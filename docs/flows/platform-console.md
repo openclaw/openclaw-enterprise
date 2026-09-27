@@ -45,7 +45,7 @@ graph TD
     E1 --> S1["Select Secret or open creation modal"]
     S1 -->|select| S3["Stage binding until Apply"]
     S3 -->|apply| E1
-    E --> E2["Select new revision or AgentRevision by URL"]
+    E --> E2["Open new version draft or admitted version by URL"]
     E2 --> E3["Save supported channel draft edit"]
     E2 --> E4["Confirm Agent deletion"]
     E2 --> E5["Confirm Agent stop"]
@@ -285,15 +285,16 @@ this client never infers it from a network error.
 
 ## Deploy the new revision
 
-The **New revision** detail view exposes **Deploy new revision**.
+The **Create new version** draft exposes **Deploy new version**.
 **Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
 only the managed runtime-credential metadata gate; OCC does not validate host
-credentials. Deployment rereads the Agent and Configuration, checks their loaded
-association and generation, then sends the existing bodyless
-`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server retains
-authorization and admission checks. The returned revision opens Workspace files;
-subsequent workspace reads check gateway startup and file availability. An
-uncertain response disables replay until refresh and inspection.
+credentials.
+Deployment rereads the Agent and Configuration, checks association and generation,
+then sends bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy`.
+The server authorizes and admits the revision. Its read-only details open while
+**Deployment activity** follows the latest visible deployment. Workspace
+reads check gateway and file availability. Uncertain responses require refresh
+and inspection before retry.
 
 ## Debugging and Verification
 

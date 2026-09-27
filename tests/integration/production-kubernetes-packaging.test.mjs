@@ -257,6 +257,31 @@ function rootSecretName(namespace, gatewayName) {
   return `${gatewayServiceName(namespace, gatewayName)}-root`;
 }
 
+function tenantApiRules() {
+  return [
+    {
+      apiGroups: [""],
+      resources: ["secrets"],
+      verbs: ["get", "create", "update", "patch", "delete"],
+    },
+    {
+      apiGroups: ["apps"],
+      resources: ["deployments"],
+      verbs: ["list"],
+    },
+    {
+      apiGroups: [""],
+      resources: ["pods"],
+      verbs: ["get", "list"],
+    },
+    {
+      apiGroups: [""],
+      resources: ["pods/proxy"],
+      verbs: ["get"],
+    },
+  ];
+}
+
 test("production native examples satisfy the current Helm, Installation, and PVC schemas", async (t) => {
   const { loadInstallationConfiguration } =
     await import("../../apps/controller/src/composition/installation-config.ts");
@@ -1162,20 +1187,7 @@ test(
     assert.ok(!bindings.has(tenant.metadata.name));
     assert.ok(!bindings.has(tenantApiRole.metadata.name));
     assert.ok(tenant.rules.some(({ resources }) => resources.includes("configmaps")));
-    // Initial runtime credential provisioning must refuse Agents with an existing workload.
-    // Its API-side preflight lists Deployments without granting workload mutations.
-    assert.deepEqual(tenantApiRole.rules, [
-      {
-        apiGroups: [""],
-        resources: ["secrets"],
-        verbs: ["get", "create", "update", "patch", "delete"],
-      },
-      {
-        apiGroups: ["apps"],
-        resources: ["deployments"],
-        verbs: ["list"],
-      },
-    ]);
+    assert.deepEqual(tenantApiRole.rules, tenantApiRules());
     // Only the unbound tenant-worker role can reconcile and remove an Agent-owned claim.
     assert.deepEqual(
       tenant.rules.filter(({ resources }) => resources.includes("persistentvolumeclaims")),
@@ -1410,18 +1422,7 @@ test(
       metadata.name.endsWith("-openclaw-tenant-api"),
     );
     assert.ok(tenantApiRole);
-    assert.deepEqual(tenantApiRole.rules, [
-      {
-        apiGroups: [""],
-        resources: ["secrets"],
-        verbs: ["get", "create", "update", "patch", "delete"],
-      },
-      {
-        apiGroups: ["apps"],
-        resources: ["deployments"],
-        verbs: ["list"],
-      },
-    ]);
+    assert.deepEqual(tenantApiRole.rules, tenantApiRules());
     assert.ok(
       !objects.some(
         ({ kind, roleRef }) =>

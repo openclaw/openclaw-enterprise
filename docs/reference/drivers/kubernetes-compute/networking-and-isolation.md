@@ -18,11 +18,14 @@ DNS, approved gateway clients, and required communication between an Agent's
 gateway and dedicated Harness. Cross-tenant traffic, traffic between different
 Agents, Kubernetes API access, and cloud metadata access remain denied.
 
-For Compute-owned startup failure evidence and plugin reporting, set
+For Compute-owned startup failure evidence, plugin reporting, and on-demand
+deployment diagnostics, set
 `network.pluginStatusProxySourceCidrs` to the precise source addresses used by the
 Kubernetes API server when proxying requests to workload Pods. The policy allows
-those sources only to the private status port, TCP/18791; worker RBAC separately
-requires `get` on `pods/proxy`. Prefer individual `/32` or `/128` addresses. On an
+those sources only to the private status port, TCP/18791. Both worker and API
+ServiceAccounts need namespace-local `get` on `pods/proxy` for their respective
+reads. The ingress rule also applies when an Agent has no enabled plugins.
+Prefer individual `/32` or `/128` addresses. On an
 overlay network, the observed source may be the control-plane node's overlay
 address rather than its node IP. Verify it across nodes with enforced policies.
 An omitted list adds no API-proxy ingress rule and leaves status unavailable

@@ -7,6 +7,8 @@ import devdayOncallPreset from "/console/devday-oncall-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+const currentRevisionId = "rev_00000000-0000-4000-8000-000000000006";
+const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
@@ -119,6 +121,10 @@ export function installFixture(scenario, evidence) {
     values: configurationValues(scenario),
     secretBindings: {},
   };
+  if (scenario.candidateDeploymentStatus) {
+    config.generation = 2;
+    config.values.agents.defaults.model = "codex/gpt-5.1";
+  }
   if (scenario.slack && scenario.slackBindings !== false) {
     const keys =
       scenario.slackBindings === "app"
@@ -140,6 +146,15 @@ export function installFixture(scenario, evidence) {
         : scenario.auth === "service"
           ? { method: "chatgpt_service_account", serviceAccountId: "sa_demo" }
           : auth;
+  let selectedRevisionId = null;
+  if (scenario.candidateDeploymentStatus) {
+    selectedRevisionId =
+      scenario.candidateDeploymentStatus === "succeeded" || scenario.candidateSelected
+        ? candidateRevisionId
+        : currentRevisionId;
+  } else if (scenario.deployed) {
+    selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
+  }
   const agent = {
     id: "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -151,7 +166,7 @@ export function installFixture(scenario, evidence) {
     harnessAuth: selectedAuth,
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: scenario.deployed ? "rev_00000000-0000-4000-8000-000000000001" : null,
+    activeRevisionId: selectedRevisionId,
     ...(scenario.repositoryBindings
       ? { repositoryBindings: structuredClone(scenario.repositoryBindings) }
       : {}),
@@ -196,30 +211,57 @@ export function installFixture(scenario, evidence) {
     };
   }
   if (scenario.deployed) {
-    revisions.set(
-      "rev_00000000-0000-4000-8000-000000000001",
-      snapshot(agent, "rev_00000000-0000-4000-8000-000000000001", 1),
-    );
-    deployments.set("rev_00000000-0000-4000-8000-000000000001", {
-      deploymentId: "dep_demo",
-      revisionId: "rev_00000000-0000-4000-8000-000000000001",
-      status: scenario.deploymentStatus ?? "succeeded",
-      error:
-        scenario.deploymentStatus === "failed"
-          ? {
-              code: "RUNTIME_NOT_READY",
-              message: "The Harness did not become ready before the startup deadline.",
-              data: {
-                runtimeFailure: {
-                  component: "harness",
-                  check: "readiness",
-                  code: "TIMEOUT",
-                  checkedAt: createdAt,
-                },
-              },
-            }
-          : null,
+    const revisionId = scenario.candidateDeploymentStatus
+      ? currentRevisionId
+      : "rev_00000000-0000-4000-8000-000000000001";
+    const currentRevision = snapshot(agent, revisionId, scenario.candidateDeploymentStatus ? 6 : 1);
+    if (scenario.candidateDeploymentStatus) {
+      currentRevision.createdAt = "2026-09-25T12:00:00.000Z";
+      currentRevision.configurationGeneration = 1;
+      currentRevision.configuration.agents.defaults.model = "codex/gpt-4.1";
+    }
+    revisions.set(revisionId, currentRevision);
+    deployments.set(revisionId, {
+      deploymentId: revisionId,
+      namespaceId,
+      agentId: agent.id,
+      status: "succeeded",
+      error: null,
+      warnings: [],
     });
+    if (scenario.candidateDeploymentStatus) {
+      const candidate = snapshot(agent, candidateRevisionId, 7);
+      candidate.createdAt = "2026-09-26T22:52:53.000Z";
+      revisions.set(candidate.id, candidate);
+      deployments.set(candidate.id, {
+        deploymentId: candidate.id,
+        namespaceId,
+        agentId: agent.id,
+        status: scenario.candidateDeploymentStatus,
+        error:
+          scenario.candidateDeploymentStatus === "failed"
+            ? scenario.candidateSelected
+              ? {
+                  code: "REVISION_FINALIZATION_INCOMPLETE",
+                  message: "Deployment reconciliation failed.",
+                }
+              : {
+                  code: "CONVERGENCE_DEADLINE_EXCEEDED",
+                  message: "Deployment convergence deadline exceeded.",
+                  data: {
+                    timeoutMs: 60000,
+                    runtimeFailure: {
+                      component: "harness",
+                      check: "readiness",
+                      code: "TIMEOUT",
+                      checkedAt: candidate.createdAt,
+                    },
+                  },
+                }
+            : null,
+        warnings: scenario.candidateDeploymentWarnings ?? [],
+      });
+    }
   }
   if (scenario.emptyAgents) {
     agents.clear();
@@ -509,11 +551,13 @@ export function installFixture(scenario, evidence) {
         const revision = snapshot(saved, nextId("rev"), 1);
         revisions.set(revision.id, revision);
         deployments.set(revision.id, {
-          deploymentId: `dep_${revision.id}`,
-          revisionId: revision.id,
+          deploymentId: revision.id,
+          namespaceId,
+          agentId: saved.id,
           status: "queued",
           reads: 0,
           error: null,
+          warnings: [],
         });
         provisioning.set(saved.id, {
           requestId,
@@ -646,11 +690,13 @@ export function installFixture(scenario, evidence) {
           }
         }
         if (suffix === "/deploy" && method === "POST") {
-          const next = snapshot(
-            saved,
-            nextId("rev"),
-            [...revisions.values()].filter((item) => item.agentId === id).length + 1,
+          const lastRevision = Math.max(
+            0,
+            ...[...revisions.values()]
+              .filter((item) => item.agentId === id)
+              .map((item) => item.revision),
           );
+          const next = snapshot(saved, nextId("rev"), lastRevision + 1);
           revisions.set(next.id, next);
           const stagedFiles = stagedWorkspaceFiles.get(id);
           for (const [filename, content] of Object.entries(stagedFiles ?? {})) {
@@ -659,11 +705,13 @@ export function installFixture(scenario, evidence) {
           stagedWorkspaceFiles.delete(id);
           saved.desiredRuntimeState = "running";
           deployments.set(next.id, {
-            deploymentId: `dep_${next.id}`,
-            revisionId: next.id,
+            deploymentId: next.id,
+            namespaceId,
+            agentId: id,
             status: "queued",
             reads: 0,
             error: null,
+            warnings: [],
           });
           return response(next, 202);
         }
@@ -675,6 +723,64 @@ export function installFixture(scenario, evidence) {
             ? response(revisions.get(suffix.split("/")[2]))
             : error(404);
         }
+        if (
+          suffix.startsWith("/deployments/") &&
+          suffix.endsWith("/diagnostics") &&
+          method === "POST"
+        ) {
+          const revisionId = suffix.split("/")[2];
+          if (!revisions.has(revisionId)) {
+            return error(404);
+          }
+          return response({
+            revisionId,
+            observedAt: "2026-09-27T12:00:00.000Z",
+            checks:
+              scenario.diagnosticsState === "unknown"
+                ? [
+                    {
+                      component: "gateway",
+                      check: "configuration",
+                      state: "succeeded",
+                      checkedAt: "2026-09-27T11:59:59.000Z",
+                    },
+                    {
+                      component: "gateway",
+                      check: "authentication",
+                      state: "unknown",
+                      checkedAt: "2026-09-27T11:59:59.000Z",
+                      code: "PROBE_FAILED",
+                    },
+                    {
+                      component: "gateway",
+                      check: "connectivity",
+                      state: "unknown",
+                      checkedAt: "2026-09-27T11:59:59.000Z",
+                      code: "INCOMPATIBLE_RESPONSE",
+                    },
+                  ]
+                : [
+                    {
+                      component: "gateway",
+                      check: "configuration",
+                      state: "succeeded",
+                      checkedAt: "2026-09-27T11:59:59.000Z",
+                    },
+                    {
+                      component: "gateway",
+                      check: "authentication",
+                      state: "succeeded",
+                      checkedAt: "2026-09-27T11:59:59.000Z",
+                    },
+                    {
+                      component: "gateway",
+                      check: "connectivity",
+                      state: "succeeded",
+                      checkedAt: "2026-09-27T11:59:59.000Z",
+                    },
+                  ],
+          });
+        }
         if (suffix.startsWith("/deployments/") && method === "GET") {
           const deployment = deployments.get(suffix.split("/")[2]);
           if (!deployment) {
@@ -683,7 +789,7 @@ export function installFixture(scenario, evidence) {
           if (deployment.reads !== undefined && ++deployment.reads > 1) {
             deployment.status = "succeeded";
             saved.desiredRuntimeState = "running";
-            saved.activeRevisionId = deployment.revisionId;
+            saved.activeRevisionId = deployment.deploymentId;
           }
           return response(deployment);
         }

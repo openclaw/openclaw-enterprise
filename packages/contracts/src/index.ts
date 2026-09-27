@@ -942,6 +942,26 @@ export interface AgentRuntimeCredentialStatus {
   readonly transportConfigured: boolean;
 }
 
+export type RuntimeDiagnosticState = "succeeded" | "failed" | "unknown";
+
+export interface RuntimeDiagnosticCheck {
+  readonly component: string;
+  readonly check: string;
+  readonly state: RuntimeDiagnosticState;
+  readonly checkedAt: string | null;
+  readonly code?: string;
+}
+
+export interface AgentDeploymentDiagnostics {
+  readonly revisionId: string;
+  readonly observedAt: string;
+  readonly checks: readonly RuntimeDiagnosticCheck[];
+}
+
+export interface ComputeAgentRevisionBinding extends ComputeAgentBinding {
+  readonly revision: Readonly<AgentRevision>;
+}
+
 /** Observed workload image identity; missing provenance must never be inferred from a tag. */
 export interface RuntimeImage {
   readonly workload: string;
@@ -1006,6 +1026,9 @@ export interface ComputeDriver extends Driver {
     binding: ComputeAgentBinding,
     input: AgentRuntimeCredentialsInput,
   ): Promise<AgentRuntimeCredentialStatus>;
+  diagnoseAgentDeployment?(
+    binding: ComputeAgentRevisionBinding,
+  ): Promise<AgentDeploymentDiagnostics>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;

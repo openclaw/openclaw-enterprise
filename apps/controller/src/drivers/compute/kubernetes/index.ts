@@ -28,12 +28,14 @@ import type {
   V1VolumeMount,
 } from "@kubernetes/client-node";
 import type {
+  AgentDeploymentDiagnostics,
   AgentRevision,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
   ComputeAgentBinding,
+  ComputeAgentRevisionBinding,
   ComputeReadiness,
   ComputePreflightResult,
   ComputeRevisionContext,
@@ -56,6 +58,8 @@ import type {
   SecretBindings,
   SecretEnvironmentProjection,
   LoggingLevel,
+  RuntimeDiagnosticCheck,
+  RuntimeDiagnosticState,
   RuntimeFailureEvidence,
   RuntimeImage,
   OpenClawConfigurationValue,
@@ -445,6 +449,7 @@ const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
 const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
 const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
 const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_AGENT_REVISION_ID",
   "OPENCLAW_RUNTIME_STATUS_CONTAINER",
@@ -1556,6 +1561,69 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
       return { transportConfigured: true };
     });
+  }
+
+  async diagnoseAgentDeployment(
+    binding: ComputeAgentRevisionBinding,
+  ): Promise<AgentDeploymentDiagnostics> {
+    const revision = binding.revision;
+    if (
+      revision.namespaceId !== binding.namespace.id ||
+      revision.agentId !== binding.agent.id ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new ResourceConflictError("The Agent deployment diagnostic binding is invalid.");
+    }
+    const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const ownerSignal = currentComputeAbortSignal();
+    const signal = ownerSignal === undefined ? deadline : AbortSignal.any([ownerSignal, deadline]);
+    try {
+      return await withComputeAbortSignal(signal, async () => {
+        const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+        const observedNamespace = await this.get("Namespace", namespace);
+        if (observedNamespace === undefined || observedNamespace.status?.phase !== "Active") {
+          throw new DependencyUnavailableError(
+            "The Agent deployment Kubernetes namespace is unavailable.",
+          );
+        }
+        this.verifyNamespaceOwnership(
+          observedNamespace,
+          { namespaceId: revision.namespaceId },
+          external,
+        );
+        const reports = await Promise.all(
+          this.runtimeStatusContainers(revision).map(async (container) => {
+            const checks = await this.runtimeDiagnosticChecks(revision, namespace, container);
+            if (checks === undefined) {
+              return [
+                {
+                  component: container,
+                  check: "runtime-status",
+                  state: "unknown",
+                  checkedAt: null,
+                  code: "UNAVAILABLE",
+                } satisfies RuntimeDiagnosticCheck,
+              ];
+            }
+            return checks;
+          }),
+        );
+        return {
+          revisionId: revision.id,
+          observedAt: new Date().toISOString(),
+          checks: reports.flat().slice(0, 32),
+        };
+      });
+    } catch (error) {
+      if (ownerSignal?.aborted) {
+        throw ownerSignal.reason;
+      }
+      if (deadline.aborted) {
+        throw new DependencyUnavailableError("Runtime diagnostics timed out.");
+      }
+      throw error;
+    }
   }
 
   async deleteAgentRuntimeCredentials(binding: ComputeAgentBinding): Promise<void> {
@@ -4764,6 +4832,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return revision.harness.mode === "embedded" ? ["gateway"] : ["agent", "gateway"];
   }
 
+  private async runtimeDiagnosticChecks(
+    revision: AgentRevision,
+    namespace: string,
+    container: "agent" | "gateway",
+  ): Promise<readonly RuntimeDiagnosticCheck[] | undefined> {
+    const readback = await this.privateStatusReadback(
+      revision,
+      namespace,
+      container,
+      RUNTIME_DIAGNOSTICS_PATH,
+    );
+    if (readback === undefined) {
+      return undefined;
+    }
+    return this.validRuntimeDiagnosticChecks(readback.status, revision, container, readback.podUid);
+  }
+
   private async privateStatusReadback(
     revision: AgentRevision,
     namespace: string,
@@ -4846,6 +4931,55 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new DependencyUnavailableError("Runtime status returned oversized data.");
     }
     return value;
+  }
+
+  private validRuntimeDiagnosticChecks(
+    value: unknown,
+    revision: AgentRevision,
+    container: "agent" | "gateway",
+    podUid: string,
+  ): readonly RuntimeDiagnosticCheck[] {
+    const status = asRecord(value);
+    if (
+      status === undefined ||
+      status.revisionId !== revision.id ||
+      status.container !== container ||
+      status.podUid !== podUid ||
+      !this.validIsoTimestamp(status.observedAt) ||
+      !Array.isArray(status.checks) ||
+      status.checks.length > 32
+    ) {
+      throw new DependencyUnavailableError("Runtime status returned invalid data.");
+    }
+    return Object.freeze(status.checks.map((check) => this.validRuntimeDiagnosticCheck(check)));
+  }
+
+  private validRuntimeDiagnosticCheck(value: unknown): RuntimeDiagnosticCheck {
+    const check = asRecord(value);
+    const state = check?.state;
+    const checkedAt = check?.checkedAt;
+    if (
+      check === undefined ||
+      !this.validRuntimeStatusIdentifier(check.component) ||
+      !this.validRuntimeStatusIdentifier(check.check) ||
+      !this.validRuntimeDiagnosticState(state) ||
+      (checkedAt !== null &&
+        (typeof checkedAt !== "string" || !this.validIsoTimestamp(checkedAt))) ||
+      (check.code !== undefined && !this.validRuntimeStatusIdentifier(check.code))
+    ) {
+      throw new DependencyUnavailableError("Runtime status returned invalid diagnostic data.");
+    }
+    return {
+      component: check.component,
+      check: check.check,
+      state,
+      checkedAt,
+      ...(check.code === undefined ? {} : { code: check.code }),
+    };
+  }
+
+  private validRuntimeDiagnosticState(value: unknown): value is RuntimeDiagnosticState {
+    return value === "succeeded" || value === "failed" || value === "unknown";
   }
 
   private runtimeFailureEvidence(value: unknown): RuntimeFailureEvidence | undefined {
@@ -6932,9 +7066,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const enabledPluginIds = Object.entries(revision.plugins?.plugins ?? {})
       .filter(([, selection]) => selection.enabled)
       .map(([pluginId]) => pluginId);
-    if (enabledPluginIds.length === 0) {
-      return [];
-    }
     const policies =
       statusProxySourceCidrs.length > 0
         ? [
@@ -6955,9 +7086,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             }),
           ]
         : [];
-    if (revision.harness.mode === "embedded" || this.options.runtime === undefined) {
-      return policies;
-    }
     const gatewayProxyPolicies =
       gatewayNamespace === namespace
         ? []
@@ -6965,6 +7093,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ...item,
             metadata: { ...item.metadata, namespace: gatewayNamespace },
           }));
+    // The private runtime diagnostics endpoint uses the same proxy even when
+    // no plugins are enabled; its ingress must follow workload placement.
+    if (
+      enabledPluginIds.length === 0 ||
+      revision.harness.mode === "embedded" ||
+      this.options.runtime === undefined
+    ) {
+      return [...policies, ...gatewayProxyPolicies];
+    }
     return [
       ...policies,
       ...gatewayProxyPolicies,

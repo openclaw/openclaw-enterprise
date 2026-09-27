@@ -709,7 +709,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       url.searchParams.get("revision") === "draft"
     );
   });
-  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  await page.getByRole("button", { name: "Create new version" }).waitFor();
   await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "create"').waitFor();
@@ -1114,7 +1114,7 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the d
   await page
     .getByText("Credential metadata unavailable. Refresh status before deploying.")
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length,
@@ -3309,6 +3309,155 @@ test("Agent creation saves explicitly selected models for both harnesses", async
   }
 });
 
+test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deployment activity", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Deployment Agent", nativeValues("v1"));
+  const current = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v2"));
+  // Admission creates v2 while v1 stays selected until activation.
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${pending.id}`;
+  const diagnosticsPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}/diagnostics`;
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // The in-memory API fixture has no worker records. Supply contract-shaped status
+  // reads to prove the UI keeps each version's outcome tied to its exact ID.
+  for (const [revisionId, status] of [
+    [current.revision.id, "succeeded"],
+    [pending.id, "queued"],
+  ]) {
+    await page.route(
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            data: {
+              deploymentId: revisionId,
+              namespaceId: namespace.id,
+              agentId: agent.id,
+              status,
+              error: null,
+              warnings: [],
+            },
+            meta: { requestId: "req_test_deployment_activity" },
+          }),
+        });
+      },
+    );
+  }
+  await page.route(`${fixture.origin}${diagnosticsPath}`, async (route) => {
+    assert.equal(route.request().method(), "POST");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          revisionId: current.revision.id,
+          observedAt: "2026-09-27T12:00:00.000Z",
+          checks: [
+            {
+              component: "slack",
+              check: "authentication",
+              state: "succeeded",
+              checkedAt: "2026-09-27T11:59:59.000Z",
+            },
+          ],
+        },
+        meta: { requestId: "req_test_exact_diagnostics" },
+      }),
+    });
+  });
+  const url = detailUrl(fixture, namespace.id, agent.id, current.revision.id, "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Versions" }).waitFor();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.getByText("Current version · v1", { exact: true }).waitFor();
+  const activity = page.locator(".deployment-status");
+  await activity.getByRole("heading", { name: "Deployment activity" }).waitFor();
+  await activity.getByText("Most recent visible deployment · v2").waitFor();
+  await activity.getByText("Recorded status: queued").waitFor();
+  await activity.getByText("Waiting for a worker claim.").waitFor();
+  await activity.getByText("Successful completion is not recorded yet.").waitFor();
+  const versionRecord = page.locator(".version-deployment-record");
+  await versionRecord.getByRole("heading", { name: "This version’s deployment record" }).waitFor();
+  await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
+  const observations = page.locator(".version-diagnostics");
+  await observations
+    .getByText("No current observation has been requested for this version.")
+    .waitFor();
+  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+  await observations.getByText(/Observed /).waitFor();
+  await observations.getByText("slack / authentication").waitFor();
+  assert.equal(pathRequests(requests, "POST", diagnosticsPath).length, 1);
+  await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
+  await activity.getByText("Recorded status: queued").waitFor();
+  assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
+  assert.ok(
+    pathRequests(
+      requests,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}`,
+    ).length >= 1,
+  );
+
+  await page.getByRole("button", { name: "View version v2" }).click();
+  await page.getByRole("heading", { name: "Version v2" }).waitFor();
+  await page.getByText("Current version · v1", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "View version v1" }).click();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await activity.getByText("Most recent visible deployment · v2").waitFor();
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
+  const newer = await fixture.deployAgent(namespace.id, agent.id);
+  let newerStatus = "queued";
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${newer.id}`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: newer.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: newerStatus,
+            error:
+              newerStatus === "failed"
+                ? {
+                    code: "REVISION_FINALIZATION_INCOMPLETE",
+                    message: "Deployment reconciliation failed.",
+                  }
+                : null,
+            warnings: [],
+          },
+          meta: { requestId: "req_test_new_deployment_activity" },
+        }),
+      });
+    },
+  );
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await activity.getByText("Most recent visible deployment · v3").waitFor();
+  await page.getByRole("button", { name: "View version v3" }).waitFor();
+  await page.getByText("Current version · v1", { exact: true }).waitFor();
+  await fixture.activateRevision(namespace.id, agent.id, newer.id, current.revision.id);
+  newerStatus = "failed";
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await page.getByText("Current version · v3", { exact: true }).waitFor();
+  await activity.getByText("Recorded status: failed").waitFor();
+  await activity
+    .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")
+    .waitFor();
+  await activity
+    .getByText("Deployment work failed; check the recorded error and current version.")
+    .waitFor();
+  await activity.getByText("Successful completion was not recorded for this deployment.").waitFor();
+});
+
 test("Agent detail preserves admitted revision history while draft edits change current configuration", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -3353,25 +3502,25 @@ test("Agent detail preserves admitted revision history while draft edits change 
   requests.length = 0;
 
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/);
 
-  await page.getByRole("button", { name: "Newer revision" }).click();
+  await page.getByRole("button", { name: "View version v2" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
   await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/);
   assertRevisionUrl(page, second.revision.id);
 
-  await page.getByRole("button", { name: "Older revision" }).click();
+  await page.getByRole("button", { name: "View version v1" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   assertRevisionUrl(page, first.revision.id);
 
-  await page.getByRole("button", { name: "New revision", exact: true }).click();
+  await page.getByRole("button", { name: "Create new version" }).last().click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
@@ -3415,17 +3564,17 @@ test("Agent detail preserves admitted revision history while draft edits change 
   // Tabs, admitted revision browsing, and global routes preserve this exact unsaved draft.
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
-  await page.getByLabel("AgentRevision").selectOption(second.revision.id);
+  await page.getByLabel("Available versions").selectOption(second.revision.id);
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
   const savedConfiguration = page.waitForResponse(
     (response) =>
@@ -3450,7 +3599,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.deepEqual(currentConfiguration.data.values, editedValues);
   assert.deepEqual(currentConfiguration.data.secretBindings, secretBindings);
 
-  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
@@ -3480,7 +3629,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     .waitFor();
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.harnessAuth, null);
-  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
   await page
     .getByRole("link", {
       name: "Auth Revisioned Agent",
@@ -3861,7 +4010,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     await page.getByRole("button", { name: "Retry credential access" }).isDisabled(),
     false,
   );
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.deepEqual(current.data.harnessAuth, {
@@ -3916,12 +4065,12 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
 
   const nextValues = nativeValues("after-unknown");
   await page.getByText("Configured on the runtime host").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
   await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Save Configuration" }).click();
 
   await page.getByText("Outcome unknown. Configuration may have been saved.").waitFor();
@@ -3950,7 +4099,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   await page.goBack();
   await page.getByLabel("Configuration JSON").waitFor();
   assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Reload draft" }).click();
   await page.getByText(/generation 2/).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
@@ -3980,7 +4129,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Stop Agent" }).click();
   let dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
   await dialog
-    .getByText(/Configuration, AgentRevisions, Credentials, and workspace data are retained/i)
+    .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
@@ -3988,7 +4137,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Stop Agent" }).click();
   dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
   await dialog
-    .getByText(/Configuration, AgentRevisions, Credentials, and workspace data are retained/i)
+    .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
   const stopResponse = page.waitForResponse(
     (response) =>
@@ -4005,9 +4154,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("status").getByText("Stop requested.").waitFor();
   await page.getByText(/Runtime shutdown completion is not exposed in Console/).waitFor();
   await page
-    .getByText(
-      `Selected revision ${active.revision.id.slice(0, 12)}…${active.revision.id.slice(-6)}`,
-    )
+    .getByText(`Version ${active.revision.id.slice(0, 12)}…${active.revision.id.slice(-6)}`)
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
   assert.deepEqual(
@@ -4049,12 +4196,12 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page
     .getByRole("region", { name: "Stop Agent", exact: true })
-    .getByText("No selected revision", { exact: true })
+    .getByText("No current version", { exact: true })
     .waitFor();
 
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "New revision", exact: true }).click();
-  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
   const running = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(running.data.desiredRuntimeState, "running");
@@ -4599,7 +4746,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
   // Viewing an older configuration snapshot must still open the current active gateway.
-  await page.getByLabel("AgentRevision").selectOption(historicalRevisionId);
+  await page.getByLabel("Available versions").selectOption(historicalRevisionId);
   await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
@@ -5356,7 +5503,7 @@ test("Agent credentials choose existing Slack Secrets without reading token valu
   await selectSecret(page, "Slack bot token", slackBotSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
+    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
     .waitFor();
 
   const configuration = await fixture.request(
@@ -5548,7 +5695,7 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
   await selectSecret(page, "Slack bot token", botSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   const firstConfiguration = await fixture.request(
     "GET",
@@ -5565,13 +5712,13 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   requests.length = 0;
   await selectSecret(page, "Slack app token", secondAppSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
-    .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
+    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
     .waitFor();
 
   const finalConfiguration = await fixture.request(
@@ -5588,7 +5735,7 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
       .sort(),
     [botSecret.id, secondAppSecret.id].sort(),
   );
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
 });
 
 // A persisted binding must remain blocked for both permission denials and retryable IAM failures.
@@ -5662,10 +5809,7 @@ for (const grantStatus of [403, 429]) {
       false,
     );
     await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
-    assert.equal(
-      await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(),
-      true,
-    );
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
     const configuration = await fixture.request(
       "GET",
@@ -6899,6 +7043,9 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "workspace");
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Versions", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Deployment activity", exact: true }).waitFor();
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   assert.equal(
     requests.some((request) => request.path === configurationPath),
@@ -6906,7 +7053,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   );
   assert.equal(
     requests.some((request) => request.path.endsWith("/revisions")),
-    false,
+    true,
   );
   const tabs = await page.locator(".agent-tabs").elementHandle();
   let release;
@@ -6932,8 +7079,8 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   const delivered = page.waitForResponse(`${fixture.origin}${configurationPath}`);
   release();
   await delivered;
-  // Configuration completion may prepare shared controls, but must not replace the active tab.
-  await page.getByRole("heading", { name: "New revision", exact: true }).waitFor();
+  // Configuration completion may prepare shared controls, but must not replace the live workspace view.
+  await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
   assert.equal(
     await page.getByRole("heading", { name: "Workspace files", exact: true }).isVisible(),
     true,
@@ -7593,7 +7740,7 @@ test("Credentials retries denied and interrupted grants without repeating the au
     .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(pathRequests(requests, "POST", bindingsPath).length, 0);
   assert.equal(
     (await fixture.request("GET", agentPath)).data.harnessAuth.source.id,
@@ -7604,7 +7751,7 @@ test("Credentials retries denied and interrupted grants without repeating the au
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   await page.getByRole("button", { name: "Retry credential access" }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   fixture.policy.restrictions.splice(
     fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
     1,
@@ -7674,7 +7821,7 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
     await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),
     true,
   );
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/access-bindings`).length,
@@ -8119,7 +8266,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "New revision", exact: true }).click();
+  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);

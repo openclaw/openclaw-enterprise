@@ -68,7 +68,7 @@ Presets and edited Configuration JSON retain their settings.
    Secret references, Agent inputs, repositories, and workspace files for provisioning.
    Console follows the job through resource creation, credential provisioning, and
    first-deployment activation, then opens that revision's Workspace files.
-   Ordinary creation saves Configuration first and opens a draft on **New revision**,
+   Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
@@ -213,7 +213,7 @@ and successful repository discovery, **Create Agent** queues setup and follows
 the first deployment. The worker creates the Configuration and Agent, grants
 access to the final Secret references, and provisions transport credentials.
 Check that the returned revision belongs to this Agent and retains its repository
-selections. An ordinary draft requires credential setup and **Deploy new revision**
+selections. An ordinary draft requires credential setup and **Deploy new version**
 from its detail page.
 
 Operators must prepare the
@@ -275,25 +275,27 @@ provider acceptance, runtime readiness, or a channel connection.
 
 ## Deploy a new revision
 
-Select **Deploy new revision** from a draft or admitted revision after storing
-generated credentials, saving required channel Secret bindings, and selecting
-harness authentication. The action deploys the current saved Configuration;
-it never copies the viewed snapshot or rolls back. Every accepted request
-creates an immutable revision, even at the same Configuration generation.
+Open **Create new version**, then select **Deploy new version** after storing
+credentials, saving channel Secret bindings, and selecting harness authentication.
+This draft-only action uses the saved Configuration; it does not redeploy a viewed
+snapshot. Every accepted request creates an immutable revision, even at the same
+Configuration generation.
 
-Before admission, the console rereads the Agent, Configuration and managed
-credential metadata. Changed draft generations, associations or authentication
-bindings require refresh when viewing the draft. These reads are not atomic
-with admission.
+Before admission, the console rereads the Agent, Configuration, and managed
+credential metadata. If generation, association, or authentication changed since
+the draft loaded, refresh. These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.
 
-If a deployment response is lost, inspect the Agent's revision history before
-trying again; the console does not automatically repeat an uncertain request.
-To follow the deployment worker, use the [deployment status API](../agents.md#deployment-status).
-The revision view displays stored deployment failures and available startup evidence.
-Missing evidence leaves the cause unspecified. The console does not display live runtime health. Give your operator the
-Namespace ID, the Agent ID shown on its detail page, and the full revision ID
-in the `revision` query parameter of the page URL after deployment. Ask them to
+If a deployment response is lost, inspect **Versions** before retrying; the
+console does not repeat an uncertain request. **Deployment activity** follows
+the most recent visible deployment's persisted status; use the
+[deployment status API](../agents.md#deployment-status) for an exact revision.
+The viewed version shows stored startup evidence; missing evidence leaves the
+cause unspecified. [Current observations](../../guides/console/agent-details.md#follow-deployment-activity)
+can request limited checks for that version, including Slack configuration,
+authentication, and connectivity when supported. They do not prove serving or
+a model response. Give your operator the Namespace ID, Agent ID, and full
+revision ID from the page URL's `revision` query parameter. Ask them to
 [verify that exact workload and get a real model response](../../guides/deploy/production-agents.md#verify-production-workloads).
 Do not create another Agent to verify this one.

@@ -164,6 +164,87 @@
         "properties": {
           "data": {
             "additionalProperties": false,
+            "properties": {
+              "checks": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "check": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                      "type": "string"
+                    },
+                    "checkedAt": {
+                      "anyOf": [
+                        {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        { "type": "null" }
+                      ]
+                    },
+                    "code": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                      "type": "string"
+                    },
+                    "component": {
+                      "maxLength": 64,
+                      "minLength": 1,
+                      "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                      "type": "string"
+                    },
+                    "state": {
+                      "anyOf": [
+                        { "const": "succeeded", "type": "string" },
+                        { "const": "failed", "type": "string" },
+                        { "const": "unknown", "type": "string" }
+                      ]
+                    }
+                  },
+                  "required": ["component", "check", "state", "checkedAt"],
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "observedAt": {
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                "type": "string"
+              },
+              "revisionId": {
+                "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["revisionId", "observedAt", "checks"],
+            "type": "object"
+          },
+          "meta": {
+            "additionalProperties": false,
+            "properties": {
+              "requestId": {
+                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              }
+            },
+            "required": ["requestId"],
+            "type": "object"
+          }
+        },
+        "required": ["data", "meta"],
+        "title": "AgentDeploymentDiagnosticsResponse",
+        "type": "object"
+      },
+      "def-7": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
             "properties": { "transportConfigured": { "type": "boolean" } },
             "required": ["transportConfigured"],
             "type": "object"
@@ -184,7 +265,7 @@
         "title": "AgentRuntimeCredentialResponse",
         "type": "object"
       },
-      "def-7": {
+      "def-8": {
         "additionalProperties": false,
         "properties": {
           "data": {
@@ -6266,6 +6347,179 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/diagnostics": {
+      "post": {
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "operationId": "diagnoseAgentDeployment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deploymentId",
+            "required": true,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "checks": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "check": {
+                                "maxLength": 64,
+                                "minLength": 1,
+                                "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                "type": "string"
+                              },
+                              "checkedAt": {
+                                "anyOf": [
+                                  {
+                                    "format": "date-time",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                    "type": "string"
+                                  },
+                                  { "type": "null" }
+                                ]
+                              },
+                              "code": {
+                                "maxLength": 64,
+                                "minLength": 1,
+                                "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                "type": "string"
+                              },
+                              "component": {
+                                "maxLength": 64,
+                                "minLength": 1,
+                                "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                "type": "string"
+                              },
+                              "state": {
+                                "anyOf": [
+                                  { "const": "succeeded", "type": "string" },
+                                  { "const": "failed", "type": "string" },
+                                  { "const": "unknown", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["component", "check", "state", "checkedAt"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "observedAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "revisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["revisionId", "observedAt", "checks"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-5" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Run explicit current-runtime diagnostics for one exact Agent revision",
+        "tags": ["Agent deployments"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
         "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
@@ -11328,7 +11582,7 @@
         "responses": {
           "201": {
             "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-8" } }
             },
             "description": "Default Response"
           },
@@ -11495,7 +11749,7 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-8" } }
             },
             "description": "Default Response"
           },
@@ -11589,7 +11843,7 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-8" } }
             },
             "description": "Default Response"
           },

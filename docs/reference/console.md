@@ -85,7 +85,7 @@ Use **Refresh** to retry unavailable metadata or update the snapshot.
 The console creates an Agent and reusable Configuration, records optional
 Agent-owned plugin selections and a harness authentication binding, stages initial
 workspace contents, and provisions transport/channel credentials. Creation leaves
-the Agent stopped and undeployed; **Deploy new revision** creates and starts a revision from the current Configuration. Follow
+the Agent stopped and undeployed; **Deploy new version** admits a revision from the current Configuration and queues startup. Follow
 [Create and deploy Agents](console/create-and-deploy.md) for the complete
 workflow, channel constraints, and recovery after partial or uncertain writes.
 Plugin selections use the same Agent create/update contract as the API: omitted
@@ -94,51 +94,56 @@ unsupported catalog or policy choices.
 
 ## Inspect detail, revisions, and channel drafts
 
-Switching between **Configuration**, **Channels**, **Credentials**, and **Workspace
-files** updates only the tab content. The surrounding Agent panels stay in place,
-and browser Back/Forward restores the selected tab. Unsaved Configuration JSON,
-live workspace text, authentication source choices, and open Slack drawers survive
-tab and page navigation. Drafts stay in this document, scoped to the signed-in
-user, Namespace, and Agent. Preset variables and the Agents search filter also
-survive navigation. Password values clear; existing Secret IDs remain references.
-Reloading the browser, leaving the document, or signing out clears local drafts.
+**Configuration**, **Channels**, **Credentials**, and **Workspace files** change
+only tab content; Back/Forward restores the tab. Unsaved JSON, workspace text,
+authentication choices, Slack drawers, Preset variables, and Agent search survive
+navigation within the document. Drafts are scoped to account, Namespace, and
+Agent. Passwords clear; Secret IDs remain references. Reload, page exit, and
+sign-out clear drafts.
 
-**Cancel**, **Start over**, and each editor's explicit **Reload** discard its edits.
-Successful saves clear that editor's draft. **Refresh** rereads saved resources
-while retaining unsaved edits. Restored Configuration and authentication editors
-keep their original save baseline; concurrent changes require the editor's reload.
-Unsaved Configuration edits still block deployment. Pending or uncertain saves
-retain their recovery guard until readback; navigation never retries a mutation.
+**Cancel**, **Start over**, and editor **Reload** discard edits. A successful
+save clears its draft; **Refresh** rereads resources while retaining edits.
+Configuration and authentication editors retain their save baseline, requiring
+reload after concurrent changes. Unsaved Configuration blocks deployment;
+pending or uncertain saves block retries until readback. Navigation never
+retries a mutation.
 
-**New revision** edits the current Configuration through native JSON, channels,
-and authentication controls. **Operator-managed credentials** saves
-`{ "method": "runtime" }` for SSH embedded OpenClaw, without a Secret or account.
-Deployment skips OCC-managed credential metadata; API permissions and
-Driver/topology checks still apply. OCC does not validate host credentials.
-**Selected revision** displays `activeRevisionId`, which may differ from the
-newest admitted revision or viewed snapshot.
+**Create new version** edits the current Configuration, channels, and
+authentication. **Operator-managed credentials** saves `{ "method": "runtime" }`
+for SSH embedded OpenClaw without a Secret or account. Deployment skips managed
+metadata, but API permissions and Driver/topology checks apply; OCC does not
+validate host credentials. **Current version** displays `activeRevisionId`,
+independent of the newest or viewed version and without proving live serving.
+**Deployment activity** shows the latest visible version's persisted result;
+the viewed version shows its own recorded outcome.
 
-**Save authentication source** saves the binding, then confirms exact
-`secret:operate` access for the Agent service principal on the selected API-key
-or Service Accounts Secret. Grant changes require the signed-in actor's Namespace
-IAM authority. Issued ChatGPT accounts and operator-managed authentication skip
-this grant. A failed grant reports partial success and offers **Retry credential
-access** without repeating the Agent update. Partial saves survive navigation.
-Deployment errors remain visible; confirmed grants do not establish runtime or
+**Current observations** runs only when **Run diagnostics for this version** is
+selected. The bodyless POST checks the exact viewed version and returns an
+observation time and bounded checks marked `succeeded`, `failed`, or `unknown`.
+Agent `read` and `operate` plus exact AgentRevision `read` are required.
+An unavailable request shows an error. Results do not change deployment history,
+repeat the startup model probe, or prove message delivery.
+
+**Save authentication source** stores the binding and confirms exact
+`secret:operate` access for the Agent principal on an API-key or Service Accounts
+Secret. Grant changes require Namespace IAM authority. Issued ChatGPT accounts
+and operator-managed authentication skip the grant. A failed grant reports
+partial success and offers **Retry credential access** without repeating the
+Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
-Configuration and Slack summaries show Harness, app-token, and bot-token Secret
-names and IDs. Bindings belong to the viewed draft or revision; names require
-current, exact Secret `read` permission in the same Namespace. Denied, missing,
-or failed reads retain the bound ID with **Metadata unavailable**. **No Secret
-bound** means no binding exists. Summaries never read values or establish runtime
+Configuration and Slack summaries show bound Secret names and IDs for the viewed
+draft or revision. Names require exact same-Namespace Secret `read`. Denied,
+missing, or failed reads retain IDs with **Metadata unavailable**; **No Secret
+bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 
 AgentRevision snapshots are read-only: they cannot be edited, rolled back, or
-redeployed. **Deploy new revision** admits the current saved Configuration without
-changing the viewed snapshot. **Edit current Configuration** opens the draft
-without changing the snapshot. Activation means OCC admitted and selected a revision. Persisted
-deployment and startup evidence does not establish live gateway health; see the
+redeployed. **Create new version** opens the saved draft; **Deploy new version**
+admits it as another immutable revision. **Edit current Configuration** opens
+the draft without changing the viewed snapshot. Admission, recorded activation,
+and `activeRevisionId` are separate facts. Startup evidence does not establish
+live gateway health; see the
 [deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime)
 and [deployment reference](agents/deployment.md#revisions-and-deployment).
 
@@ -153,14 +158,12 @@ Agents that reference the same Configuration.
 These channel allowlist edits are native Configuration changes and are separate
 from Agent-owned plugin selections.
 
-Before saving, the browser rereads the Agent and Configuration and checks that
-the Agent still references the same Configuration and its generation is unchanged.
-These are separate reads; a later concurrent change can still race the PATCH.
-Refresh before retrying a conflict or uncertain save. An unconfirmed PATCH shows
-**Outcome unknown**, closes the editor, and disables channel writes until
-Refresh loads current saved state. The write may have succeeded; there is no
-automatic replay. **Disable Slack** edits only the draft. It does not disable
-access, stop execution, or change an admitted revision.
+Before saving, separate Agent and Configuration reads verify the association and
+generation; a concurrent change can still race the PATCH. Refresh after a
+conflict or uncertain save. An unconfirmed PATCH shows **Outcome unknown** and
+disables channel writes until Refresh loads saved state. It may have succeeded;
+there is no automatic replay. **Disable Slack** changes only the draft, not
+access, execution, or admitted revisions.
 
 Slack requires dedicated execution and Kubernetes runtime projection. Socket Mode
 uses unresolved `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` references.
@@ -213,7 +216,7 @@ the Agent's desired state and selected revision; it does not probe the runtime.
 If the result is uncertain, refresh before retrying. Permission denials remain
 visible, and the console never automatically repeats a stop request.
 
-To resume, open **New revision** and select **Deploy new revision**. This creates a
+To resume, open **Create new version** and select **Deploy new version**. This creates a
 new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
 worker lifecycle and preservation guarantees.
 

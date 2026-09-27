@@ -55,60 +55,60 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
 
-The detail page reads the Agent, revisions, and its current Configuration
-(`revision=draft`) or immutable AgentRevision (`revision=<id>`). The Selected
-revision badge uses `activeRevisionId`, which may differ from the newest or viewed
-revision. Read-only snapshots show persisted deployment status and failures, not
-live health, and offer no rollback. **Deploy new revision** admits the
-current saved Configuration, not the viewed snapshot. **Edit current
-Configuration** opens the current draft without copying historical values.
+The detail page reads the Agent and readable revisions, then its current
+Configuration (`revision=draft`) or immutable AgentRevision (`revision=<id>`).
+**Current version** uses `activeRevisionId`, independent of the newest or viewed
+version. **View version vN** opens read-only details without changing selection.
+**Deployment activity** reads the most recent visible version's persisted status;
+admitted, deployment work, and activation milestones project `queued`, `running`,
+`succeeded`, or `failed`, not live health. The viewed version separately shows
+its recorded result. **Refresh deployment** rereads activity and Agent selection.
+**Current observations** runs exact-version diagnostics only on demand. Its
+timestamped `succeeded`, `failed`, or `unknown` checks and request errors do not
+change persisted deployment status. The bodyless POST requires Agent `read` and
+`operate` plus exact AgentRevision `read`.
+**Create new version** opens the saved draft; **Deploy new version** admits its
+Configuration. **Edit current Configuration** does not copy historical values.
 Stop and deletion target the Agent.
 
-In the draft Configuration tab, **Edit Configuration** opens the native JSON
-editor. It accepts an object and submits only `{ values }` to the existing exact
-Namespace Configuration PATCH route, retaining omitted `secretBindings`. Before
-writing, the browser rereads the Agent and Configuration and rejects a changed
-Configuration ID or generation. This preflight is not an atomic compare-and-swap: a write can race after
-the reads. The API retains Configuration authorization and generation ownership.
+In the draft, **Edit Configuration** accepts a JSON object and PATCHes only
+`{ values }` to the exact Namespace Configuration, retaining omitted
+`secretBindings`. It first rereads Agent and Configuration, rejecting changed
+Configuration ID or generation. This is not an atomic compare-and-swap: writes
+can race after the reads. The API owns authorization and generation.
 
-A successful save reloads the draft without changing admitted snapshots or
-active revision selection. Invalid input, denied writes, and stale drafts retain
-editor text. An uncertain mutation outcome blocks another save until successful
-readback. Unsaved or unresolved edits block deployment of the old saved values.
-Ordinary edits survive tab, revision, and page navigation; pending or unresolved
-Configuration saves still block tab and revision changes until readback.
+Saving reloads the draft without changing admitted snapshots or selection.
+Invalid input, denied writes, and stale drafts retain editor text. An uncertain
+result blocks another save until readback. Unsaved or unresolved edits block
+deployment. Ordinary edits survive navigation; pending saves block tab and
+version changes until readback.
 
-Deployment rereads the Agent, its current Configuration and, for managed
-credentials, runtime credential metadata. It requires a current harness binding,
-generated transport credentials and enabled Slack Secret bindings. Teams-enabled
-drafts remain blocked. In the draft view, a changed Configuration association,
-generation or harness binding requires refresh; from a snapshot the current saved
-Configuration is selected. The browser sends a bodyless POST to the Agent deploy route and opens the
-returned revision. Failed reads send no deployment request. An uncertain POST blocks
-another deployment until reload; inspect revision history before retrying. These
-reads do not make admission atomic.
+Deployment rereads Agent, Configuration, and managed credential metadata. It
+requires a harness binding, generated transport credentials, and enabled Slack
+Secret bindings; Teams-enabled drafts remain blocked. Changed Configuration
+association, generation, or harness binding requires refresh. A bodyless deploy
+POST opens the returned version's activity. Failed reads send no POST. An
+uncertain POST blocks another until reload; inspect history before retrying.
+Preflight reads do not make admission atomic.
 
 `apps/controller/src/console/drafts.mjs:createDraftStore` owns document-local
-snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` flush editor
-captures before teardown. Each editor selects retained fields, excluding
-passwords. Namespace and Agent keys isolate editors; session expiry, user changes,
-logout, and page exit clear snapshots and captures. No browser storage or URL
-carries draft contents. Preset variables,
-Create Agent fields, and Agent search use the same store.
+snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` capture editors
+before teardown, excluding passwords. Namespace and Agent keys isolate drafts;
+session expiry, account changes, logout, and page exit clear them. No browser
+storage or URL carries draft contents. Preset variables, Create Agent, and Agent
+search use the same store.
 
-Configuration and authentication snapshots retain their original save baselines,
-so fresh reads on reentry cannot silently authorize overwriting concurrent edits.
-Channel snapshots retain their opening generation, raw controls, and staged Secret
-metadata; a changed baseline disables Save until Cancel discards the drawer.
-Saves clear captures; Cancel and reload discard edits. Pending saves retain
-recovery guards.
+Configuration and authentication retain their save baselines across reentry, so
+fresh reads cannot silently overwrite concurrent edits. Channel drafts retain
+opening generation, controls, and staged Secret metadata; a changed baseline
+disables Save until Cancel. Saves clear captures; Cancel and reload discard edits.
+Pending saves retain recovery guards.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
-only **New revision** permits editing. Slack uses unresolved `SLACK_APP_TOKEN`
-and `SLACK_BOT_TOKEN` environment references. Enabled channels require dedicated
+only **Create new version** permits editing. Slack uses unresolved
+`SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` references and requires dedicated
 execution. The editor rejects [unsupported native shapes](../../reference/console.md#inspect-detail-revisions-and-channel-drafts).
-Teams remains visible only in native JSON; its unverified credential readiness
-blocks Console deployment.
+Teams remains in native JSON and blocks Console deployment.
 
 `agents/detail.mjs:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
@@ -205,7 +205,7 @@ without a source field. This mode skips managed credential metadata and provisio
 state before submitting deployment. API authorization and selected-driver
 compatibility checks remain authoritative.
 
-For managed authentication methods, the **New revision** view reads metadata from the exact Agent's `runtime-credentials`
+For managed authentication methods, the **Create new version** view reads metadata from the exact Agent's `runtime-credentials`
 endpoint. The response reports stored groups, not provider validity or runtime
 health; an uncertain response requires a status refresh before retrying.
 

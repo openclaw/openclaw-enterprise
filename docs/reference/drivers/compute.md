@@ -134,6 +134,22 @@ terminal result. The existing [deployment status API](../agents.md#deployment-st
 returns the saved evidence under the caller's exact-revision read permission.
 It does not invoke Compute while serving the GET request.
 
+### Optional runtime diagnostics
+
+`diagnoseAgentDeployment(binding)` returns current checks for an exact revision
+using its approved Namespace and Agent. OCC first authorizes exact Agent read
+and operate and revision read.
+
+The Driver owns native collection and maps its evidence to generic
+`component`, `check`, `state`, nullable `checkedAt`, and optional safe `code`
+fields. It must verify runtime identity, bound response size and time, and omit
+credentials, raw provider output, and logs. OCC rejects mismatched revisions,
+invalid timestamps, more than 32 checks, and unsupported states.
+
+The call does not update deployment work, rerun the startup probe, send
+messages, or prove a model response. Missing support returns dependency
+unavailable; Drivers unable to collect safe evidence should omit the method.
+
 ### Runtime logging ownership
 
 Omitting `runtimeLogging` or setting it to `"platform"` uses the bundled
@@ -289,6 +305,7 @@ prove readiness. See [Kubernetes startup status](kubernetes-compute.md#plugin-st
 
 - [Harness execution](../harness-execution.md) and [Agent lifecycle](../agents.md)
 - [Driver selection](selection.md) and [deployment guide](../../guides/deploy.md)
+- [Agent deployment diagnostics flow](../../flows/agent-deployment-diagnostics.md)
 - [Controller reconciliation](../controller/reconciliation.md) and [Harness execution topology](../../flows/harness-execution-topology.md)
 - [Worker source](../../../apps/controller/src/worker.ts) and [OCC admission and resource operations](../../../packages/occ/src/index.ts)
 - [Docker Compose development flow](../../flows/docker-compose-development.md) and [verification guide](../../testing/README.md)

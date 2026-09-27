@@ -2976,6 +2976,268 @@ test("native channel providers require Secret bindings and project them only to 
   ]);
 });
 
+test("Kubernetes runtime diagnostics read exact private Pod status without native sends", async () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+      },
+    }),
+  );
+  const resolveNamespace = driver.resolveNamespace.bind(driver);
+  driver.resolveNamespace = async (...args) => {
+    assert.ok(
+      currentComputeAbortSignal(),
+      "the overall diagnostic deadline covers namespace reads",
+    );
+    return resolveNamespace(...args);
+  };
+  const namespaceName = kubernetesNamespaceName(tenant.id);
+  const gatewayNamespaceName = kubernetesGatewayNamespaceName(tenant.id);
+  const agent = {
+    id: "agent-runtime-diagnostics",
+    namespaceId: tenant.id,
+    name: "Runtime diagnostics Agent",
+    configurationId: "cfg_runtime_diagnostics",
+    providerId: null,
+    executionMode: "dedicated",
+    servicePrincipalId: "service-principal-runtime-diagnostics",
+    createdAt: tenant.createdAt,
+  };
+  const revision = routedRevision(driver, {
+    id: "revision-runtime-diagnostics",
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    servicePrincipalId: agent.servicePrincipalId,
+  });
+  const pod = (role) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: `${role}-runtime-diagnostics-pod`,
+      namespace: role === "gateway" ? gatewayNamespaceName : namespaceName,
+      uid: `${role}-runtime-diagnostics-uid`,
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": role,
+      },
+    },
+    status: { containerStatuses: [{ name: role, containerID: `${role}-container-1` }] },
+  });
+  const pods = { agent: pod("agent"), gateway: pod("gateway") };
+  const proxyReads = [];
+  const podListReads = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespace({ labelSelector }) {
+        assert.equal(labelSelector, `openclaw.dev/namespace=${tenant.id}`);
+        return {
+          apiVersion: "v1",
+          kind: "NamespaceList",
+          items: [
+            {
+              ...driver.manifest("v1", "Namespace", namespaceName, { namespaceId: tenant.id }),
+              status: { phase: "Active" },
+            },
+          ],
+        };
+      },
+      async readNamespace({ name }) {
+        assert.equal(name, namespaceName);
+        return {
+          ...driver.manifest("v1", "Namespace", namespaceName, { namespaceId: tenant.id }),
+          status: { phase: "Active" },
+        };
+      },
+      async listNamespacedPod({ namespace, labelSelector }) {
+        const role = labelSelector.includes("openclaw.dev/workload-role=agent")
+          ? "agent"
+          : "gateway";
+        assert.equal(namespace, role === "gateway" ? gatewayNamespaceName : namespaceName);
+        podListReads.push(role);
+        return { apiVersion: "v1", kind: "PodList", items: [structuredClone(pods[role])] };
+      },
+      async connectGetNamespacedPodProxyWithPath({ name, namespace, path }) {
+        proxyReads.push({ name, namespace, path });
+        assert.equal(path, "openclaw/runtime/diagnostics");
+        const role = name.startsWith("agent-") ? "agent" : "gateway";
+        assert.equal(namespace, role === "gateway" ? gatewayNamespaceName : namespaceName);
+        assert.equal(name, `${pods[role].metadata.name}:18791`);
+        return {
+          revisionId: revision.id,
+          container: role,
+          podUid: pods[role].metadata.uid,
+          observedAt: "2026-09-19T12:00:00.000Z",
+          checks: [
+            {
+              component: role,
+              check: role === "agent" ? "auth" : "socket",
+              state: role === "agent" ? "succeeded" : "unknown",
+              checkedAt: role === "agent" ? "2026-09-19T12:00:00.000Z" : null,
+            },
+          ],
+        };
+      },
+    },
+  });
+
+  const diagnostics = await driver.diagnoseAgentDeployment({
+    namespace: tenant,
+    agent,
+    revision,
+  });
+
+  assert.equal(diagnostics.revisionId, revision.id);
+  assert.equal(diagnostics.checks.length, 2);
+  assert.deepEqual(
+    diagnostics.checks.map(({ component, check, state }) => ({ component, check, state })),
+    [
+      { component: "agent", check: "auth", state: "succeeded" },
+      { component: "gateway", check: "socket", state: "unknown" },
+    ],
+  );
+  assert.equal(diagnostics.checks.find((check) => check.component === "gateway")?.checkedAt, null);
+  assert.deepEqual(proxyReads, [
+    {
+      name: "agent-runtime-diagnostics-pod:18791",
+      namespace: namespaceName,
+      path: "openclaw/runtime/diagnostics",
+    },
+    {
+      name: "gateway-runtime-diagnostics-pod:18791",
+      namespace: gatewayNamespaceName,
+      path: "openclaw/runtime/diagnostics",
+    },
+  ]);
+  assert.equal(podListReads.filter((role) => role === "agent").length, 2);
+  assert.equal(podListReads.filter((role) => role === "gateway").length, 2);
+});
+
+test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod readbacks", async () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+      },
+    }),
+  );
+  assert.throws(
+    () =>
+      driver.validRuntimeDiagnosticCheck({ component: "agent", check: "auth", state: "failed" }),
+    /invalid diagnostic data/,
+  );
+
+  const namespaceName = kubernetesNamespaceName(tenant.id);
+  const revision = routedRevision(driver, {
+    id: "revision-runtime-readback-race",
+    agentId: "agent-runtime-readback-race",
+    configurationId: "cfg_runtime_readback_race",
+    servicePrincipalId: "service-principal-runtime-readback-race",
+  });
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "agent-runtime-readback-race-pod",
+      namespace: namespaceName,
+      uid: "agent-runtime-readback-race-uid",
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+    },
+    status: { containerStatuses: [{ name: "agent", containerID: "agent-container-1" }] },
+  };
+  let podLists = 0;
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespacedPod() {
+        podLists += 1;
+        return {
+          apiVersion: "v1",
+          kind: "PodList",
+          items:
+            podLists === 1
+              ? [structuredClone(pod)]
+              : [
+                  structuredClone(pod),
+                  {
+                    ...structuredClone(pod),
+                    metadata: {
+                      ...pod.metadata,
+                      name: "agent-runtime-readback-race-pod-2",
+                      uid: "agent-runtime-readback-race-uid-2",
+                    },
+                  },
+                ],
+        };
+      },
+      async connectGetNamespacedPodProxyWithPath() {
+        return {
+          revisionId: revision.id,
+          container: "agent",
+          podUid: pod.metadata.uid,
+          observedAt: "2026-09-19T12:00:00.000Z",
+          checks: [
+            {
+              component: "agent",
+              check: "auth",
+              state: "unknown",
+              checkedAt: "2026-09-19T12:00:00.000Z",
+            },
+          ],
+        };
+      },
+    },
+  });
+
+  assert.equal(
+    await driver.privateStatusReadback(
+      revision,
+      namespaceName,
+      "agent",
+      "/openclaw/runtime/status",
+    ),
+    undefined,
+  );
+});
+
+test("runtime diagnostics proxy ingress remains available without enabled plugins", () => {
+  const cidr = "10.42.0.0/16";
+  const tenantNamespace = kubernetesNamespaceName(tenant.id);
+  for (const mode of ["embedded", "dedicated"]) {
+    const driver = createKubernetesComputeDriver(
+      options({
+        network: { ...options().network, pluginStatusProxySourceCidrs: [cidr] },
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      }),
+    );
+    const revision = routedRevision(driver, {
+      harness: { id: mode === "embedded" ? "openclaw" : "codex", version: "1.0.0", mode },
+      plugins: { plugins: {} },
+    });
+    const policies = driver.pluginStatusNetworkPolicies(revision, tenantNamespace);
+    assert.deepEqual(
+      policies.map((policy) => policy.metadata.namespace),
+      mode === "embedded"
+        ? [tenantNamespace]
+        : [tenantNamespace, kubernetesGatewayNamespaceName(tenant.id)],
+    );
+    assert.ok(
+      policies.every((policy) => policy.metadata.name.startsWith("allow-plugin-status-proxy-")),
+    );
+    assert.ok(
+      policies.every((policy) =>
+        policy.spec.ingress[0].from.some((peer) => peer.ipBlock?.cidr === cidr),
+      ),
+    );
+  }
+});
+
 test("Kubernetes cached runtime failure evidence is native-only and readiness-passive", async () => {
   const revision = routedRevision(createKubernetesComputeDriver(options()), {
     id: "revision-runtime-failure-evidence",

@@ -1,8 +1,8 @@
 # Understand the Agent detail page
 
-Open **Agents**, then select an Agent to inspect its configuration, deployment
-record, credentials, and workspace. This walkthrough explains the page from top
-to bottom, including controls revealed by **New revision**. For initial setup, use
+Open **Agents**, then select an Agent to see its current version, most recent visible
+deployment, saved settings, and workspace. This walkthrough explains how to
+inspect a version and create the next one. For initial setup, use
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
 
 Available actions depend on your Installation and permissions. Stored settings
@@ -10,71 +10,91 @@ do not confirm that an Agent or its Slack connection is currently healthy.
 
 ## Navigation and Agent identity
 
-| Component                  | What it does                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------- |
-| **Control Plane**          | Identifies the OpenClaw Control Plane (OCC) console.                                |
-| **Agents** / **← Agents**  | Opens the Agents list in the selected Namespace.                                    |
-| **Namespaces**             | Lists the Namespaces you can read.                                                  |
-| Agent name                 | Human-readable name of this Agent.                                                  |
-| **Namespace · name**       | Namespace containing the Agent.                                                     |
-| **Refresh**                | Reloads the current page's data. It does not restart the Agent.                     |
-| **Selected revision · vN** | Revision selected by the Agent, which may differ from the snapshot you are viewing. |
-| `agt_…`                    | Stable Agent identifier for API calls and support.                                  |
+| Component                 | What it does                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------- |
+| **Control Plane**         | Identifies the OpenClaw Control Plane (OCC) console.                                        |
+| **Agents** / **← Agents** | Opens the Agents list in the selected Namespace.                                            |
+| **Namespaces**            | Lists the Namespaces you can read.                                                          |
+| Agent name                | Human-readable name of this Agent.                                                          |
+| **Namespace · name**      | Namespace containing the Agent.                                                             |
+| **Refresh**               | Reloads the Agent page. It does not retry or restart deployment.                            |
+| **Current version**       | Version in the Agent's `activeRevisionId`. It may differ from the latest or viewed version. |
+| **Deployment activity**   | Most recent visible version and its persisted deployment status.                            |
+| `agt_…`                   | Stable Agent identifier for API calls and support.                                          |
 
 The bottom **OpenClaw Enterprise** menu contains **Namespace**, **Settings**,
 and **Logout**. Namespace selection changes your scope; from Agent detail it
 returns to the new Namespace's Agents list. Settings displays your account;
 it does not offer configurable settings. Logout ends your console session.
 
-## Deployment status
+## Follow deployment activity
 
-**Deployment status** appears when viewing a revision and reads its persisted
-startup record:
+**Deployment activity** follows the most recent version you can read, even when
+you are viewing another version or the editable draft. Its three milestones use
+the persisted deployment record:
 
-| Component                        | Meaning                                                                                    |
-| -------------------------------- | ------------------------------------------------------------------------------------------ |
-| **Status**                       | Recorded deployment outcome. `succeeded` describes that deployment, not continuous health. |
-| **Deployment**                   | Identifier of the deployment record, matching the revision ID.                             |
-| **No persisted startup failure** | No startup failure is stored in that record; this is not a live probe.                     |
-| Failure details, when present    | Identify the runtime component, failed check, error code, and check time.                  |
-| **Refresh deployment**           | Rereads that record; it does not retry deployment.                                         |
+| Milestone               | Evidence                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                       |
+| **Deployment work**     | `queued` awaits a claim; `running` records a worker claim.                      |
+| **Completion recorded** | `succeeded` means the original work completed activation or was already active. |
 
-The console has no live serving-health indicator. To establish health, verify
-the installed runtime and a real model or
-channel response using [Agent troubleshooting](../topics/agent-troubleshoot.md).
+A `failed` result stops the activity view and shows the stored error. When
+available, startup evidence identifies the runtime component, failed check,
+code, and check time. Plugin warnings describe that deployment attempt. An
+unavailable record leaves its status unknown. **Refresh deployment** rereads
+that record and the Agent's selected version; it does not retry failed work.
 
-Historical revisions retain their deployment and startup-failure details.
-Browsing an older revision does not change the selected revision.
+**Current version** is OCC's selected revision, not a live traffic or health
+measurement. A deployment may still be in progress after its revision becomes
+selected. A successful historical record does not confirm that the Agent, model,
+or channel is responding now. Verify the runtime and a real response with
+[Agent troubleshooting](../topics/agent-troubleshoot.md).
 
 <span id="browse-revisions-or-open-the-saved-draft"></span>
 
-## Browse revisions or open New revision
+## Browse versions or create a new version
 
-An **AgentRevision** is an immutable deployment snapshot. A **Configuration** is
-the reusable, mutable input from which a new revision is created.
+An **AgentRevision** is an immutable version created by deployment. A
+**Configuration** is the reusable, mutable input for the next version.
 
-| Component                                 | What it does                                                                                                                                       |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AgentRevision** dropdown                | Selects the new revision or a historical snapshot to inspect. Revision entries include version, creation time, and whether the Agent selects them. |
-| **Older revision** / **Newer revision**   | Browses history; disabled at the corresponding end. Browsing does not activate a revision.                                                         |
-| **New revision**                          | Opens the current Configuration and supported editing controls.                                                                                    |
-| **View current revision**                 | Returns to the snapshot currently selected by the Agent.                                                                                           |
-| `rev_…`                                   | Identifies the viewed immutable revision.                                                                                                          |
-| **Source Configuration … · generation N** | Identifies the Configuration and generation captured for that revision. The draft instead shows its current generation.                            |
-| Read-only snapshot notice                 | Explains whether the viewed revision is selected and that its admitted settings cannot be edited.                                                  |
+The **Versions** list shows admitted versions and marks the current one. Select
+**View version vN** to see its read-only details beside the list: creation time,
+source Configuration generation, that version's recorded deployment status, and
+captured settings. This status is historical evidence; the activity panel above
+continues to follow the most recent visible deployment. **Available versions** lets
+you jump to any readable version. Use the Configuration and Channels views below
+for more detail, including the admitted native JSON. The `rev_…` ID
+identifies the exact version for API calls and support. Selecting a version does
+not deploy or activate it.
+
+Below that version's recorded deployment result, **Current observations** offers
+**Run diagnostics for this version**. This requests a fresh check of the exact
+version you are viewing; it does not run automatically. The result lists an
+observation time and checks marked `succeeded`, `failed`, or `unknown`.
+`unknown` means the check did not establish a result. An unavailable request
+shows an error that you can retry. Running diagnostics does not change the
+stored deployment outcome, activate a version, repeat the startup model probe,
+or prove message delivery. You need Agent `read` and `operate` plus read access
+to that version.
 
 There is no rollback or redeploy-old-revision button. See
 [Agent Revisions](../topics/agent-revisions.md) for the lifecycle.
 
-**Deploy new revision** submits the saved Configuration for a new revision. It
-checks freshness and required credential metadata; missing prerequisites or a
-changed draft require correction or refresh. A successful request opens the new
-revision's Workspace files view. The credential notice below the button reports
-stored metadata, not successful authentication or a working channel.
+Select **Create new version** to open the current saved settings. Edit and save
+Configuration, channel settings, or credentials as needed. **Deploy new version**
+submits those saved settings; it does not redeploy a version you were viewing.
+OCC creates a new immutable AgentRevision when it admits the deployment and
+queues the work. The Console checks freshness and required credential metadata
+before submission. Missing prerequisites or changed saved settings require
+correction or refresh. Credential metadata does not prove successful
+authentication or a working channel.
 
 The **Configuration**, **Channels**, **Credentials**, and **Workspace files** tabs
-change the panel below. Credentials is available only on the new revision.
-Browser Back and Forward restore the selected tab. Leaving a tab clears entered token values. The workspace remains live regardless of the selected revision.
+change the panel below. Credentials is available only for the new version draft.
+Browser Back and Forward restore the selected tab. Leaving a tab clears entered
+token values. Workspace files are live Agent files regardless of which version
+you view.
 
 ## Configuration tab
 
@@ -89,14 +109,14 @@ Browser Back and Forward restore the selected tab. Leaving a tab clears entered 
 | **Compute**                            | Revision's Compute Driver identifier and implementation.                                                         |
 | **View admitted native configuration** | Expands the revision's formatted native JSON. The draft uses **View native Configuration**.                      |
 
-In **New revision**, select **Edit Configuration** to edit the native JSON,
+In **Create new version**, select **Edit Configuration** to edit the native JSON,
 including model and gateway settings. **Save Configuration** requires a JSON
 object and updates the saved draft; **Cancel** discards unsaved edits. On an
 admitted snapshot, **Edit current Configuration** opens the current draft, not
 a copy of the historical snapshot.
 
 Save does not deploy or change existing AgentRevisions. Select **Deploy new
-revision** after saving to apply the new values. Deployment, tab switching, and revision navigation are blocked while edits are unsaved, a save is
+version** after saving to apply the new values. Deployment, tab switching, and revision navigation are blocked while edits are unsaved, a save is
 pending, or a stale or unknown result requires reload. Other Agents sharing this
 Configuration also use the updated values on their next deployment.
 
@@ -114,7 +134,7 @@ The Slack card shows **Not configured**, **Disabled**, or
 **Configured (enabled)** based on saved settings: Socket Mode, selected channels, and allowed users. This is not a
 live connection indicator.
 
-Revision cards are read-only. On the new revision, **Configure** or **Edit** opens
+Version cards are read-only. On the new version draft, **Configure** or **Edit** opens
 a drawer; **Disable** saves a disabled channel setting. These changes affect
 future deployments, including other Agents sharing that Configuration. They do
 not stop a running channel or modify an existing revision. Channels require
@@ -147,7 +167,7 @@ never reads an existing value. If the name already exists in this Namespace,
 correct the Name and retry; both fields remain filled and the existing Secret is unchanged.
 See the [Console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
 for binding permissions and save behavior. Apply the saved draft with
-**Deploy new revision** before expecting the running Agent to use it.
+**Deploy new version** before expecting the running Agent to use it.
 
 Microsoft Teams has no console editor. Existing Teams settings remain visible
 in native Configuration JSON, but a Teams-enabled draft cannot deploy through
@@ -174,7 +194,7 @@ binding saves but the grant fails, ask a Namespace administrator to confirm
 `secret:operate` for this Agent on that Secret, then use **Retry credential
 access**. The retry checks the saved binding and does not resave it. If the
 binding changed, or the save outcome is unknown, use **Reload authentication source** first.
-Deployment authorization failures remain visible beside **Deploy new revision**;
+Deployment authorization failures remain visible beside **Deploy new version**;
 check both your deployment permission and the Agent's credential access.
 Changing between **API key** and **Service Accounts** clears the selected Secret
 so a token is not silently reused for another authentication method. The account
@@ -248,7 +268,7 @@ permission on this Agent, regardless of the revision or tab you are viewing.
 An accepted stop requests shutdown; it does not prove that the runtime has
 finished. **Refresh stop status** reads the desired state and selected revision.
 An uncertain result blocks another stop until a successful refresh. To resume,
-open **New revision** and select **Deploy new revision**, which creates a new
+open **Create new version** and select **Deploy new version**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
 ## Delete Agent and error recovery

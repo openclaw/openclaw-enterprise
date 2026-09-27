@@ -2,6 +2,10 @@ const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000001";
+const currentVersion =
+  "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
+const candidateVersion =
+  "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start without Preset")];
@@ -1686,10 +1690,24 @@ export const scenarios = {
   },
   draft: {
     group: "Pages/Agent detail",
-    name: "New revision",
+    name: "First version",
     path: draft,
     description:
-      "Editable desired configuration, masked authentication summary, deployment gate, and Agent deletion.",
+      "An Agent without a version can edit saved settings and deploy its first immutable version.",
+  },
+  newVersion: {
+    group: "Pages/Agent detail",
+    name: "Create new version",
+    path: draft,
+    deployed: true,
+    description:
+      "Edit and save the current Configuration before deploying a new immutable version. The selected version stays unchanged until activation.",
+    steps: [
+      "Review the selected version and saved draft settings.",
+      "Edit and save Configuration; then deploy the new version.",
+      "Inspect the admitted version and its deployment activity.",
+    ],
+    gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
   configurationNavigation: {
     group: "Pages/Agent detail",
@@ -1728,25 +1746,26 @@ export const scenarios = {
   },
   admitted: {
     group: "Pages/Agent detail",
-    name: "Admitted revision",
+    name: "Current version",
     path: revision,
     deployed: true,
     description:
-      "Immutable Configuration snapshot with Deploy new revision targeting the current saved draft. Persisted deployment status does not establish live serving health.",
+      "The selected immutable version has recorded deployment success. It is not proof of current live serving health.",
   },
   repositoryDraft: {
     group: "Pages/Agent detail",
-    name: "Repository access in new revision",
+    name: "Repository access in new version",
     path: draft,
     repositoryBindings: [
       { repositoryRef: "application", profile: "git-write" },
       { repositoryRef: "handbook", profile: "git-read" },
     ],
-    description: "The new revision names Contributor and Read-only access and shows write limits.",
+    description:
+      "The new version draft names Contributor and Read-only access and shows write limits.",
   },
   repositoryAdmitted: {
     group: "Pages/Agent detail",
-    name: "Repository access in admitted revision",
+    name: "Repository access in current version",
     path: revision,
     deployed: true,
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
@@ -1755,20 +1774,112 @@ export const scenarios = {
   },
   deploymentPending: {
     group: "Pages/Agent detail",
-    name: "Deployment pending",
-    path: revision,
+    name: "New version queued",
+    path: candidateVersion,
     deployed: true,
-    deploymentStatus: "queued",
-    description: "An admitted revision with pending simulated worker progress.",
+    candidateDeploymentStatus: "queued",
+    description:
+      "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified.",
+  },
+  deploymentRunning: {
+    group: "Pages/Agent detail",
+    name: "New version in progress",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    description:
+      "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+  },
+  currentVersionDuringDeployment: {
+    group: "Pages/Agent detail",
+    name: "Current version during deployment",
+    path: currentVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    description:
+      "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
   deploymentFailed: {
     group: "Pages/Agent detail",
-    name: "Deployment failed",
-    path: revision,
+    name: "New version failed",
+    path: candidateVersion,
     deployed: true,
-    deploymentStatus: "failed",
+    candidateDeploymentStatus: "failed",
     description:
-      "Persisted startup failure with runtime component, readiness check, and failure code.",
+      "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
+  },
+  deploymentFailedAfterSelection: {
+    group: "Pages/Agent detail",
+    name: "Deployment failed after selection",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSelected: true,
+    description:
+      "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
+  },
+  deploymentSucceeded: {
+    group: "Pages/Agent detail",
+    name: "New version activated",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    description:
+      "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+  },
+  deploymentUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Deployment activity unavailable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007",
+        status: 503,
+      },
+    ],
+    description:
+      "The latest deployment record cannot be read. Version history and the selected version remain distinct from the status error.",
+  },
+  diagnosticsSuccess: {
+    group: "Pages/Agent detail",
+    name: "Current observations for v7",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "An on-demand observation for viewed v7 reports timestamped Slack configuration, authentication, and connectivity checks. It does not change v7's persisted deployment result.",
+  },
+  diagnosticsUnknown: {
+    group: "Pages/Agent detail",
+    name: "Unknown observation for v6",
+    path: currentVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    diagnosticsState: "unknown",
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "While v7 deploys, the operator requests checks for viewed v6. Authentication and connectivity are unknown, not deployment failures.",
+  },
+  diagnosticsUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Current observation unavailable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/diagnostics",
+        method: "POST",
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+      },
+    ],
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "A failed on-demand check reports its own error. The viewed v7 deployment record remains succeeded.",
   },
   agentMissing: {
     group: "Pages/Agent detail",
@@ -1817,13 +1928,13 @@ export const scenarios = {
         status: 403,
       },
     ],
-    actions: [click("Deploy new revision")],
+    actions: [click("Deploy new version")],
     description: "A rejected deployment reports failure and re-enables the action.",
   },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
-    name: "Revision deployment denied",
-    path: revision,
+    name: "New version deployment denied",
+    path: draft,
     deployed: true,
     rules: [
       {
@@ -1832,19 +1943,18 @@ export const scenarios = {
         status: 403,
       },
     ],
-    actions: [click("Deploy new revision")],
+    actions: [click("Deploy new version")],
     description:
-      "A denied deployment from an admitted snapshot leaves the snapshot unchanged and permits an explicit retry.",
+      "A denied deployment from saved settings leaves the current version unchanged and permits an explicit retry.",
   },
   revisionCredentialsMissing: {
     group: "Pages/Agent detail",
-    name: "Revision deployment missing credentials",
-    path: revision,
+    name: "New version missing credentials",
+    path: draft,
     deployed: true,
     transport: false,
-    actions: [click("Deploy new revision")],
     description:
-      "Deployment checks the current draft and refuses missing generated credentials before admission.",
+      "A previous version exists, but generated runtime credentials are missing. Deployment remains blocked pending operator recovery.",
   },
   buildRevision: {
     group: "Components/Navigation",
@@ -2575,7 +2685,7 @@ export const scenarios = {
       "Choose Research assistant, fill Variable: name, then Use Preset.",
       "Review the Configuration, masked pre-existing model Secret reference, and four seeded workspace files; click Create Agent.",
       "Wait for the simulated provisioning and deployment to finish; the Console opens Workspace files for the admitted revision.",
-      "Use AgentRevision to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
+      "Use Versions to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
   },
@@ -2803,12 +2913,12 @@ export const scenarios = {
     deployed: true,
     slack: true,
     description:
-      "Edit the new revision while an admitted revision remains unchanged; deploy a new immutable revision.",
+      "Edit saved settings while the current version stays unchanged; deploy a new immutable version.",
     steps: [
       "Open Edit Slack, add CNEW123 to Slack channel IDs, then Save configuration.",
-      "Select v1 in AgentRevision and open Channels: it still has the original settings.",
-      "While viewing v1, select Deploy new revision. It deploys the saved draft, not the viewed snapshot.",
-      "Refresh deployment and inspect the new revision. The prior snapshot remains readable.",
+      "Select View version v1 and open Channels: it still has the original settings.",
+      "Select Create new version, then Deploy new version. The saved draft is deployed, not the viewed snapshot.",
+      "Refresh deployment and inspect the new version. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
     gap: "Native JSON edits use Configuration, while Slack has a dedicated drawer. The Slack drawer preserves existing policies; change unsupported policy fields through native JSON.",
@@ -2883,7 +2993,7 @@ export const scenarios = {
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
-      "Return to New revision and Deploy new revision to request running again.",
+      "Return to Create new version and Deploy new version to request running again.",
     ],
     gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
   },

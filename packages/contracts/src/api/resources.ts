@@ -706,6 +706,36 @@ export const AgentDeploymentStatusResponse = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentDeploymentDiagnosticsSchema = Type.Object(
+  {
+    revisionId: RevisionId,
+    observedAt: Timestamp,
+    checks: Type.Array(
+      Type.Object(
+        {
+          component: RuntimeFailureIdentifier,
+          check: RuntimeFailureIdentifier,
+          state: Type.Union([
+            Type.Literal("succeeded"),
+            Type.Literal("failed"),
+            Type.Literal("unknown"),
+          ]),
+          checkedAt: Type.Union([Timestamp, Type.Null()]),
+          code: Type.Optional(RuntimeFailureIdentifier),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 32 },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentDeploymentDiagnosticsResponse = Type.Object(
+  { data: AgentDeploymentDiagnosticsSchema, meta: Meta },
+  { $id: "AgentDeploymentDiagnosticsResponse", additionalProperties: false },
+);
+
 export const WorkspaceFileResponse = Type.Object(
   {
     data: Type.Object(
@@ -753,6 +783,7 @@ export type IAMRoleWire = Type.Static<typeof IAMRoleSchema>;
 export type IAMAccessBindingWire = Type.Static<typeof IAMAccessBindingSchema>;
 export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type AgentDeploymentStatusWire = Type.Static<typeof AgentDeploymentStatusSchema>;
+export type AgentDeploymentDiagnosticsWire = Type.Static<typeof AgentDeploymentDiagnosticsSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
 export type InstallationDeploymentInventoryResponse = Type.Static<
   typeof InstallationDeploymentInventoryResponse
@@ -778,6 +809,9 @@ export type RepositoryOptionListResponse = Type.Static<typeof RepositoryOptionLi
 export type AgentRevisionResponse = Type.Static<typeof AgentRevisionResponse>;
 export type AgentRevisionListResponse = Type.Static<typeof AgentRevisionListResponse>;
 export type AgentDeploymentStatusResponse = Type.Static<typeof AgentDeploymentStatusResponse>;
+export type AgentDeploymentDiagnosticsResponse = Type.Static<
+  typeof AgentDeploymentDiagnosticsResponse
+>;
 export type WorkspaceFileResponse = Type.Static<typeof WorkspaceFileResponse>;
 export type WorkspaceFileUpdateResponse = Type.Static<typeof WorkspaceFileUpdateResponse>;
 

@@ -86,6 +86,17 @@ warnings record the observed startup result, not live plugin health.
 A later deployment admits a new revision with its own deployment status and does
 not rewrite the original result.
 
+### Current runtime diagnostics
+
+A bodyless `POST` to
+`/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
+requests fresh checks for the exact revision. It requires Agent read and operate
+plus AgentRevision read. The response has a revision ID, observation time, and
+at most 32 bounded checks. Kubernetes currently probes Slack configuration,
+authentication, and connectivity without sending. Missing Pods yield `unknown`;
+unavailable evidence yields `503`. The call changes no stored deployment state
+and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+
 ## Backend association
 
 An Agent can reference one Installation-configured [experimental Backend](backends.md)

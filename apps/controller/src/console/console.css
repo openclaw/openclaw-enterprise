@@ -544,6 +544,198 @@ select:not([multiple])[size="1"] {
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
 }
+.agent-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agent-current-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.agent-current-summary > div {
+  display: grid;
+  gap: 2px;
+  flex: none;
+}
+.agent-current-summary strong {
+  color: var(--text-strong);
+  font-size: 21px;
+}
+.agent-current-summary p {
+  margin: 0;
+}
+.eyebrow {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.deployment-heading,
+.agent-version-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.deployment-heading h2,
+.agent-version-heading h2 {
+  margin-bottom: 4px;
+}
+.deployment-heading p,
+.agent-version-heading p {
+  margin-bottom: 0;
+}
+.deployment-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  list-style: none;
+  padding: 0;
+  margin: 20px 0;
+}
+.deployment-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.deployment-step strong,
+.deployment-step span:not(.deployment-step-marker) {
+  display: block;
+}
+.deployment-step span:not(.deployment-step-marker) {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.deployment-step-marker {
+  display: block;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 2px solid var(--input-border);
+  background: var(--surface);
+}
+.deployment-step-complete {
+  border-color: var(--success);
+  background: var(--success-subtle);
+}
+.deployment-step-complete .deployment-step-marker {
+  border-color: var(--success);
+  background: var(--success);
+}
+.deployment-step-active {
+  border-color: var(--warning);
+  background: var(--warning-subtle);
+}
+.deployment-step-active .deployment-step-marker {
+  border-color: var(--warning);
+  background: var(--warning);
+}
+.deployment-step-failed {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+}
+.deployment-step-failed .deployment-step-marker {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.deployment-outcome {
+  font-weight: 600;
+}
+.deployment-warnings {
+  padding: 12px 16px;
+  background: var(--warning-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.deployment-warnings h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.deployment-warnings ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.agent-version-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.agent-version-detail {
+  min-width: 0;
+}
+.agent-version-heading {
+  padding: 20px 0 0;
+}
+.agent-version-heading .resource-id {
+  margin: 8px 0 4px;
+  overflow-wrap: anywhere;
+}
+.version-list {
+  display: grid;
+  gap: 8px;
+  max-height: 480px;
+  overflow-y: auto;
+  margin: 14px 0 22px;
+}
+.version-item,
+.revision-create {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  border-color: var(--line);
+}
+.version-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.version-item[aria-current="page"],
+.revision-create[aria-current="page"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+.version-current {
+  width: fit-content;
+  margin-top: 3px;
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 650;
+}
+.agent-draft-actions {
+  margin: 18px 0;
+}
+.agent-draft-actions h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.agent-draft-actions > button.primary {
+  margin-top: 4px;
+}
+.draft-steps {
+  display: flex;
+  gap: 22px;
+  padding-left: 20px;
+  flex-wrap: wrap;
+}
 .agent-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -806,6 +998,19 @@ summary:focus-visible {
 @media (max-width: 760px) {
   .agent-card {
     padding: 18px;
+  }
+  .agent-current-summary {
+    display: block;
+  }
+  .agent-current-summary p {
+    margin-top: 8px;
+  }
+  .deployment-progress,
+  .agent-version-layout {
+    grid-template-columns: 1fr;
+  }
+  .version-list {
+    max-height: 250px;
   }
   .repository-options {
     grid-template-columns: 1fr;

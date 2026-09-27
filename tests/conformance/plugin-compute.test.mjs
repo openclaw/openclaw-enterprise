@@ -96,6 +96,26 @@ function readRuntimeStatusFromHandler(handler) {
   return readStatusFromHandler(handler, "/openclaw/runtime/status");
 }
 
+async function readStatusFromHandlerAsync(handler, path) {
+  let body = "";
+  await handler(
+    { method: "GET", url: path, on() {}, off() {} },
+    {
+      writeHead() {},
+      on() {},
+      off() {},
+      end(chunk) {
+        body += chunk;
+      },
+    },
+  );
+  return JSON.parse(body);
+}
+
+async function readRuntimeChannelChecksFromHandler(handler) {
+  return readStatusFromHandlerAsync(handler, "/openclaw/runtime/diagnostics");
+}
+
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000016",
   name: "Plugin compute tenant",
@@ -2116,6 +2136,288 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
       path: "openclaw/runtime/status",
     },
   ]);
+});
+
+test("gateway runtime status maps native Slack channel status without provider data", async () => {
+  const revisionId = "revision-plugin-compute-1";
+  let statusHandler;
+  let channelStatus;
+  let channelStatusCalls = 0;
+  let holdChannelStatusResponse = false;
+  let pendingChannelStatusListeners;
+  let childTimeout;
+  const childKillSignals = [];
+  const sandbox = {
+    AbortController,
+    AbortSignal,
+    Buffer,
+    JSON,
+    URL,
+    console: { error() {} },
+    process: {
+      env: {
+        OPENCLAW_AGENT_REVISION_ID: revisionId,
+        OPENCLAW_GATEWAY_PORT: "8080",
+        OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+        OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "pod-gateway-status-1",
+      },
+      on() {},
+      exit(code) {
+        throw new Error(`unexpected process exit ${code}`);
+      },
+    },
+    setInterval() {
+      return { unref() {} };
+    },
+    setTimeout(callback, timeoutMs) {
+      if (timeoutMs === 6000) {
+        childTimeout = callback;
+      }
+      return { unref() {} };
+    },
+    clearTimeout() {},
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            statusHandler = handler;
+            return { listen() {} };
+          },
+        };
+      }
+      if (specifier === "node:fs") {
+        return {
+          cpSync() {},
+          existsSync() {
+            return false;
+          },
+          lstatSync() {
+            return { isDirectory: () => true };
+          },
+          mkdirSync() {},
+          readFileSync() {
+            throw new Error("unexpected file read");
+          },
+          readdirSync() {
+            return [];
+          },
+          rmSync() {},
+          writeFileSync() {},
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn(command, args) {
+            if (args?.[1] !== "channels") {
+              return { on() {}, kill() {} };
+            }
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), [
+              "/app/openclaw.mjs",
+              "channels",
+              "status",
+              "--channel",
+              "slack",
+              "--json",
+              "--probe",
+              "--timeout",
+              "5000",
+            ]);
+            channelStatusCalls += 1;
+            const listeners = {};
+            const child = {
+              stdout: {
+                on(event, listener) {
+                  listeners["stdout:" + event] = listener;
+                },
+              },
+              kill(signal) {
+                childKillSignals.push(signal);
+              },
+              on(event, listener) {
+                listeners[event] = listener;
+              },
+            };
+            if (holdChannelStatusResponse) {
+              pendingChannelStatusListeners = listeners;
+            } else {
+              queueMicrotask(() => {
+                listeners["stdout:data"]?.(Buffer.from(JSON.stringify(channelStatus)));
+                listeners.close?.(0, null);
+              });
+            }
+            return child;
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+
+  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  await Promise.resolve();
+
+  assert.ok(statusHandler);
+  const ready = await readRuntimeStatusFromHandler(statusHandler);
+  assert.equal(ready.revisionId, revisionId);
+  assert.equal(channelStatusCalls, 0);
+  const assertSlackDiagnostics = async (status, expected, description) => {
+    channelStatus = status;
+    const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
+    assert.deepEqual(
+      diagnostics.checks.map(({ component }) => component),
+      ["gateway", "gateway", "gateway"],
+      `${description} components`,
+    );
+    assert.deepEqual(
+      diagnostics.checks.map(({ check, state, code }) => ({ check, state, code })),
+      expected,
+      description,
+    );
+  };
+
+  await assertSlackDiagnostics(
+    {
+      channels: { slack: { configured: true, connected: true } },
+      channelAccounts: {
+        slack: [{ accountId: "default", configured: true, connected: true, probe: { ok: true } }],
+      },
+      channelDefaultAccountId: { slack: "default" },
+    },
+    [
+      { check: "configuration", state: "succeeded", code: undefined },
+      { check: "authentication", state: "succeeded", code: undefined },
+      { check: "connectivity", state: "succeeded", code: undefined },
+    ],
+    "connected",
+  );
+
+  await assertSlackDiagnostics(
+    { configOnly: true, configuredChannels: [] },
+    [
+      { check: "configuration", state: "failed", code: "NOT_CONFIGURED" },
+      { check: "authentication", state: "unknown", code: undefined },
+      { check: "connectivity", state: "unknown", code: undefined },
+    ],
+    "disabled",
+  );
+
+  for (const error of [
+    "invalid_auth",
+    "An API error occurred: invalid_auth; code: slack_webapi_platform_error; slack error: invalid_auth",
+  ]) {
+    await assertSlackDiagnostics(
+      {
+        channels: { slack: { configured: true } },
+        channelAccounts: {
+          slack: [{ accountId: "default", configured: true, probe: { ok: false, error } }],
+        },
+        channelDefaultAccountId: { slack: "default" },
+      },
+      [
+        { check: "configuration", state: "succeeded", code: undefined },
+        { check: "authentication", state: "failed", code: "AUTHENTICATION_FAILED" },
+        { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      ],
+      `invalid auth ${error}`,
+    );
+  }
+
+  await assertSlackDiagnostics(
+    {
+      channels: { slack: { configured: true, connected: true } },
+      channelAccounts: {
+        slack: [
+          {
+            accountId: "default",
+            configured: true,
+            connected: true,
+            probe: { ok: false, error: "probe timed out after 5000ms" },
+          },
+        ],
+      },
+      channelDefaultAccountId: { slack: "default" },
+    },
+    [
+      { check: "configuration", state: "succeeded", code: undefined },
+      { check: "authentication", state: "unknown", code: "PROBE_FAILED" },
+      { check: "connectivity", state: "succeeded", code: undefined },
+    ],
+    "probe timeout with connected transport",
+  );
+
+  await assertSlackDiagnostics(
+    {
+      channels: { slack: { configured: true, connected: true } },
+      channelAccounts: {
+        slack: [{ accountId: "secondary", configured: true, connected: true, probe: { ok: true } }],
+      },
+      channelDefaultAccountId: { slack: "missing-default" },
+    },
+    [
+      { check: "configuration", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "authentication", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+    ],
+    "missing default account",
+  );
+
+  await assertSlackDiagnostics(
+    { configOnly: true },
+    [
+      { check: "configuration", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "authentication", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+    ],
+    "malformed config fallback",
+  );
+
+  holdChannelStatusResponse = true;
+  const timedOutRequest = readRuntimeChannelChecksFromHandler(statusHandler);
+  await Promise.resolve();
+  assert.equal(typeof childTimeout, "function");
+  childTimeout();
+  assert.deepEqual(childKillSignals.slice(-1), ["SIGTERM"]);
+  pendingChannelStatusListeners.close?.(null, "SIGTERM");
+  const timedOutDiagnostics = await timedOutRequest;
+  assert.deepEqual(
+    timedOutDiagnostics.checks.map(({ state, code }) => ({ state, code })),
+    Array.from({ length: 3 }, () => ({ state: "unknown", code: "UNAVAILABLE" })),
+  );
+
+  const requestListeners = {};
+  const responseListeners = {};
+  const abortedRequest = statusHandler(
+    {
+      method: "GET",
+      url: "/openclaw/runtime/diagnostics",
+      on(event, listener) {
+        requestListeners[event] = listener;
+      },
+      off() {},
+    },
+    {
+      writeHead() {
+        throw new Error("aborted response must not write headers");
+      },
+      end() {
+        throw new Error("aborted response must not write a body");
+      },
+      on(event, listener) {
+        responseListeners[event] = listener;
+      },
+      off() {},
+    },
+  );
+  await Promise.resolve();
+  assert.ok(pendingChannelStatusListeners);
+  requestListeners.aborted();
+  assert.deepEqual(childKillSignals.slice(-1), ["SIGTERM"]);
+  pendingChannelStatusListeners.close?.(null, "SIGTERM");
+  await abortedRequest;
+  responseListeners.close?.();
+  assert.equal(channelStatusCalls, 9);
 });
 
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {

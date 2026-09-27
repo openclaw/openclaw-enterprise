@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type {
   Agent,
   InitialWorkspaceFiles,
+  AgentDeploymentDiagnostics,
   AgentRevision,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
@@ -48,6 +49,7 @@ import type {
   ResourceKind,
   ResourceRef,
   Role,
+  RuntimeDiagnosticCheck,
   SandboxDriver,
   SandboxFacet,
   Secret,
@@ -404,6 +406,22 @@ const COMPUTE_LIFECYCLE_PHASES = [
   "beforeNamespaceDelete",
 ] as const satisfies readonly (keyof ComputeLifecycleHooks)[];
 
+const RUNTIME_DIAGNOSTIC_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
+const RUNTIME_DIAGNOSTIC_TIMESTAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
+
+function validRuntimeDiagnosticIdentifier(value: unknown): value is string {
+  return typeof value === "string" && RUNTIME_DIAGNOSTIC_IDENTIFIER.test(value);
+}
+
+function validRuntimeDiagnosticTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !RUNTIME_DIAGNOSTIC_TIMESTAMP.test(value)) {
+    return false;
+  }
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
 function validName(value: unknown): value is string {
   return isNonEmptyString(value) && value.length <= 200;
 }
@@ -488,6 +506,8 @@ function driverHasCapabilityContract(driver: Driver): boolean {
       typeof candidate.getAgentRuntimeCredentialStatus === "function") &&
     (candidate.provisionAgentRuntimeCredentials === undefined ||
       typeof candidate.provisionAgentRuntimeCredentials === "function") &&
+    (candidate.diagnoseAgentDeployment === undefined ||
+      typeof candidate.diagnoseAgentDeployment === "function") &&
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
   );
@@ -1874,6 +1894,50 @@ export class OpenClawController {
         code,
       });
     }
+  }
+
+  async diagnoseAgentDeployment(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    deploymentId: string,
+  ): Promise<Readonly<AgentDeploymentDiagnostics>> {
+    const revision = await this.getRevision(principalId, namespaceId, agentId, deploymentId);
+    await this.authorize(principalId, "operate", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
+    await this.authorize(principalId, "read", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
+    const binding = await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespace.id, agentId);
+      if (!agent) {
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      }
+      return { namespace, agent, revision };
+    });
+    const driver = this.diagnosticsComputeDriver();
+    if (
+      driver.id !== revision.compute.id ||
+      driver.implementation !== revision.compute.implementation
+    ) {
+      throw new DependencyUnavailableError("The deployment's Compute Driver is unavailable.");
+    }
+    let diagnostics: AgentDeploymentDiagnostics;
+    try {
+      diagnostics = await driver.diagnoseAgentDeployment!(binding);
+    } catch {
+      // Native Driver failures can contain private runtime or credential details.
+      throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
+    }
+    return this.deploymentDiagnostics(diagnostics, revision.id);
   }
 
   async getServiceAccount(
@@ -4826,6 +4890,57 @@ export class OpenClawController {
     });
   }
 
+  private validRuntimeDiagnosticCheck(value: RuntimeDiagnosticCheck): RuntimeDiagnosticCheck {
+    const state = value?.state;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !validRuntimeDiagnosticIdentifier(value.component) ||
+      !validRuntimeDiagnosticIdentifier(value.check) ||
+      (state !== "succeeded" && state !== "failed" && state !== "unknown") ||
+      (value.checkedAt !== null && !validRuntimeDiagnosticTimestamp(value.checkedAt)) ||
+      (value.code !== undefined && !validRuntimeDiagnosticIdentifier(value.code))
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected compute Driver returned invalid runtime diagnostic evidence.",
+      );
+    }
+    return Object.freeze({
+      component: value.component,
+      check: value.check,
+      state,
+      checkedAt: value.checkedAt,
+      ...(value.code === undefined ? {} : { code: value.code }),
+    });
+  }
+
+  private deploymentDiagnostics(
+    diagnostics: AgentDeploymentDiagnostics,
+    revisionId: string,
+  ): Readonly<AgentDeploymentDiagnostics> {
+    if (
+      typeof diagnostics !== "object" ||
+      diagnostics === null ||
+      Array.isArray(diagnostics) ||
+      diagnostics.revisionId !== revisionId ||
+      !validRuntimeDiagnosticTimestamp(diagnostics.observedAt) ||
+      !Array.isArray(diagnostics.checks) ||
+      diagnostics.checks.length > 32
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected compute Driver returned invalid runtime diagnostics.",
+      );
+    }
+    return Object.freeze({
+      revisionId: diagnostics.revisionId,
+      observedAt: diagnostics.observedAt,
+      checks: Object.freeze(
+        diagnostics.checks.map((check) => this.validRuntimeDiagnosticCheck(check)),
+      ),
+    });
+  }
+
   private secretMetadata(secret: Secret): Readonly<SecretMetadata> {
     return immutableCopy({
       id: secret.id,
@@ -4863,6 +4978,21 @@ export class OpenClawController {
     if (typeof method !== "function") {
       throw new DependencyUnavailableError(
         "The selected compute Driver does not support Agent runtime credentials.",
+      );
+    }
+    return driver;
+  }
+
+  private diagnosticsComputeDriver(): ComputeDriver {
+    let driver: ComputeDriver;
+    try {
+      driver = this.selectedDriver("compute");
+    } catch {
+      throw new DependencyUnavailableError("The selected compute Driver is unavailable.");
+    }
+    if (typeof driver.diagnoseAgentDeployment !== "function") {
+      throw new DependencyUnavailableError(
+        "The selected compute Driver does not support runtime diagnostics.",
       );
     }
     return driver;

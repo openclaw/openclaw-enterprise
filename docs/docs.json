@@ -759,6 +759,7 @@
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
               "flows/controller-worker",
+              "flows/agent-deployment-diagnostics",
               "flows/platform-console",
               "flows/platform-console/agent-editing",
               "flows/configuration-driver",

@@ -47,7 +47,7 @@ Each operation lists its supported status codes.
 | [Installation](#installation) | 3 operations |
 | [Namespaces](#namespaces) | 4 operations |
 | [Agents](#agents) | 20 operations |
-| [Agent deployments](#agent-deployments) | 1 operation |
+| [Agent deployments](#agent-deployments) | 2 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
 | [IAM](#iam) | 8 operations |
@@ -1960,6 +1960,7 @@ Create or replace an allowed workspace file for one active Agent
 | Operation | Summary |
 | --- | --- |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}`](#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentid) | Get the durable deployment status for one admitted Agent revision |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/diagnostics`](#post-namespacesnamespaceidagentsagentiddeploymentsdeploymentiddiagnostics) | Run explicit current-runtime diagnostics for one exact Agent revision |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}`
 
@@ -2008,6 +2009,59 @@ Get the durable deployment status for one admitted Agent revision
 | `data.warnings` | `array<object>` | Yes | Warnings recorded from this deployment startup. Plugin install and connector-auth warnings mean the deployment succeeded after the runtime disabled the affected admitted plugin for that startup. |
 | `data.warnings[].code` | `"PLUGIN_INSTALL_FAILED" or "PLUGIN_AUTH_REQUIRED"` | Yes | — |
 | `data.warnings[].pluginId` | `string` | Yes | min length: 1; max length: 253; pattern: `^[A-Za-z0-9._~:@-]{1,253}$`; The admitted Agent plugin selection key. |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/diagnostics`
+
+<span id="post-namespacesnamespaceidagentsagentiddeploymentsdeploymentiddiagnostics"></span>
+
+Run explicit current-runtime diagnostics for one exact Agent revision
+
+**Operation ID:** `diagnoseAgentDeployment`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `read` | `agent` | `requested` |
+| `read` | `agent_revision` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.checks` | `array<object>` | Yes | max items: 32 |
+| `data.checks[].check` | `string` | Yes | min length: 1; max length: 64; pattern: `^[A-Za-z0-9._~:@-]{1,64}$` |
+| `data.checks[].checkedAt` | `string (date-time) or null` | Yes | — |
+| `data.checks[].code` | `string` | No | min length: 1; max length: 64; pattern: `^[A-Za-z0-9._~:@-]{1,64}$` |
+| `data.checks[].component` | `string` | Yes | min length: 1; max length: 64; pattern: `^[A-Za-z0-9._~:@-]{1,64}$` |
+| `data.checks[].state` | `"succeeded" or "failed" or "unknown"` | Yes | — |
+| `data.observedAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3715,5 +3769,6 @@ Reusable schema names are referenced by operation request and response tables.
 | `PluginDesiredSelection` | `object` |
 | `PluginDesiredState` | `object<string, PluginDesiredSelection>` |
 | `ErrorResponse` | `object` |
+| `AgentDeploymentDiagnosticsResponse` | `object` |
 | `AgentRuntimeCredentialResponse` | `object` |
 | `SecretResponse` | `object` |

@@ -23,6 +23,7 @@ import {
   normalizeInitialWorkspaceFiles,
   type InitialWorkspaceFiles,
   ErrorResponse,
+  AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   JsonValue,
   PluginDesiredSelectionSchema,
@@ -574,6 +575,14 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { ...permission, scope: "requested" },
       { action: "read", resourceKind: "agent", scope: "requested" },
+    ];
+  }
+
+  if (operation.operationId === "diagnoseAgentDeployment") {
+    return [
+      { action: "operate", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent_revision", scope: "requested" },
     ];
   }
 
@@ -2618,6 +2627,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "diagnoseAgentDeployment") {
+      const diagnostics = await controller.diagnoseAgentDeployment(
+        context.actorId,
+        namespaceId,
+        agentId,
+        params.deploymentId as string,
+      );
+      reply.send({ data: diagnostics, meta: { requestId: request.id } });
+      return;
+    }
+
     throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
 
@@ -3201,6 +3221,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   void app.register(async (routes) => {
     routes.addSchema(ErrorResponse);
+    routes.addSchema(AgentDeploymentDiagnosticsResponse);
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.route({
