@@ -31,7 +31,7 @@
           "mode": "local",
           "bind": "lan",
           "controlUi": {
-            "enabled": false
+            "enabled": true
           },
           "auth": {
             "password": {
