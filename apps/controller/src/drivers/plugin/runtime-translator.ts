@@ -482,7 +482,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
 
   function codexObservedTools(statuses: readonly unknown[]): readonly {
     appId: string;
-    id: string;
+    name: string;
+    ids: readonly string[];
   }[] {
     const servers = statuses.filter((status) => isRecord(status) && status.name === "codex_apps");
     const server = servers[0];
@@ -508,12 +509,23 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         if (key !== name) {
           throw new Error("Codex plugin tool identities are ambiguous.");
         }
-        return [
-          {
-            appId,
-            id: codexToolId(appId, name),
-          },
-        ];
+        const ids = [codexToolId(appId, name)];
+        const metadata = tool._meta._codex_apps;
+        const resource = isRecord(metadata)
+          ? optionalString(metadata.resource_uri)?.split("/")
+          : undefined;
+        // Hosted catalogs use action names; native names may have renamed or collision-suffixed prefixes.
+        // Bind through the server's /connector/target/action metadata, never a guessed display prefix.
+        if (
+          resource?.length === 4 &&
+          resource[0] === "" &&
+          resource[1] === appId &&
+          resource[2] &&
+          resource[3]
+        ) {
+          ids.push(codexToolId(appId, resource[3]));
+        }
+        return [{ appId, name, ids }];
       });
   }
 
@@ -526,18 +538,23 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     if (policies.length === 0) {
       return new Map();
     }
-    const observed = new Set(
-      codexObservedTools(statuses)
-        .filter((tool) => ownedAppIds.includes(tool.appId))
-        .map((tool) => tool.id),
+    const observed = codexObservedTools(statuses).filter((tool) =>
+      ownedAppIds.includes(tool.appId),
     );
     const byApp = new Map<string, [string, Record<string, unknown>][]>();
     for (const [id, policy] of policies.sort(([left], [right]) => left.localeCompare(right))) {
-      if (!observed.has(id)) {
+      const [tool, duplicate] = observed.filter((tool) => tool.ids.includes(id));
+      if (tool === undefined) {
         throw new Error("Codex plugin tool policy references an unknown or unowned tool.");
       }
-      const { appId, name } = parseCodexToolId(id);
+      if (duplicate !== undefined) {
+        throw new Error("Codex plugin tool policy identity is ambiguous.");
+      }
+      const { appId, name } = tool;
       const entries = byApp.get(appId) ?? [];
+      if (entries.some(([existing]) => existing === name)) {
+        throw new Error("Codex plugin tool policies target the same native tool.");
+      }
       entries.push([
         name,
         {
@@ -549,8 +566,12 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       ]);
       byApp.set(appId, entries);
     }
+    // Shared apps compare serialized policies; catalog/native aliases must produce the same order.
     return new Map(
-      [...byApp].map(([appId, tools]) => [appId, { tools: Object.fromEntries(tools) }]),
+      [...byApp].map(([appId, tools]) => [
+        appId,
+        { tools: Object.fromEntries(tools.sort(([left], [right]) => left.localeCompare(right))) },
+      ]),
     );
   }
 

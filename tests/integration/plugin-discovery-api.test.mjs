@@ -5,6 +5,7 @@ import test from "node:test";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, PluginDiscoveryError } from "../../packages/occ/src/index.ts";
@@ -418,6 +419,50 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   assert.equal(details.status, 200);
   assert.equal(details.data.tools[0].id, "fixture-app/search");
   assert.ok(credentials.every((value) => value === accessToken));
+
+  // A discovered policy must reach the raw native tool despite its renamed prefix.
+  const artifact = codexRuntimeArtifact(
+    {
+      [details.data.id]: {
+        enabled: true,
+        tools: { [details.data.tools[0].id]: { enabled: true, approval: "prompt" } },
+      },
+    },
+    [
+      {
+        plugin: {
+          summary: {
+            id: "fixture@openai-curated-remote",
+            remotePluginId: plugin.id,
+            version: "1.0.0",
+          },
+          apps: [{ id: "fixture-app" }],
+          skills: [],
+          hooks: [],
+          mcpServers: [],
+        },
+      },
+    ],
+    [],
+    [
+      {
+        name: "codex_apps",
+        tools: {
+          "renamed_123.search": {
+            name: "renamed_123.search",
+            inputSchema: { type: "object", properties: {} },
+            _meta: {
+              connector_id: "fixture-app",
+              _codex_apps: { resource_uri: "/fixture-app/link_fixture/search" },
+            },
+          },
+        },
+      },
+    ],
+  );
+  assert.deepEqual(artifact.configuration.apps["fixture-app"].tools, {
+    "renamed_123.search": { enabled: true, approval_mode: "prompt" },
+  });
 
   // Rotation is observed by the next request without persisting the old or new value in discovery state.
   const updatePath = `/namespaces/${fixture.namespace.id}/secrets/${secret.id}`;

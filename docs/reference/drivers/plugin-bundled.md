@@ -124,11 +124,14 @@ native approval settings, not unconditional bridge acceptance. The bridge keeps
 `destructiveEnabled:false` uses `false` to preserve that native category default.
 
 Codex tool policy IDs are
-`encodeURIComponent(appId) + "/" + encodeURIComponent(nativeToolName)`. Treat
-these as opaque. At startup, `mcpServerStatus/list` supplies authenticated
-`codex_apps` tool names and connector ownership after installation. A requested
-ID absent from the selected plugin's concrete apps or that inventory fails
-startup. Classifications are not required, and defaults are not expanded into
+`encodeURIComponent(appId) + "/" + encodeURIComponent(toolName)`. Treat
+these as opaque. Hosted discovery uses the catalog action name; native inventory
+IDs use the runtime tool name. At startup, `mcpServerStatus/list` supplies
+authenticated `codex_apps` names and connector ownership. Its
+`_meta._codex_apps.resource_uri` binds a catalog action to the observed native name
+when the connector IDs match. Unknown, unowned, or ambiguous IDs fail startup,
+as do two selected IDs targeting the same native tool.
+Classifications are not required, and defaults are not expanded into
 per-tool rules. The optional controller catalog reader still returns `tools:null`.
 
 The scope remains concrete hosted apps. Marketplace visibility does not imply

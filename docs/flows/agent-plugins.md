@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-09-27
-last_updated_session: 01a0e099-da9d-78f1-8e79-ea4a919edf7d
+last_updated_session: 01a0d4f7-8085-70e0-9d0c-69a465a81fe3
 ---
 
 # Agent Plugin Deployment Flow
@@ -166,11 +166,11 @@ At startup, native `plugin/list` discovers the `openai-curated-remote` marketpla
 app grant. See the [bundled Driver limits](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 `runtime-translator.ts:codexInstallPlan` validates policy and native detail before
 Compute calls `plugin/install` for each enabled selection. Confirmed install
-rejections or missing app authentication produce warnings. If successful enabled
-selections contain explicit tool policies, `readCodexToolStatuses` pages through
-`mcpServerStatus/list` with `detail:"toolsAndAuthOnly"`. The translator checks the
-requested scoped tool IDs against `codex_apps` tool names and connector ownership.
-Unknown or unowned tools fail startup; tool classifications are not required.
+rejections or missing app authentication produce warnings. For explicit tool policies,
+`readCodexToolStatuses` reads `codex_apps` inventory through `mcpServerStatus/list`.
+`runtime-translator.ts:codexAppToolSettings` binds catalog action IDs to native names
+using connector-matched `_meta._codex_apps.resource_uri` metadata. Native IDs remain
+supported. Unknown, unowned, ambiguous, or duplicate targets fail startup.
 
 `codexRuntimeArtifact` writes app defaults and supplied tool fields independently;
 it does not expand category rules or copy defaults to every tool. `native` maps to
@@ -292,6 +292,8 @@ completed deployment attempt rather than ongoing runtime health.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 05:38: Resolve catalog IDs through owned runtime metadata. (01a0d4f7-8085-70e0-9d0c-69a465a81fe3 - 6f7534fa)
 
 - 2026-09-27 02:41: Authorize the selected Secret before reporting unsupported plugin discovery. (01a0e099-da9d-78f1-8e79-ea4a919edf7d - 36cb6d6a4a515ad7328eb596b3da174f262f6d18)
 

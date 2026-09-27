@@ -484,6 +484,99 @@ test("Codex scoped tools override independent defaults and retain omitted native
   assert.throws(() => codexRuntimeArtifact(selections, codexDetails), /inventory/i);
 });
 
+test("Codex catalog tool policies resolve through owned action metadata to native names", () => {
+  const appId = "catalog-app";
+  const nativeName = "renamed_123.search";
+  const details = [codexDetail("linear", [appId])];
+  const tool = {
+    name: nativeName,
+    _meta: {
+      connector_id: appId,
+      _codex_apps: { resource_uri: "/catalog-app/link_fixture/search" },
+    },
+  };
+  const inventory = [{ name: "codex_apps", tools: { [nativeName]: tool } }];
+  const selections = codexSelection(linearPluginId, {
+    tools: { "catalog-app/search": { enabled: true, approval: "prompt" } },
+  });
+  assert.deepEqual(
+    codexRuntimeArtifact(selections, details, [], inventory).configuration.apps[appId].tools,
+    { [nativeName]: { enabled: true, approval_mode: "prompt" } },
+  );
+
+  // Display prefixes are not identities; missing, malformed or foreign metadata cannot bind them.
+  for (const resourceUri of [
+    undefined,
+    "/other-app/link_fixture/search",
+    "/catalog-app//search",
+    "/catalog-app/link_fixture/search/extra",
+    "catalog-app/link_fixture/search",
+  ]) {
+    const invalid = structuredClone(inventory);
+    invalid[0].tools[nativeName]._meta._codex_apps.resource_uri = resourceUri;
+    assert.throws(
+      () => codexRuntimeArtifact(selections, details, [], invalid),
+      /unknown or unowned tool/,
+    );
+  }
+
+  const ambiguous = structuredClone(inventory);
+  ambiguous[0].tools["another.search"] = { ...tool, name: "another.search" };
+  assert.throws(() => codexRuntimeArtifact(selections, details, [], ambiguous), /ambiguous/);
+  assert.throws(
+    () =>
+      codexRuntimeArtifact(
+        codexSelection(linearPluginId, {
+          tools: {
+            "catalog-app/search": { enabled: true },
+            [appId + "/" + nativeName]: { enabled: false },
+          },
+        }),
+        details,
+        [],
+        inventory,
+      ),
+    /same native tool/,
+  );
+});
+
+test("Codex shared apps accept identical policies using mixed catalog and native IDs", () => {
+  const details = [codexDetail("linear", ["app"]), codexDetail("google-calendar", ["app"])];
+  const inventory = [
+    {
+      name: "codex_apps",
+      tools: Object.fromEntries(
+        ["alpha", "beta"].map((action) => [
+          "prefix." + action,
+          {
+            name: "prefix." + action,
+            _meta: {
+              connector_id: "app",
+              _codex_apps: { resource_uri: "/app/link_fixture/" + action },
+            },
+          },
+        ]),
+      ),
+    },
+  ];
+  // Alias sorting differs, but both plugins request the same native policy.
+  const selections = {
+    ...codexSelection(linearPluginId, {
+      tools: { "app/prefix.alpha": { enabled: true }, "app/beta": { enabled: false } },
+    }),
+    ...codexSelection(calendarPluginId, {
+      tools: { "app/alpha": { enabled: true }, "app/beta": { enabled: false } },
+    }),
+  };
+  assert.deepEqual(
+    codexRuntimeArtifact(selections, details, [], inventory).configuration.apps.app.tools,
+    {
+      "prefix.alpha": { enabled: true },
+      "prefix.beta": { enabled: false },
+    },
+  );
+});
+
 test("Codex destructive defaults project to native config and the hosted-app bridge", () => {
   const selections = codexSelection(linearPluginId, {
     toolDefaults: { approval: "native", reviewer: "human" },
