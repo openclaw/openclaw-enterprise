@@ -178,8 +178,8 @@ Filter readable same-Namespace names or IDs; arrow keys and Enter select,
 Escape restores the binding. **Create new Secret...** remains available with
 no matches. Its editable **Name** defaults to the Agent name plus credential
 purpose; **Value** stays masked. Slack also shows the fixed
-`SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` key. Duplicate-name errors retain both
-inputs for correction without overwriting the existing Secret.
+`SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` key. Conflict errors retain both inputs without overwriting existing Secrets.
+Namespace-not-ready errors require refresh; other conflicts may indicate duplicate names.
 
 Creation stores the Secret immediately; cancelling the surrounding editor does
 not delete it. Values are never read back. Existing

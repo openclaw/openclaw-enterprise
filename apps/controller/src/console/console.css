@@ -595,7 +595,8 @@ select:not([multiple])[size="1"] {
 .secret-typeahead-listbox [role="option"] {
   cursor: pointer;
 }
-.secret-typeahead-listbox [role="option"][aria-selected="true"] {
+.secret-typeahead-listbox [role="option"][aria-selected="true"],
+.secret-typeahead-listbox [role="option"].secret-typeahead-active {
   background: var(--accent-subtle);
 }
 .secret-typeahead-create {

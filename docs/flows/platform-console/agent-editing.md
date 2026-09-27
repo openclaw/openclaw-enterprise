@@ -145,12 +145,12 @@ Cancel discards it. Creation remains available.
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
 an editable Agent-prefixed Name, password input, and optional fixed Slack key.
 POST stores the Secret immediately and stages returned metadata; cancellation
-never deletes it. Duplicate rejection retains both inputs without overwriting
-existing Secrets. Success, cancellation, and uncertain outcomes clear passwords;
-uncertain outcomes also block retries pending refresh. The
+never deletes it. Conflicts retain inputs without overwriting Secrets.
+Readiness errors differ from name/backend conflicts. Success, cancellation, and uncertain outcomes clear passwords;
+uncertain outcomes block retries until refresh. The
 [Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
 recovery. Metadata and Credentials links open new tabs, preserving edits.
-Values are never read back.
+Values are never retrieved.
 
 Saving channels first rereads the Agent and Configuration, then checks that the
 Agent still references the same Configuration generation. The PATCH sends

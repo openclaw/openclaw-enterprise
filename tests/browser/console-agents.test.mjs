@@ -3596,10 +3596,28 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await page.getByRole("heading", { name: "Combobox Agent" }).waitFor();
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.fill("keyboard");
+  const keyboardOption = page.getByRole("option", {
+    name: secretOptionLabel(keyboardSecret),
+    exact: true,
+  });
   await apiKeySecret.press("ArrowDown");
+  assert.equal(await keyboardOption.getAttribute("aria-selected"), "false");
+  assert.equal(
+    await keyboardOption.evaluate((node) => node.classList.contains("secret-typeahead-active")),
+    true,
+  );
+  assert.equal(
+    await apiKeySecret.getAttribute("aria-activedescendant"),
+    await keyboardOption.getAttribute("id"),
+  );
   await apiKeySecret.press("Enter");
   await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(keyboardSecret));
+  await apiKeySecret.fill("");
+  assert.equal(await keyboardOption.getAttribute("aria-selected"), "true");
+  await apiKeySecret.press("ArrowDown");
+  assert.equal(await keyboardOption.getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("listbox").getByRole("option", { selected: true }).count(), 1);
   await apiKeySecret.fill("does-not-exist");
   await page.getByText("No matching Secrets.", { exact: true }).waitFor();
   await apiKeySecret.press("Escape");
@@ -3631,7 +3649,10 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   );
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await duplicate).status(), 409);
-  await dialog.getByRole("alert").filter({ hasText: "already exists in this Namespace" }).waitFor();
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: "may already exist in this Namespace" })
+    .waitFor();
   assert.equal(
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     duplicateNameSecret.name,
@@ -3641,6 +3662,49 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     "synthetic-duplicate-value",
   );
   assert.equal(secretDriver.valueFor(duplicateNameSecret), "hidden-duplicate-picker");
+
+  // Simulate documented controller conflict responses; duplicate rejection above uses the real route.
+  let conflictCode = "NAMESPACE_NOT_READY";
+  const failSecretCreate = (route, request) => {
+    if (request.method() !== "POST") {
+      return route.fallback();
+    }
+    return route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: conflictCode, message: "masked Secret create conflict" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
+      }),
+    });
+  };
+  await page.route(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
+  await dialog.getByLabel("Name", { exact: true }).fill("Namespace not ready picker Secret");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.getByRole("alert").filter({ hasText: "not ready for Secret creation" }).waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Namespace not ready picker Secret",
+  );
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+
+  conflictCode = "RESOURCE_CONFLICT";
+  await dialog.getByLabel("Name", { exact: true }).fill("Backend conflict picker Secret");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.getByRole("alert").filter({ hasText: "Secret creation conflicted" }).waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Backend conflict picker Secret",
+  );
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+  assert.equal(await dialog.getByRole("alert").filter({ hasText: "may already exist" }).count(), 1);
+  await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
 
   const distinctName = "Combobox Agent corrected service account token";
   await dialog.getByLabel("Name", { exact: true }).fill(distinctName);

@@ -258,7 +258,7 @@ export function createSecretReferenceField({
       ...listbox.querySelectorAll("[role='option']"),
     ].entries()) {
       const active = optionIndex === activeOptionIndex;
-      option.setAttribute("aria-selected", active ? "true" : "false");
+      option.classList.toggle("secret-typeahead-active", active);
       if (active) {
         input.setAttribute("aria-activedescendant", option.id);
         option.scrollIntoView?.({ block: "nearest" });
@@ -507,9 +507,12 @@ export function createSecretReferenceField({
         if (outcomeUnknown) {
           feedback.textContent =
             "Secret creation outcome could not be confirmed. Refresh before trying again.";
+        } else if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
+          feedback.textContent =
+            "This Namespace is not ready for Secret creation. Refresh the Namespace status before trying again.";
         } else if (error.status === 409) {
           feedback.textContent =
-            "A Secret with this name already exists in this Namespace. Choose a different name.";
+            "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
         } else {
           feedback.textContent = credentialMutationError(error);
         }
@@ -517,7 +520,7 @@ export function createSecretReferenceField({
         cancel.disabled = false;
         name.disabled = outcomeUnknown;
         value.disabled = outcomeUnknown;
-        if (error.status === 409) {
+        if (error.status === 409 && error.code !== "NAMESPACE_NOT_READY") {
           name.focus();
         }
       } finally {
