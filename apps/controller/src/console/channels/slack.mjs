@@ -268,23 +268,13 @@ function credentialReferenceField(binding, context = {}) {
   return picker.field;
 }
 
-function credentialNavigation(context = {}) {
-  if (!context.credentialsHref) {
-    return element(
-      "p",
-      { className: "hint" },
-      "Choose existing Slack token Secrets or create them here before creating the Agent.",
-    );
-  }
+function credentialNavigation(context) {
   return element(
     "p",
     { className: "hint" },
-    element(
-      "a",
-      { href: context.credentialsHref, target: "_blank", rel: "noopener" },
-      "Open Agent Credentials (opens in new tab)",
-    ),
-    " to review runtime credential status. Secret menu changes are saved with these channel settings.",
+    context.creating
+      ? "Choose existing Slack token Secrets or create them here before creating the Agent."
+      : "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
   );
 }
 

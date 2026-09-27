@@ -194,7 +194,8 @@ function validSecretDriver(driver: SecretDriver): boolean {
     typeof driver.create === "function" &&
     typeof driver.update === "function" &&
     typeof driver.delete === "function" &&
-    typeof driver.resolve === "function"
+    typeof driver.resolve === "function" &&
+    (driver.withValue === undefined || typeof driver.withValue === "function")
   );
 }
 

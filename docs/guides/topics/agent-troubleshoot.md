@@ -56,7 +56,9 @@ revision or successful file read.
 
 The operation may have succeeded. Before retrying:
 
-- For credentials, select **Refresh status** and check what is already stored.
+- For model and channel credentials, reload the Agent's Credentials tab and check
+  its saved bindings. An operator can inspect generated transport storage through
+  the exact Agent runtime-credentials API.
 - For deployment, inspect the Agent's **Versions** list and the status for the
   revision already admitted; a second deployment creates another revision.
 - For a workspace file, reload that file and compare its content with your

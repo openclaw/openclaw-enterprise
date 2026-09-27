@@ -449,6 +449,7 @@ export const scenarios = {
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
       "Tab through the search and creation controls, then search for an Agent and open its detail page.",
+      "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
     ],
   },
@@ -469,7 +470,7 @@ export const scenarios = {
     steps: [
       "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
       "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
-      "Open an Agent, visit its tabs, return to Agents, and use Back. Check the selected revision and tab. Refresh and refocus the preview to check pending-read behavior.",
+      "Open an Agent, visit its tabs, return to Agents, and use Back. Check the selected revision and tab. Refocus keeps the Agent detail mounted during access checks; Refresh rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
   },
@@ -747,8 +748,8 @@ export const scenarios = {
       "Review the Driver's workspace access and service account setup guidance. Connection status is unverified; catalog availability does not confirm linked credentials. External help links open separately from plugin navigation.",
       "Compare the administrator, plan, and unsupported-runtime reasons in the list. Choose each unavailable plugin to see its reason and help link in detail; Add stays disabled.",
       "Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
-      "Choose Calendar to load its tools, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
-      "Filter this page matches plugins on the current page; Filter tools matches the selected plugin’s tools.",
+      "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
+      "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Filter this page matches plugins on the current page.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
     ],
     gap: pluginDiscoveryGap,
@@ -958,9 +959,11 @@ export const scenarios = {
     description:
       "Calendar uses native approval and automatic review as its tool defaults, with explicit overrides for creating and deleting events. Tool reviewers inherit because this Driver advertises reviewer selection only at the default scope.",
     steps: [
+      "Type create into Filter tools one character at a time; only Create event remains. Clear the search to restore the other tools.",
+      "Compare Create event's ID beneath its title with its key in Plugin selections JSON after Done.",
       "Change Calendar's default reviewer to Human, click Done, and inspect toolDefaults.reviewer in Plugin selections JSON.",
       "Choose inheritance to omit the reviewer field without changing default approval or tool overrides.",
-      "Use a tool toggle to set enabled or disabled explicitly; Tool policy opens overrides and lets you restore inheritance. Tool reviewer selection is unavailable for this Driver.",
+      "Use a tool toggle to set enabled or disabled explicitly; Tool policy opens overrides and lets you restore inheritance. Set reviewer for all tools jumps to the plugin default reviewer because this Driver does not support per-tool reviewers.",
     ],
     gap: pluginPreviewGap,
   },
@@ -1709,6 +1712,19 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  draftAutomaticCredentials: {
+    group: "Pages/Agent detail",
+    name: "First deployment creates credentials",
+    path: draft,
+    transport: false,
+    description: "A saved draft can deploy without a separate connection-credential action.",
+    steps: [
+      "Check that the Agent has no selected version and does not report a Stop request.",
+      "Confirm Deploy new version is available and the page explains automatic connection setup.",
+      "Select Deploy new version and inspect the admitted version.",
+    ],
+    gap: "The fixture admits a version but does not model server-side credential creation, delivery, or runtime readiness.",
+  },
   configurationNavigation: {
     group: "Pages/Agent detail",
     name: "Keep Configuration edits",
@@ -1732,6 +1748,37 @@ export const scenarios = {
     actions: [click("Edit Configuration")],
     description:
       "Edit native JSON on the current draft. Save Configuration persists values; deployment remains a separate action.",
+  },
+  pluginsDraft: {
+    group: "Pages/Agent detail",
+    name: "Edit plugins in new version",
+    path: draft,
+    deployed: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [click("Plugins")],
+    description:
+      "Edit Agent-owned plugin selections on the draft while the admitted version keeps its original snapshot.",
+    steps: [
+      "Review Calendar's saved policy. The catalog loads from the Agent's saved Service Accounts token.",
+      "Open Calendar and inspect the tool IDs beneath their titles. Type create into Filter tools, then clear it; filtering should keep the cursor in the search box.",
+      "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
+      "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
+    ],
+    gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
+  },
+  pluginsAdmitted: {
+    group: "Pages/Agent detail",
+    name: "Plugins in admitted version",
+    path: revision,
+    deployed: true,
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    actions: [click("Plugins")],
+    description:
+      "An admitted version shows its immutable Agent-owned plugin selection and policy.",
   },
   invalidConfiguration: {
     group: "Pages/Agent detail",
@@ -2308,17 +2355,10 @@ export const scenarios = {
   },
   credentials: {
     group: "Components/Credentials",
-    name: "Stored",
+    name: "Model authentication",
     path: `${draft}&tab=credentials`,
-    description: "Stored harness Secret reference and generated-runtime credential metadata.",
-  },
-  credentialsMissing: {
-    group: "Components/Credentials",
-    name: "Missing generated credentials",
-    path: `${draft}&tab=credentials`,
-    transport: false,
     description:
-      "Provision generated connection credentials before deployment. No values are returned to the console.",
+      "The saved harness authentication source can be reviewed or changed before deployment.",
   },
   credentialsSlack: {
     group: "Components/Credentials",
@@ -2388,26 +2428,6 @@ export const scenarios = {
     slackBindings: "app",
     description:
       "The app token is already bound; the missing bot token remains empty and required.",
-  },
-  credentialsLocked: {
-    group: "Components/Credentials",
-    name: "Generated credentials locked",
-    path: `${draft}&tab=credentials`,
-    deployed: true,
-    description:
-      "After the first revision, generated credentials cannot be regenerated here; channel Secrets remain separately editable.",
-  },
-  credentialsError: {
-    group: "Components/Credentials",
-    name: "Metadata unavailable",
-    path: `${draft}&tab=credentials`,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/runtime-credentials",
-        status: 503,
-      },
-    ],
-    description: "Metadata failure disables dependent provisioning and deployment controls.",
   },
   authenticationNavigation: {
     group: "Components/Credentials",

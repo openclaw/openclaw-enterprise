@@ -38,6 +38,9 @@ const safeRepositoryPlatformSetupStages = new Set([
   "controller-restart",
 ]);
 
+const postTestAsyncActivityPrefix =
+  "Error: A resource generated asynchronous activity after the test ended.";
+
 const safeRuntimeImageStockBrokerStages = new Set([
   "material-init",
   "native-git-init",
@@ -369,6 +372,7 @@ function upstreamDiagnostic(value) {
 function location(data = {}) {
   const error = data.details?.error;
   const cause = error?.cause ?? error;
+  const fileFailure = typeof data.file === "string" && data.name === data.file;
   // Only retain coordinates in the known test file, never arbitrary stack text.
   const frame =
     typeof cause?.stack === "string" && typeof data.file === "string"
@@ -395,6 +399,19 @@ function location(data = {}) {
       ? {
           code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
           name: "Error",
+          failureType:
+            fileFailure && error.failureType === "testCodeFailure" ? "testCodeFailure" : undefined,
+          exitCode:
+            fileFailure &&
+            Number.isInteger(error.exitCode) &&
+            error.exitCode >= 0 &&
+            error.exitCode <= 255
+              ? error.exitCode
+              : undefined,
+          signal:
+            fileFailure && ["SIGABRT", "SIGKILL", "SIGTERM"].includes(error.signal)
+              ? error.signal
+              : undefined,
           cause:
             cause?.code === "ERR_ASSERTION" && cause?.name === "AssertionError"
               ? { code: "ERR_ASSERTION", name: "AssertionError" }
@@ -411,6 +428,16 @@ function location(data = {}) {
 
 export default async function* jsonLinesReporter(source) {
   for await (const event of source) {
+    if (event.type === "test:diagnostic") {
+      // Node diagnostics can quote thrown errors; retain only this fixed failure category.
+      if (
+        typeof event.data?.message === "string" &&
+        event.data.message.startsWith(postTestAsyncActivityPrefix)
+      ) {
+        yield '{"type":"test:diagnostic","data":{"kind":"post-test-async-activity"}}\n';
+      }
+      continue;
+    }
     if (!["test:pass", "test:fail", "test:start"].includes(event.type)) {
       continue;
     }

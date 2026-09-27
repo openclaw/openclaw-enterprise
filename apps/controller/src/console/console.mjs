@@ -32,6 +32,8 @@ const request = createApiClient({
 });
 const retainedViews = new Map();
 let mountedRouteKey = null;
+let mountedAgent = null;
+let resumePending = null;
 
 function sessionOwnerKey(value) {
   const userId = value?.user?.id;
@@ -157,6 +159,7 @@ function markMountedRoute(current) {
 function resetReads({ retainView = false } = {}) {
   drafts.flush();
   navigateAgentTab = null;
+  mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
   if (retainView) {
@@ -498,11 +501,12 @@ async function loadPage({ fromNavigation = false } = {}) {
       return;
     }
     if (current.agentId) {
-      await renderAgentDetail(
+      const agent = await renderAgentDetail(
         { ...agentContext, agentId: current.agentId },
         { agent: retainedAgent },
       );
       if (lifetime.isCurrent(active)) {
+        mountedAgent = agent;
         markMountedRoute(current);
       }
       return;
@@ -604,6 +608,168 @@ async function loadPage({ fromNavigation = false } = {}) {
   }
 }
 
+async function revalidateMountedAgent(current) {
+  const key = routeKey(current);
+  const view = app.querySelector('.content [aria-live="polite"]');
+  const agent = mountedAgent;
+  const owner = sessionOwnerKey(session);
+  const selectedNamespace = namespaceId;
+  if (!view || !agent || !owner || !key) {
+    await loadPage();
+    return;
+  }
+  const active = lifetime.capture();
+  const isCurrent = () =>
+    lifetime.isCurrent(active) &&
+    mountedRouteKey === key &&
+    routeKey(route()) === key &&
+    view.isConnected;
+  const path = `/namespaces/${encodeURIComponent(selectedNamespace)}/agents/${encodeURIComponent(agent.id)}`;
+  const focused = view.contains(document.activeElement) ? document.activeElement : null;
+  const selection =
+    typeof focused?.selectionStart === "number"
+      ? [focused.selectionStart, focused.selectionEnd]
+      : null;
+  let checking = "session";
+  // Block stale controls during admission without losing an editor's caret on return.
+  view.inert = true;
+  try {
+    const resolvedSession = await request("/api/auth/session");
+    if (!isCurrent()) {
+      return;
+    }
+    if (resolvedSession === null) {
+      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      return;
+    }
+    if (sessionOwnerKey(resolvedSession) !== owner) {
+      clearDrafts();
+      resetReads();
+      clearPrivate();
+      app.replaceChildren();
+      await loadPage();
+      return;
+    }
+    checking = "namespaces";
+    const readable = await request("/namespaces");
+    if (!isCurrent()) {
+      return;
+    }
+    if (!Array.isArray(readable)) {
+      throw new Error("Invalid collection response");
+    }
+    clearRetainedViewsOutsideNamespaces(readable);
+    session = resolvedSession;
+    namespaces = sorted(readable);
+    if (!namespaces.some((item) => item.id === selectedNamespace)) {
+      clearRetainedViewsForNamespace(selectedNamespace);
+      resetReads();
+      const shell = renderShell(current.feature);
+      panel(
+        shell.view,
+        "Namespace unavailable",
+        "This Namespace is missing or you no longer have access. Choose another Namespace.",
+        "Switch Namespace",
+        () => switchNamespace(),
+      );
+      return;
+    }
+    checking = "detail";
+    await request(path);
+    if (!isCurrent()) {
+      return;
+    }
+    shellUI.updateNamespaces(namespaces);
+    if (current.url.searchParams.get("tab") !== "workspace") {
+      const selected =
+        current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
+      await Promise.all([
+        request(`${path}/revisions`),
+        request(
+          selected === "draft"
+            ? `/namespaces/${encodeURIComponent(selectedNamespace)}/configurations/${encodeURIComponent(agent.configurationId)}`
+            : `${path}/revisions/${encodeURIComponent(selected)}`,
+        ),
+      ]);
+    }
+  } catch (error) {
+    if (!isCurrent() || error.name === "AbortError") {
+      return;
+    }
+    if (error.status === 401) {
+      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      return;
+    }
+    resetReads();
+    if (checking !== "detail") {
+      clearDrafts();
+      clearPrivate();
+      publicPanel(
+        checking === "session" ? "Session unavailable" : "Namespace access unavailable",
+        checking === "session"
+          ? "Could not check your session. Please retry."
+          : "Could not check Namespace access. Please retry.",
+        "Retry",
+        () => void loadPage(),
+      );
+      return;
+    }
+    if ([400, 403, 404].includes(error.status)) {
+      clearRetainedViewsForNamespace(selectedNamespace);
+    }
+    const shell = renderShell(current.feature);
+    panel(
+      shell.view,
+      error.status === 403
+        ? "Access denied"
+        : error.status === 404
+          ? "Resource unavailable"
+          : "Request unavailable",
+      error.status === 403
+        ? "You do not have permission to read this Agent or its revision."
+        : "The read could not be completed. Retry to check current access and saved state.",
+      "Retry",
+      () => void loadPage(),
+      error.requestId,
+    );
+  } finally {
+    if (view.isConnected) {
+      view.inert = false;
+      if (
+        isCurrent() &&
+        focused?.isConnected &&
+        document.hasFocus() &&
+        document.activeElement === document.body
+      ) {
+        focused.focus({ preventScroll: true });
+        if (selection) {
+          focused.setSelectionRange(...selection);
+        }
+      }
+    }
+  }
+}
+
+function resumePage() {
+  if (document.hidden || !session || loggingOut || app.querySelector("form, dialog[open]")) {
+    return;
+  }
+  if (resumePending) {
+    return;
+  }
+  const current = route();
+  const pending =
+    current.agentId && mountedRouteKey === routeKey(current)
+      ? revalidateMountedAgent(current)
+      : loadPage();
+  resumePending = pending;
+  void pending.finally(() => {
+    if (resumePending === pending) {
+      resumePending = null;
+    }
+  });
+}
+
 async function logout() {
   loggingOut = true;
   clearDrafts();
@@ -640,18 +806,14 @@ async function logout() {
 
 window.addEventListener("popstate", () => {
   if (!loggingOut) {
-    void loadPage({ fromNavigation: true });
+    // Browser history can change Agent tabs while the mounted view is inert.
+    // Recheck admission for the new route before exposing its cached panel.
+    void loadPage({ fromNavigation: !resumePending });
   }
 });
-window.addEventListener("focus", () => {
-  if (session && !loggingOut && !app.querySelector("form, dialog[open]")) {
-    void loadPage();
-  }
-});
+window.addEventListener("focus", resumePage);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && session && !loggingOut && !app.querySelector("form, dialog[open]")) {
-    void loadPage();
-  }
+  resumePage();
 });
 window.addEventListener("pagehide", () => {
   clearDrafts();

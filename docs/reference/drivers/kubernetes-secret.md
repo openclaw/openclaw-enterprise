@@ -9,10 +9,13 @@ Configuration `secretBindings` entry for gateway-only credentials.
 The [SecretDriver base contract](secret.md) defines the shared interface, IAM, and
 lifecycle. This page owns Kubernetes setup and operator procedures.
 
-The Driver stores values for env delivery and transient server-side plugin discovery.
-It does not issue credentials,
-share Secrets across Namespaces, keep value history, restart workloads after an
-update, roll values back, or broker per-access secret reads. Native OpenClaw
+The Driver stores values for environment delivery and transient server-side
+hosted plugin discovery. Hosted existing-Agent discovery uses its bound
+`codex_pat` Secret; Create Agent discovery can use a selected Secret. Curated
+discovery needs no Secret. Values never enter Console
+responses. The Driver does not issue credentials, share Secrets across Namespaces,
+keep value history, restart workloads after an update, roll values back, or
+broker per-access Secret reads. Native OpenClaw
 `SecretRef` handling for `env`, `file`, and `exec` configuration remains the
 gateway's responsibility.
 

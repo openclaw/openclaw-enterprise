@@ -356,11 +356,12 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
-For an Agent without revisions, use **Provision generated runtime credentials**
-in the Console, or call the same exact-Agent API below. Keep `OCC_URL` and
+For a draft Agent, **Deploy new revision** generates missing transport
+credentials before its first revision. API clients may call the endpoint below
+first. Keep `OCC_URL` and
 `OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
 Secret placement for the Agent's execution mode and never returns credential
-values. It does not rotate existing credentials.
+values. It never rotates credentials.
 
 ```bash
 node --input-type=module <<'NODE'

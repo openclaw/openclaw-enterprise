@@ -195,7 +195,9 @@ interface RequiredPermission {
     | "bound_secret"
     | "selected_secret"
     | "iam_binding_target"
-    | "provisioning_work";
+    | "provisioning_work"
+    | "missing_runtime_credentials"
+    | "authenticated_plugin_discovery";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -542,6 +544,22 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               scope: "requested" as const,
             },
           ]),
+      ...(operation.operationId === "deployAgent"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+              condition: "missing_runtime_credentials" as const,
+            },
+            {
+              action: "operate" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+              condition: "missing_runtime_credentials" as const,
+            },
+          ]
+        : []),
       {
         action: "read",
         resourceKind: "service_account",
@@ -575,6 +593,27 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { ...permission, scope: "requested" },
       { action: "read", resourceKind: "agent", scope: "requested" },
+    ];
+  }
+
+  if (
+    operation.operationId === "getSavedAgentPluginPolicyCapabilities" ||
+    operation.operationId === "discoverSavedAgentPlugins" ||
+    operation.operationId === "discoverSavedAgentPluginDetails"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      ...(operation.operationId === "getSavedAgentPluginPolicyCapabilities"
+        ? []
+        : [
+            {
+              action: "operate" as const,
+              resourceKind: "secret" as const,
+              scope: "requested" as const,
+              condition: "authenticated_plugin_discovery" as const,
+            },
+          ]),
     ];
   }
 
@@ -653,6 +692,12 @@ function permissionDescription(
       }
       if (condition === "provisioning_work") {
         return `Requires current ${action} authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.`;
+      }
+      if (condition === "missing_runtime_credentials") {
+        return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
+      }
+      if (condition === "authenticated_plugin_discovery") {
+        return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -2004,6 +2049,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           : { secretRef: body.secretRef as SecretReference }),
         pluginId: body?.pluginId as string,
       });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getSavedAgentPluginPolicyCapabilities") {
+      const capabilities = await controller.getSavedAgentPluginPolicyCapabilities(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: capabilities, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverSavedAgentPlugins") {
+      const catalog = await controller.discoverSavedAgentPlugins(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+        body?.cursor === undefined ? {} : { cursor: body.cursor as string },
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: catalog, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverSavedAgentPluginDetails") {
+      const plugin = await controller.discoverSavedAgentPluginDetails(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+        { pluginId: body?.pluginId as string },
+      );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
       return;

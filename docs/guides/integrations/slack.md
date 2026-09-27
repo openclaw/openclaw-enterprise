@@ -19,7 +19,8 @@ go to the Agent's gateway; model credentials are configured separately.
 - Choose a dedicated Agent on Kubernetes and configure its
   [model authentication](../../reference/agents.md#harness-authentication).
   Embedded execution cannot isolate channel credentials from the Harness.
-- To provision generated credentials, you need `read` and `operate` on the Agent.
+- First deployment generates required connection credentials. It requires Agent
+  `deploy`, plus Agent `read` and `operate` when generation is needed.
   Selecting Secrets requires [readable Secret metadata](../../reference/drivers/secret.md#iam)
   and caller `operate` on each selected Secret. Saving token bindings requires Configuration update and
   [Namespace IAM administration](../../reference/authorization.md#manage-namespace-policy)
@@ -42,14 +43,15 @@ go to the Agent's gateway; model credentials are configured separately.
    selected bindings. Cancelling the drawer discards selections but keeps any
    newly created Secrets. If multiple Agents use this Configuration, the edit
    also affects their future deployments.
-2. Open **Credentials** and select **Provision generated runtime credentials**
-   before the first deployment. If tokens are still missing, fill them and select
+2. Open **Credentials**. If tokens are still missing, select their Secrets and
    **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
    Agent access, and saves Configuration bindings for gateway delivery. Stored
-   credentials confirm storage only; they do not prove Slack accepted them.
+   Secret bindings confirm storage only; they do not prove Slack accepted the tokens.
    Bound tokens show a synthetic password mask. To replace one token, edit that
    field and leave the other unchanged; its stored value is preserved.
-3. Select **Deploy new version** to apply the saved bindings. After a channel
+3. Select **Deploy new version** to apply the saved bindings. OCC generates
+   missing connection credentials during the first deployment when the Compute
+   Driver requires them. After a channel
    draft or Secret value change, explicitly redeploy each consumer. Follow
    [Secret updates](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
    when replacing an existing token.
@@ -88,7 +90,7 @@ bot. To enable one-to-one messages:
 
 ## Troubleshoot
 
-- **Credentials show Stored but the Agent does not reply:** first confirm that
+- **Credentials show Bound but the Agent does not reply:** first confirm that
   the gateway connected to Slack, the bot has joined the configured channel,
   and the channel ID is correct. Then send an explicit mention. Ask the
   operator to check gateway network access if it cannot connect.
@@ -96,8 +98,8 @@ bot. To enable one-to-one messages:
   `message.im` subscription, the installed bot token's `im:history` scope,
   and whether the sender's Slack user ID is allowed by the native `allowFrom`
   setting and direct-message policy.
-- **Credential save failed or the response was lost:** select **Refresh status**
-  before retrying. Inspect saved Secrets, IAM bindings, and Configuration after a
+- **Credential save failed or the response was lost:** reload the Agent and
+  inspect saved Secrets, IAM bindings, and Configuration before retrying after a
   partial save; those writes are separate and are not automatically rolled back.
 - **Slack replies with a model error:** check the Agent's model authentication
   and active revision independently. Slack connection alone does not establish

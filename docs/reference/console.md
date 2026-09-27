@@ -33,9 +33,9 @@ Builds without metadata show **dev** beside OCE.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents** or **Namespaces**. **Refresh** repeats the current
-read. Model provider and API-key setup are part of Agent creation; the separate
-[experimental Backends](backends.md) tab is hidden. Namespace rows remain read-only collection entries.
+The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
+Set up models during Agent creation; the [experimental Backends](backends.md)
+tab is hidden. Namespace rows are read-only.
 
 | Page       | Scope and permission                                                     |
 | ---------- | ------------------------------------------------------------------------ |
@@ -45,12 +45,12 @@ read. Model provider and API-key setup are part of Agent creation; the separate
 The console uses a light appearance and OCC-served fonts; no external font
 service is required.
 
-Returning pages retain content during session, Namespace, and resource checks.
-Navigation remains available; resource controls await authorization. First visits
-still load. Previews are document-local and scoped to account, session, route,
-and Namespace. Sign-out, session changes, and leaving the document clear them.
-Failed reads show recovery. Backend access denial clears all previews because
-authorization is Installation-wide.
+Returning pages retain content during access checks; controls await authorization.
+Agent detail keeps its mounted editor on refocus while access remains available.
+Refresh rereads saved state. First visits still load. Document-local previews
+are scoped to account, session, route, and Namespace; sign-out, session changes,
+and exit clear them. Failed reads show recovery. Installation-wide Backend
+denial clears all previews.
 
 Use the **Namespace** selector in the page header to switch scope on desktop or
 mobile. It lists readable Namespaces and shows the current selection. The
@@ -82,10 +82,12 @@ Use **Refresh** to retry unavailable metadata or update the snapshot.
 
 ## Agent creation and deployment
 
-The console creates an Agent and reusable Configuration, records optional
-Agent-owned plugin selections and a harness authentication binding, stages initial
-workspace contents, and provisions transport/channel credentials. Creation leaves
-the Agent stopped and undeployed; **Deploy new version** admits a revision from the current Configuration and queues startup. Follow
+The console creates an Agent with reusable Configuration, optional plugins and
+harness authentication, and staged workspace files. Supported Dedicated
+provisioning deploys the first revision during creation. Otherwise, creation
+saves a draft: provide model and channel credentials when prompted, then select
+**Deploy new version**. When the selected Compute Driver requires them, OCC
+generates missing connection credentials during that first deployment. Follow
 [Create and deploy Agents](console/create-and-deploy.md) for the complete
 workflow, channel constraints, and recovery after partial or uncertain writes.
 Plugin selections use the same Agent create/update contract as the API: omitted
@@ -94,26 +96,30 @@ unsupported catalog or policy choices.
 
 ## Inspect detail, revisions, and channel drafts
 
-**Configuration**, **Channels**, **Credentials**, and **Workspace files** change
-only tab content; Back/Forward restores the tab. Unsaved JSON, workspace text,
-authentication choices, Slack drawers, Preset variables, and Agent search survive
-navigation within the document. Drafts are scoped to account, Namespace, and
-Agent. Passwords clear; Secret IDs remain references. Reload, page exit, and
-sign-out clear drafts.
+The **Configuration**, **Plugins**, **Channels**, **Credentials**, and **Workspace
+files** tabs change only their panel; Back/Forward restores the selected tab.
+Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
+Preset variables, and Agent search survive navigation within the document.
+Drafts are scoped to user, Namespace, and Agent. Passwords clear; reload, exit,
+and sign-out clear drafts.
 
-**Cancel**, **Start over**, and editor **Reload** discard edits. A successful
-save clears its draft; **Refresh** rereads resources while retaining edits.
-Configuration and authentication editors retain their save baseline, requiring
-reload after concurrent changes. Unsaved Configuration blocks deployment;
-pending or uncertain saves block retries until readback. Navigation never
-retries a mutation.
+**Cancel**, **Start over**, and editor **Reload** discard edits. Successful
+saves clear drafts; **Refresh** retains unsaved edits. Configuration, plugin,
+and authentication editors retain their save baseline; concurrent changes
+require reload. Unsaved edits block deployment. Pending or uncertain saves
+require readback; navigation never retries mutations.
 
-**Create new version** edits the current Configuration, channels, and
-authentication. **Operator-managed credentials** saves `{ "method": "runtime" }`
-for SSH embedded OpenClaw without a Secret or account. Deployment skips managed
-metadata, but API permissions and Driver/topology checks apply; OCC does not
-validate host credentials. **Current version** displays `activeRevisionId`,
-independent of the newest or viewed version and without proving live serving.
+**Create new version** edits Configuration JSON and channels; **Plugins** and
+**Credentials** edit Agent selections and authentication. Plugin browsing
+requires exact Agent `read`/`update` and a catalog-capable Driver. The curated
+catalog needs no Secret. Hosted browsing reads bound `codex_pat` server-side and
+requires caller and Agent ServicePrincipal Secret `operate`.
+**Save plugin selections** updates the Agent; deployment snapshots them.
+Admitted versions are read-only. **Operator-managed credentials** saves
+`{ "method": "runtime" }` for SSH embedded OpenClaw; OCC does not validate host
+credentials or generate metadata for that binding. API permissions and topology
+checks still apply. **Current version** displays `activeRevisionId`, which
+can differ from the viewed snapshot without proving live serving.
 **Deployment activity** shows the latest visible version's persisted result;
 the viewed version shows its own recorded outcome.
 
@@ -150,13 +156,11 @@ and [deployment reference](agents/deployment.md#revisions-and-deployment).
 Channels edits the saved Slack draft. Teams credentials and Bot Framework ingress
 require operator setup; Teams has no editor and blocks Console deployment.
 Its settings remain visible in native Configuration JSON.
-Saving Slack settings patches `values` and includes `secretBindings` when a
-token selection changed, preserving unrelated bindings. An existing plugin allowlist is
-extended; an omitted allowlist stays omitted. Because a Configuration can be
-shared by multiple Agents, channel edits can affect future deployments of other
-Agents that reference the same Configuration.
-These channel allowlist edits are native Configuration changes and are separate
-from Agent-owned plugin selections.
+Saving Slack settings patches `values` and includes `secretBindings` only
+for changed token selections, preserving other bindings. Existing plugin
+allowlists are extended; omitted ones stay omitted. Shared Configurations can
+affect other Agents' future deployments. Channel allowlists remain native
+Configuration changes.
 
 Before saving, separate Agent and Configuration reads verify the association and
 generation; a concurrent change can still race the PATCH. Refresh after a
@@ -176,13 +180,13 @@ Channel edits preserve DM and group policies. Change DM access separately with
 **Direct-message policy** and **Allowed DM user IDs**; see
 [Slack policies](configuration/secrets.md#native-channel-configuration).
 
-Model, Harness, and Slack credential fields share a searchable Secret picker.
-Filter readable same-Namespace names or IDs; arrow keys and Enter select,
-Escape restores the binding. **Create new Secret...** remains available with
-no matches. Its editable **Name** defaults to the Agent name plus credential
-purpose; **Value** stays masked. Slack also shows the fixed
-`SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` key. Conflict errors retain both inputs without overwriting existing Secrets.
-Namespace-not-ready errors require refresh; other conflicts may indicate duplicate names.
+Model, Harness, and Slack credentials share a searchable Secret picker.
+Filter readable same-Namespace names or IDs; arrows and Enter select, Escape
+restores the binding. **Create new Secret...** remains available without
+matches. **Name** defaults to Agent name and purpose; **Value** stays masked.
+Slack shows its fixed `SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` key. Conflicts
+retain both inputs without overwriting Secrets. Namespace readiness errors
+require refresh.
 
 Creation stores the Secret immediately; cancelling the surrounding editor does
 not delete it. Values are never read back. Existing

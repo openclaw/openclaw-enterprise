@@ -3,12 +3,11 @@
 ## Overview
 
 `ComputeDriver` prepares and removes Namespace infrastructure and runs Agent
-revisions. OpenClaw Control Plane (OCC) selects one Compute Driver per
-Installation, authorizes operations, and records each revision's configuration;
-that record cannot change. Compute manages the Agent gateway, workload identity,
-routing, and activation; it also reports when the workload is ready. Its backend owns the underlying
+revisions. OCC selects one Driver per Installation, authorizes operations, and
+stores immutable revision configurations. Compute owns gateway, workload
+identity, routing, activation, and readiness; its backend owns underlying
 resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
-workload; Compute keeps its other responsibilities.
+workload.
 
 See [Driver selection](selection.md) for supported combinations and package trust,
 the [feature matrix](compute-matrix.md) to compare Drivers, and the
@@ -18,8 +17,8 @@ current and planned placement.
 ## Interface
 
 The [shared contracts](../../../packages/contracts/src/index.ts) define the types.
-Every `ComputeDriver` has an `id`,
-an `implementation`, and `capability: "compute"`.
+Every `ComputeDriver` has an `id`, `implementation`, and
+`capability: "compute"`.
 
 The optional `getRuntimeImages(revision)` method observes containers belonging to
 that admitted revision and returns `{workload, container, image, imageId, commit, openclawCommit}`
@@ -101,15 +100,21 @@ for the bundled route implementation.
 
 ### Optional initial runtime credential provisioning
 
-`getAgentRuntimeCredentialStatus(binding)` returns `transportConfigured`: whether
-complete generated transport credentials are stored for this Agent.
+`getAgentRuntimeCredentialStatus(binding)` returns `transportConfigured` when
+complete generated transport credentials are stored.
 `provisionAgentRuntimeCredentials(binding, input)` accepts an empty input object and
-sets up those transport credentials. Channel credentials use Namespace Secrets and
-Configuration `secretBindings` instead of this endpoint. The caller holds Namespace
-and Agent locks and requires a ready Namespace with no earlier Agent revision. It
-passes approved identities, never physical storage names. Missing methods return an
-error. External writes can survive a database or audit failure; refresh status
-before retrying. See the [initial credential workflow](../console/create-and-deploy.md#initial-runtime-credentials).
+sets up those transport credentials. Channel credentials use Namespace Secrets
+and Configuration `secretBindings`. The caller holds Namespace and Agent locks
+and requires a ready Namespace with no earlier revision. It passes approved
+identities, never storage names. Missing methods fail. External writes can
+survive database or audit failure; refresh status before retrying. See the
+[initial credential workflow](../console/create-and-deploy.md#initial-runtime-credentials).
+
+`requiresAgentRuntimeCredentials: true` means the Driver needs generated
+transport credentials to deploy. OCC checks stored status for these Drivers and
+creates missing credentials before the first revision with the caller's exact
+Agent `read` and `operate` permission. Later revisions cannot regenerate them.
+Other Drivers skip this deployment step.
 
 `deleteAgentRuntimeCredentials(binding)` is the idempotent teardown counterpart.
 During Agent deletion, the worker calls it after retiring every revision and

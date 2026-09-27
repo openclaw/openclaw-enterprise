@@ -76,20 +76,6 @@ function detailUrl(fixture, namespaceId, agentId, tab = "credentials") {
   return `${url.pathname}${url.search}`;
 }
 
-function credentialEnvelope(data) {
-  return {
-    data,
-    meta: { requestId: `req_${randomUUID()}` },
-  };
-}
-
-async function routeRuntimeCredentials(page, fixture, namespaceId, agentId, handler) {
-  const path = `/namespaces/${namespaceId}/agents/${agentId}/runtime-credentials`;
-  await page.route(`${fixture.origin}${path}`, async (route, request) => {
-    await handler(route, request);
-  });
-}
-
 async function expectNoText(page, pattern) {
   await assert.rejects(
     page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
@@ -322,7 +308,7 @@ function nativeValuesWithImplicitTeams(marker) {
   };
 }
 
-test("draft Agent deploy waits for generated runtime credentials", async (t) => {
+test("draft Agent offers deployment without a generated-credential step", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Runtime credential gate", { ready: true });
@@ -332,45 +318,23 @@ test("draft Agent deploy waits for generated runtime credentials", async (t) => 
     nativeValues("gate"),
     { executionMode: "dedicated" },
   );
-  const requests = [];
-  let status = { transportConfigured: false };
   const { page, artifacts } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route, request) => {
-    if (request.method() === "POST") {
-      requests.push(request.postDataJSON());
-      status = { transportConfigured: true };
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope(status)),
-    });
-  });
-
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "configuration"));
+  await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+  await page.getByText(/Connection credentials are generated automatically/).waitFor();
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("button", { name: "Save authentication source" }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Channel Secrets" }).count(), 0);
   await expectNoText(page, /Slack app token|Slack bot token/);
-  await page
-    .getByText(/Deploy requires stored credential metadata: Generated runtime credentials/)
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Set up credentials" }).isVisible(), false);
   assert.equal(
-    await page
-      .getByRole("button", { name: "Provision generated runtime credentials" })
-      .isDisabled(),
-    false,
+    await page.getByRole("button", { name: "Provision generated runtime credentials" }).count(),
+    0,
   );
-  await page.getByRole("button", { name: "Provision generated runtime credentials" }).click();
-  await page.getByText("Generated runtime credential metadata refreshed.").waitFor();
-  assert.deepEqual(requests, [{}]);
-  await page
-    .getByText(
-      "Stored credential metadata is present. This does not confirm live channel readiness.",
-    )
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  assert.equal(await deploy.isEnabled(), true);
 
-  // Real admission must reject missing Agent Secret access even when runtime metadata is present.
+  // A one-click first deployment still requires this Agent's model Secret grant.
   const originalBindings = [...fixture.policy.bindings];
   fixture.policy.bindings.splice(
     0,
@@ -382,13 +346,13 @@ test("draft Agent deploy waits for generated runtime credentials", async (t) => 
       response.url().endsWith(`/agents/${agent.id}/deploy`) &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Deploy new version" }).click();
+  await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
   await page
     .getByRole("alert")
-    .filter({ hasText: /Deployment denied.*Agent.*credential Secret/ })
+    .filter({ hasText: /Deployment denied.*selected Secrets/ })
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  assert.equal(await deploy.isEnabled(), true);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
 
   const deployResponse = page.waitForResponse(
@@ -396,7 +360,7 @@ test("draft Agent deploy waits for generated runtime credentials", async (t) => 
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Deploy new version" }).click();
+  await deploy.click();
   assert.equal((await deployResponse).status(), 202);
   await page.screenshot({ path: join(artifacts, "runtime-credentials.png"), fullPage: true });
 });
@@ -419,18 +383,8 @@ test("active Agent can deploy the current saved draft as a new version", async (
     agent.configurationId,
     nativeValues("current-draft", { slack: true }),
   );
-  let credentialStatus = {
-    transportConfigured: false,
-  };
   const { page, artifacts } = await newPage(t, fixture);
   const deploymentRequests = [];
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope(credentialStatus)),
-    });
-  });
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
@@ -452,17 +406,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   // The viewed version stays immutable; create a draft before deploying v2.
   await page.getByRole("button", { name: "Create new version" }).first().click();
   await page
-    .getByText(
-      /Deploy requires stored credential metadata: Generated runtime credentials, Slack Secret bindings/,
-    )
-    .waitFor();
-  assert.deepEqual(deploymentRequests, []);
-
-  credentialStatus = { ...credentialStatus, transportConfigured: true };
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  await page.getByRole("button", { name: "Refresh status" }).click();
-  await page
-    .getByText(/Deploy requires stored credential metadata: Slack Secret bindings/)
+    .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
   assert.deepEqual(deploymentRequests, []);
 
@@ -563,21 +507,24 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   );
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let metadataUnavailable = true;
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: metadataUnavailable ? 503 : 200,
-      contentType: "application/json",
-      body: JSON.stringify(
-        metadataUnavailable
-          ? {
-              error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable" },
-              meta: { requestId: `req_${randomUUID()}` },
-            }
-          : credentialEnvelope({ transportConfigured: true }),
-      ),
-    });
-  });
+  let configurationUnavailable = true;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route) => {
+      if (configurationUnavailable) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable" },
+            meta: { requestId: `req_${randomUUID()}` },
+          }),
+        });
+        return;
+      }
+      await route.fallback();
+    },
+  );
   let deploymentRequests = 0;
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
@@ -593,19 +540,15 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   await page.getByRole("button", { name: "Create new version" }).first().click();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page
-    .getByText("Credential metadata unavailable. Refresh status before deploying.")
+    .getByRole("alert")
+    .filter({ hasText: "Service unavailable. The read could not be completed. Please retry." })
+    .first()
     .waitFor();
   assert.equal(deploymentRequests, 0);
-  assert.equal(await deploy.isDisabled(), true);
-  metadataUnavailable = false;
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  await page.getByRole("button", { name: "Refresh status" }).click();
-  await page
-    .getByText(
-      "Stored credential metadata is present. This does not confirm live channel readiness.",
-    )
-    .waitFor();
-  assert.equal(await deploy.isDisabled(), false);
+  assert.equal(await deploy.count(), 0);
+  configurationUnavailable = false;
+  await page.reload();
+  await deploy.and(page.locator(":enabled")).waitFor();
   await deploy.click();
   await page.getByText(/Outcome unknown/).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -631,20 +574,12 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
-    });
-  });
-
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
   await page.getByLabel("Slack app token").waitFor();
   await page.getByLabel("Slack bot token").waitFor();
   await page
-    .getByText(/Deploy requires stored credential metadata: Slack Secret bindings/)
+    .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
@@ -663,16 +598,8 @@ test("Teams-enabled drafts keep console deploy blocked", async (t) => {
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
-    });
-  });
-
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await page.getByRole("button", { name: "Save authentication source" }).waitFor();
   await page
     .getByText(
       "Microsoft Teams credentials and readiness are operator-managed and cannot be confirmed by this Credentials tab. Use the operator deployment workflow for Teams, or disable Teams through the Configuration API to deploy here.",
@@ -713,13 +640,6 @@ test("bound Slack credential fields show Secret references without reading value
     secretBindings,
   });
   const { page } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
-    });
-  });
   const channelApi = await routeChannelSecretApis(
     page,
     fixture,
@@ -730,7 +650,7 @@ test("bound Slack credential fields show Secret references without reading value
   );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
   const appToken = page.getByLabel("Slack app token");
   const botToken = page.getByLabel("Slack bot token");
   await appToken.waitFor();
@@ -780,13 +700,6 @@ test("Slack credential replacement switches only selected Secret references", as
     secretBindings,
   });
   const { page } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
-    });
-  });
   const channelApi = await routeChannelSecretApis(
     page,
     fixture,
@@ -797,7 +710,7 @@ test("Slack credential replacement switches only selected Secret references", as
   );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
   await selectSecret(page, "Slack app token", replacementAppSecret);
   await expectNoText(page, /xapp-replacement/);
   const saveResponse = page.waitForResponse(
@@ -877,13 +790,6 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     secretBindings,
   });
   const { page } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
-    });
-  });
   const channelApi = await routeChannelSecretApis(
     page,
     fixture,
@@ -894,7 +800,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
   );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
   assert.equal(
     await page.getByLabel("Slack app token").evaluate((node) => node.value),
     secretOptionLabel(appSecret),
@@ -961,13 +867,6 @@ test("missing Slack credential fields require both Secret references before savi
     executionMode: "dedicated",
   });
   const { page } = await newPage(t, fixture);
-  await routeRuntimeCredentials(page, fixture, namespace.id, agent.id, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(credentialEnvelope({ transportConfigured: true })),
-    });
-  });
   const channelApi = await routeChannelSecretApis(
     page,
     fixture,
@@ -977,9 +876,9 @@ test("missing Slack credential fields require both Secret references before savi
   );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-  await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
   await page
-    .getByText(/Deploy requires stored credential metadata: Slack Secret bindings/)
+    .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
   assert.equal(await page.getByLabel("Slack app token").evaluate((node) => node.value), "");
   assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
@@ -1084,6 +983,10 @@ test("operator-managed console binding saves and deploys without a managed crede
   await page
     .getByText("Version history is required before deploying this new version.", { exact: true })
     .waitFor();
+  assert.equal(
+    await page.getByText("This Configuration will be used for the first deployment.").count(),
+    0,
+  );
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.unroute(revisionsPath);
   await page.reload();

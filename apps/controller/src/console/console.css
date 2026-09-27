@@ -1071,7 +1071,7 @@ summary:focus-visible {
   min-height: 200px;
 }
 
-.runtime-credentials {
+.channel-secrets {
   max-width: 960px;
 }
 .credential-status-list {
@@ -1320,6 +1320,7 @@ summary:focus-visible {
   overflow-wrap: anywhere;
 }
 .plugin-tool-row > summary .plugin-tool-heading,
+.plugin-tool-row > summary .plugin-id,
 .plugin-tool-description {
   grid-column: 1;
 }

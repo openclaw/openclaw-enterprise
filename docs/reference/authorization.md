@@ -255,7 +255,9 @@ For each protected operation, the controller:
 
 Lists are also authorized per resource. Permission to deploy an Agent does not
 automatically grant permission to read it, and permission to read one Agent
-does not expose every Agent in the Namespace.
+does not expose every Agent in the Namespace. First deployment additionally
+checks Agent `read` and `operate` if Compute must generate missing transport
+credentials.
 
 The selected IAM Driver loads current authoritative policy for each identity
 lookup and authorization decision. Account and permission changes become

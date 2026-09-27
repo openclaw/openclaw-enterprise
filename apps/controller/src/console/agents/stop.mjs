@@ -51,7 +51,10 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
             element(
               "p",
               { className: "notice", role: "status" },
-              "Stop requested. OCC will not start this Agent again until you deploy a new version. Runtime shutdown completion is not exposed in Console.",
+              // Initial drafts and completed stops both have no selected revision.
+              state.agent.activeRevisionId
+                ? "Stop requested. OCC will not start this Agent again until you deploy a new version. Runtime shutdown completion is not exposed in Console."
+                : "No version is selected. Deploy a new version to start this Agent.",
             ),
           ]
         : []),

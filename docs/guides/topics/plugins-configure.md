@@ -1,10 +1,27 @@
 # Configure Agent plugins
 
-Use the OpenClaw Control Plane (OCC) CLI to select a plugin for an existing
-Agent, deploy the change, and check the result. This example enables the bundled
-Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedicated
+Use the console or OpenClaw Control Plane (OCC) CLI to change an existing Agent's
+plugin selections, then deploy a new revision. The CLI example enables the
+bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedicated
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
+
+## Use the console
+
+Open **Agents**, select the Agent, then open **New revision** → **Plugins**.
+Use **Configure plugins** to edit saved selections and tool policy. If the
+Driver has no catalog, edit **Plugin selections JSON** with a known plugin ID;
+the CLI example below shows the Diffs ID. For dedicated Codex browsing, the
+curated catalog needs no Secret. Hosted discovery requires a bound Service
+Accounts token Secret under **Credentials** and uses it server-side; other
+authentication methods cannot browse the hosted catalog. Select **Save plugin selections**, then
+**Deploy new revision**. The prior revision keeps its
+original selections. On its **Plugins** tab, you can inspect that immutable
+snapshot. See the [Agent detail guide](../console/agent-details.md#plugins-tab)
+for the controls and [deployment status](../../reference/agents.md#deployment-status)
+for the result. Catalog visibility alone does not prove that the plugin is
+installed or available to the running Agent. Hosted discovery uses the Agent's
+current draft credential, which may differ from its running revision's.
 
 ## Before you start
 

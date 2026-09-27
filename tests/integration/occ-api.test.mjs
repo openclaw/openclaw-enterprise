@@ -334,6 +334,7 @@ function createProvisioningCapableComputeDriver() {
     capability: "compute",
     implementation: "deterministic-test",
     agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
     async ensureNamespace(namespace) {
       return { namespaceId: namespace.id, namespaceReady: true };
     },

@@ -255,11 +255,10 @@ preflight. Session expiry still clears the whole private view.
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-Page/revision navigation, Namespace changes, refocus, and logout invalidate prior
-reads. Generation checks reject late responses. Previews remain during session,
-Namespace, and exact page reads until fresh results arrive. Drafts restore edits
-with their original save baselines. Namespace selection never reuses another
-scope's rows.
+Navigation, Namespace changes, and logout invalidate reads; generations reject
+late responses. Refocus coalesces events. Agent detail rechecks access in place,
+preserving controls and saves on success; failures clear the view. Other pages
+retain previews. Drafts keep save baselines and Namespace scopes separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state immediately. `pagehide` clears
@@ -287,14 +286,14 @@ this client never infers it from a network error.
 
 The **Create new version** draft exposes **Deploy new version**.
 **Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
-only the managed runtime-credential metadata gate; OCC does not validate host
-credentials.
-Deployment rereads the Agent and Configuration, checks association and generation,
-then sends bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy`.
-The server authorizes and admits the revision. Its read-only details open while
-**Deployment activity** follows the latest visible deployment. Workspace
-reads check gateway and file availability. Uncertain responses require refresh
-and inspection before retry.
+managed credential setup in Console; OCC does not validate host credentials.
+Deployment checks the Agent, Configuration association, and generation, then sends
+bodyless
+`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server authorizes
+and admits the revision. Its read-only details open while **Deployment
+activity** follows the latest visible deployment. Workspace reads check gateway
+startup and file availability. An uncertain response disables replay until
+refresh and inspection.
 
 ## Debugging and Verification
 

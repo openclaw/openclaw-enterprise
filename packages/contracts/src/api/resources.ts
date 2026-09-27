@@ -120,6 +120,49 @@ const RuntimeEvidenceTimestamp = Type.String({
     "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
 });
 
+const PluginPolicyCapabilitiesSchema = Type.Object(
+  {
+    driver: Type.Ref("PluginDriverIdentity"),
+    toolDefaults: Type.Object(
+      {
+        enabled: Type.Boolean(),
+        approval: Type.Array(PluginApprovalModeSchema),
+        reviewer: Type.Array(PluginReviewerSchema),
+      },
+      { additionalProperties: false },
+    ),
+    tools: Type.Object(
+      {
+        enabled: Type.Boolean(),
+        approval: Type.Array(PluginApprovalModeSchema),
+        reviewer: Type.Array(PluginReviewerSchema),
+      },
+      { additionalProperties: false },
+    ),
+    driverPolicySchema: Type.Record(Type.String(), Type.Unknown()),
+  },
+  { additionalProperties: false },
+);
+
+const PluginDiscoveryCredentialSchema = Type.Union([
+  Type.Literal("required"),
+  Type.Literal("none"),
+]);
+
+export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        ...PluginPolicyCapabilitiesSchema.properties,
+        discoveryCredential: PluginDiscoveryCredentialSchema,
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 const InstallationCapabilitiesSchema = Type.Object(
   {
     agentProvisioning: Type.Optional(
@@ -129,36 +172,9 @@ const InstallationCapabilitiesSchema = Type.Object(
       ),
     ),
     pluginDiscovery: Type.Optional(
-      Type.Object(
-        { credential: Type.Union([Type.Literal("required"), Type.Literal("none")]) },
-        { additionalProperties: false },
-      ),
+      Type.Object({ credential: PluginDiscoveryCredentialSchema }, { additionalProperties: false }),
     ),
-    pluginPolicies: Type.Optional(
-      Type.Object(
-        {
-          driver: Type.Ref("PluginDriverIdentity"),
-          toolDefaults: Type.Object(
-            {
-              enabled: Type.Boolean(),
-              approval: Type.Array(PluginApprovalModeSchema),
-              reviewer: Type.Array(PluginReviewerSchema),
-            },
-            { additionalProperties: false },
-          ),
-          tools: Type.Object(
-            {
-              enabled: Type.Boolean(),
-              approval: Type.Array(PluginApprovalModeSchema),
-              reviewer: Type.Array(PluginReviewerSchema),
-            },
-            { additionalProperties: false },
-          ),
-          driverPolicySchema: Type.Record(Type.String(), Type.Unknown()),
-        },
-        { additionalProperties: false },
-      ),
-    ),
+    pluginPolicies: Type.Optional(PluginPolicyCapabilitiesSchema),
   },
   { additionalProperties: false },
 );

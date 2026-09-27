@@ -1079,6 +1079,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly capability = "compute" as const;
   readonly implementation: string;
   readonly supportsWorkspaceSetup = true as const;
+  readonly requiresAgentRuntimeCredentials?: true;
   readonly agentProvisioning = Object.freeze({
     executionModes: Object.freeze(["dedicated"] as const),
   });
@@ -1303,6 +1304,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       "Kubernetes Compute Driver implementation",
     );
     this.options = options;
+    if (options.runtime !== undefined) {
+      this.requiresAgentRuntimeCredentials = true;
+    }
     this.sandboxDriver = selection.sandboxDriver;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;

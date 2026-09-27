@@ -984,6 +984,8 @@ export interface ComputePreflightResult {
 export interface ComputeDriver extends Driver {
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
+  /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
+  readonly requiresAgentRuntimeCredentials?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;

@@ -283,6 +283,16 @@ export const DiscoverAgentPluginDetailsBody = Type.Union([
   ),
 ]);
 
+export const DiscoverSavedAgentPluginsBody = Type.Object(
+  { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })) },
+  { additionalProperties: false },
+);
+
+export const DiscoverSavedAgentPluginDetailsBody = Type.Object(
+  { pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
+  { additionalProperties: false },
+);
+
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
   Type.Literal("read"),

@@ -515,6 +515,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
 
   let nodeResult = null;
   let tests = [];
+  let fileFailure;
   try {
     if (issues.length === 0) {
       nodeResult = spawnSync(
@@ -529,7 +530,25 @@ async function runFile(root, lane, file, statePath, prepareFile) {
         },
       );
 
-      tests = parseReporter(nodeResult.stdout)
+      const events = parseReporter(nodeResult.stdout);
+      const rootFailure = events.find(
+        (event) =>
+          event.type === "test:fail" &&
+          event.data?.file === absolutePath &&
+          event.data.name === absolutePath,
+      );
+      if (rootFailure) {
+        fileFailure = {
+          error: rootFailure.data.error,
+          ...(events.some(
+            (event) =>
+              event.type === "test:diagnostic" && event.data?.kind === "post-test-async-activity",
+          )
+            ? { diagnosticKind: "post-test-async-activity" }
+            : {}),
+        };
+      }
+      tests = events
         .filter((event) => isRealTestEvent(event, absolutePath))
         .map((event) => ({
           name: event.data.name,
@@ -626,6 +645,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     status: nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed",
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
     issues,

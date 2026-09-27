@@ -81,11 +81,13 @@ export function createPluginFields({
   capabilities = null,
   onLoadPlugins = null,
   onLoadTools = null,
+  saveHint = "Changes are saved when you create the Agent.",
 }) {
   let disabled = false;
   let activeId = null;
   let configuredOnly = false;
   let toolQuery = "";
+  let waitingForCatalog = false;
   const search = element("input", {
     type: "search",
     id: "plugin-search",
@@ -135,6 +137,8 @@ export function createPluginFields({
     search.focus();
     if (catalog?.status === "idle" && catalog.canLoad) {
       loadPage("refresh");
+    } else if (catalog?.status === "idle") {
+      waitingForCatalog = true;
     }
   });
   const accessHelp = element("div", { className: "plugin-access-help" });
@@ -146,14 +150,17 @@ export function createPluginFields({
       element("h2", { id: "plugin-dialog-title" }, "Configure plugins"),
       button("Done", () => dialog.close()),
     ),
-    element("p", { className: "hint" }, "Changes are saved when you create the Agent."),
+    element("p", { className: "hint" }, saveHint),
     accessHelp,
     policyStatus,
     feedback,
     workspace,
   );
-  dialog.addEventListener("close", () => configure.focus());
-  // A search Enter must not submit the surrounding Create Agent form.
+  dialog.addEventListener("close", () => {
+    waitingForCatalog = false;
+    configure.focus();
+  });
+  // A search Enter must not submit a surrounding form.
   dialog.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && event.target.matches('input[type="search"]')) {
       event.preventDefault();
@@ -184,6 +191,7 @@ export function createPluginFields({
   }
 
   function showConfigured(value) {
+    waitingForCatalog = false;
     configuredOnly = value;
     search.value = "";
     activeId = null;
@@ -260,6 +268,10 @@ export function createPluginFields({
       [...detail.querySelectorAll("details[data-tool][open]")].map((node) => node.dataset.tool),
     );
     const focused = document.activeElement?.getAttribute("aria-label");
+    const focusedSelection =
+      focused === "Filter tools"
+        ? [document.activeElement.selectionStart, document.activeElement.selectionEnd]
+        : null;
     const focusedPlugin = document.activeElement?.closest(".plugin-card")?.dataset.plugin;
     const focusedTool = document.activeElement?.closest("[data-tool]")?.dataset.tool;
     const focusedHeading = document.activeElement?.matches(".plugin-detail h3");
@@ -384,6 +396,7 @@ export function createPluginFields({
     detail.replaceChildren(
       ...[entries.get(activeId)].filter(Boolean).map((entry) => {
         const selected = values?.[entry.id];
+        let defaultReviewer = null;
         const details = element(
           "div",
           { className: "plugin-card", "data-plugin": entry.id },
@@ -460,6 +473,14 @@ export function createPluginFields({
                 delete selection.toolDefaults;
               }
             });
+          defaultReviewer = select(
+            `${entry.name} default reviewer`,
+            defaults.reviewer ?? "",
+            [["", "Inherit Harness reviewer"], ...defaultReviewers],
+            (value) => writeDefault("reviewer", value || undefined),
+            Boolean(capabilities) &&
+              (defaultReviewers.length > 0 || defaults.reviewer !== undefined),
+          );
           details.append(
             element(
               "fieldset",
@@ -491,14 +512,7 @@ export function createPluginFields({
                   (value) => writeDefault("approval", value || undefined),
                   defaultApprovals.length > 0,
                 ),
-                select(
-                  `${entry.name} default reviewer`,
-                  defaults.reviewer ?? "",
-                  [["", "Inherit Harness reviewer"], ...defaultReviewers],
-                  (value) => writeDefault("reviewer", value || undefined),
-                  Boolean(capabilities) &&
-                    (defaultReviewers.length > 0 || defaults.reviewer !== undefined),
-                ),
+                defaultReviewer,
               ),
             ),
           );
@@ -622,6 +636,15 @@ export function createPluginFields({
         if (entry.toolError) {
           details.append(element("p", { className: "error", role: "status" }, entry.toolError));
         }
+        const toolRows = [];
+        const filterTools = () => {
+          const query = toolQuery.toLowerCase();
+          for (const [tool, row] of toolRows) {
+            row.hidden = ![tool.name, tool.description ?? "", tool.id].some((value) =>
+              value.toLowerCase().includes(query),
+            );
+          }
+        };
         if (tools.size) {
           const filter = element("input", {
             type: "search",
@@ -631,7 +654,7 @@ export function createPluginFields({
           });
           filter.addEventListener("input", () => {
             toolQuery = filter.value;
-            render();
+            filterTools();
           });
           details.append(
             element("h4", {}, `Tools (${tools.size})`),
@@ -644,14 +667,6 @@ export function createPluginFields({
           );
         }
         for (const tool of tools.values()) {
-          if (
-            toolQuery &&
-            ![tool.name, tool.description ?? "", tool.id].some((value) =>
-              value.toLowerCase().includes(toolQuery.toLowerCase()),
-            )
-          ) {
-            continue;
-          }
           const policy = selected?.tools?.[tool.id] ?? {};
           const writeTool = (key, value) =>
             update((all) => {
@@ -676,7 +691,6 @@ export function createPluginFields({
               disabled: !selected || !selected.enabled || tool.available === false,
             },
             element("legend", {}, tool.name),
-            element("code", { className: "plugin-id" }, tool.id),
             tool.description ? element("p", { className: "hint" }, tool.description) : null,
             tool.available === false
               ? element(
@@ -709,14 +723,19 @@ export function createPluginFields({
                 (value) => writeTool("approval", value || undefined),
                 toolApprovals.length > 0,
               ),
-              select(
-                `${tool.name} reviewer`,
-                policy.reviewer ?? "",
-                [["", "Inherit plugin or Harness reviewer"], ...toolReviewers],
-                (value) => writeTool("reviewer", value || undefined),
-                Boolean(capabilities) &&
-                  (toolReviewers.length > 0 || policy.reviewer !== undefined),
-              ),
+              toolReviewers.length > 0 || policy.reviewer !== undefined
+                ? select(
+                    `${tool.name} reviewer`,
+                    policy.reviewer ?? "",
+                    [["", "Inherit plugin or Harness reviewer"], ...toolReviewers],
+                    (value) => writeTool("reviewer", value || undefined),
+                    Boolean(capabilities),
+                  )
+                : selected && defaultReviewers.length > 0
+                  ? button("Set reviewer for all tools", () =>
+                      defaultReviewer.querySelector("select")?.focus(),
+                    )
+                  : null,
             ),
           );
           const enabledOverride = element("input", {
@@ -754,6 +773,9 @@ export function createPluginFields({
                       : "Inherits defaults",
                 ),
               ),
+              tool.name === tool.id
+                ? null
+                : element("code", { className: "hint plugin-id" }, tool.id),
               tool.description
                 ? element("span", { className: "hint plugin-tool-description" }, tool.description)
                 : null,
@@ -767,17 +789,19 @@ export function createPluginFields({
             row,
           );
           toolDetails.open = open.has(tool.id);
-          if (capabilities && !toolReviewers.length) {
+          if (capabilities && !toolReviewers.length && defaultReviewers.length > 0) {
             row.append(
               element(
                 "p",
                 { className: "hint" },
-                "This Harness uses the plugin reviewer for all tools.",
+                "Reviewer selection applies to every tool in this plugin.",
               ),
             );
           }
+          toolRows.push([tool, toolDetails]);
           details.append(toolDetails);
         }
+        filterTools();
         return details;
       }),
     );
@@ -811,18 +835,20 @@ export function createPluginFields({
         (values === null && node.dataset.discovery !== "true") ||
         node.dataset.policyUnsupported === "true";
     }
-    // Loading details replaces the heading too; retain the keyboard entry point.
+    // Detail refreshes replace focused controls; keep the search caret in place.
     if (focusedHeading && focusedPlugin === activeId) {
       detail.querySelector("h3")?.focus();
     } else if (focused) {
-      [...detail.querySelectorAll("[aria-label]")]
-        .find(
-          (node) =>
-            node.getAttribute("aria-label") === focused &&
-            node.closest(".plugin-card")?.dataset.plugin === focusedPlugin &&
-            node.closest("[data-tool]")?.dataset.tool === focusedTool,
-        )
-        ?.focus();
+      const control = [...detail.querySelectorAll("[aria-label]")].find(
+        (node) =>
+          node.getAttribute("aria-label") === focused &&
+          node.closest(".plugin-card")?.dataset.plugin === focusedPlugin &&
+          node.closest("[data-tool]")?.dataset.tool === focusedTool,
+      );
+      control?.focus();
+      if (focusedSelection && control?.matches('input[type="search"]')) {
+        control.setSelectionRange(...focusedSelection);
+      }
     }
   }
   input.addEventListener("input", render);
@@ -852,8 +878,15 @@ export function createPluginFields({
       render();
     },
     setCatalog(value) {
+      const load = waitingForCatalog && dialog.open && value.canLoad && value.status === "idle";
       catalog = value;
-      render();
+      if (load) {
+        waitingForCatalog = false;
+        configuredOnly = false;
+        loadPage("refresh");
+      } else {
+        render();
+      }
     },
   };
 }

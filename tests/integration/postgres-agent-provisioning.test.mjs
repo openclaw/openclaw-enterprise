@@ -127,6 +127,7 @@ function createRuntimeComputeDriver(options = {}) {
   return {
     ...base,
     agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
     calls,
     validateAgentProvisioning(input) {
       if (input.executionMode !== "dedicated") {
@@ -1076,14 +1077,18 @@ test(
       return { namespace, admitted, failed, pendingEffect: pending.rows[0].pending_effect };
     }
 
-    function failingTransportDriver() {
+    function failingTransportDriver(reportStoredCredentials = () => false) {
       const computeDriver = createRuntimeComputeDriver();
       const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
+      const getRuntimeCredentialStatus = computeDriver.getAgentRuntimeCredentialStatus;
       computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
         await provisionRuntimeCredentials(...args);
         throw new Error("synthetic pre-handoff transport failure");
       };
-      computeDriver.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: false });
+      computeDriver.getAgentRuntimeCredentialStatus = async (...args) =>
+        reportStoredCredentials()
+          ? getRuntimeCredentialStatus(...args)
+          : { transportConfigured: false };
       return computeDriver;
     }
 
@@ -1105,7 +1110,10 @@ test(
       return settled;
     }
 
-    const stopFixture = await createFixture(context, { computeDriver: failingTransportDriver() });
+    let reportStoredCredentials = false;
+    const stopFixture = await createFixture(context, {
+      computeDriver: failingTransportDriver(() => reportStoredCredentials),
+    });
     const stopTarget = await createFailedPreHandoffAgent(stopFixture);
     const stopped = await stopFixture.request(
       "POST",
@@ -1122,6 +1130,7 @@ test(
     assert.equal(stoppedProvisioning.data.error?.code, "PROVISIONING_CANCELLED");
 
     await settleLateTransport(stopFixture, stopTarget);
+    reportStoredCredentials = true;
     const deployed = await stopFixture.request(
       "POST",
       `/namespaces/${stopTarget.namespace.id}/agents/${stopTarget.failed.agentId}/deploy`,

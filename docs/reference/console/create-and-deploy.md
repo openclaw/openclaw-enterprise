@@ -55,8 +55,8 @@ Presets and edited Configuration JSON retain their settings.
    New Secrets persist even if you cancel Agent creation.
    **Apply channel settings** stages settings and bindings into the form;
    cancelling the drawer discards its selections.
-   Channel settings, plugin entries, and selected Secret bindings are saved with
-   the Configuration when you select **Create Agent**. You can also supply Slack
+   Channel settings and selected Secret bindings are saved with the Configuration;
+   plugin selections belong to the Agent. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
 7. Optionally configure plugins as described below, or open **Advanced settings**
    to review Configuration JSON and **Workspace files**. Preset workspace
@@ -159,9 +159,8 @@ pull requests, and issue creation and management. **Customize access** lets you
 turn off issue management (`git-write`) when that profile is approved. Push and
 pull request permissions are bundled together. The control is disabled when the
 selected repositories do not share both writable profiles; its explanation states
-whether issue management is required or unavailable. The selected permissions
-remain visible when the pane is closed. Changing repositories never silently
-upgrades a customized grant; an unavailable selection must be chosen again.
+whether issue management is required or unavailable. Changing repositories never
+silently upgrades a customized grant; an unavailable selection must be chosen again.
 The pane also explains that token-bounded GraphQL permits merges and
 ref changes; native push allowlists do not constrain API writes. Repository
 administration and workflow permissions remain excluded. See
@@ -171,8 +170,7 @@ all of them and always submits the chosen level explicitly. The server rechecks
 current Namespace policy when it creates the Agent and again when it admits a
 deployment.
 
-Failed rediscovery retains unsaved repository choices for retry. Preset forms also
-retain them across navigation.
+Failed rediscovery and navigation retain unsaved repository choices.
 **Create Agent** stays blocked until discovery succeeds and filters choices against
 current policy. **Start over** discards selections.
 
@@ -213,7 +211,7 @@ and successful repository discovery, **Create Agent** queues setup and follows
 the first deployment. The worker creates the Configuration and Agent, grants
 access to the final Secret references, and provisions transport credentials.
 Check that the returned revision belongs to this Agent and retains its repository
-selections. An ordinary draft requires credential setup and **Deploy new version**
+selections. An ordinary draft requires model and channel credential setup and **Deploy new version**
 from its detail page.
 
 Operators must prepare the
@@ -227,35 +225,34 @@ approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
-Before deploying a draft Agent, provision transport credentials and bind Slack
-tokens as Namespace Secrets. This leaves the separately selected `harnessAuth`
-model credential unchanged.
+Select model authentication and bind any Slack tokens as Namespace Secrets.
+When Compute requires generated credentials, OCC creates missing transport
+credentials before first revision admission. Supported Dedicated Agent creation
+does so during provisioning. Neither path creates the selected `harnessAuth`
+model credential or channel tokens.
 
-Select **Provision generated runtime credentials** to create the transport bundle.
-The Kubernetes Driver generates an app-server transport token and a local
-gateway password. Kubernetes gateway authentication is trusted-proxy only. The
-password is projected only when native Configuration
-explicitly selects the supported environment reference; it is never returned by
-the credential API. Provisioning checks for existing Agent runtime Deployments
-before writing credentials so it does not modify values after a runtime has
-started.
+The Kubernetes Driver generates an app-server token and local gateway password.
+Gateway authentication is trusted-proxy only. The password is projected only
+when native Configuration selects the supported environment reference; the API
+never returns it. Generation checks for Agent runtime Deployments before writing
+so it cannot change values after startup.
 
-The credential API uses `GET` and initial `POST {}` on
-`/namespaces/:namespaceId/agents/:agentId/runtime-credentials`. Reading requires
-exact Agent `read`; provisioning also requires `operate`. Status reports transport storage only. The server derives Kubernetes names from the admitted
-Namespace, Agent, and Installation driver configuration. The browser never receives generated credentials. Audit records contain the actor, target,
-action, and outcome, never the values.
+The credential API retains `GET` and explicit initial `POST {}` on
+`/namespaces/:namespaceId/agents/:agentId/runtime-credentials` for API clients.
+Reading requires exact Agent `read`; generation also requires `operate`.
+Deploying requires `deploy`. Status reports transport storage only. The server derives Kubernetes names from the admitted
+Namespace, Agent, and Installation driver configuration. The browser receives no generated values. Audit records contain the actor, target,
+action, and outcome, never credential bytes.
 
-Provisioning creates missing whole Secrets before any AgentRevision exists. It
-never rotates or overwrites existing credentials. A retry may reuse complete,
-owned transport groups. For dedicated Agents, the CP transport Secret contains only `app-server-token`,
-and a separate CP Secret contains only `gateway-password`. Compute delivers the
-transport token to the Harness without copying the Gateway password. Embedded
-Agents use one tenant-local transport group with both keys. Unexpected keys, foreign ownership,
-or malformed values produce a conflict. If a response is lost or a dependency fails, refresh
-stored status before explicitly retrying. Already-created Secrets remain in place
-even when later storage or audit work fails; there is no automatic retry or
-rollback deletion.
+Generation creates missing whole Secrets before any AgentRevision. It never
+rotates existing values and reuses complete, owned groups on retry. Dedicated
+Agents keep `app-server-token` and `gateway-password` in separate CP Secrets;
+Compute delivers only the transport token to the Harness. Embedded Agents use
+one tenant-local group with both keys. Unexpected keys, foreign ownership, or
+malformed values cause a conflict. Failed generation creates no revision;
+retries reread status. A lost deployment reply requires revision-history
+readback. Created Secrets remain after later storage or audit failure. Missing
+credentials after a historical revision require investigation, not regeneration.
 
 On the **Credentials** tab, Slack token fields use the same Secret picker as the
 creation and channel-editing flows. Select a readable Namespace Secret or
@@ -277,12 +274,15 @@ provider acceptance, runtime readiness, or a channel connection.
 
 Open **Create new version**, then select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
-This draft-only action uses the saved Configuration; it does not redeploy a viewed
-snapshot. Every accepted request creates an immutable revision, even at the same
-Configuration generation.
+To change plugins, edit **Plugins**, select **Save plugin selections**, then
+deploy. This action uses the saved Configuration and Agent plugin map; it does
+not redeploy or roll back a viewed snapshot. Every accepted request creates an
+immutable revision, even at the same Configuration generation. Earlier versions
+retain their snapshots; see the
+[Agent detail guide](../../guides/console/agent-details.md#plugins-tab).
 
-Before admission, the console rereads the Agent, Configuration, and managed
-credential metadata. If generation, association, or authentication changed since
+Before admission, the console rereads the Agent and Configuration. If
+generation, association, authentication, or plugin selections changed since
 the draft loaded, refresh. These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.

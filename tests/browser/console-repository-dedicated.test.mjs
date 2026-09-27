@@ -144,25 +144,7 @@ for (const issuesEnabled of [true, false]) {
     }
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
     await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
     const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
-    assert.equal(await deploy.isDisabled(), true);
-    const provisionResponse = page.waitForResponse(
-      (result) =>
-        result.url() ===
-          `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials` &&
-        result.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Provision generated runtime credentials" }).click();
-    const provisioned = await provisionResponse;
-    assert.equal(provisioned.status(), 200, JSON.stringify((await provisioned.json()).error));
-    const credentialStatus = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`,
-    );
-    assert.equal(credentialStatus.status, 200);
-    assert.deepEqual(credentialStatus.data, { transportConfigured: true });
-    await page.getByText("Generated runtime credential metadata refreshed.").waitFor();
     const text = await page.locator("body").innerText();
     assert.equal(text.includes("xapp-synthetic-demo"), false);
     assert.equal(text.includes("xoxb-synthetic-demo"), false);
@@ -175,6 +157,12 @@ for (const issuesEnabled of [true, false]) {
     await deploy.click();
     const admitted = await admittedResponse;
     assert.equal(admitted.status(), 202);
+    const credentialStatus = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`,
+    );
+    assert.equal(credentialStatus.status, 200);
+    assert.deepEqual(credentialStatus.data, { transportConfigured: true });
     const { data: revision } = await admitted.json();
     assert.equal(revision.agentId, agent.id);
     assert.equal(revision.harness.id, "codex");

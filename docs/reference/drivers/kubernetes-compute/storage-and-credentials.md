@@ -210,8 +210,10 @@ Embedded execution retains its combined workload and transport bundle; CP-backed
 model/configuration sources are delivered to that workload as needed. It is
 outside the dedicated trust-boundary acceptance scope.
 
-Before the first AgentRevision, the [console credential workflow](../../console/create-and-deploy.md#initial-runtime-credentials)
-can create initial per-Agent transport and Gateway password Secrets through
+When Kubernetes runtime credentials are configured,
+[Agent creation or first deployment](../../console/create-and-deploy.md#initial-runtime-credentials)
+creates missing per-Agent transport and Gateway password Secrets before the first
+AgentRevision through
 the selected Driver. It derives their names internally, checks Namespace and
 Agent ownership, and creates missing whole Secrets without replacing existing
 values. Backend-managed credentials and Configuration Secret bindings retain
@@ -221,9 +223,9 @@ The controller API service account needs `list` permission for Deployments in
 both physical namespaces so it can reject an existing runtime before
 creating initial Secrets.
 
-Before deploying an Agent, provision its Agent-specific transport Secret using
-the configured `runtime.transportSecretPrefix`. The Secret name appends the
-first 12 hexadecimal characters of `sha256(agentId)`. Kubernetes gateways use
+The Driver names each Agent-specific transport Secret with the configured
+`runtime.transportSecretPrefix` followed by the first 12 hexadecimal characters
+of `sha256(agentId)`. Kubernetes gateways use
 trusted-proxy authentication only. Initial provisioning generates
 `gateway-password` and the independent `app-server-token`; dedicated Codex
 requires the latter for its Harness transport. Dedicated provisioning requires

@@ -2739,9 +2739,11 @@ test(
     });
     const adoptedTenant = await createAgent(namespaceIds[2], "adopted-tenant");
     if (runtimeImage !== undefined) {
-      // Real runtime integration fails closed when any Agent-owned credential is absent.
+      const firstCredentialsPath = `/namespaces/${namespaceIds[0]}/agents/${first.id}/runtime-credentials`;
+      const beforeDeploy = await request("GET", firstCredentialsPath);
+      assert.equal(beforeDeploy.status, 200, JSON.stringify(beforeDeploy.error));
+      assert.deepEqual(beforeDeploy.data, { transportConfigured: false });
       for (const [namespaceId, agent] of [
-        [namespaceIds[0], first],
         [namespaceIds[0], second],
         [namespaceIds[0], boundSecretAgent],
         [namespaceIds[1], separateTenant],
@@ -2781,6 +2783,19 @@ test(
       deploy(namespaceIds[2], adoptedTenant.id),
       deploy(namespaceIds[0], boundSecretAgent.id),
     ]);
+    if (runtimeImage !== undefined) {
+      const afterDeploy = await request(
+        "GET",
+        `/namespaces/${namespaceIds[0]}/agents/${first.id}/runtime-credentials`,
+      );
+      assert.equal(afterDeploy.status, 200, JSON.stringify(afterDeploy.error));
+      assert.deepEqual(afterDeploy.data, { transportConfigured: true });
+      await resource(
+        "secret",
+        `transport-${hash(first.id)}`,
+        kubernetesGatewayNamespaceName(namespaceIds[0]),
+      );
+    }
 
     await Promise.all(
       [

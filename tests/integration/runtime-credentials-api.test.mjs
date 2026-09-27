@@ -14,6 +14,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -48,6 +49,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
     id: options.id ?? "runtime-credential-compute",
     capability: "compute",
     implementation: "in-memory-runtime-credential-test",
+    requiresAgentRuntimeCredentials: true,
     calls,
     setStatus(namespaceId, agentId, status) {
       statusByAgent.set(explicitKeyOf(namespaceId, agentId), { ...status });
@@ -347,6 +349,139 @@ test("runtime credential API provisions transport metadata only through the sele
   );
 });
 
+test("first draft deployment provisions generated credentials and later revisions reuse them", async (t) => {
+  const fixture = await createFixture(t);
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+
+  const first = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  assert.equal(first.data.revision, 1);
+  const credentials = await fixture.request("GET", `${agentPath}/runtime-credentials`);
+  assert.equal(credentials.status, 200);
+  assert.equal(credentials.data.transportConfigured, true);
+
+  const second = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(second.status, 202, JSON.stringify(second.body));
+  assert.equal(second.data.revision, 2);
+  assert.equal(
+    fixture.computeDriver.calls.filter(({ operation }) => operation === "provision").length,
+    1,
+    "a later revision must retain the original transport values",
+  );
+
+  // Lost credentials after a historical revision require recovery, not silent regeneration.
+  fixture.computeDriver.setStatus(namespace.id, agent.id, { transportConfigured: false });
+  const missing = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(missing.status, 409, JSON.stringify(missing.body));
+  assert.equal(missing.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    fixture.computeDriver.calls.filter(({ operation }) => operation === "provision").length,
+    1,
+  );
+  const revisions = await fixture.request("GET", `${agentPath}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.data.length, 2);
+});
+
+test("Kubernetes without managed runtime credentials admits a draft deployment", async (t) => {
+  const computeDriver = createTestKubernetesComputeDriver("runtime-free-kubernetes");
+  // Namespace setup is outside this admission case; no Kubernetes cluster is contacted.
+  computeDriver.ensureNamespace = async (namespace) => ({
+    namespaceId: namespace.id,
+    namespaceReady: true,
+  });
+  const fixture = await createFixture(t, {
+    computeDriver,
+  });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+
+  const admitted = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  assert.equal(admitted.data.revision, 1);
+});
+
+test("first deployment requires Agent read and operate only when generating credentials", async (t) => {
+  const fixture = await createFixture(t);
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const deploySessions = [];
+  for (const { label, agentActions, deniedAction } of [
+    { label: "without-agent-read", agentActions: [], deniedAction: "read" },
+    { label: "without-agent-operate", agentActions: ["read"], deniedAction: "operate" },
+  ]) {
+    const { principal, session } = await fixture.createPrincipal(label, (identity) => {
+      const roleId = `deploy-${randomUUID()}`;
+      fixture.policy.roles.push({
+        id: roleId,
+        namespaceId: namespace.id,
+        permissions: [
+          { action: "deploy", resourceKind: "agent" },
+          ...agentActions.map((action) => ({ action, resourceKind: "agent" })),
+          { action: "read", resourceKind: "configuration" },
+          { action: "operate", resourceKind: "secret" },
+        ],
+      });
+      fixture.policy.bindings.push({
+        id: `${roleId}-binding`,
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: identity.id,
+        roleId,
+      });
+    });
+    const denied = await fixture.request("POST", `${agentPath}/deploy`, { session });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.deepEqual(fixture.auditSink.events.at(-1).authorization, {
+      principalId: principal.id,
+      action: deniedAction,
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+    });
+    deploySessions.push(session);
+  }
+  assert.equal(
+    fixture.computeDriver.calls.some(({ operation }) => operation === "provision"),
+    false,
+  );
+
+  const prepared = await fixture.request("POST", `${agentPath}/runtime-credentials`, { body: {} });
+  assert.equal(prepared.status, 200);
+  const admitted = await fixture.request("POST", `${agentPath}/deploy`, {
+    session: deploySessions[0],
+  });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+});
+
+test("failed first-deployment credential write does not admit a revision and can be retried", async (t) => {
+  const leakedValue = `driver-leak-${randomUUID()}`;
+  const fixture = await createFixture(t, {
+    computeDriver: createRuntimeCredentialComputeDriver({
+      provisionError: new Error(`must not leak ${leakedValue}`),
+    }),
+  });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+
+  // A remote Secret can be stored before its response is lost; retries must inspect it.
+  const failed = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(failed.status, 503, JSON.stringify(failed.body));
+  assert.equal(JSON.stringify(failed.body).includes(leakedValue), false);
+  const revisionsBeforeRetry = await fixture.request("GET", `${agentPath}/revisions`);
+  assert.equal(revisionsBeforeRetry.status, 200);
+  assert.equal(revisionsBeforeRetry.data.length, 0);
+
+  const retried = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(retried.status, 202, JSON.stringify(retried.body));
+  assert.equal(retried.data.revision, 1);
+  assert.equal(
+    fixture.computeDriver.calls.filter(({ operation }) => operation === "provision").length,
+    1,
+  );
+});
+
 test("runtime credential POST accepts empty input when only transport provisioning is needed", async (t) => {
   const fixture = await createFixture(t);
   const { namespace, agent } = await fixture.bootstrapAgent();
@@ -465,6 +600,8 @@ test("deployment diagnostics require exact revision read and Agent operate autho
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
   );
   assert.equal(revision.status, 202);
+  // Deployment provisions connection credentials; the assertions below cover diagnostics only.
+  fixture.computeDriver.calls.length = 0;
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.data.id}/diagnostics`;
 
   const { principal, session } = await fixture.createPrincipal(

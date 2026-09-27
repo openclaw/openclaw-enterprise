@@ -8,19 +8,19 @@ last_updated_session: 01a0e176-b1ee-7641-85e8-c167f10c6a66
 
 ## Overview
 
-An authorized caller saves plugin selections and deploys the Agent. OCC validates
-policy and snapshots selections and Driver. Startup resolves metadata, translates
-policy, and prepares the revision. The active revision pointer can change before
-runtime cutover finishes; the Harness owns tool invocation and approvals.
+An authorized caller saves plugin selections, then deploys. OCC validates and
+snapshots policy, selections, and Driver. Startup resolves metadata, translates
+policy, and prepares the revision. Revision selection may precede cutover; the
+Harness owns tools and approvals.
 
 ## Entry Points
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, followed by Agent deployment.
-- Assumptions: exact Agent create/update authorization, structurally valid plugin
-  configuration, a compatible trusted PluginDriver selected before saving plugins,
-  and the existing deployment prerequisites.
+- Trigger: Agent create/update with `plugins`, including a Console new-revision
+  plugin save, followed by Agent deployment.
+- Assumptions: exact Agent permission, valid selections, compatible trusted
+  PluginDriver, and deployment prerequisites.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
@@ -29,14 +29,21 @@ runtime cutover finishes; the Harness owns tool invocation and approvals.
 
 ```mermaid
 graph TD
-  D0["Request discovery"] --> D1["Authorize Agent create"]
+  D0["Request discovery"] -->|Create Agent| D1["Authorize Agent create"]
+  D0 -->|Existing Agent| E0["Authorize Agent read/update"]
+  E0 -->|curated| D6
+  E0 -->|hosted| E1["Resolve bound codex_pat Secret"]
+  E1 --> E2["Authorize caller and Agent Secret operate"]
+  E2 --> D6
   D1 -->|Secret reference| D2["Authorize exact Secret operate"]
   D2 --> D6["Check PluginDriver support"]
   D1 -->|transient token or no credential| D6
   D6 -->|unsupported| D7["Return unavailable capability"]
   D6 -->|Secret reference| D3["Read owned current value"]
   D6 -->|transient token or no credential| D4["Call selected PluginDriver"]
-  D3 --> D4
+  D3 -->|Create Agent| D4
+  D3 -->|Existing Agent| E3["Recheck grants and binding"]
+  E3 --> D4
   D4 --> D5["Return safe catalog metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
@@ -59,27 +66,32 @@ graph TD
 
 ### Credential-scoped discovery
 
-The [discovery routes](../reference/drivers/plugin.md#selection-and-catalogs) accept
-a PAT, exact Secret reference, or no credential if the Driver permits it.
-`apps/controller/src/index.ts:createFastifyApp` calls
-`packages/occ/src/index.ts:OpenClawController.discoverAgentPlugins` or
-`discoverAgentPluginDetails`. OCC authorizes Namespace Agent creation and, for a
-Secret, checks Namespace scope and exact `operate` permission before Driver support.
-Unsupported discovery never reads the Secret. Otherwise `SecretDriver.withValue`
-checks ownership and supplies its current value without a platform transaction.
-Each request rereads it; an in-flight request can use a pre-rotation value. Missing,
-denied, and unavailable Secrets fail before provider discovery. No discovery state
-or credential is stored.
+[Create Agent discovery](../reference/drivers/plugin.md#selection-and-catalogs)
+accepts a transient PAT, same-Namespace Secret, or no credential when the Driver
+permits it. OCC checks Namespace Agent `create` and caller Secret `operate` before
+Driver support. Unsupported discovery reads no Secret.
+
+Existing-Agent routes accept only cursors or plugin IDs under active Agent
+`read`/`update`. Curated discovery needs no Secret. Hosted discovery reads bound
+`codex_pat`, requires caller and Agent ServicePrincipal Secret `operate`, then
+rechecks binding and grants inside
+[`SecretDriver.withValue`](../reference/drivers/secret.md) before provider I/O.
+Plugin edits use Agent PATCH; admitted revisions stay immutable.
+
+Secret-backed reads use current values without transactions; in-flight
+reads may use pre-rotation values. Missing, denied, or unavailable Secrets fail
+before provider discovery. Discovery stores no state or credential.
 
 The [Codex Plugin Driver](../../apps/controller/src/drivers/plugin/index.ts)
-selects its configured catalog. Hosted discovery hydrates identity, pages 20
-GLOBAL entries, and loads tools (`null`: unknown). The hardcoded catalog returns
-entries without provider I/O or known tools and account access. Console permits
-supported entries after reading details; unsupported releases remain unavailable.
-Hosted reads are bounded and redirect-free. OCC returns `no-store` metadata,
-rejects results echoing credentials, and suppresses artifacts and upstream errors.
-Driver-owned links and [setup guidance](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-stay outside selections. App connections remain unverified; HTTPS logos use no
+selects hosted or curated discovery. Hosted discovery hydrates identity, pages 20
+GLOBAL entries, and loads tools (`null`: unknown). Curated entries require no
+provider I/O; tools and account access remain unknown. Console permits
+supported entries after details; unsupported releases stay unavailable.
+Filtering is local; hosted reads are bounded and redirect-free. OCC returns
+`no-store` metadata, rejects credential echoes, and suppresses upstream errors
+and artifacts. Driver links and
+[setup guidance](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+stay outside selections. App connections remain unverified; HTTPS logos omit
 referrers and fall back to initials.
 
 ### 1. Validate desired state under exact-Agent authority
@@ -98,8 +110,8 @@ authentication, and release/tool metadata remain startup checks. Agent mutations
 the reusable Configuration or active runtime. On update, omission preserves the
 map, `{}` clears it, and a nonempty map replaces it.
 
-Authorized `GET /installation` exposes the selected Driver's `policyCapabilities` through
-`OpenClawController.getInstallation`; it does not list plugins or tools.
+Installation readers use `GET /installation`; Agent editors use
+`GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
 
 ### 2. Admit an immutable plugin deployment
 
@@ -130,32 +142,26 @@ the container's private temporary home.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:installOpenClawPlugins`
 
-For embedded OpenClaw, the entrypoint resolves the requested selection against
-the bundled OpenClaw catalog and rejects conflicts with native plugin policy
-before installation. It merges generated tool grants into an existing nonempty
-`tools.allow`, otherwise `tools.alsoAllow`, preserving tool denies and profiles.
-The translator resolves each known tool's `enabled` override before its
-`toolDefaults.enabled` value, then emits native denies for disabled tools. A
-plugin master disable wins over tool exceptions; operator denies remain effective.
-`native` and `approve` add no review step for Diffs. The resulting configuration
-is private to the revision. Installation uses
-`--pin --force --no-enable` so native installation cannot change enablement or
-plugin allow/deny lists; preparation then refreshes the registry and verifies the
-admitted configuration. The runtime image must first gain the required native
-flag; the pinned release does not support it.
+For embedded OpenClaw, the entrypoint checks selections against the bundled
+catalog and native policy. Generated grants enter nonempty `tools.allow`,
+otherwise `tools.alsoAllow`, preserving denies and profiles. A tool's `enabled`
+override precedes `toolDefaults.enabled`; disabled tools emit native denies.
+Master disable and operator denies prevail; `native` and `approve` add no Diffs
+review step. The revision-private configuration uses `--pin --force --no-enable`
+to prevent installation from changing enablement or allow/deny lists. Preparation
+refreshes the registry and verifies admitted configuration. The runtime image
+must gain this flag; the pinned release lacks it.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
 Verification failure stops startup before the replacement gateway becomes ready.
 A confirmed install rejection instead disables that optional selection and
 removes its managed tool allowance before the gateway starts.
 
-Dedicated Codex uses one of two fixed bootstrap configurations in its isolated
-`CODEX_HOME`: empty selections disable the apps/plugins/remote-plugin features;
-nonempty selections enable those features. Both set `apps._default.enabled:false`.
-For nonempty selections, Compute applies the shared selected-only OpenClaw
-bridge renderer during gateway configuration construction: `codexPlugins.enabled:true`,
-`allow_all_plugins:false`, and one entry per selected plugin. Disabled entries
-remain selected but cannot execute through that bridge.
+Dedicated Codex bootstraps its isolated `CODEX_HOME` with apps, plugins, and
+remote plugins enabled only for nonempty selections. Both states set
+`apps._default.enabled:false`. With selections, Compute renders the OpenClaw
+bridge with `codexPlugins.enabled:true`, `allow_all_plugins:false`, and one entry
+per selected plugin. Disabled entries remain selected but cannot execute.
 
 At startup, native `plugin/list` discovers the `openai-curated-remote` marketplace;
 `plugin/read` resolves each selection using the summary's opaque remote identity.
@@ -302,6 +308,10 @@ completed deployment attempt rather than ongoing runtime health.
 - 2026-09-27 02:08: Added exact-Secret-authorized transient plugin discovery and current-value reads. (01a0e099-da9d-78f1-8e79-ea4a919edf7d - 41aae7750e33b8739efc5f7c6a0ebd160f42f711)
 
 - 2026-09-26 21:38: Added Agent skill paths. (c5a050f1-e44a-48c1-9c18-f7661d50623f - 41aae775)
+
+- 2026-09-26 19:16: Saved-Secret discovery. (authoring-run/828a8a37-a9f6-4bb5-9eed-912780152d5c - e5867bcd)
+
+- 2026-09-26 17:42: Document Console new-revision plugin editing and read-only revision snapshots in the accompanying change. (authoring-run/3aa63184-7716-4d27-90ed-33974110d0f5 - cdd6e3c8413f7cca4909f98d2d4c5f6bd17dbe54)
 
 - 2026-09-24 19:44: Added Driver-owned setup and recovery links. (01a0d1dd-aa36-7622-9f43-8376f6ff935e - ef89ded5)
 
