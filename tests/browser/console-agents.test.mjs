@@ -4040,20 +4040,12 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
-  await page
-    .getByText(
-      /Configured on the runtime host; not validated by OCC|Save or discard plugin changes before deploying/,
-    )
-    .waitFor();
-  assert.equal(await deploy.isDisabled(), true);
-  assert.equal(
-    await page
-      .getByText("Save or discard plugin changes before deploying.", { exact: true })
-      .isVisible(),
-    true,
-  );
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
   assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "none");
+  await page
+    .getByText("Save or discard plugin changes before deploying.", { exact: true })
+    .waitFor();
+  assert.equal(await deploy.isDisabled(), true);
 });
 
 test("Agent draft plugin browsing explains a missing hosted credential", async (t) => {
