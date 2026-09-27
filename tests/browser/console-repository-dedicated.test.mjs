@@ -6,6 +6,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
+import { setSlackSelection } from "./console-agents-browser-helpers.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 async function openCreateSecretDialog(scope, label) {
@@ -114,7 +115,7 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(agent.executionMode, "dedicated");
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: modelSecret.ref });
     assert.deepEqual(agent.repositoryBindings, expectedBindings);
-    await page.getByRole("heading", { name: "New revision" }).waitFor();
+    await page.getByRole("heading", { name: "Create new version" }).waitFor();
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
       .waitFor();
@@ -123,8 +124,14 @@ for (const issuesEnabled of [true, false]) {
     await grantModelAccess(agent);
     await page.getByRole("button", { name: "Channels", exact: true }).click();
     await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
-    await page.getByLabel("Slack channel IDs").fill("CDEMO123");
-    await page.getByLabel("Allowed channel user IDs").fill("UDEMO123");
+    await setSlackSelection(
+      page.getByRole("combobox", { name: "Channels", exact: true }),
+      "CDEMO123",
+    );
+    await setSlackSelection(
+      page.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+      "UDEMO123",
+    );
     const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
     // This workflow enables channel mentions without granting direct-message access.
     await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
@@ -144,25 +151,7 @@ for (const issuesEnabled of [true, false]) {
     }
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
     await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
-    const deploy = page.getByRole("button", { name: "Deploy new revision", exact: true });
-    assert.equal(await deploy.isDisabled(), true);
-    const provisionResponse = page.waitForResponse(
-      (result) =>
-        result.url() ===
-          `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials` &&
-        result.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Provision generated runtime credentials" }).click();
-    const provisioned = await provisionResponse;
-    assert.equal(provisioned.status(), 200, JSON.stringify((await provisioned.json()).error));
-    const credentialStatus = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`,
-    );
-    assert.equal(credentialStatus.status, 200);
-    assert.deepEqual(credentialStatus.data, { transportConfigured: true });
-    await page.getByText("Generated runtime credential metadata refreshed.").waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
     const text = await page.locator("body").innerText();
     assert.equal(text.includes("xapp-synthetic-demo"), false);
     assert.equal(text.includes("xoxb-synthetic-demo"), false);
@@ -175,6 +164,12 @@ for (const issuesEnabled of [true, false]) {
     await deploy.click();
     const admitted = await admittedResponse;
     assert.equal(admitted.status(), 202);
+    const credentialStatus = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`,
+    );
+    assert.equal(credentialStatus.status, 200);
+    assert.deepEqual(credentialStatus.data, { transportConfigured: true });
     const { data: revision } = await admitted.json();
     assert.equal(revision.agentId, agent.id);
     assert.equal(revision.harness.id, "codex");
@@ -216,10 +211,13 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(deployment.status, 200);
     assert.equal(deployment.data.deploymentId, revision.id);
     assert.equal(deployment.data.status, "queued");
-    await page.getByText("queued", { exact: true }).waitFor();
+    await page
+      .locator(".deployment-outcome")
+      .filter({ hasText: "Recorded status: queued" })
+      .waitFor();
     await page.getByRole("button", { name: "Configuration", exact: true }).click();
     await page
-      .getByRole("heading", { name: `AgentRevision v${revision.revision}`, exact: true })
+      .getByRole("heading", { name: `Version v${revision.revision}`, exact: true })
       .waitFor();
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })

@@ -49,3 +49,15 @@ jobs:
           profile: k3d
           node-version: "24.16.0"
           artifact-prefix: demo-results
+      - name: Upload rendered log dashboard
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: demo-log-dashboard
+          path: |
+            ${{ runner.temp }}/observability-demo/*.png
+            ${{ runner.temp }}/observability-demo/logs-failure.json
+          # Missing dashboard artifacts fail a successful lane, but do not add a
+          # secondary upload error when setup or the browser run already failed.
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
+          retention-days: 7

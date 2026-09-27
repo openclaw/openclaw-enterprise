@@ -204,7 +204,11 @@ available or restore it automatically.
 If a worker exits or stops renewing its lease, stale-claim recovery either
 requeues the operation or marks it `failed_permanent` after its final attempt.
 Recovery can also terminalize an already queued operation whose attempts are
-exhausted.
+exhausted. When that work targets Namespace creation, recovery changes a still
+`provisioning` Namespace to `failed` in the same atomic statement as the terminal
+work state and audit evidence. Retryable recovery leaves it `provisioning`;
+Agent work, Namespace deletion work, and Namespaces already past provisioning
+do not change Namespace status through this recovery path.
 
 ## Authorization, retries, and scope
 

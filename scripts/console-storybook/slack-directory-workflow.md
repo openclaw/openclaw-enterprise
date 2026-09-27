@@ -1,0 +1,9 @@
+# Slack directory
+
+These stories use production Console controls with simulated Secrets and directory results. They do not read a real token or contact Slack.
+
+1. Open **Components / Channels / Saved Slack IDs show current names** and **Qualified Slack targets keep names and IDs**. Saved targets appear as removable name chips; hover a chip for the exact saved ID.
+2. In **Find Slack channels by name**, check that the first page shows five channels. Next shows the two buffered matches; Previous restores the first page without another directory request. Next twice reaches the final two channels through the provider cursor. Type `platform` directly into Channels; typing waits 300 ms and Enter searches immediately. Choose the result with the mouse or Arrow Down and Enter. The chip is added without a second modal. Remove it, paste two exact IDs separated by commas, and press Enter. Unselected search text must not become a chip.
+3. In **Resolve duplicate Slack people**, check five people per page and distinguish duplicate names by handle and ID. Choose a person, then switch channel access between Specific people and Everyone. Switching back preserves the staged people; clearing the last person must still require an explicit access choice before saving.
+4. Inspect **Slack directory needs a bot Secret**, **Slack directory access denied**, and **Slack directory loading**. Exact-ID entry remains available. In **New search supersedes pending results**, type `platform` while the first request is pending; the browser cancels the old request and the new result remains visible. Type another query and press Escape before the debounce ends; no new directory request should appear in the frame's evidence.
+5. Check narrow-screen layout and keyboard focus. Escape closes results without closing the Slack editor. See **Pages / Agent detail / Find Slack plugin approvers** for the same control saving workspace-qualified approvers.

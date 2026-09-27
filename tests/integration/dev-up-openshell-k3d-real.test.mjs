@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 const execute = promisify(execFile);
@@ -545,6 +546,105 @@ test(
       ),
       "the regular OCC workflow must observe the bootstrap Namespace as ready",
     );
+
+    // The generated Installation selects the OpenShell Credential Gateway, so the CLI's
+    // credential-source commands must reach the live gateway through the API. The value is
+    // synthetic: registration stores it in OpenShell without contacting the model provider.
+    const cli = async (...args) =>
+      JSON.parse(
+        (
+          await execute(occ, [...args, "--output", "json"], {
+            cwd: repository,
+            env: { ...occEnvironment, OCC_NAMESPACE: created.id },
+            maxBuffer: 4 * 1024 * 1024,
+          })
+        ).stdout,
+      );
+    const syntheticKey = `sk-oce-dev-up-${randomUUID()}`;
+    const secretFile = join(root, "credential-source-secret.json");
+    await writeFile(secretFile, JSON.stringify({ name: `openai-${suffix}`, value: syntheticKey }), {
+      mode: 0o600,
+    });
+    const secret = await cli("secret", "create", "--file", secretFile);
+    await rm(secretFile);
+    const sourceFile = join(root, "credential-source.json");
+    await writeFile(
+      sourceFile,
+      JSON.stringify({
+        name: `openai-${suffix}`,
+        type: "openai",
+        secrets: { api_key: secret.ref },
+      }),
+    );
+    const source = await cli("credential-source", "create", "--file", sourceFile);
+    assert.match(source.id, /^cs_/);
+    assert.equal(source.state, "ready");
+    assert.deepEqual(source.status, { state: "ready" });
+    assert.equal(JSON.stringify(source).includes(syntheticKey), false);
+    const observed = await cli("credential-source", "get", source.id);
+    assert.deepEqual(observed.status, { state: "ready" });
+    assert.deepEqual(
+      (await cli("credential-source", "list")).map(({ id }) => id),
+      [source.id],
+    );
+    // The gateway copy lives in the Namespace's own OpenShell Workspace under an OCC-owned name.
+    const providerName = openShellProviderName(source.id);
+    const provider = await gateway.getProvider(
+      createdPhysicalNamespace,
+      providerName,
+      AbortSignal.timeout(10_000),
+    );
+    assert.equal(provider?.name, providerName);
+
+    // Agents need exact operate on a source before deployment, so Namespace IAM must accept
+    // credential_source Roles through the same CLI and API path an operator uses.
+    const roleFile = join(root, "credential-source-role.json");
+    await writeFile(
+      roleFile,
+      JSON.stringify({
+        name: "Use a credential source",
+        permissions: [{ action: "operate", resourceKind: "credential_source" }],
+      }),
+    );
+    const role = await cli("iam", "role", "create", "--file", roleFile);
+    assert.deepEqual(role.permissions, [{ action: "operate", resourceKind: "credential_source" }]);
+    await cli("iam", "role", "delete", role.id);
+
+    // A referenced Secret cannot be deleted while its source exists; deleting the source
+    // removes the gateway copy, after which the Secret is unreferenced again.
+    await assert.rejects(cli("secret", "delete", secret.id), /409|RESOURCE_CONFLICT/);
+    // Right after registration, DELETE removes the copy but keeps the record: a timed-out
+    // registration could still create a copy, so OCC finalizes only after its fence window.
+    await assert.rejects(
+      cli("credential-source", "delete", source.id),
+      /503|DEPENDENCY_UNAVAILABLE/,
+    );
+    assert.equal(
+      (await cli("credential-source", "get", source.id)).state,
+      "deleting",
+      "an early deletion must keep the cleanup record",
+    );
+    const fenceDeadline = Date.now() + 120_000;
+    for (;;) {
+      try {
+        await cli("credential-source", "delete", source.id);
+        break;
+      } catch (error) {
+        if (Date.now() > fenceDeadline || !/503|DEPENDENCY_UNAVAILABLE/.test(String(error))) {
+          throw error;
+        }
+        await delay(5_000);
+      }
+    }
+    assert.equal(
+      await gateway.getProvider(
+        createdPhysicalNamespace,
+        providerName,
+        AbortSignal.timeout(10_000),
+      ),
+      undefined,
+    );
+    await cli("secret", "delete", secret.id);
   },
 );
 

@@ -99,6 +99,12 @@ rules:
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -117,3 +123,9 @@ rules:
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    verbs: [get]

@@ -24,6 +24,7 @@ import type {
   NamespaceEnsureResult,
   BackendDefinition,
   SandboxDriver,
+  CredentialGatewayDriver,
   SecretBindings,
   SecretDriver,
   ResolvedHarnessAuth,
@@ -73,6 +74,7 @@ export interface ControllerWorkerOptions {
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
+  readonly credentialGatewayDriver?: CredentialGatewayDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
@@ -194,7 +196,8 @@ function validSecretDriver(driver: SecretDriver): boolean {
     typeof driver.create === "function" &&
     typeof driver.update === "function" &&
     typeof driver.delete === "function" &&
-    typeof driver.resolve === "function"
+    typeof driver.resolve === "function" &&
+    (driver.withValue === undefined || typeof driver.withValue === "function")
   );
 }
 
@@ -367,6 +370,7 @@ export class ControllerWorker {
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
+  private readonly credentialGateway: CredentialGatewayDriver | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -458,6 +462,18 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.sandbox = drivers?.sandboxDriver ?? options.sandboxDriver;
+    this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
+    if (
+      (drivers?.installation.drivers.credential_gateway === undefined) !==
+      (drivers?.credentialGatewayDriver === undefined)
+    ) {
+      throw new Error(
+        "The selected Credential Gateway Driver requires shared startup configuration.",
+      );
+    }
+    if (this.credentialGateway !== undefined && this.sandbox === undefined) {
+      throw new Error("The selected Credential Gateway Driver requires a paired Sandbox Driver.");
+    }
     if (
       (drivers?.installation.drivers.sandbox === undefined) !==
       (drivers?.sandboxDriver === undefined)
@@ -530,6 +546,7 @@ export class ControllerWorker {
     for (const driver of [
       this.configuration,
       this.sandbox,
+      this.credentialGateway,
       this.iam,
       this.secretDriver,
       this.repoDriver,
@@ -2011,8 +2028,35 @@ export class ControllerWorker {
       ) {
         refs.push(auth.source);
       }
-    } else if (auth.method !== "chatgpt_service_account" && auth.method !== "runtime") {
+    } else if (
+      auth.method !== "chatgpt_service_account" &&
+      auth.method !== "credential_source" &&
+      auth.method !== "runtime"
+    ) {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
+    }
+    if (auth.method === "credential_source") {
+      // Both the deploying actor and the Agent principal must still operate the source.
+      for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
+        const sourceAuthorization: AuthorizationRequest = {
+          principalId,
+          action: "operate",
+          resource: {
+            kind: "credential_source",
+            id: auth.sourceId,
+            namespaceId: revision.namespaceId,
+          },
+        };
+        const sourceDecision = await this.iamDecision(driver, sourceAuthorization);
+        if (!sourceDecision.allowed) {
+          return {
+            outcome: "permanent",
+            code: "AUTHORIZATION_DENIED",
+            authorization: sourceAuthorization,
+            decision: sourceDecision,
+          };
+        }
+      }
     }
     for (const ref of refs) {
       for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
@@ -2238,6 +2282,27 @@ export class ControllerWorker {
       // Admission verifies the physical source. Workers project authoritative
       // OCC metadata without requiring permission to read backend Secret values.
       harnessAuth = { ...auth, backendRef: secret.backendRef };
+    } else if (revision.harnessAuth.method === "credential_source") {
+      const auth = revision.harnessAuth;
+      if (
+        this.credentialGateway === undefined ||
+        auth.credentialGatewayId !== this.credentialGateway.id
+      ) {
+        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+      }
+      const source = await this.state.read((view) =>
+        view.credentialSources.findCredentialSource(revision.namespaceId, auth.sourceId),
+      );
+      // A deleting source can no longer be attached, even to an admitted revision.
+      if (
+        source === undefined ||
+        source.state !== "ready" ||
+        source.driverId !== auth.credentialGatewayId ||
+        source.type !== auth.sourceType
+      ) {
+        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
+      harnessAuth = { ...auth, source };
     } else {
       harnessAuth = revision.harnessAuth;
     }

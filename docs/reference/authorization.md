@@ -102,7 +102,8 @@ these actions can be granted to either a human Principal or an Agent-owned
 ServicePrincipal through an appropriately scoped Role and AccessBinding.
 
 Resource kinds currently include `installation`, `namespace`, `configuration`,
-`preset`, `agent`, `agent_revision`, `secret`, and `service_account`. Use the
+`preset`, `agent`, `agent_revision`, `secret`, `credential_source`, and
+`service_account`. Use the
 [permissions cheat sheet](cheatsheets/permissions.md) for the resource matrix and
 operations that require additional grants.
 
@@ -204,7 +205,7 @@ Bind it to the immutable `servicePrincipalId` returned in the Agent response:
 
 The identity, Role, and target must exist in the path Namespace. Exact targets
 and Role permission kinds are `agent`, `agent_revision`, `configuration`,
-`preset`, `secret`, or `service_account`. A ServiceAccount resource is not an IAM
+`credential_source`, `preset`, `secret`, or `service_account`. A ServiceAccount resource is not an IAM
 identity. Caller IDs, scope, wildcard targets, Groups, unknown permissions,
 and extra fields are rejected. Native IAM commits validated policy and its
 attributable audit event together; later requests on other replicas see it
@@ -255,7 +256,9 @@ For each protected operation, the controller:
 
 Lists are also authorized per resource. Permission to deploy an Agent does not
 automatically grant permission to read it, and permission to read one Agent
-does not expose every Agent in the Namespace.
+does not expose every Agent in the Namespace. First deployment additionally
+checks Agent `read` and `operate` if Compute must generate missing transport
+credentials.
 
 The selected IAM Driver loads current authoritative policy for each identity
 lookup and authorization decision. Account and permission changes become

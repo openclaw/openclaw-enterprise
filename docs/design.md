@@ -85,9 +85,10 @@ runtime detail.
   operator-selected `ComputeDriver`, whether bundled or installed.
 - Support model inference from an external provider or local model source
   without introducing either as a platform resource.
-- Enforce admitted sandbox policies and, in the future brokered design, keep
-  secret values, backend credentials, and provider credentials outside agent
-  workloads. The approved KubernetesSecretDriver path stores Namespace-owned
+- Enforce admitted sandbox policies and keep secret values, backend
+  credentials, and provider credentials outside agent workloads; the
+  `CredentialSource` path does this today only for OpenShell-sandboxed dedicated
+  Codex model keys. The approved KubernetesSecretDriver path stores Namespace-owned
   material before Agent creation and may deliver it by env only to explicitly
   selected consuming gateways; embedded OpenClaw and dedicated Codex production retain the
   explicitly scoped, topology-specific model-credential boundaries described in [Secret access](design/safeguards.md#secret-access).
@@ -123,7 +124,7 @@ runtime detail.
    the exact action, resource, and Namespace.
 4. Define the v1 platform resources: `Namespace`, `Configuration`,
    `ServiceAccount`, `Agent`, `AgentRevision`, `Harness`, `Channel`, `Secret`,
-   `SecretBroker`, `SandboxPolicy`, and `Restriction`.
+   `CredentialSource`, `SandboxPolicy`, and `Restriction`.
 5. Have OCC manage one OpenClaw gateway for each deployed Agent. The selected
    `ComputeDriver` places a dedicated gateway in the control-plane runtime
    target and its revision-scoped Harness in the selected tenant data-plane
@@ -244,8 +245,9 @@ models, and `PluginDriver` translates Agent-owned plugin selections at revision
 startup. Platform state retains resources, immutable revisions, and audit
 evidence; secret material belongs in the selected Secret backend, with references
 in OCC state. Explicit delivery and topology-specific credential boundaries remain
-as defined in [Secret access](design/safeguards.md#secret-access). `SecretBroker`
-and broker/substitution delivery are deferred. Required authorization, isolation,
+as defined in [Secret access](design/safeguards.md#secret-access). A
+`CredentialGatewayDriver` holds `CredentialSource` values outside the Harness
+for its paired Sandbox; other brokered delivery is deferred. Required authorization, isolation,
 or dependency failures block the operation; there is no unauthorized fallback.
 
 ## Design chapters

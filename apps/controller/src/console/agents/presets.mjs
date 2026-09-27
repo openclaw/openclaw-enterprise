@@ -24,9 +24,7 @@ function sameNamespaceSecret(context, secret) {
 function renderSecretOptions(secrets) {
   return [
     element("option", { value: "" }, "Choose an existing Secret"),
-    ...secrets.map((secret) =>
-      element("option", { value: secret.id }, `${secret.name ?? "Secret"} · ${secret.id}`),
-    ),
+    ...secrets.map((secret) => element("option", { value: secret.id }, secret.name ?? "Secret")),
   ];
 }
 

@@ -33,7 +33,9 @@ function codexPluginState() {
 function openClawPluginState() {
   return {
     driver: { id: "openclaw-plugin", implementation: "occ/openclaw-plugin" },
-    plugins: { "openclaw-plugin:example": { enabled: true, toolDefaults: { approval: "native" } } },
+    plugins: {
+      "openclaw-plugin:example": { enabled: true, toolDefaults: { approval: "provider_default" } },
+    },
   };
 }
 
@@ -781,7 +783,7 @@ for (const mode of ["embedded", "dedicated"]) {
     const driverId = mode === "embedded" ? "openclaw-plugin" : "codex-plugin";
     f.revision.plugins = {
       driver: { id: driverId, implementation: `occ/${driverId}` },
-      plugins: { [pluginId]: { enabled: true, toolDefaults: { approval: "native" } } },
+      plugins: { [pluginId]: { enabled: true, toolDefaults: { approval: "provider_default" } } },
     };
     let loseMaterialReadiness = false;
     let statusObserved = false;

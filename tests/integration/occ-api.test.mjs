@@ -334,6 +334,7 @@ function createProvisioningCapableComputeDriver() {
     capability: "compute",
     implementation: "deterministic-test",
     agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
     async ensureNamespace(namespace) {
       return { namespaceId: namespace.id, namespaceReady: true };
     },
@@ -409,7 +410,7 @@ const diffsPluginId = "occ-plugin:diffs";
 const linearPluginId = "codex-plugin:linear@openai-curated-remote";
 
 function pluginPolicy(overrides = {}) {
-  return { enabled: true, toolDefaults: { approval: "approve" }, ...overrides };
+  return { enabled: true, toolDefaults: { approval: "none" }, ...overrides };
 }
 
 function assertPolicyOnlyPlugin(selection) {
@@ -488,7 +489,8 @@ async function createInjectedFixture(options = {}) {
   const configurationDriver =
     options.configurationDriver ??
     createTestConfigurationDriver({ id: "configuration-integration" });
-  const secretDriver = createTestSecretDriver({ id: "secret-api-integration" });
+  const secretDriver =
+    options.secretDriver ?? createTestSecretDriver({ id: "secret-api-integration" });
   const sessionsByPrincipalId = new Map();
   let controller;
   let platformState;
@@ -1593,6 +1595,160 @@ test("Installation deployment inventory fails closed on incomplete authorization
   assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
+test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
+  const token = "synthetic-channel-directory-token";
+  const secretDriver = createTestSecretDriver({ id: "secret-directory-integration" });
+  const originalWithValue = secretDriver.withValue.bind(secretDriver);
+  let revokeOnRead;
+  let fixture;
+  secretDriver.withValue = (secret, use) =>
+    originalWithValue(secret, (value) => {
+      if (revokeOnRead !== undefined) {
+        fixture.state.restrictions.push(revokeOnRead);
+        revokeOnRead = undefined;
+      }
+      return use(value);
+    });
+  const controller = await configuredController({ secretDriver });
+  fixture = controller.fixture;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "channel-directory-api");
+  const configuration = await createConfiguration(controller, namespace.id);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "channel-bot", value: token },
+  });
+  assert.equal(secret.status, 201);
+  const agent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "directory-agent", configurationId: configuration.id },
+  });
+  assert.equal(agent.status, 201);
+
+  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
+  const body = { secretId: secret.data.id, kind: "users", query: "mem" };
+  const unavailable = await controller.request("POST", path, { body });
+  assert.equal(unavailable.status, 501);
+  assert.equal(unavailable.body.error.code, "NOT_IMPLEMENTED");
+
+  let providerCalls = 0;
+  let lastProviderInput;
+  let providerResult = {
+    workspaceId: "T123",
+    workspaceName: "Example workspace",
+    candidates: [{ id: "U123", name: "member", displayName: "Member", token }],
+    complete: true,
+    token,
+  };
+  const channelDriver = {
+    id: "channel-directory-integration",
+    capability: "channel",
+    implementation: "test-directory",
+    async lookupDirectory(input) {
+      providerCalls += 1;
+      lastProviderInput = input;
+      assert.equal(input.token, token);
+      return providerResult;
+    },
+  };
+  fixture.controller.registerDriver(channelDriver);
+  fixture.controller.selectDriver("channel", channelDriver.id);
+  const expected = {
+    workspaceId: "T123",
+    workspaceName: "Example workspace",
+    candidates: [{ id: "U123", name: "member", displayName: "Member" }],
+    complete: true,
+  };
+  const created = await controller.request("POST", path, { body });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.deepEqual(created.data, expected);
+  assert.equal(JSON.stringify(created.body).includes(token), false);
+  assert.equal(providerCalls, 1);
+  const hydrated = await controller.request("POST", path, {
+    body: { secretId: secret.data.id, kind: "users", ids: ["U123", "U999"] },
+  });
+  assert.equal(hydrated.status, 200, JSON.stringify(hydrated.body));
+  assert.deepEqual(hydrated.data, expected);
+  assert.deepEqual(lastProviderInput.ids, ["U123", "U999"]);
+  const mixed = await controller.request("POST", path, {
+    body: { ...body, ids: ["U123"] },
+  });
+  assert.equal(mixed.status, 400);
+  assert.deepEqual(
+    (
+      await controller.request("POST", path, {
+        body: { ...body, agentId: agent.data.id },
+      })
+    ).data,
+    expected,
+  );
+  assert.deepEqual(
+    (
+      await controller.request("POST", path, {
+        body: { ...body, configurationId: configuration.id },
+      })
+    ).data,
+    expected,
+  );
+
+  for (const [resourceKind, resourceId, action, editTarget] of [
+    ["agent", namespace.id, "create", {}],
+    ["agent", agent.data.id, "update", { agentId: agent.data.id }],
+    ["configuration", configuration.id, "update", { configurationId: configuration.id }],
+    ["secret", secret.data.id, "operate", {}],
+  ]) {
+    const restriction = {
+      id: `deny-directory-${resourceKind}-${action}`,
+      namespaceId: namespace.id,
+      resourceKind,
+      resourceId,
+      action,
+      effect: "deny",
+    };
+    fixture.state.restrictions.push(restriction);
+    const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    fixture.state.restrictions.pop();
+  }
+
+  for (const [resourceKind, resourceId, action, editTarget] of [
+    ["agent", agent.data.id, "update", { agentId: agent.data.id }],
+    ["secret", secret.data.id, "operate", {}],
+  ]) {
+    revokeOnRead = {
+      id: `revoke-directory-after-read-${resourceKind}`,
+      namespaceId: namespace.id,
+      resourceKind,
+      resourceId,
+      action,
+      effect: "deny",
+    };
+    const callsBefore = providerCalls;
+    const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(providerCalls, callsBefore);
+    fixture.state.restrictions.pop();
+  }
+
+  providerResult = { workspaceId: "T123", candidates: [], complete: false, nextCursor: "more" };
+  const incompleteHydration = await controller.request("POST", path, {
+    body: { secretId: secret.data.id, kind: "users", ids: ["U123"] },
+  });
+  assert.equal(incompleteHydration.status, 503);
+  assert.equal(incompleteHydration.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
+
+  providerResult = { workspaceId: "T123", workspaceName: token, candidates: [], complete: true };
+  const echoed = await controller.request("POST", path, { body });
+  assert.equal(echoed.status, 503);
+  assert.equal(echoed.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
+  assert.equal(JSON.stringify(echoed.body).includes(token), false);
+
+  providerResult = { candidates: [], complete: true, token };
+  const invalid = await controller.request("POST", path, { body });
+  assert.equal(invalid.status, 503);
+  assert.equal(invalid.body.error.code, "CHANNEL_DIRECTORY_INVALID_RESPONSE");
+  assert.equal(JSON.stringify(invalid.body).includes(token), false);
+});
+
 test("Agent create and update replace policy-only plugin maps and revisions freeze the requested snapshot", async () => {
   const controller = await configuredController();
   await bootstrap(controller);
@@ -1613,20 +1769,22 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   });
   assert.deepEqual(capabilities.toolDefaults, {
     enabled: true,
-    approval: ["native", "approve"],
+    approval: ["provider_default", "none"],
     reviewer: [],
   });
   assert.deepEqual(capabilities.tools, {
     enabled: true,
-    approval: ["native", "approve"],
+    approval: ["provider_default", "none"],
     reviewer: [],
   });
+  assert.deepEqual(capabilities.approvers, { agent: true, plugin: true, tools: true });
   assert.equal(capabilities.driverPolicySchema.additionalProperties, false);
   assert.deepEqual(capabilities.driverPolicySchema.properties, {});
   const initialPlugins = {
     [diffsPluginId]: pluginPolicy({
-      toolDefaults: { enabled: false, approval: "approve" },
-      tools: { diffs: { enabled: true } },
+      approvers: [{ channel: "slack", id: "team:T123:user:U123" }],
+      toolDefaults: { enabled: false, approval: "none" },
+      tools: { diffs: { enabled: true, approvers: [] } },
     }),
   };
 
@@ -1635,10 +1793,12 @@ test("Agent create and update replace policy-only plugin maps and revisions free
       name: "plugin-agent",
       configurationId: configuration.id,
       plugins: initialPlugins,
+      pluginApprovers: [],
     },
   });
   assert.equal(created.status, 201);
   assert.deepEqual(created.data.plugins, initialPlugins);
+  assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
 
   const saved = await controller.request(
@@ -1647,6 +1807,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.data.plugins, initialPlugins);
+  assert.deepEqual(saved.data.pluginApprovers, []);
 
   await controller.fixture.controller.handleNamespaceLifecycle(
     controller.fixture.principal.id,
@@ -1663,6 +1824,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
     driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
     plugins: initialPlugins,
   });
+  assert.deepEqual(deployment.data.pluginApprovers, []);
   assert.equal(Object.hasOwn(deployment.data.plugins, "artifacts"), false);
 
   const omittedPlugins = await controller.request(
@@ -1673,21 +1835,31 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.equal(omittedPlugins.status, 200);
   assert.equal(omittedPlugins.data.configurationId, replacementConfiguration.id);
   assert.deepEqual(omittedPlugins.data.plugins, initialPlugins);
+  assert.deepEqual(omittedPlugins.data.pluginApprovers, []);
 
   const replacementPlugins = {
     [diffsPluginId]: pluginPolicy({
-      toolDefaults: { approval: "native" },
-      tools: { diffs: { approval: "approve" } },
+      toolDefaults: { approval: "provider_default" },
+      tools: { diffs: { approval: "none" } },
     }),
   };
   const replacedPlugins = await controller.request(
     "PATCH",
     `/namespaces/${namespace.id}/agents/${created.data.id}`,
-    { body: { configurationId: replacementConfiguration.id, plugins: replacementPlugins } },
+    {
+      body: {
+        configurationId: replacementConfiguration.id,
+        plugins: replacementPlugins,
+        pluginApprovers: [{ channel: "slack", id: "team:T123:user:U456" }],
+      },
+    },
   );
   assert.equal(replacedPlugins.status, 200);
   // Replacing policy removes old enablement overrides without inventing new defaults.
   assert.deepEqual(replacedPlugins.data.plugins, replacementPlugins);
+  assert.deepEqual(replacedPlugins.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
   assertPolicyOnlyPlugin(replacedPlugins.data.plugins[diffsPluginId]);
 
   const clearedPlugins = await controller.request(
@@ -1697,6 +1869,9 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(clearedPlugins.status, 200);
   assert.deepEqual(clearedPlugins.data.plugins, {});
+  assert.deepEqual(clearedPlugins.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
 
   const historical = await controller.request(
     "GET",
@@ -1704,6 +1879,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(historical.status, 200);
   assert.deepEqual(historical.data.plugins, deployment.data.plugins);
+  assert.deepEqual(historical.data.pluginApprovers, []);
 
   const pluginFreeRevision = await controller.request(
     "POST",
@@ -1711,6 +1887,25 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   );
   assert.equal(pluginFreeRevision.status, 202);
   assert.equal(Object.hasOwn(pluginFreeRevision.data, "plugins"), false);
+  assert.deepEqual(pluginFreeRevision.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
+  const clearedApprovers = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    { body: { configurationId: replacementConfiguration.id, pluginApprovers: null } },
+  );
+  assert.equal(clearedApprovers.status, 200);
+  assert.equal(Object.hasOwn(clearedApprovers.data, "pluginApprovers"), false);
+  const inheritedRevision = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/deploy`,
+  );
+  assert.equal(inheritedRevision.status, 202);
+  assert.equal(Object.hasOwn(inheritedRevision.data, "pluginApprovers"), false);
+  assert.deepEqual(pluginFreeRevision.data.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
 });
 
 test("Agent plugin reviewer selection preserves omission and rejects unsupported tool scope", async () => {
@@ -1829,7 +2024,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
       plugins: {
         [linearPluginId]: {
           enabled: true,
-          toolDefaults: { approval: "native" },
+          toolDefaults: { approval: "provider_default" },
           approvals_reviewer: "auto_review",
         },
       },
@@ -1848,6 +2043,7 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     { [diffsPluginId]: pluginPolicy({ destructiveActions: "never" }) },
     { [diffsPluginId]: pluginPolicy({ writes: "prompt" }) },
     { [diffsPluginId]: pluginPolicy({ tools: { diffs: { approvalMode: "always" } } }) },
+    { [diffsPluginId]: pluginPolicy({ toolDefaults: { approval: "native" } }) },
     { [diffsPluginId]: pluginPolicy({ toolDefaults: { approval: "auto" } }) },
     { [diffsPluginId]: pluginPolicy({ toolDefaults: { reviewer: "user" } }) },
     { [diffsPluginId]: pluginPolicy({ tools: { diffs: { reviewer: null } } }) },
@@ -1866,11 +2062,15 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   // These policies satisfy the shared schema but the selected native driver cannot apply them.
   for (const [policy, message] of [
     [
-      pluginPolicy({ toolDefaults: { approval: "prompt" } }),
+      pluginPolicy({ toolDefaults: { approval: "all_actions" } }),
       "The supplied plugin policies are invalid.",
     ],
     [
-      pluginPolicy({ tools: { diffs: { approval: "prompt" } } }),
+      pluginPolicy({ toolDefaults: { approval: "write_actions" } }),
+      "The supplied plugin policies are invalid.",
+    ],
+    [
+      pluginPolicy({ tools: { diffs: { approval: "all_actions" } } }),
       "The supplied plugin policies are invalid.",
     ],
     [

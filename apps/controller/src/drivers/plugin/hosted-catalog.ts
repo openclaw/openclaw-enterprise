@@ -209,15 +209,19 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
 }
 
 export async function discoverHostedPlugins(
-  input: { readonly accessToken: string; readonly cursor?: string },
+  input: { readonly accessToken: string; readonly cursor?: string; readonly q?: string },
   signal?: AbortSignal,
 ): Promise<PluginCatalogPage> {
   return withCredential(input.accessToken, signal, async (request) => {
     const query = new URLSearchParams({ scope: "GLOBAL", limit: String(PAGE_SIZE) });
+    const search = input.q?.trim();
+    if (search) {
+      query.set("q", search);
+    }
     if (input.cursor !== undefined) {
       query.set("pageToken", text(input.cursor));
     }
-    const response = await request(`plugins/list?${query}`);
+    const response = await request(`plugins/${search ? "search" : "list"}?${query}`);
     const next = record(response.pagination).next_page_token;
     const nextCursor = next === null ? null : text(next);
     if (nextCursor !== null && nextCursor === input.cursor) {

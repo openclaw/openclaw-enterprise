@@ -77,6 +77,10 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
   };
 }
 
+// Model egress comes only from the credential source's OpenShell profile, bound to this binary.
+export const OPENSHELL_CODEX_BINARY =
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.156.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+
 export function createOpenShellInstallationConfiguration({
   authentication,
   platformNamespace,
@@ -102,12 +106,28 @@ export function createOpenShellInstallationConfiguration({
     "limits.memory": "8Gi",
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3600;
+  // The integration replaces this placeholder transport with each namespace's port-forward.
+  configuration.backend = [
+    {
+      id: "openshell",
+      type: "openshell",
+      // The fixture gateway is in-cluster HTTP isolated by the suite's NetworkPolicies.
+      configuration: { endpoint: "http://127.0.0.1:1", insecureTransport: "network-policy" },
+      drivers: {
+        sandbox: "sandbox-openshell-kubernetes",
+        credential_gateway: "credential-gateway-openshell-kubernetes",
+      },
+    },
+  ];
+  configuration.drivers.credential_gateway = {
+    id: "credential-gateway-openshell-kubernetes",
+    configuration: { binaries: [OPENSHELL_CODEX_BINARY] },
+  };
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
       gateway: {
         workspaceMode: "operator",
-        endpoint: "http://127.0.0.1:1",
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
@@ -166,15 +186,6 @@ export function createOpenShellInstallationConfiguration({
             name: "openclaw",
             endpoints: [{ host: "www.openclaw.org", ports: [443], tls: "skip" }],
             binaries: [{ path: "/usr/bin/curl" }],
-          },
-          {
-            name: "model-provider",
-            endpoints: [{ host: "api.openai.com", ports: [443], tls: "skip" }],
-            binaries: [
-              {
-                path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.156.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-              },
-            ],
           },
         ],
       },

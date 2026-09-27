@@ -59,7 +59,9 @@
     "format": "pnpm format:fix",
     "storybook:install": "pnpm --dir scripts/console-storybook install --frozen-lockfile",
     "storybook": "pnpm --dir scripts/console-storybook dev",
-    "storybook:build": "pnpm --dir scripts/console-storybook build"
+    "storybook:build": "pnpm --dir scripts/console-storybook build",
+    "analyze:modules": "node scripts/verify-module-boundaries.mjs",
+    "check:modules": "node scripts/verify-module-boundaries.mjs --policy scripts/module-boundaries/policy.json --exceptions scripts/module-boundaries/exceptions.json"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -74,6 +76,7 @@
     "playwright": "1.63.0",
     "prettier": "3.9.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript-compiler-api": "npm:typescript@6.0.3",
     "typescript-eslint": "8.70.0"
   }
 }

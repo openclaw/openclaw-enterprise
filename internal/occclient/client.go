@@ -212,6 +212,33 @@ func (client *Client) DeleteSecret(namespaceID, secretID string) error {
 	return client.sendEmpty(http.MethodDelete, []string{"namespaces", namespaceID, "secrets", secretID})
 }
 
+// CreateCredentialSource registers a Namespace Secret with the selected Credential Gateway.
+func (client *Client) CreateCredentialSource(namespaceID string, body jsontext.Value) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "credential-sources"},
+		body,
+	)
+}
+
+// ListCredentialSources lists credential sources without live gateway status.
+func (client *Client) ListCredentialSources(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "credential-sources")
+}
+
+// GetCredentialSource fetches a credential source with its live gateway status.
+func (client *Client) GetCredentialSource(namespaceID, sourceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "credential-sources", sourceID)
+}
+
+// DeleteCredentialSource removes an unreferenced credential source and its gateway copy.
+func (client *Client) DeleteCredentialSource(namespaceID, sourceID string) error {
+	return client.sendEmpty(
+		http.MethodDelete,
+		[]string{"namespaces", namespaceID, "credential-sources", sourceID},
+	)
+}
+
 // CreateAgent creates an Agent in a Namespace.
 func (client *Client) CreateAgent(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents"}, body)

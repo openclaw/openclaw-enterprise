@@ -9,7 +9,7 @@ const nativeId = "fixture@openai-curated-remote";
 const selections = {
   [`codex-plugin:${nativeId}`]: {
     enabled: true,
-    toolDefaults: { approval: "native", reviewer: "human" },
+    toolDefaults: { approval: "provider_default", reviewer: "human" },
   },
 };
 const detail = {
@@ -82,6 +82,8 @@ test("serialized Agent startup carries repository broker policy into bridge conf
         allowLocalBinding: true,
         readOnlyPaths: [
           "/app/node_modules/openclaw",
+          "/home/node/.openclaw/plugin-skills",
+          "/home/node/openclaw-runtime-assets/plugin-skills",
           "/opt/oce/repository-credentials",
           "/run/oce/repository-credentials",
         ],

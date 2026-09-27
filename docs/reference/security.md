@@ -173,11 +173,12 @@ lifecycle hooks, and runtime payload fields cannot supply `RUST_LOG`,
 `LOG_FORMAT`, `OTEL_*`, native `OPENCLAW_*` logging controls, exporter
 credentials, or remote destination settings.
 
-The Collector promotes only fixed operational event classes: reviewed OCC event
-names, gateway subsystem records under `gateway`, and Codex app-server stderr
-records under `codex_app_server`. It parses JSON records up to `32KiB`, maps
-severity explicitly, sets the remote body to the event class, and drops
-malformed, oversized, unclassified, stdout protocol, or content-bearing records.
+The bundled Collector promotes only fixed operational event classes: reviewed OCC
+event names, gateway subsystem records under `gateway`, and Codex app-server
+stderr records under `codex_app_server`. It parses JSON records up to `32KiB`,
+maps severity explicitly, keeps allowlisted attributes, and replaces retained
+bodies with the event class, stripping arbitrary content. It drops malformed,
+oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
 request, work, Namespace, Agent, and revision IDs remain attributes.
 

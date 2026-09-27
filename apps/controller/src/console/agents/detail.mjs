@@ -3,14 +3,15 @@ import { createHarnessAuthFields, renderHarnessAuthSummary } from "./harness-aut
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
+import { renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { renderChannels } from "../channels.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { displayDate, shortId, namespacePath, link, message } from "./list.mjs";
 import {
-  createRuntimeCredentialsPanel,
-  missingRuntimeCredentialGroups,
-  runtimeCredentialBlockReason,
+  createChannelSecretsPanel,
+  hasRequiredChannelCredentials,
+  channelCredentialBlockReason,
 } from "./credentials.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 
@@ -80,19 +81,92 @@ function deploymentFailure(error) {
   );
 }
 
-function createDeploymentStatusPanel(context, path, revisionId) {
-  const section = element("section", { className: "agent-card deployment-status" });
-  const state = { loading: false, status: null, error: null };
+function deploymentProgress(status) {
+  const stages = [
+    ["Admitted", "An immutable version was created.", "complete"],
+    [
+      "Deployment work",
+      status === "queued"
+        ? "Waiting for a worker claim."
+        : status === "running"
+          ? "A worker claim is active."
+          : status === "failed"
+            ? "Deployment work failed; check the recorded error and current version."
+            : "Work completed or the version was already active.",
+      status === "queued"
+        ? "waiting"
+        : status === "running"
+          ? "active"
+          : status === "succeeded"
+            ? "complete"
+            : "failed",
+    ],
+    [
+      "Completion recorded",
+      status === "succeeded"
+        ? "This deployment completed activation or was already active."
+        : status === "failed"
+          ? "Successful completion was not recorded for this deployment."
+          : "Successful completion is not recorded yet.",
+      status === "succeeded" ? "complete" : "waiting",
+    ],
+  ];
+  return element(
+    "ol",
+    { className: "deployment-progress", "aria-label": "Deployment progress" },
+    ...stages.map(([name, description, state]) =>
+      element(
+        "li",
+        { className: `deployment-step deployment-step-${state}` },
+        element("span", { className: "deployment-step-marker", "aria-hidden": "true" }),
+        element("div", {}, element("strong", {}, name), element("span", {}, description)),
+      ),
+    ),
+  );
+}
 
-  async function loadStatus() {
+function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
+  const section = element("section", { className: "agent-card deployment-status" });
+  const state = { loading: false, status: null, error: null, overviewError: false };
+
+  async function loadStatus(refreshAgent = false) {
     if (state.loading || !context.isCurrent()) {
       return;
     }
     state.loading = true;
     state.error = null;
+    state.overviewError = false;
     render();
     try {
-      state.status = await context.request(`${path}/deployments/${encodeURIComponent(revisionId)}`);
+      const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
+        context.request(`${path}/deployments/${encodeURIComponent(revision.id)}`),
+        refreshAgent ? context.request(path) : Promise.resolve(null),
+        refreshAgent ? context.request(`${path}/revisions`) : Promise.resolve(null),
+      ]);
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (
+        [statusResult, agentResult, revisionsResult].some(
+          (result) => result.status === "rejected" && result.reason.status === 401,
+        )
+      ) {
+        context.onExpired();
+        return;
+      }
+      if (statusResult.status === "fulfilled") {
+        state.status = statusResult.value;
+      } else {
+        state.status = null;
+        state.error = statusResult.reason;
+      }
+      if (refreshAgent) {
+        if (agentResult.status === "fulfilled" && revisionsResult.status === "fulfilled") {
+          onAgentChange(agentResult.value, revisionsResult.value);
+        } else {
+          state.overviewError = true;
+        }
+      }
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -107,6 +181,7 @@ function createDeploymentStatusPanel(context, path, revisionId) {
       if (context.isCurrent()) {
         state.loading = false;
         render();
+        onStatusChange(state.status?.status ?? null, state.error !== null);
       }
     }
   }
@@ -121,39 +196,249 @@ function createDeploymentStatusPanel(context, path, revisionId) {
     return element(
       "div",
       {},
-      element(
-        "dl",
-        { className: "credential-status-list" },
-        element("dt", {}, "Status"),
-        element("dd", {}, state.status.status),
-        element("dt", {}, "Deployment"),
-        element("dd", {}, state.status.deploymentId),
-      ),
+      deploymentProgress(state.status.status),
+      element("p", { className: "deployment-outcome" }, `Recorded status: ${state.status.status}`),
       deploymentFailure(state.status.error),
+      state.status.warnings?.length
+        ? element(
+            "div",
+            { className: "deployment-warnings" },
+            element("h3", {}, "Startup warnings"),
+            element(
+              "ul",
+              {},
+              ...state.status.warnings.map((warning) =>
+                element("li", {}, `${warning.pluginId}: ${warning.code}`),
+              ),
+            ),
+          )
+        : null,
     );
   }
 
   function render() {
     section.replaceChildren(
-      element("h2", {}, "Deployment status"),
+      element(
+        "div",
+        { className: "deployment-heading" },
+        element(
+          "div",
+          {},
+          element("h2", {}, "Deployment activity"),
+          element(
+            "p",
+            { className: "muted" },
+            `Most recent visible deployment · v${revision.revision}`,
+          ),
+        ),
+        button(
+          state.loading ? "Refreshing..." : "Refresh deployment",
+          () => void loadStatus(true),
+          {
+            disabled: state.loading,
+          },
+        ),
+      ),
       element(
         "p",
         { className: "muted" },
-        "Startup evidence is read from the durable deployment record.",
+        "Progress comes from the persisted deployment record. It does not check live serving or model access.",
       ),
       renderStatus(),
-      element(
-        "div",
-        { className: "form-actions credential-actions" },
-        button(state.loading ? "Refreshing..." : "Refresh deployment", () => void loadStatus(), {
-          disabled: state.loading,
-        }),
-      ),
+      ...(state.overviewError
+        ? [
+            element(
+              "p",
+              { className: "error", role: "alert" },
+              "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+            ),
+          ]
+        : []),
     );
   }
 
   render();
   void loadStatus();
+  return section;
+}
+
+function createVersionDeploymentRecord(context, path, revisionId) {
+  const section = element("section", { className: "agent-card version-deployment-record" });
+  let status = null;
+  let error = null;
+  let loading = false;
+
+  async function load() {
+    if (loading || !context.isCurrent()) {
+      return;
+    }
+    loading = true;
+    error = null;
+    render();
+    try {
+      status = await context.request(`${path}/deployments/${encodeURIComponent(revisionId)}`);
+    } catch (cause) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (cause.status === 401) {
+        context.onExpired();
+        return;
+      }
+      status = null;
+      error = cause;
+    } finally {
+      if (context.isCurrent()) {
+        loading = false;
+        render();
+      }
+    }
+  }
+
+  function render() {
+    section.replaceChildren(
+      element(
+        "div",
+        { className: "deployment-heading" },
+        element("h3", {}, "This version’s deployment record"),
+        button(loading ? "Refreshing..." : "Refresh record", () => void load(), {
+          disabled: loading,
+        }),
+      ),
+      error
+        ? element("p", { className: "error", role: "alert" }, message(error))
+        : status
+          ? element(
+              "div",
+              {},
+              element("p", {}, `Recorded outcome: ${status.status}`),
+              deploymentFailure(status.error),
+              status.warnings?.length
+                ? element(
+                    "p",
+                    { className: "hint" },
+                    `Startup warnings: ${status.warnings.map((warning) => `${warning.pluginId} (${warning.code})`).join(", ")}`,
+                  )
+                : null,
+            )
+          : element("p", { className: "muted" }, "Loading this version’s recorded outcome…"),
+    );
+  }
+
+  render();
+  void load();
+  return section;
+}
+
+function createVersionDiagnosticsPanel(context, path, revisionId) {
+  const section = element("section", { className: "agent-card version-diagnostics" });
+  let diagnostics = null;
+  let error = null;
+  let loading = false;
+
+  async function run() {
+    if (loading || !context.isCurrent()) {
+      return;
+    }
+    loading = true;
+    error = null;
+    diagnostics = null;
+    render();
+    try {
+      diagnostics = await context.request(
+        `${path}/deployments/${encodeURIComponent(revisionId)}/diagnostics`,
+        { method: "POST", readOnly: true },
+      );
+    } catch (cause) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (cause.status === 401) {
+        context.onExpired();
+        return;
+      }
+      error = cause;
+    } finally {
+      if (context.isCurrent()) {
+        loading = false;
+        render();
+      }
+    }
+  }
+
+  function renderChecks() {
+    if (!diagnostics) {
+      return element(
+        "p",
+        { className: "muted" },
+        error
+          ? "No observation was returned from this attempt."
+          : "No current observation has been requested for this version.",
+      );
+    }
+    const checks = element("dl", { className: "credential-status-list" });
+    for (const check of diagnostics.checks) {
+      checks.append(
+        element("dt", {}, `${check.component} / ${check.check}`),
+        element(
+          "dd",
+          {},
+          `${check.state}${check.code ? ` (${check.code})` : ""} · ${check.checkedAt ? displayDate(check.checkedAt) : "No check time"}`,
+        ),
+      );
+    }
+    return element(
+      "div",
+      {},
+      element("p", { className: "muted" }, `Observed ${displayDate(diagnostics.observedAt)}`),
+      diagnostics.checks.length
+        ? checks
+        : element("p", { className: "muted" }, "No diagnostic checks were returned."),
+    );
+  }
+
+  function render() {
+    section.replaceChildren(
+      element(
+        "div",
+        { className: "deployment-heading" },
+        element("h3", {}, "Current observations"),
+        button(
+          loading ? "Running diagnostics..." : "Run diagnostics for this version",
+          () => void run(),
+          {
+            disabled: loading,
+          },
+        ),
+      ),
+      element(
+        "p",
+        { className: "muted" },
+        "Checks run on demand against this exact version. Results are timestamped and do not change its recorded deployment outcome.",
+      ),
+      element(
+        "p",
+        { className: "muted" },
+        "For Kubernetes Compute, Gateway checks currently cover Slack configuration, authentication, and connectivity. They do not inspect Pod conditions, restarts, Events, logs, or run a model turn.",
+      ),
+      ...(error
+        ? [
+            element(
+              "p",
+              { className: "error", role: "alert" },
+              error.status === 403
+                ? "Diagnostics require Agent read and operate access plus read access to this version. Ask a Namespace administrator to confirm those grants."
+                : error.status === 503
+                  ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
+                  : message(error),
+            ),
+          ]
+        : []),
+      renderChecks(),
+    );
+  }
+
+  render();
   return section;
 }
 
@@ -166,10 +451,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   context.setTitle(agent.name);
   let deleting = agent.status === "deleting";
+  let currentRevisionId = agent.activeRevisionId;
+  let visibleRevisions = [];
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
   const tabsForSelection = [
     "configuration",
+    "plugins",
     "channels",
     ...(selected === "draft" ? ["credentials"] : []),
     "workspace",
@@ -184,40 +472,99 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     context.navigate(target(revision, tab));
   };
+  const headerActions = element(
+    "div",
+    { className: "agent-toolbar-actions" },
+    selected !== "draft"
+      ? button("Create new version", () => change("draft", "configuration"), {
+          className: "primary",
+        })
+      : null,
+  );
   const header = element(
     "div",
     { className: "agent-toolbar" },
     link("← Agents", "agents", context),
+    headerActions,
+  );
+  const currentVersionValue = element("strong");
+  const currentVersionNote = element("p", { className: "muted" });
+  const latestDeploymentValue = element("strong", {}, "Loading…");
+  const latestDeploymentNote = element("p", { className: "muted" }, "Reading deployment history.");
+  const currentSummary = element(
+    "section",
+    { className: "agent-current-summary", "aria-label": "Agent state at a glance" },
     element(
-      "span",
-      { className: "badge" },
-      agent.activeRevisionId
-        ? `Selected revision · ${shortId(agent.activeRevisionId)}`
-        : "No selected revision",
+      "div",
+      {},
+      element("span", { className: "eyebrow" }, "Current version"),
+      currentVersionValue,
+      currentVersionNote,
+    ),
+    element(
+      "div",
+      {},
+      element("span", { className: "eyebrow" }, "Latest visible deployment"),
+      latestDeploymentValue,
+      latestDeploymentNote,
+    ),
+    element(
+      "div",
+      {},
+      element("span", { className: "eyebrow" }, "Live serving"),
+      element("strong", {}, "Not verified"),
+      element("p", { className: "muted" }, "Serving version and model access are unknown."),
     ),
   );
+  const statusLine = element("p", { className: "agent-status-line", hidden: true });
+  function renderCurrentVersion() {
+    const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+    const version = current
+      ? `v${current.revision}`
+      : currentRevisionId
+        ? shortId(currentRevisionId)
+        : "None";
+    currentVersionValue.textContent = version;
+    currentVersionNote.textContent = currentRevisionId
+      ? "Selected for service · live serving unverified"
+      : "No version is currently selected for service.";
+  }
+  renderCurrentVersion();
   const identity = element("p", { className: "resource-id" }, agent.id);
-  const stop = createAgentStop(context, path, agent, showDeleting, () =>
+  const stopPanel = createAgentStop(context, path, agent, showDeleting, () =>
     context.navigate(target(selected, selectedTab), namespaceId, true),
   );
   const deletion = createAgentDeletion(context, path, agent, showDeleting);
   function showDeleting() {
     deleting = true;
-    header.lastChild.textContent = "Deleting";
+    headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
     view.replaceChildren(header, identity, deletion);
   }
   if (deleting) {
     showDeleting();
-    return;
+    return agent;
   }
   const selector = element("section", { className: "agent-card revision-selector" });
   const content = element("div");
+  const detailPane = element("div", { className: "agent-version-detail" });
+  const detailHeading = element("div", { className: "agent-version-heading" });
+  const versionEvidence = element("div", { className: "version-evidence" });
+  const versionLayout = element("div", { className: "agent-version-layout" }, selector, detailPane);
+  const deploymentStatus = element("section", { className: "agent-card deployment-status" });
+  deploymentStatus.append(
+    element("h2", {}, "Deployment activity"),
+    element("p", { className: "muted" }, "Loading the most recent visible deployment…"),
+  );
   const tabControls = new Map();
   const revisionControls = new Map();
   let draftEditorNavigationBlock = null;
   let showDraftEditorNavigationBlock = () => {};
   function draftEditorBlocksNavigation() {
-    return selected === "draft" && selectedTab === "configuration" && draftEditorNavigationBlock;
+    return (
+      selected === "draft" &&
+      ["configuration", "plugins"].includes(selectedTab) &&
+      draftEditorNavigationBlock
+    );
   }
   function trackRevisionControl(control) {
     revisionControls.set(control, control.disabled);
@@ -237,6 +584,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   });
   for (const [id, label] of [
     ["configuration", "Configuration"],
+    ["plugins", "Plugins"],
     ["channels", "Channels"],
     ...(selected === "draft" ? [["credentials", "Credentials"]] : []),
     ["workspace", "Workspace files"],
@@ -260,23 +608,331 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     tabControls.set(id, control);
     tabs.append(control);
   }
-  const deploymentStatus =
-    selected === "draft" ? [] : [createDeploymentStatusPanel(context, path, selected)];
+  detailPane.append(detailHeading, versionEvidence, tabs, content);
   view.replaceChildren(
     header,
     identity,
-    ...deploymentStatus,
+    currentSummary,
+    statusLine,
+    deploymentStatus,
     renderNativeAdminAccess(context, path),
-    selector,
-    tabs,
-    content,
+    versionLayout,
   );
   let details;
-  let tabGeneration = 0;
+  const retainedTabs = new Map();
+  let mountedTab = null;
+  let activityPanel = deploymentStatus;
+  let activityRevisionId;
+  let viewedSnapshot = null;
+  let detailLoadFinished = false;
+  let latestRevisionResult = null;
+  let latestDeploymentStatus = null;
+  let latestDeploymentError = false;
+  const revisionsPromise = request(`${path}/revisions`);
+
+  function versionNotice() {
+    return selected === "draft"
+      ? selectedTab === "plugins"
+        ? "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
+        : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
+      : selected === currentRevisionId
+        ? "Current version · read-only admitted snapshot. Selection does not confirm that this version is serving."
+        : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+  }
+
+  function renderDetailHeading() {
+    if (selectedTab === "workspace") {
+      detailHeading.replaceChildren(
+        element(
+          "div",
+          {},
+          element("h2", {}, "Agent workspace"),
+          element(
+            "p",
+            { className: "muted" },
+            "Workspace files are live Agent data, not part of a version snapshot.",
+          ),
+        ),
+      );
+      return;
+    }
+    const snapshot = viewedSnapshot;
+    const heading = element(
+      "div",
+      {},
+      element(
+        "span",
+        { className: "eyebrow" },
+        selected === "draft" ? "Editable Configuration" : "Immutable snapshot",
+      ),
+      element(
+        "h2",
+        {},
+        selected === "draft"
+          ? "Create new version"
+          : snapshot
+            ? `Version v${snapshot.revision}`
+            : detailLoadFinished
+              ? "Version unavailable"
+              : "Loading version details…",
+      ),
+    );
+    if (snapshot) {
+      if (selected !== "draft") {
+        heading.append(element("p", { className: "resource-id" }, snapshot.id));
+      }
+      heading.append(
+        element(
+          "p",
+          { className: "muted" },
+          `${selected === "draft" ? "Configuration" : "Source Configuration"} ${selected === "draft" ? snapshot.id : snapshot.configurationId} · generation ${selected === "draft" ? snapshot.generation : snapshot.configurationGeneration}`,
+        ),
+      );
+    }
+    detailHeading.replaceChildren(
+      heading,
+      ...(selected !== "draft" &&
+      currentRevisionId &&
+      selected !== currentRevisionId &&
+      visibleRevisions.some((revision) => revision.id === currentRevisionId)
+        ? [button("View current version", () => change(currentRevisionId, "configuration"))]
+        : []),
+    );
+  }
+
+  function renderVersions(revisions, snapshot, historyError = null) {
+    revisionControls.clear();
+    const newVersion = button("Create new version", () => change("draft", "configuration"), {
+      className: "revision-create",
+      ...(selected === "draft" ? { "aria-current": "page" } : {}),
+    });
+    trackRevisionControl(newVersion);
+    const list = element("div", { className: "version-list" });
+    for (const revision of revisions) {
+      const control = button("", () => change(revision.id, "configuration"), {
+        className: "version-item",
+        "aria-label": `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`,
+        ...(selected === revision.id ? { "aria-current": "page" } : {}),
+      });
+      control.append(
+        element("strong", {}, `v${revision.revision}`),
+        element("small", {}, displayDate(revision.createdAt)),
+      );
+      if (revision.id === currentRevisionId) {
+        control.append(element("span", { className: "version-current" }, "Current version"));
+      }
+      trackRevisionControl(control);
+      list.append(control);
+    }
+    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
+      if (snapshot) {
+        const control = button("", () => change(selected, "configuration"), {
+          className: "version-item",
+          "aria-label": `View version v${snapshot.revision}`,
+          "aria-current": "page",
+        });
+        control.append(
+          element("strong", {}, `v${snapshot.revision}`),
+          element("small", {}, "Viewed version"),
+        );
+        trackRevisionControl(control);
+        list.append(control);
+      } else {
+        list.append(
+          element(
+            "div",
+            { className: "version-item version-unavailable" },
+            "Viewed version unavailable",
+          ),
+        );
+      }
+    }
+    const chooser = element(
+      "select",
+      { id: "revision-selector" },
+      element("option", { value: "draft" }, "New version · editable Configuration"),
+      ...revisions.map((revision) =>
+        element(
+          "option",
+          { value: revision.id },
+          `v${revision.revision} · ${displayDate(revision.createdAt)}`,
+        ),
+      ),
+    );
+    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
+      chooser.append(
+        element(
+          "option",
+          { value: selected, disabled: !snapshot },
+          snapshot ? `v${snapshot.revision} · Viewed version` : "Viewed version unavailable",
+        ),
+      );
+    }
+    chooser.value = selected;
+    chooser.addEventListener("change", () => {
+      const nextRevision = chooser.value;
+      if (draftEditorBlocksNavigation()) {
+        chooser.value = selected;
+        showDraftEditorNavigationBlock();
+        return;
+      }
+      change(nextRevision, "configuration");
+    });
+    trackRevisionControl(chooser);
+    selector.replaceChildren(
+      ...[
+        element("h2", {}, "Versions"),
+        element("p", { className: "muted" }, "Choose a version to inspect its saved details."),
+        newVersion,
+        list,
+        revisions.length || selected !== "draft"
+          ? element("label", { for: "revision-selector" }, "Available versions")
+          : null,
+        revisions.length || selected !== "draft" ? chooser : null,
+        historyError
+          ? element(
+              "p",
+              { className: "error", role: "alert" },
+              `Version history unavailable. ${message(historyError)}`,
+            )
+          : null,
+        !historyError && !revisions.length
+          ? element(
+              "p",
+              { className: "muted" },
+              "No readable versions. Creating an Agent alone does not create a version.",
+            )
+          : null,
+      ].filter(Boolean),
+    );
+    updateNavigationControls();
+  }
+
+  function updateCurrentAgent(freshAgent, revisions, snapshot) {
+    if (freshAgent.status === "deleting") {
+      showDeleting();
+      return;
+    }
+    currentRevisionId = freshAgent.activeRevisionId;
+    stopPanel.updateAgent(freshAgent);
+    renderOverview({ status: "fulfilled", value: revisions }, snapshot);
+    renderDetailHeading();
+    const notice = content.querySelector(".version-selection-notice");
+    if (notice) {
+      notice.textContent = versionNotice();
+    }
+  }
+
+  function renderLatestDeployment() {
+    const latest = visibleRevisions[0];
+    if (!latest) {
+      latestDeploymentValue.textContent =
+        latestRevisionResult?.status === "rejected"
+          ? "Unavailable"
+          : latestRevisionResult
+            ? "None"
+            : "Loading…";
+      latestDeploymentNote.textContent =
+        latestRevisionResult?.status === "rejected"
+          ? "Version history could not be read."
+          : latestRevisionResult
+            ? "No readable deployments."
+            : "Reading deployment history.";
+      statusLine.hidden = true;
+      return;
+    }
+    const label = {
+      queued: "Queued",
+      running: "In progress",
+      succeeded: "Succeeded",
+      failed: "Failed",
+    }[latestDeploymentStatus];
+    latestDeploymentValue.textContent = `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`;
+    latestDeploymentNote.textContent = latestDeploymentStatus
+      ? `Recorded status: ${latestDeploymentStatus}`
+      : latestDeploymentError
+        ? "Recorded deployment status could not be read."
+        : "Reading recorded deployment status.";
+    statusLine.hidden = !latestDeploymentStatus;
+    if (latestDeploymentStatus) {
+      const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+      const selection = currentRevisionId
+        ? `${current ? `v${current.revision}` : shortId(currentRevisionId)} is selected.`
+        : "No version is selected.";
+      statusLine.textContent = `v${latest.revision} deployment is recorded as ${latestDeploymentStatus}. ${selection} Live serving is unverified.`;
+    }
+  }
+
+  function renderOverview(revisionResult, snapshot) {
+    latestRevisionResult = revisionResult;
+    const revisions =
+      revisionResult.status === "fulfilled"
+        ? [...revisionResult.value].sort((a, b) => b.revision - a.revision)
+        : [];
+    visibleRevisions = revisions;
+    renderCurrentVersion();
+    renderVersions(
+      revisions,
+      snapshot,
+      revisionResult.status === "rejected" ? revisionResult.reason : null,
+    );
+    const mostRecent = revisions[0];
+    if (activityRevisionId !== (mostRecent?.id ?? null)) {
+      latestDeploymentStatus = null;
+      latestDeploymentError = false;
+      const nextPanel = mostRecent
+        ? createDeploymentStatusPanel(
+            context,
+            path,
+            mostRecent,
+            (freshAgent, freshRevisions) =>
+              updateCurrentAgent(freshAgent, freshRevisions, snapshot),
+            (status, unavailable) => {
+              if (activityRevisionId !== mostRecent.id) {
+                return;
+              }
+              latestDeploymentStatus = status;
+              latestDeploymentError = unavailable;
+              renderLatestDeployment();
+            },
+          )
+        : element(
+            "section",
+            { className: "agent-card deployment-status" },
+            element("h2", {}, "Deployment activity"),
+            element(
+              "p",
+              { className: "muted" },
+              revisionResult.status === "rejected"
+                ? "Version history is unavailable."
+                : "No readable deployment records.",
+            ),
+          );
+      activityPanel.replaceWith(nextPanel);
+      activityPanel = nextPanel;
+      activityRevisionId = mostRecent?.id ?? null;
+    }
+    renderLatestDeployment();
+    return revisions;
+  }
+
+  async function loadOverview() {
+    const [revisionResult] = await Promise.allSettled([revisionsPromise]);
+    if (!context.isCurrent() || deleting) {
+      return;
+    }
+    if (revisionResult.status === "rejected" && revisionResult.reason.status === 401) {
+      context.onExpired();
+      return;
+    }
+    renderOverview(revisionResult, viewedSnapshot);
+    renderDetailHeading();
+  }
+  let refreshDeployControls = () => {};
 
   async function loadDetails() {
     const results = await Promise.allSettled([
-      request(`${path}/revisions`),
+      revisionsPromise,
       request(
         selected === "draft"
           ? `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(agent.configurationId)}`
@@ -290,113 +946,25 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       context.onExpired();
       return;
     }
-    const revisionResult = results[0];
-    const revisions =
-      revisionResult.status === "fulfilled"
-        ? [...revisionResult.value].sort((a, b) => b.revision - a.revision)
-        : [];
+    const revisionResult = latestRevisionResult ?? results[0];
     let snapshot = results[1].status === "fulfilled" ? results[1].value : null;
-    const activeRevision = revisions.find((revision) => revision.id === agent.activeRevisionId);
-    if (activeRevision) {
-      header.lastChild.textContent = `Selected revision · v${activeRevision.revision}`;
-    }
-    const chooser = element(
-      "select",
-      { id: "revision-selector", "aria-label": "AgentRevision" },
-      element("option", { value: "draft" }, "New revision · editable Configuration"),
-    );
-    for (const revision of revisions) {
-      chooser.append(
-        element(
-          "option",
-          { value: revision.id },
-          `v${revision.revision} · ${displayDate(revision.createdAt)} · ${revision.id === agent.activeRevisionId ? "Selected by Agent" : "Not selected by Agent"}`,
-        ),
-      );
-    }
-    if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
-      chooser.append(
-        element(
-          "option",
-          { value: selected },
-          snapshot ? `v${snapshot.revision} · Viewed snapshot` : "Viewed snapshot unavailable",
-        ),
-      );
-    }
-    chooser.value = selected;
-    chooser.addEventListener("change", () => {
-      const nextRevision = chooser.value;
-      if (draftEditorBlocksNavigation()) {
-        chooser.value = selected;
-        showDraftEditorNavigationBlock();
-        return;
-      }
-      change(nextRevision);
-    });
-    trackRevisionControl(chooser);
-    const position = revisions.findIndex((revision) => revision.id === selected);
-    const older = button("Older revision", () => change(revisions[position + 1].id));
-    older.disabled = position < 0 || position >= revisions.length - 1;
-    trackRevisionControl(older);
-    const newer = button("Newer revision", () => change(revisions[position - 1].id));
-    newer.disabled = position <= 0;
-    trackRevisionControl(newer);
-    const newRevision = button("New revision", () => change("draft"));
-    trackRevisionControl(newRevision);
-    const currentRevision = agent.activeRevisionId
-      ? button("View current revision", () => change(agent.activeRevisionId))
-      : null;
-    if (currentRevision) {
-      trackRevisionControl(currentRevision);
-    }
-    selector.append(
-      ...[
-        element(
-          "h2",
-          {},
-          selected === "draft"
-            ? "New revision"
-            : snapshot
-              ? `AgentRevision v${snapshot.revision}`
-              : "AgentRevision unavailable",
-        ),
-        revisions.length || selected !== "draft"
-          ? element("label", { for: "revision-selector" }, "AgentRevision")
-          : null,
-        revisions.length || selected !== "draft" ? chooser : null,
-        element(
-          "div",
-          { className: "form-actions" },
-          selected !== "draft" && revisions.length > 1 ? older : null,
-          selected !== "draft" && revisions.length > 1 ? newer : null,
-          selected !== "draft" ? newRevision : null,
-          agent.activeRevisionId && selected !== agent.activeRevisionId ? currentRevision : null,
-        ),
-      ].filter(Boolean),
-    );
-    if (revisionResult.status === "rejected") {
-      selector.append(
-        element(
-          "p",
-          { className: "error", role: "alert" },
-          `Revision history unavailable. ${message(revisionResult.reason)}`,
-        ),
-      );
-    } else if (!revisions.length) {
-      selector.append(
-        element(
-          "p",
-          { className: "muted" },
-          "No readable AgentRevisions. Creation alone does not create a revision.",
-        ),
-      );
-    }
+    detailLoadFinished = true;
+    viewedSnapshot = snapshot;
+    renderOverview(revisionResult, snapshot);
+    renderDetailHeading();
     if (!snapshot) {
       return { error: results[1].reason };
     }
     const draft = selected === "draft";
     let values = draft ? snapshot.values : snapshot.configuration;
     const executionMode = draft ? agent.executionMode : snapshot.harness.mode;
+    if (!draft) {
+      versionEvidence.append(
+        createVersionDeploymentRecord(context, path, selected),
+        createVersionDiagnosticsPanel(context, path, selected),
+      );
+      return { snapshot, values, draft, executionMode, credentials: null };
+    }
     let deploy;
     let deployPending = false;
     let deployStatus;
@@ -412,23 +980,34 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       outcomeUnknown: retainedEditor?.outcomeUnknown ?? false,
       reloadRequired: retainedEditor?.reloadRequired ?? false,
     };
+    const retainedPlugins = context.drafts.get("plugins");
+    const pluginEditorState = {
+      dirty: Boolean(retainedPlugins?.dirty),
+      saving: false,
+      outcomeUnknown: retainedPlugins?.outcomeUnknown ?? false,
+      reloadRequired: retainedPlugins?.reloadRequired ?? false,
+    };
     const runtimeAuth = agent.harnessAuth?.method === "runtime";
     const credentials =
       draft && !runtimeAuth
-        ? createRuntimeCredentialsPanel({
+        ? createChannelSecretsPanel({
             context,
-            path,
             agent,
             configuration: snapshot,
             values,
             revisionsLoaded: revisionResult.status === "fulfilled",
-            revisionCount: revisions.length,
-            onStatusChange: updateDeployControls,
+            onChange: updateDeployControls,
             onConfigurationChange(configuration) {
               snapshot = configuration;
               values = configuration.values;
+              viewedSnapshot = configuration;
+              renderDetailHeading();
             },
           })
+        : null;
+    const setupCredentials =
+      draft && !runtimeAuth
+        ? button("Set up credentials", () => change("draft", "credentials"))
         : null;
     function deployIsDisabled() {
       return (
@@ -438,9 +1017,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         draftEditorState.saving ||
         draftEditorState.outcomeUnknown ||
         draftEditorState.reloadRequired ||
+        pluginEditorState.dirty ||
+        pluginEditorState.saving ||
+        pluginEditorState.outcomeUnknown ||
+        pluginEditorState.reloadRequired ||
         !agent.harnessAuth ||
         revisionResult.status !== "fulfilled" ||
-        (draft && !runtimeAuth && !credentials?.canDeploy())
+        (!runtimeAuth && !credentials?.canDeploy())
       );
     }
     function updateDeployControls() {
@@ -448,6 +1031,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         return;
       }
       deploy.disabled = deployIsDisabled();
+      if (setupCredentials) {
+        setupCredentials.hidden =
+          selectedTab === "credentials" ||
+          revisionResult.status !== "fulfilled" ||
+          channelCredentialBlockReason(values) !== null ||
+          (Boolean(agent.harnessAuth) && !authenticationPending && credentials.canDeploy());
+        setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
+      }
       if (!deployPending) {
         if (authenticationPending) {
           deployStatus.textContent =
@@ -461,9 +1052,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           deployStatus.textContent = "Wait for Configuration save to finish before deploying.";
         } else if (draftEditorState.dirty) {
           deployStatus.textContent = "Save or cancel Configuration edits before deploying.";
+        } else if (pluginEditorState.outcomeUnknown) {
+          deployStatus.textContent =
+            "Refresh this Agent before deploying because the last plugin save outcome is unknown.";
+        } else if (pluginEditorState.reloadRequired) {
+          deployStatus.textContent = "Reload plugin selections before deploying.";
+        } else if (pluginEditorState.saving) {
+          deployStatus.textContent =
+            "Wait for plugin selections to finish saving before deploying.";
+        } else if (pluginEditorState.dirty) {
+          deployStatus.textContent = "Save or discard plugin changes before deploying.";
         } else if (revisionResult.status !== "fulfilled") {
           deployStatus.textContent =
-            "Revision history is required before deploying this new revision.";
+            "Version history is required before deploying this new version.";
         } else if (!agent.harnessAuth) {
           deployStatus.textContent =
             "Select a harness authentication source in Credentials before deployment.";
@@ -471,117 +1072,115 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           deployStatus.textContent =
             "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
         } else {
-          deployStatus.textContent = draft
-            ? credentials.deployGateMessage()
-            : "Deployment checks the current saved Configuration and credential metadata before admission.";
+          deployStatus.textContent = credentials.deployGateMessage();
         }
       }
     }
+    refreshDeployControls = updateDeployControls;
     deployStatus = element("p", { className: "muted", role: "status" });
     deployFeedback = element("p", { className: "error", role: "alert" });
-    deploy = button("Deploy new revision", async () => {
-      deployFeedback.textContent = "";
-      deploy.disabled = true;
-      deployPending = true;
-      deployStatus.textContent = "Checking Configuration…";
-      let submitted = false;
-      try {
-        const freshAgent = await request(path);
-        if (!context.isCurrent()) {
-          return;
-        }
-        if (!freshAgent.harnessAuth) {
-          deployFeedback.textContent =
-            "Select a harness authentication source in Credentials before deployment.";
-          return;
-        }
-        const freshRuntimeAuth = freshAgent.harnessAuth.method === "runtime";
-        const [freshConfig, freshCredentials] = await Promise.all([
-          request(
+    deploy = button(
+      "Deploy new version",
+      async () => {
+        deployFeedback.textContent = "";
+        deploy.disabled = true;
+        deployPending = true;
+        deployStatus.textContent = "Checking Configuration…";
+        let submitted = false;
+        try {
+          const freshAgent = await request(path);
+          if (!context.isCurrent()) {
+            return;
+          }
+          if (!freshAgent.harnessAuth) {
+            deployFeedback.textContent =
+              "Select a harness authentication source in Credentials before deployment.";
+            return;
+          }
+          const freshConfig = await request(
             `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(freshAgent.configurationId)}`,
-          ),
-          freshRuntimeAuth ? Promise.resolve(null) : request(`${path}/runtime-credentials`),
-        ]);
-        if (!context.isCurrent()) {
-          return;
-        }
-        if (
-          draft &&
-          (freshAgent.configurationId !== snapshot.id ||
+          );
+          if (!context.isCurrent()) {
+            return;
+          }
+          if (
+            freshAgent.configurationId !== snapshot.id ||
             JSON.stringify(freshAgent.harnessAuth) !== JSON.stringify(agent.harnessAuth) ||
-            freshConfig.generation !== snapshot.generation)
-        ) {
-          deployFeedback.textContent = "The Configuration changed. Refresh before deploying.";
-          return;
-        }
-        const credentialBlockReason = runtimeCredentialBlockReason(freshConfig.values);
-        if (credentialBlockReason !== null) {
-          deployFeedback.textContent = credentialBlockReason;
-          return;
-        }
-        const missingCredentials = freshRuntimeAuth
-          ? []
-          : missingRuntimeCredentialGroups(freshCredentials, freshConfig.values, freshConfig);
-        if (missingCredentials.length) {
-          deployFeedback.textContent = `Deploy requires stored runtime credential metadata: ${missingCredentials.join(", ")}.`;
-          return;
-        }
-        submitted = true;
-        deployStatus.textContent = "Requesting deployment…";
-        const revision = await request(`${path}/deploy`, { method: "POST" });
-        if (context.isCurrent()) {
-          change(revision.id, "workspace");
-        }
-      } catch (error) {
-        if (!context.isCurrent()) {
-          return;
-        }
-        if (error.status === 401) {
-          context.onExpired();
-          return;
-        }
-        deployFeedback.textContent =
-          error.status === 403
-            ? "Deployment denied. Check your Agent deployment permission and this Agent’s access to the selected credential Secret in Credentials. Ask a Namespace administrator to confirm the required grants."
-            : message(error, submitted);
-        if (!submitted || [400, 403, 404, 409, 429].includes(error.status)) {
-          deployPending = false;
-        }
-      } finally {
-        if (context.isCurrent()) {
-          if (!submitted) {
+            JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(agent.plugins ?? {}) ||
+            freshConfig.generation !== snapshot.generation
+          ) {
+            deployFeedback.textContent = "The Agent settings changed. Refresh before deploying.";
+            return;
+          }
+          const credentialBlockReason = channelCredentialBlockReason(freshConfig.values);
+          if (credentialBlockReason !== null) {
+            deployFeedback.textContent = credentialBlockReason;
+            return;
+          }
+          if (
+            freshAgent.harnessAuth.method !== "runtime" &&
+            !hasRequiredChannelCredentials(freshConfig.values, freshConfig)
+          ) {
+            deployFeedback.textContent =
+              "Channel Secret bindings changed. Refresh this Agent before deploying.";
+            return;
+          }
+          submitted = true;
+          deployStatus.textContent = "Requesting deployment…";
+          const revision = await request(`${path}/deploy`, { method: "POST" });
+          if (context.isCurrent()) {
+            change(revision.id, "configuration");
+          }
+        } catch (error) {
+          if (!context.isCurrent()) {
+            return;
+          }
+          if (error.status === 401) {
+            context.onExpired();
+            return;
+          }
+          deployFeedback.textContent =
+            error.status === 403
+              ? "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Ask a Namespace administrator to confirm the required grants."
+              : error.status === 409
+                ? "Deployment conflicts with the saved Agent state. Refresh this Agent to check for changed Configuration or missing connection credentials. If credentials are missing after an earlier version, ask an operator to restore them."
+                : message(error, submitted);
+          if (!submitted || [400, 403, 404, 409, 429].includes(error.status)) {
             deployPending = false;
           }
-          updateDeployControls();
+        } finally {
+          if (context.isCurrent()) {
+            if (!submitted) {
+              deployPending = false;
+            }
+            updateDeployControls();
+          }
         }
-      }
-    });
+      },
+      { className: "primary" },
+    );
     updateDeployControls();
-    if (credentials) {
-      void credentials.loadStatus();
-    }
-    selector.append(
+    const draftActions = element(
+      "section",
+      { className: "agent-card agent-draft-actions" },
+      element("h3", {}, "Prepare this version"),
+      element(
+        "ol",
+        { className: "draft-steps" },
+        element("li", {}, "Edit and save Configuration, plugins, or Channels"),
+        element("li", {}, "Check authentication and credentials"),
+        element("li", {}, "Deploy the saved draft"),
+      ),
       element(
         "p",
         { className: "muted" },
-        draft
-          ? "Deploy the saved Configuration to create an immutable revision. Workspace files become available when its gateway is ready."
-          : "Deploy the current saved Configuration as a new immutable revision. This does not redeploy the viewed snapshot or perform a rollback.",
+        "Deployment creates an immutable version from the saved Configuration and plugin selections. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
       ),
-      deploy,
+      draft ? element("div", { className: "form-actions" }, deploy, setupCredentials) : deploy,
       deployStatus,
       deployFeedback,
     );
-    if (!draft) {
-      selector.append(element("p", { className: "resource-id" }, snapshot.id));
-    }
-    selector.append(
-      element(
-        "p",
-        { className: "muted" },
-        `${draft ? "Configuration" : "Source Configuration"} ${draft ? snapshot.id : snapshot.configurationId} · generation ${draft ? snapshot.generation : snapshot.configurationGeneration}`,
-      ),
-    );
+    detailPane.insertBefore(draftActions, tabs);
     return {
       get snapshot() {
         return snapshot;
@@ -608,16 +1207,40 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         updateNavigationControls();
         updateDeployControls();
       },
+      setPluginEditorState(nextState) {
+        Object.assign(pluginEditorState, nextState);
+        draftEditorNavigationBlock = pluginEditorState.outcomeUnknown
+          ? "Outcome unknown. Reload this Agent before leaving plugin selections."
+          : pluginEditorState.reloadRequired
+            ? "Reload plugin selections before leaving this tab."
+            : pluginEditorState.saving
+              ? "Wait for plugin selections to finish saving before leaving this tab."
+              : null;
+        updateNavigationControls();
+        updateDeployControls();
+      },
     };
   }
 
   async function renderTab() {
-    context.flushDrafts();
-    const activeTab = ++tabGeneration;
-    const tabContext = {
-      ...context,
-      isCurrent: () => context.isCurrent() && activeTab === tabGeneration,
-    };
+    const resumeDrafts = context.suspendDrafts();
+    if (mountedTab) {
+      mountedTab.resumeDrafts = resumeDrafts;
+      for (const input of content.querySelectorAll('input[type="password"]')) {
+        if (input.value) {
+          mountedTab.reusable = false;
+          input.value = "";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }
+      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
+        mountedTab.nodes = [...content.childNodes];
+        retainedTabs.set(mountedTab.id, mountedTab);
+      }
+      mountedTab = null;
+    }
+    renderDetailHeading();
+    versionEvidence.hidden = selectedTab === "workspace";
     const tab = selectedTab;
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
@@ -627,14 +1250,44 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         control.removeAttribute("aria-current");
       }
     }
-    content.querySelectorAll('input[type="password"]').forEach((input) => {
-      input.value = "";
-    });
+    refreshDeployControls();
+    const retained = retainedTabs.get(tab);
+    retainedTabs.delete(tab);
+    if (retained && retained.mutations === context.mutationVersion()) {
+      mountedTab = retained;
+      content.replaceChildren(...retained.nodes);
+      retained.resumeDrafts();
+      return;
+    }
+    const state = {
+      id: tab,
+      reusable: true,
+      loading: true,
+      pending: 0,
+      mutations: context.mutationVersion(),
+    };
+    mountedTab = state;
+    const tabContext = {
+      ...context,
+      isCurrent: () => context.isCurrent() && mountedTab === state,
+      request: async (path, options) => {
+        state.pending += 1;
+        try {
+          return await context.request(path, options);
+        } catch (error) {
+          state.reusable = false;
+          throw error;
+        } finally {
+          state.pending -= 1;
+        }
+      },
+    };
     // Retain the panel's height during reads so loading does not jump the scroll position.
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
     if (tab === "workspace") {
       content.append(renderWorkspaceFiles(tabContext, agent, path));
+      state.loading = false;
       content.style.minHeight = "";
       return;
     }
@@ -644,7 +1297,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return;
     }
     content.replaceChildren();
+    state.loading = false;
     if (data?.error) {
+      state.reusable = false;
       content.append(errorPanel(data.error, tabContext, () => change(selected)));
     } else if (data) {
       renderConfigurationTab(tabContext, tab, data);
@@ -657,15 +1312,26 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content.append(
       element(
         "p",
-        { className: "notice", role: "status" },
-        draft
-          ? "New revision. Changes affect future deployments using this Configuration. Admitted AgentRevisions stay unchanged."
-          : selected === agent.activeRevisionId
-            ? "Selected AgentRevision · read-only admitted snapshot. Selection does not confirm that this revision is serving."
-            : "Unselected AgentRevision · read-only admitted snapshot. Browsing this snapshot does not change the Agent's selected revision.",
+        { className: "notice version-selection-notice", role: "status" },
+        versionNotice(),
       ),
     );
-    if (selectedTab === "channels") {
+    if (selectedTab === "plugins") {
+      content.append(
+        renderAgentPlugins(context, {
+          agent,
+          snapshot,
+          draft,
+          path,
+          onState: data.setPluginEditorState,
+          onSaved: () => change("draft", "plugins"),
+          onReload: () => {
+            context.drafts.forget("plugins");
+            context.navigate(target("draft", "plugins"), namespaceId, true);
+          },
+        }),
+      );
+    } else if (selectedTab === "channels") {
       const channels = renderChannels({
         values,
         executionMode,
@@ -676,6 +1342,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           namespaceId,
           request,
           agentName: agent.name,
+          configurationId: snapshot.id,
           secretBindings: snapshot.secretBindings,
           isCurrent: context.isCurrent,
           onExpired: context.onExpired,
@@ -897,7 +1564,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         }
       });
       content.append(form);
-      if (credentials) {
+      if (credentials?.section) {
         content.append(credentials.section);
       }
     } else {
@@ -1189,7 +1856,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return container;
   }
 
-  view.append(stop, deletion);
+  view.append(stopPanel.section, deletion);
   context.setTabNavigation((next) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const nextTab = tabsForSelection.includes(next.searchParams.get("tab"))
@@ -1220,5 +1887,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     void renderTab();
     return true;
   });
+  if (selectedTab === "workspace") {
+    void loadOverview();
+  } else {
+    details ??= loadDetails();
+  }
   await renderTab();
+  return agent;
 }

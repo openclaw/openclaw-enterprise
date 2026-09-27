@@ -2,10 +2,10 @@
 
 Deploy an Agent into a ready Namespace and verify model execution. Complete
 [control-plane installation](production-installation.md) and its authenticated
-API check first. Run commands from the repository root,
-retaining its credentials and Kubernetes context. For Secret-backed authentication,
-you or an Installation administrator must also [grant the Agent access to the model
-Secret](#grant-the-agent-access-to-its-model-secret) before deployment.
+API check. Run commands from the repository root, retaining credentials and
+Kubernetes context. For Secret-backed authentication, you or an Installation
+administrator must [grant the Agent access to the model Secret](#grant-the-agent-access-to-its-model-secret)
+before deployment.
 
 ## Prepare each Namespace
 
@@ -19,11 +19,9 @@ occ namespace list
 export NAMESPACE_ID='<ID shown for default>'
 ```
 
-The worker creates
-the backing Kubernetes namespace and labels it with
-`openclaw.dev/namespace=$NAMESPACE_ID`. This is separate from Kubernetes'
-built-in `default` namespace. Once the worker has created it, discover and
-export its name for the tenant RoleBindings:
+The worker creates a Kubernetes namespace labeled
+`openclaw.dev/namespace=$NAMESPACE_ID`, separate from Kubernetes' built-in
+`default` namespace. Discover and export its name for tenant RoleBindings:
 
 ```bash
 TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -34,11 +32,15 @@ TENANT_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
 If no backing namespace is found, check the worker logs and repeat discovery
 after creation. Complete the tenant RoleBindings below, then wait until
 `GET /namespaces/$NAMESPACE_ID` reports `ready` before creating Configurations.
+If it reports `failed`, inspect audit evidence and worker logs.
+[Exhausted lease recovery](../../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
+stops provisioning permanently.
 
 ### Grant tenant RoleBindings
 
-Grant the worker runtime role in the data plane. The API needs list-only
-Deployment access there for dedicated credential preflight. Replace the `oce-` prefix if the Helm release name differs:
+Grant the worker runtime role in the data plane. The API lists Deployments for
+credential preflight and reads Pods through the proxy for on-demand diagnostics.
+Replace the `oce-` prefix if the Helm release name differs:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -68,14 +70,13 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
-The Secret RoleBinding grants tenant-local Secret access and list-only
-Deployment access to the API. The API lists Deployments to check for existing
-Agent workloads before provisioning initial runtime credentials. This binding
-does not replace OCC IAM grants for bound Secrets. Worker permissions in both
-targets allow admitted credential delivery. Workload ServiceAccounts receive no
-Secret API access. For separately supported embedded execution, the API also
-needs the tenant-api role in the data plane to provision its combined transport
-bundle. Wait for Namespace `ready` only after granting both targets.
+The Secret RoleBinding grants Secret access, Deployment list access for preflight,
+and Pod read/proxy access for Gateway diagnostics. The data-plane observer grants
+Deployment list and Pod read/proxy access for Agent diagnostics. OCC IAM grants
+remain required. Worker permissions in both targets allow credential delivery.
+Workload ServiceAccounts receive no Secret API access. Embedded execution also
+needs the tenant-api role in the data plane for its combined transport bundle.
+Wait for Namespace `ready` only after granting both targets.
 
 ## Prepare each Agent
 
@@ -356,11 +357,12 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
-For an Agent without revisions, use **Provision generated runtime credentials**
-in the Console, or call the same exact-Agent API below. Keep `OCC_URL` and
+For a draft Agent, **Deploy new revision** generates missing transport
+credentials before its first revision. API clients may call the endpoint below
+first. Keep `OCC_URL` and
 `OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
 Secret placement for the Agent's execution mode and never returns credential
-values. It does not rotate existing credentials.
+values. It never rotates credentials.
 
 ```bash
 node --input-type=module <<'NODE'

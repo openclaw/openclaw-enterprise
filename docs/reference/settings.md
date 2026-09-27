@@ -77,7 +77,7 @@ When a production or explicit Kubernetes startup YAML is used, the required
 same startup YAML, stores Namespace-owned Secret values in the backing
 Kubernetes namespace, and exposes only metadata through OCC. Secret value updates
 do not restart workloads; explicitly redeploy or restart each consuming Agent to
-consume the current value. The selected Secret Driver is not a CredentialGateway, SecretBroker,
+consume the current value. The selected Secret Driver is not a Credential Gateway, SecretBroker,
 rotation service, or credential issuer.
 
 The optional `drivers.sandbox` selection currently supports the bundled
@@ -86,7 +86,10 @@ Compute Driver. It is loaded from the same startup YAML, injected into the
 Kubernetes Compute Driver before workers reconcile revisions, and fails startup
 when paired with SSH or an installed Compute Driver. OpenShell-selected Agents must use
 dedicated Codex execution; embedded OpenClaw remains unsupported for this
-SandboxDriver.
+SandboxDriver. The bundled OpenShell Sandbox also requires an `openshell`
+[Backend](backends.md#openshell-gateway) and a matching
+`drivers.credential_gateway` selection of the
+[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
 
 For contributor test variables, fixtures, and commands, see the
 [testing guides](../testing/README.md).

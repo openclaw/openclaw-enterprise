@@ -833,11 +833,19 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
       ...rev,
       plugins: {
         driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-        plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "approve" } } },
+        plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" } } },
       },
     }),
     /PluginDriver installation/,
   );
+  const beforeApproverPolicy = f.calls.length;
+  for (const pluginApprovers of [[], [{ channel: "slack", id: "team:T123:user:U123" }]]) {
+    await assert.rejects(
+      f.driver.prepareRevision({ ...rev, pluginApprovers }),
+      /plugin approver policy/,
+    );
+    assert.equal(f.calls.length, beforeApproverPolicy);
+  }
   for (const configuration of [
     { gateway: { auth: { mode: "oauth" } } },
     { gateway: { auth: { unsupportedField: true } } },

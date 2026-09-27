@@ -467,10 +467,15 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 	if err := r.writeAndApply(ctx, state, "api-proxy-service", service); err != nil {
 		return err
 	}
-	workerLabels := map[string]string{
-		"app.kubernetes.io/name":      "openclaw-enterprise",
-		"app.kubernetes.io/instance":  "openclaw-enterprise",
-		"app.kubernetes.io/component": "worker",
+	// The worker provisions Sandboxes; the API registers credential sources.
+	controlPlaneClients := map[string]any{
+		"matchLabels": map[string]string{
+			"app.kubernetes.io/name":     "openclaw-enterprise",
+			"app.kubernetes.io/instance": "openclaw-enterprise",
+		},
+		"matchExpressions": []any{map[string]any{
+			"key": "app.kubernetes.io/component", "operator": "In", "values": []string{"api", "worker"},
+		}},
 	}
 	gatewayLabels := map[string]string{
 		"app.kubernetes.io/name":     "openshell",
@@ -486,7 +491,7 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-enterprise-openshell-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": map[string]any{"matchLabels": workerLabels},
+					"podSelector": controlPlaneClients,
 					"policyTypes": []string{"Egress"},
 					"egress":      []any{map[string]any{"to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": gatewayLabels}}}, "ports": port}},
 				},
@@ -498,7 +503,7 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 					"policyTypes": []string{"Ingress"},
 					"ingress": []any{map[string]any{
 						"from": []any{
-							map[string]any{"podSelector": map[string]any{"matchLabels": workerLabels}},
+							map[string]any{"podSelector": controlPlaneClients},
 							map[string]any{
 								"namespaceSelector": map[string]any{
 									"matchLabels":      map[string]string{openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue},

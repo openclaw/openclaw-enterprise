@@ -5,7 +5,8 @@ import { createRepositoryFields } from "./repositories.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
-import { createPluginFields } from "./plugin-fields.mjs";
+import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -282,6 +283,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !["embedded", "dedicated"].includes(agent.executionMode)) ||
     (agent.backendId != null && typeof agent.backendId !== "string") ||
     (agent.plugins !== undefined && !isObject(agent.plugins)) ||
+    (agent.pluginApprovers !== undefined &&
+      (!Array.isArray(agent.pluginApprovers) ||
+        !agent.pluginApprovers.every(
+          (entry) =>
+            isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
+        ))) ||
     !hasRenderableWorkspaceFiles ||
     (rendered.configuration?.secretBindings !== undefined &&
       !isObject(rendered.configuration.secretBindings))
@@ -731,18 +738,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
 
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
-  let pluginDiscoveryGeneration = 0;
-  let pluginCatalog = { status: "idle", nextCursor: null };
-  const pluginEntries = new Map();
-  let pluginPageIds = [];
-  let pluginCursors = [null];
-  let pluginPageIndex = 0;
-  const pluginFields = createPluginFields({
-    input: plugins,
-    onLoadPlugins: (direction) => void loadPluginCatalog(direction),
-    onLoadTools: (id) => void loadPluginTools(id),
-  });
+  let pluginDiscoveryCredential = null;
   function discoveryCredential() {
+    if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
+      return {};
+    }
     if (
       nativeProvider.value !== "openai" ||
       harness.value !== "codex" ||
@@ -756,151 +756,60 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     return apiKey.value.trim() ? { accessToken: apiKey.value } : null;
   }
-  function canDiscoverPlugins() {
-    return Boolean(discoveryCredential());
-  }
-  function updatePluginDiscovery() {
-    pluginFields.setCatalog({
-      ...pluginCatalog,
-      entries: pluginPageIds.map((id) => pluginEntries.get(id)),
-      knownEntries: [...pluginEntries.values()],
-      pageNumber: pluginPageIndex + 1,
-      hasPrevious: pluginPageIndex > 0,
-      canLoad: canDiscoverPlugins(),
-      message:
-        pluginCatalog.message ??
-        (canDiscoverPlugins()
-          ? "Load plugins available to the selected service account credential. Your plugin selections stay unchanged."
-          : "For discovery, choose Service Accounts with the Codex harness and select a Secret or enter a token under Plugin discovery token (optional)."),
-    });
-  }
-  function resetPluginDiscovery() {
-    // A catalog belongs to the selected credential and harness; late responses cannot restore it.
-    pluginDiscoveryGeneration += 1;
-    pluginEntries.clear();
-    pluginPageIds = [];
-    pluginCursors = [null];
-    pluginPageIndex = 0;
-    pluginCatalog = { status: "idle", nextCursor: null };
-    updatePluginDiscovery();
-  }
-  function pluginDiscoveryError(error) {
-    const reason = {
-      FORBIDDEN: "You do not have permission to discover plugins with this credential.",
-      PLUGIN_DISCOVERY_CREDENTIALS_REJECTED:
-        "The service account token was rejected or cannot access plugins. Check its permissions.",
-      PLUGIN_DISCOVERY_RATE_LIMITED: "The plugin service rate limit was reached. Try again later.",
-      PLUGIN_DISCOVERY_UNAVAILABLE:
-        "The plugin service is unavailable. Check the server's plugin service access and retry.",
-      PLUGIN_DISCOVERY_INVALID_RESPONSE:
-        "The plugin service returned an unsupported response. Retry or contact your operator.",
-    }[error.code];
-    return `${reason ?? "Plugins could not be loaded. Check the credential and retry."}${error.requestId ? ` Request: ${error.requestId}` : ""}`;
-  }
-  async function loadPluginCatalog(direction = "refresh") {
-    if (!canDiscoverPlugins() || pending || pluginCatalog.status === "loading") {
-      return;
-    }
-    let pageIndex = pluginPageIndex;
-    let cursor = pluginCursors[pageIndex];
-    if (direction === "next") {
-      if (!pluginCatalog.nextCursor) {
-        return;
-      }
-      pageIndex += 1;
-      cursor = pluginCatalog.nextCursor;
-    } else if (direction === "previous") {
-      if (pageIndex === 0) {
-        return;
-      }
-      pageIndex -= 1;
-      cursor = pluginCursors[pageIndex];
-    }
-    // Every navigation invalidates in-flight details; the service owns page boundaries.
-    const generation = ++pluginDiscoveryGeneration;
-    for (const [id, entry] of pluginEntries) {
-      pluginEntries.set(id, { ...entry, toolStatus: undefined });
-    }
-    pluginCatalog = { ...pluginCatalog, status: "loading" };
-    updatePluginDiscovery();
-    try {
-      const page = await request(`${namespacePath(namespaceId)}/agents/plugins`, {
-        method: "POST",
-        body: { ...discoveryCredential(), ...(cursor ? { cursor } : {}) },
-      });
-      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
-        return;
-      }
-      for (const entry of page.plugins) {
-        pluginEntries.set(entry.id, entry);
-      }
-      pluginPageIds = page.plugins.map((entry) => entry.id);
-      pluginCursors = [...pluginCursors.slice(0, pageIndex), cursor];
-      pluginPageIndex = pageIndex;
-      pluginCatalog = { status: "ready", nextCursor: page.nextCursor, setup: page.setup };
-    } catch (error) {
-      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
-        return;
-      }
-      if (error.status === 401) {
-        context.onExpired();
-        return;
-      }
-      pluginCatalog = { ...pluginCatalog, status: "error", message: pluginDiscoveryError(error) };
-    } finally {
-      if (context.isCurrent() && generation === pluginDiscoveryGeneration) {
-        updatePluginDiscovery();
-      }
-    }
-  }
-  async function loadPluginTools(id) {
-    const entry = pluginEntries.get(id);
-    if (
-      !canDiscoverPlugins() ||
-      pending ||
-      pluginCatalog.status === "loading" ||
-      !entry?.remoteId ||
-      entry.toolStatus === "loading"
-    ) {
-      return;
-    }
-    const generation = pluginDiscoveryGeneration;
-    pluginEntries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
-    updatePluginDiscovery();
-    try {
-      const detail = await request(`${namespacePath(namespaceId)}/agents/plugins/details`, {
-        method: "POST",
-        body: { ...discoveryCredential(), pluginId: entry.remoteId },
-      });
-      if (
-        !context.isCurrent() ||
-        generation !== pluginDiscoveryGeneration ||
-        pluginEntries.get(id)?.remoteId !== entry.remoteId
-      ) {
-        return;
-      }
-      pluginEntries.set(id, { ...entry, ...detail, toolStatus: undefined, toolError: undefined });
-    } catch (error) {
-      if (!context.isCurrent() || generation !== pluginDiscoveryGeneration) {
-        return;
-      }
-      if (error.status === 401) {
-        context.onExpired();
-        return;
-      }
-      pluginEntries.set(id, { ...entry, toolError: pluginDiscoveryError(error) });
-    } finally {
-      if (context.isCurrent() && generation === pluginDiscoveryGeneration) {
-        updatePluginDiscovery();
-      }
-    }
-  }
+  let configurationSecretBindings = structuredClone(
+    draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
+  );
+  const getSlackBotSecretId = () => {
+    const source = configurationSecretBindings.SLACK_BOT_TOKEN?.source;
+    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
+  };
+  const pluginDiscovery = createPluginDiscovery({
+    context,
+    input: plugins,
+    canDiscover: () => Boolean(discoveryCredential()),
+    isPending: () => pending,
+    requestBody: (body) => ({ ...discoveryCredential(), ...body }),
+    unavailableMessage: () =>
+      pluginDiscoveryCredential === "none"
+        ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
+        : "For discovery, choose Service Accounts with the Codex harness and select a Secret or enter a token under Plugin discovery token (optional).",
+    availableMessage: () =>
+      pluginDiscoveryCredential === "none"
+        ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
+        : "Load plugins available to the selected service account credential. Your plugin selections stay unchanged.",
+    createApproverField: (options) =>
+      createSlackApproverField({
+        context,
+        getSecretId: getSlackBotSecretId,
+        ...options,
+      }),
+  });
+  const pluginFields = pluginDiscovery.fields;
+  const updatePluginDiscovery = pluginDiscovery.update;
+  const resetPluginDiscovery = pluginDiscovery.reset;
   apiKey.addEventListener("input", resetPluginDiscovery);
   for (const control of [nativeProvider, authMethod, harness]) {
     control.addEventListener("change", resetPluginDiscovery);
   }
-  let configurationSecretBindings = structuredClone(
-    draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
+  let pluginApprovers = structuredClone(
+    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
+  );
+  const defaultApprovers = createSlackApproverField({
+    context,
+    label: "Default plugin approvers",
+    getSecretId: getSlackBotSecretId,
+    getValue: () => pluginApprovers,
+    onChange: (value) => {
+      pluginApprovers = value;
+      edited = true;
+    },
+    inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
+    lazyNames: true,
+  });
+  defaultApprovers.hidden = true;
+  pluginFields.section.insertBefore(
+    defaultApprovers,
+    pluginFields.section.querySelector(".plugin-json"),
   );
   const workspaceInputs = Object.entries(WORKSPACE_DEFAULTS).map(([filename, content]) => {
     const input = element("textarea", {
@@ -1139,6 +1048,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       Object.entries(draftInputs).map(([key, input]) => [key, input.value]),
     ),
     manualModel,
+    pluginApprovers,
     edited,
     pendingModelSettings,
     pendingProviderModel,
@@ -1233,6 +1143,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         namespaceId,
         request,
         agentName: () => name.value,
+        creating: true,
         secretBindings: configurationSecretBindings,
         isCurrent: context.isCurrent,
         onExpired: context.onExpired,
@@ -1259,6 +1170,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (options.secretBindings !== undefined) {
           configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
+          defaultApprovers.refreshValue();
+          pluginDiscovery.update();
         }
         configuration.setCustomValidity("");
         setTimeout(() => {
@@ -1337,7 +1250,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         : "API key"
       : "Token for plugin discovery";
     modelCredentialField.hidden = Boolean(binding || passwordAuth);
-    pluginDiscoveryTokenDetails.hidden = Boolean(binding || passwordAuth || !usesPat);
+    pluginDiscoveryTokenDetails.hidden = Boolean(
+      binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
+    );
     if (pluginDiscoveryTokenDetails.hidden) {
       pluginDiscoveryTokenDetails.open = false;
     }
@@ -1444,7 +1359,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       if (!context.isCurrent()) {
         return;
       }
+      pluginDiscoveryCredential =
+        installation.capabilities?.pluginDiscovery?.credential ?? "required";
       pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
+      defaultApprovers.hidden =
+        installation.capabilities?.pluginPolicies?.approvers?.agent !== true;
+      if (!defaultApprovers.hidden) {
+        defaultApprovers.refreshNames();
+      }
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {
@@ -1611,6 +1533,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
       ...(repositoryBindings.length ? { repositoryBindings } : {}),
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
+      ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
     if (!binding && !passwordAuth && modelCredentialSource?.kind !== "secret") {

@@ -129,8 +129,13 @@ grant a workstation credential additional scopes.
    current `source_sha`, and that `ci_run_id`. Leave `publish` false for no-push
    preparation. If main moved, select the new SHA and its own completed CI run.
 3. To publish, dispatch with `publish` true after reviewing the SHA, CI run,
-   and [package setup](#confirm-package-linkage). Preparation builds
-   both platforms in one OCI archive, checks the index and child manifest/config
+   and [package setup](#confirm-package-linkage). Leave `image_tag` blank to
+   update `latest` for both images, or enter a custom tag to update that tag
+   instead. The tag can contain up to 128 ASCII letters, digits, underscores,
+   periods, and hyphens; it must start with a letter, digit, or underscore.
+   Tags beginning with `sha-` or `bootstrap-` are reserved, case-insensitively.
+   The selected alias is mutable and an existing tag can be replaced. Preparation
+   builds both platforms in one OCI archive, checks the index and child manifest/config
    digests, and loads each platform into Docker separately. Its config ID must
    match that index entry. Both platforms run the existing controller or runtime
    startup smoke before sealing/uploading. AMD64 and ARM64 builds and smoke tests
@@ -138,9 +143,10 @@ grant a workstation credential additional scopes.
    archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
    environment branch policy, and package visibility are rechecked before transfer.
 4. Use the `image@sha256:...` references in the job summary and
-   `container-publication-<run-id>-<attempt>` receipt for deployment. No Git tag,
-   release, `latest` alias, or deployment is created. Existing `sha-<source-sha>`
-   image tags cannot be replaced by different bytes.
+   `container-publication-<run-id>-<attempt>` receipt for deployment. Each image
+   receives an immutable `sha-<source-sha>` tag and the selected mutable alias;
+   the receipt records both. Existing source tags cannot be replaced by different
+   bytes. Publication does not create a Git tag, GitHub release, or deployment.
 
 The multi-platform publisher requires both architectures in every seal. Earlier
 amd64-only tags retain their original bytes and digests; building this workflow
@@ -163,7 +169,11 @@ different bytes. Do not delete or overwrite existing tags to evade that
 rejection. Publication of the two images is not transactional; on a partial
 failure inspect each recorded registry digest before deciding on recovery. The
 publisher's concurrency lock serializes these workflow writes, not external
-registry administrators.
+registry administrators. Both source tags are verified before either alias moves,
+but the two alias updates are not atomic. A failure may leave them pointing to
+different publications; inspect both packages and use digest references until
+a later successful publication updates the selected alias for both images.
+Recovery restores source tags only and does not move aliases.
 
 ## Recover a partial publication
 
@@ -221,8 +231,10 @@ end-to-end tests.
 
 Local gate and recovery tests: `node --test tests/integration/container-{release,resume,promote}.test.mjs`.
 Recovery tests use HTTP and transport fixtures; they prove gate ordering, original
-identity, conflict rejection, unchanged existing images, and receipt behavior,
-not a live GHCR transfer.
+identity, conflict rejection, unchanged existing images, and receipt behavior.
+The [registry integration](../docs/testing/images.md#container-publication-registry-proof)
+uses real Skopeo and a disposable registry to check alias replacement and both
+platforms. Neither test proves a live GHCR transfer.
 Workflow syntax: `actionlint .github/workflows/*.yml`.
 Actual no-push builds and the first private-registry transfer still require
 their respective authorized hosted runs; configuration and unit tests alone

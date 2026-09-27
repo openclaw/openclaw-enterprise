@@ -26,7 +26,6 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
   ]);
   const sandbox = {
     Buffer,
-    JSON,
     files,
     process: {
       env: {

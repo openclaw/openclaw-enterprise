@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-09-25"
-last_updated_session: "01a0cf72-6985-7712-ba92-d8cc32470f24"
+updated: "2026-09-27"
+last_updated_session: "01a0df20-f340-7810-bb59-b1df6c0bbbd3"
 ---
 
 # Production Startup Flow
@@ -183,6 +183,12 @@ maintain those addresses for the optional
 [model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
 Console model selection and Harness egress do not depend on this policy.
 
+When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
+literal IPv4 address and port, the chart passes it to the API and grants only
+that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
+CONNECT to `slack.com:443`. The empty default renders no rule and leaves
+production Slack directory lookup unavailable with manual exact-ID entry.
+
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Kubernetes 1.35 or later is the supported
 baseline. An older server returns a structured preflight warning instead of
@@ -285,6 +291,8 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 08:51: Document API-only Slack directory proxy egress and disabled default. (01a0df20-f340-7810-bb59-b1df6c0bbbd3 - 1a2764952c421bfee00ed6892714366292c2741a)
 
 - 2026-09-24: Record the post-bootstrap Kubernetes Installation identity marker used by coordinated upgrades.
 

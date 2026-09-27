@@ -221,6 +221,11 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			return fmt.Errorf("OpenShell development assets are required")
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
+		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
+			"id":            openShellCredentialGatewayID,
+			"configuration": map[string]any{"binaries": []string{openShellCodexBinary}},
+		}
+		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
@@ -229,22 +234,43 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	return exclusiveWrite(filepath.Join(s.directory, "installation.yaml"), data, 0644)
 }
 
-func openShellInstallationConfiguration(s *developmentState, workspaceResources []any) map[string]any {
-	gatewayNamespace := openShellGatewayNamespace
+const (
+	openShellSandboxID           = "sandbox-openshell-development"
+	openShellCredentialGatewayID = "credential-gateway-openshell-development"
+	// The native Codex binary is the only process allowed to use injected model credentials.
+	openShellCodexBinary = "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.156.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"
+)
+
+// openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
+// Credential Gateway Drivers.
+func openShellBackendConfiguration(s *developmentState) map[string]any {
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)
 	if s.DeploymentMode == "k3d" {
+		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace)
+	}
+	return map[string]any{
+		"id":   "openshell",
+		"type": "openshell",
+		// The development gateway is unauthenticated plain HTTP; the profile's NetworkPolicies
+		// admit only the OCE API, worker, and OpenShell supervisors.
+		"configuration": map[string]any{"endpoint": endpoint, "insecureTransport": "network-policy"},
+		"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+	}
+}
+
+func openShellInstallationConfiguration(s *developmentState, workspaceResources []any) map[string]any {
+	gatewayNamespace := openShellGatewayNamespace
+	if s.DeploymentMode == "k3d" {
 		gatewayNamespace = s.PlatformNamespace
-		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", openShellGatewayService, gatewayNamespace)
 	}
 	gatewayLabels := map[string]string{
 		"app.kubernetes.io/name":     "openshell",
 		"app.kubernetes.io/instance": openShellGatewayService,
 	}
 	return map[string]any{
-		"id": "sandbox-openshell-development",
+		"id": openShellSandboxID,
 		"configuration": map[string]any{
 			"gateway": map[string]any{
-				"endpoint":      endpoint,
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
@@ -276,8 +302,9 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			"policy": map[string]any{
 				"process": map[string]string{"runAsUser": "1000", "runAsGroup": "1000"},
 				"networkPolicies": []any{
+					// Model egress comes from the credential source's OpenShell profile, which
+					// terminates TLS so the proxy can inject the key; an uninspected rule would conflict.
 					map[string]any{"name": "source-control", "endpoints": []any{map[string]any{"host": "github.com", "ports": []int{443}, "tls": "skip"}}, "binaries": []any{map[string]string{"path": "/usr/bin/git"}}},
-					map[string]any{"name": "model-provider", "endpoints": []any{map[string]any{"host": "api.openai.com", "ports": []int{443}, "tls": "skip"}}, "binaries": []any{map[string]string{"path": "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.156.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"}}},
 				},
 			},
 			"sandboxNamePrefix": "os",

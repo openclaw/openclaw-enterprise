@@ -37,13 +37,13 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
         { className: "credential-status-list" },
         element("dt", {}, "Requested runtime state"),
         element("dd", {}, requested ? "Stopped" : "Running"),
-        element("dt", {}, "Selected revision"),
+        element("dt", {}, "Current version"),
         element(
           "dd",
           {},
           state.agent.activeRevisionId
-            ? `Selected revision ${shortId(state.agent.activeRevisionId)}`
-            : "No selected revision",
+            ? `Version ${shortId(state.agent.activeRevisionId)}`
+            : "No current version",
         ),
       ),
       ...(requested
@@ -51,7 +51,10 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
             element(
               "p",
               { className: "notice", role: "status" },
-              "Stop requested. OCC will not start this Agent again until you deploy the new revision. Runtime shutdown completion is not exposed in Console.",
+              // Initial drafts and completed stops both have no selected revision.
+              state.agent.activeRevisionId
+                ? "Stop requested. OCC will not start this Agent again until you deploy a new version. Runtime shutdown completion is not exposed in Console."
+                : "No version is selected. Deploy a new version to start this Agent.",
             ),
           ]
         : []),
@@ -226,7 +229,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
       element(
         "p",
         { id: "agent-stop-confirm-description" },
-        "This interrupts the current runtime gateway. Configuration, AgentRevisions, Credentials, and workspace data are retained. Deploy the new revision to start the Agent again.",
+        "This interrupts the current runtime gateway. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
       ),
       element("div", { className: "form-actions" }, cancel, confirm),
     );
@@ -254,5 +257,16 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   }
 
   render();
-  return section;
+  return {
+    section,
+    updateAgent(next) {
+      if (state.pending) {
+        return;
+      }
+      state.agent = next;
+      state.needsRefresh = false;
+      state.notice = "";
+      render();
+    },
+  };
 }

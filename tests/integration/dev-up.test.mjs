@@ -824,14 +824,18 @@ test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before re
     "app.kubernetes.io/name": "openshell",
     "app.kubernetes.io/instance": "openshell-gateway",
   });
+  // The worker provisions Sandboxes and the API registers credential sources, so both reach
+  // the gateway; no other OCE component or tenant workload is admitted.
   assert.deepEqual(gatewayIngress.spec.ingress[0].from, [
     {
       podSelector: {
         matchLabels: {
           "app.kubernetes.io/name": "openclaw-enterprise",
           "app.kubernetes.io/instance": "openclaw-enterprise",
-          "app.kubernetes.io/component": "worker",
         },
+        matchExpressions: [
+          { key: "app.kubernetes.io/component", operator: "In", values: ["api", "worker"] },
+        ],
       },
     },
     {
@@ -996,11 +1000,27 @@ test("Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell
 
   const configuration = loadYaml(await readFile(join(directory, "installation.yaml"), "utf8"));
   assert.equal(configuration.drivers.compute.configuration.authentication.mode, "kubeconfig");
-  assert.equal(
-    configuration.drivers.sandbox.configuration.gateway.endpoint,
-    "http://k3d-occ-dev-owned-server-0:30051",
-  );
+  // The openshell Backend owns the gateway connection that both member Drivers share.
+  assert.deepEqual(configuration.backend, [
+    {
+      id: "openshell",
+      type: "openshell",
+      configuration: {
+        endpoint: "http://k3d-occ-dev-owned-server-0:30051",
+        insecureTransport: "network-policy",
+      },
+      drivers: {
+        sandbox: "sandbox-openshell-development",
+        credential_gateway: "credential-gateway-openshell-development",
+      },
+    },
+  ]);
+  assert.equal(configuration.drivers.sandbox.configuration.gateway.endpoint, undefined);
   assert.equal(configuration.drivers.sandbox.configuration.gateway.workspaceMode, "operator");
+  assert.equal(
+    configuration.drivers.credential_gateway.id,
+    "credential-gateway-openshell-development",
+  );
 
   const commands = await readJsonLines(fixture.env.SAFETY_LOG);
   const clusterCreate = commands.find(

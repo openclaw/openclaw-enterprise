@@ -123,7 +123,7 @@ export async function createInstalledRepositoryFixture(
         } else {
           reject(
             new Error(
-              `${command} failed (${timedOut ? "timeout" : code}); protected subprocess output withheld`,
+              `${command} failed (${timedOut ? "timeout" : code}); ${command === "helm" && input === undefined ? redact(stderr).slice(0, 4096) : "protected subprocess output withheld"}`,
             ),
           );
         }
@@ -263,6 +263,8 @@ export async function createInstalledRepositoryFixture(
     codexImage: images.runtime,
     cluster: system,
   });
+  // Match production Gateway headroom; real plugin startup can exceed the generic 1 GiB fixture limit.
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
   if (dedicated) {
     // Use the same authenticated route for native node enrollment and task
     // submission. The production Driver owns enrollment and shared storage.
@@ -583,25 +585,78 @@ export async function createInstalledRepositoryFixture(
     return list.items[0]?.metadata.name ?? false;
   });
   names.push(tenant);
-  for (const [name, role, account] of [
-    ["worker", "worker", "worker"],
-    ["configuration", "configuration", "api"],
-    ["secrets", "api", "api"],
-  ]) {
+  const grantNamespaceRole = async (targetNamespace, bindingName, clusterRole, account) => {
     await apply({
       apiVersion: "rbac.authorization.k8s.io/v1",
       kind: "RoleBinding",
-      metadata: metadata(`repository-${name}`, tenant),
+      metadata: metadata(bindingName, targetNamespace),
       roleRef: {
         apiGroup: "rbac.authorization.k8s.io",
         kind: "ClusterRole",
-        name: `${release}-openclaw-tenant-${role}`,
+        name: clusterRole,
       },
       subjects: [
         { kind: "ServiceAccount", name: `openclaw-enterprise-${account}`, namespace: system },
       ],
     });
-  }
+  };
+  await grantNamespaceRole(
+    tenant,
+    "repository-tenant-worker",
+    `${release}-openclaw-tenant-worker`,
+    "worker",
+  );
+  await grantNamespaceRole(
+    tenant,
+    "repository-tenant-api-configuration",
+    `${release}-openclaw-tenant-configuration`,
+    "api",
+  );
+  await grantNamespaceRole(
+    tenant,
+    "repository-tenant-api-secrets",
+    `${release}-openclaw-tenant-api`,
+    "api",
+  );
+  await grantNamespaceRole(
+    tenant,
+    "repository-tenant-gateway-observer",
+    `${release}-openclaw-gateway-observer`,
+    "api",
+  );
+  const gatewayRuntimeNamespace = await waitFor("backing Gateway runtime namespace", async () => {
+    const list = JSON.parse(
+      await kubectl(
+        "get",
+        "namespaces",
+        "-l",
+        `openclaw.dev/gateway-namespace=${namespace.id}`,
+        "-o",
+        "json",
+      ),
+    );
+    assert.ok(list.items.length <= 1);
+    return list.items[0]?.metadata.name ?? false;
+  });
+  names.push(gatewayRuntimeNamespace);
+  await grantNamespaceRole(
+    gatewayRuntimeNamespace,
+    "repository-gateway-worker",
+    `${release}-openclaw-tenant-worker`,
+    "worker",
+  );
+  await grantNamespaceRole(
+    gatewayRuntimeNamespace,
+    "repository-gateway-api-configuration",
+    `${release}-openclaw-tenant-configuration`,
+    "api",
+  );
+  await grantNamespaceRole(
+    gatewayRuntimeNamespace,
+    "repository-gateway-api-secrets",
+    `${release}-openclaw-tenant-api`,
+    "api",
+  );
   await waitFor(
     "OCC Namespace ready",
     async () => (await api("GET", `/namespaces/${namespace.id}`)).status === "ready",
@@ -630,6 +685,31 @@ export async function createInstalledRepositoryFixture(
         { input: statement },
       )
     ).trim();
+  const renderRepositoryCredentials = async (repositoryCredentials) => {
+    const values = JSON.parse(await readFile(join(directory, "values.json"), "utf8"));
+    values.repositoryCredentials = repositoryCredentials;
+    const candidateValues = join(directory, "repository-values.json");
+    await writeFile(candidateValues, JSON.stringify(values), { mode: 0o600 });
+    const rendered = JSON.parse(
+      await run(
+        "node",
+        [
+          "scripts/render-repository-credentials-origin.mjs",
+          "--release",
+          release,
+          "--namespace",
+          system,
+          "--values",
+          candidateValues,
+        ],
+        { timeout: 120000 },
+      ),
+    );
+    assert.equal(rendered.release, release);
+    assert.equal(rendered.namespace, system);
+    assert.equal(rendered.backendId, repositoryCredentials.backendId);
+    return rendered;
+  };
   const upgrade = async (repositoryCredentials) => {
     await createSecret("occ-installation-startup", {
       "installation.yaml": JSON.stringify(configuration),
@@ -637,6 +717,7 @@ export async function createInstalledRepositoryFixture(
     const values = JSON.parse(await readFile(join(directory, "values.json"), "utf8"));
     values.repositoryCredentials = repositoryCredentials;
     await writeFile(join(directory, "values.json"), JSON.stringify(values), { mode: 0o600 });
+    const renderedRepositoryCredentials = await renderRepositoryCredentials(repositoryCredentials);
     await run(
       "helm",
       [
@@ -658,6 +739,7 @@ export async function createInstalledRepositoryFixture(
       { timeout: 330000 },
     );
     await waitForInstallation();
+    return renderedRepositoryCredentials;
   };
   return {
     selection,
@@ -668,6 +750,7 @@ export async function createInstalledRepositoryFixture(
     suffix,
     namespace,
     tenant,
+    gatewayRuntimeNamespace,
     configuration,
     gatewayConfiguration,
     gatewayHostname,
@@ -684,6 +767,7 @@ export async function createInstalledRepositoryFixture(
     externalRequest,
     waitFor,
     sql,
+    renderRepositoryCredentials,
     upgrade,
     close,
   };
@@ -731,7 +815,7 @@ export const submitRepositoryTaskScript = String.raw`
       input += chunk;
       if (input.length > 32768) throw new Error("task input too large");
     }
-    const { sessionKey, prompt, gatewayUrl } = JSON.parse(input);
+    const { sessionKey, prompt, gatewayUrl, completionMarker } = JSON.parse(input);
     stage = "authentication";
     if (process.env.OPENAI_API_KEY) throw new Error("request client must not receive model credentials");
     let url;
@@ -742,10 +826,90 @@ export const submitRepositoryTaskScript = String.raw`
           !/^occ-gateway-[a-f0-9]{12}\.[a-z0-9-]+\.svc$/.test(url.hostname) ||
           !/^\/namespaces\/[A-Za-z0-9_-]+\/agents\/[A-Za-z0-9_-]+$/.test(url.pathname) ||
           url.search || url.hash) throw new Error("invalid private Gateway route");
+      if (typeof completionMarker !== "string" || completionMarker.length === 0 ||
+          completionMarker.length > 1024) throw new Error("private Gateway route requires a completion marker");
       const key = require("node:fs").readFileSync(process.env.OCC_GATEWAY_API_KEY_PATH, "utf8");
       if (!key || !/^[\x21-\x7e]+$/.test(key)) throw new Error("Gateway API key unavailable");
-      authentication = { "x-api-key": key };
-      url.pathname += "/v1/chat/completions";
+      const { randomUUID } = require("node:crypto");
+      const { pathToFileURL } = require("node:url");
+      const { setTimeout: delay } = require("node:timers/promises");
+      const { GatewayClient } = await import(
+        pathToFileURL(
+          require.resolve("@openclaw/gateway-client", { paths: ["/app/apps/controller"] }),
+        ).href
+      );
+      stage = "gateway-connect";
+      let resolveHello;
+      let rejectHello;
+      const connected = new Promise((resolve, reject) => {
+        resolveHello = resolve;
+        rejectHello = reject;
+      });
+      url.protocol = "wss:";
+      const client = new GatewayClient({
+        url: url.toString(),
+        clientName: "gateway-client",
+        mode: "backend",
+        role: "operator",
+        scopes: [],
+        deviceIdentity: null,
+        edgeAuthHeaders: { "x-api-key": key },
+        onHelloOk: resolveHello,
+        onConnectError: rejectHello,
+      });
+      const signal = AbortSignal.timeout(600000);
+      const helloTimer = setTimeout(() => rejectHello(new Error("gateway hello timeout")), 15000);
+      client.start();
+      try {
+        const hello = await connected;
+        clearTimeout(helloTimer);
+        if (hello.auth?.role !== "operator" || !hello.auth.scopes.includes("operator.admin")) {
+          throw new Error("trusted-proxy gateway authentication did not grant operator.admin");
+        }
+        if (hello.auth.deviceToken !== undefined) {
+          throw new Error("trusted-proxy gateway issued an unexpected device token");
+        }
+        stage = "chat-send";
+        const acknowledgement = await client.request(
+          "chat.send",
+          { sessionKey, idempotencyKey: randomUUID(), message: prompt },
+          { signal, timeoutMs: 30000 },
+        );
+        stage = "chat-history";
+        while (!signal.aborted) {
+          const history = await client.request(
+            "chat.history",
+            { sessionKey, limit: 30 },
+            { signal, timeoutMs: 10000 },
+          );
+          for (const message of history.messages ?? []) {
+            if (message.role !== "assistant") continue;
+            if (message.stopReason === "error") throw new Error("native model turn failed");
+            const content = typeof message.content === "string"
+              ? message.content
+              : (message.content ?? [])
+                  .filter((part) => part?.type === "text" && typeof part.text === "string")
+                  .map((part) => part.text)
+                  .join("\n");
+            const hasToolCalls = Array.isArray(message.content) &&
+              message.content.some((part) => part?.type === "toolCall");
+            if (content.includes(completionMarker) && !hasToolCalls && message.stopReason !== "toolUse") {
+              process.stdout.write(JSON.stringify({
+                status: 200,
+                transport: "wss",
+                runId: acknowledgement?.runId,
+              }));
+              return;
+            }
+          }
+          await delay(500, undefined, { signal });
+        }
+        throw new Error("native task timeout");
+      } finally {
+        clearTimeout(helloTimer);
+        client.stop();
+        await client.stopAndWait?.({ timeoutMs: 1000 }).catch(() => undefined);
+      }
     } else {
       const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
       if (!password) throw new Error("gateway loopback credential unavailable");

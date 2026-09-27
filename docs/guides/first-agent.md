@@ -79,12 +79,13 @@ as active does not establish that the model responded; the returned answer does.
 ### 3. Find your Agent in the console
 
 Open the console link from the command and sign in with the local credentials
-from [Local setup](quickstart.md#open-the-platform-console). Under
-**Configuration**, **Selected revision** shows the active revision. The console
-has no browser chat or live health view; use the model response printed by the
-command as verification. This local setup does not configure browser access to
-workspace files. For that capability, use [Kubernetes Setup](kubernetes-setup.md),
-which includes private routing and a workspace-file verification step.
+from [Local setup](quickstart.md#open-the-platform-console). **Current version**
+shows the revision selected by OCC; **Deployment activity** shows persisted
+deployment progress. The console has no browser chat or live health view; use the
+model response printed by the command as verification. This local setup does not
+configure browser access to workspace files. For that capability, use
+[Kubernetes Setup](kubernetes-setup.md), which includes private routing and a
+workspace-file verification step.
 
 The Agent remains available after the command exits. Run the same command with
 the same Agent name and a different `--prompt` to ask another question; you do

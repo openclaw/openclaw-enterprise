@@ -228,7 +228,6 @@ test("kubernetes-secret-driver stores, verifies, updates, resolves, and deletes 
     }),
     backendRef,
   );
-
   // The callback receives the exact stored UTF-8 text, including a leading byte-order mark.
   updated.data.value = Buffer.from("\uFEFFrotated-value").toString("base64");
   assert.equal(await driver.withValue(secret, async (value) => value), "\uFEFFrotated-value");
@@ -296,13 +295,15 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
     const backendRef = await driver.create(identity, "safe-value");
     scenario.mutateStored?.(client.secrets.get(`${namespace}/${backendRef.name}`));
+    const secret = {
+      ...identity,
+      driverId: driver.id,
+      backendRef: scenario.mutateBackendRef?.(backendRef) ?? backendRef,
+      createdAt: new Date().toISOString(),
+    };
+    await assert.rejects(driver.resolve(secret), SecretOwnershipError, scenario.name);
     await assert.rejects(
-      driver.resolve({
-        ...identity,
-        driverId: driver.id,
-        backendRef: scenario.mutateBackendRef?.(backendRef) ?? backendRef,
-        createdAt: new Date().toISOString(),
-      }),
+      driver.withValue(secret, async () => assert.fail("foreign Secret must not be used")),
       SecretOwnershipError,
       scenario.name,
     );
@@ -325,6 +326,37 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     () => driver.create({ ...identity, id: secretId(), namespaceId: namespaceId() }, "safe-value"),
     SecretBackendUnavailableError,
   );
+});
+
+test("kubernetes-secret-driver rejects malformed or oversized stored values on transient use", async () => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  const namespace = client.addNamespace(nsId);
+  const driver = driverWithClient(client);
+  const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
+  const backendRef = await driver.create(identity, "safe-value");
+  const secret = {
+    ...identity,
+    driverId: driver.id,
+    backendRef,
+    createdAt: new Date().toISOString(),
+  };
+  const stored = client.secrets.get(`${namespace}/${backendRef.name}`);
+
+  for (const encoded of [
+    "",
+    "not-base64!",
+    "c2FmZS12YWx1ZQ==\n",
+    Buffer.from([0xff]).toString("base64"),
+    Buffer.from("value\0suffix").toString("base64"),
+    Buffer.alloc(65_537, "x").toString("base64"),
+  ]) {
+    stored.data.value = encoded;
+    await assert.rejects(
+      driver.withValue(secret, async () => assert.fail("invalid value must not be used")),
+      SecretBackendUnavailableError,
+    );
+  }
 });
 
 test("kubernetes-secret-driver delete reports inaccessible backends instead of idempotent success", async () => {

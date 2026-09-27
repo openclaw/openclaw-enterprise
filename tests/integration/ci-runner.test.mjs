@@ -204,6 +204,49 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
   );
 });
 
+test("run records a sanitized file failure after all reported cases pass", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/file-failure.json");
+  await writeFile(
+    join(root, "tests/integration/file-failure.test.mjs"),
+    [
+      'import test from "node:test";',
+      'test("first pass", () => {});',
+      'setImmediate(() => { throw new Error("secretauthvalue-root-failure"); });',
+      'test("second pass", () => {});',
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { failure: { files: [{ path: "tests/integration/file-failure.test.mjs" }] } },
+    groups: { ci: ["failure"] },
+  });
+
+  const result = run(root, [
+    "run",
+    "failure",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/file-failure.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  const artifact = await readFile(resultsPath, "utf8");
+  const summary = JSON.parse(artifact);
+  assert.equal(result.status, 1);
+  assert.equal(summary.counts.passed, 2);
+  assert.equal(summary.counts.failed, 0);
+  assert.deepEqual(summary.files[0].fileFailure, {
+    error: { code: "ERR_TEST_FAILURE", name: "Error", failureType: "testCodeFailure", exitCode: 1 },
+    diagnosticKind: "post-test-async-activity",
+  });
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+});
+
 test("run fails missing expected tests, skipped expected tests, skips, todos, and missing required env", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/lane.json");

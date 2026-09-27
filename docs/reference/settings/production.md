@@ -17,17 +17,26 @@ procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md
 Envoy and Agent gateway Services remain private, and OCC strips the shared OCE
 session cookie before forwarding to the native gateway.
 
-| Variable                   | Required value or format                                        | Behavior                                                                                                                |
-| -------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                 | Exactly `production`.                                           | Enables durable production controller composition.                                                                      |
-| `OCC_HOST`                 | One explicit Pod interface IP address.                          | Wildcard addresses and implicit hostnames are rejected.                                                                 |
-| `OCC_PORT`                 | Decimal integer from `1` through `65535`.                       | Selects the internal listener port exposed by the operator's Service.                                                   |
-| `OCC_DATABASE_URL`         | Explicit PostgreSQL application-role URL.                       | Must connect to the already migrated controller database.                                                               |
-| `OCC_CONFIG_PATH`          | Absolute path to trusted Installation startup YAML.             | Selects Configuration, IAM, Compute, and optional account Drivers.                                                      |
-| `OCC_AUTH_SECRET`          | Mounted high-entropy Better Auth secret.                        | Signs and verifies session material without logging it.                                                                 |
-| `OCC_AUTH_BASE_URL`        | Absolute controller base URL.                                   | Defines the production Better Auth base URL and cookie origin.                                                          |
-| `OCC_GATEWAY_API_KEY_PATH` | Optional absolute path to the private gateway service-key file. | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
-| `NODE_EXTRA_CA_CERTS`      | Optional PEM bundle for a private gateway CA.                   | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
+| Variable                          | Required value or format                                                    | Behavior                                                                                                                |
+| --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                        | Exactly `production`.                                                       | Enables durable production controller composition.                                                                      |
+| `OCC_HOST`                        | One explicit Pod interface IP address.                                      | Wildcard addresses and implicit hostnames are rejected.                                                                 |
+| `OCC_PORT`                        | Decimal integer from `1` through `65535`.                                   | Selects the internal listener port exposed by the operator's Service.                                                   |
+| `OCC_DATABASE_URL`                | Explicit PostgreSQL application-role URL.                                   | Must connect to the already migrated controller database.                                                               |
+| `OCC_CONFIG_PATH`                 | Absolute path to trusted Installation startup YAML.                         | Selects Configuration, IAM, Compute, and optional account Drivers.                                                      |
+| `OCC_AUTH_SECRET`                 | Mounted high-entropy Better Auth secret.                                    | Signs and verifies session material without logging it.                                                                 |
+| `OCC_AUTH_BASE_URL`               | Absolute controller base URL.                                               | Defines the production Better Auth base URL and cookie origin.                                                          |
+| `OCC_GATEWAY_API_KEY_PATH`        | Optional absolute path to the private gateway service-key file.             | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
+| `OCC_CHANNEL_DIRECTORY_PROXY_URL` | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port. | API only; enables the bundled Slack directory Driver through an HTTP CONNECT tunnel. Invalid values fail startup.       |
+| `NODE_EXTRA_CA_CERTS`             | Optional PEM bundle for a private gateway CA.                               | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
+
+For the Helm deployment, set `api.channelDirectoryProxyUrl` to the approved
+proxy IP and port. The chart passes that value only to the API Pod and grants
+egress only to that exact IPv4 `/32` and TCP port. The proxy must allow CONNECT
+to `slack.com:443`; restrict its other destinations at the proxy. An empty value
+renders no directory proxy egress rule and leaves production directory lookup
+unavailable with manual exact-ID entry. See the
+[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production).
 
 When the native admin pilot is enabled, the API also requires:
 

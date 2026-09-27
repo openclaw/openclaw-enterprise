@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "packages": ["apps/app", "packages/library"],
+  "sourceRoots": ["apps/app/src", "packages/library/src"],
+  "boundaries": [],
+  "packageImports": {
+    "sourcePaths": "error",
+    "internalRoot": "error"
+  },
+  "cycles": {
+    "runtime": "error",
+    "typeOnly": "report"
+  },
+  "diagnosticLimit": 10
+}

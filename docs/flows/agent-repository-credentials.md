@@ -223,13 +223,17 @@ Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
 `allow_login_shell=false` and `shell_environment_policy.set.PATH`. The Harness
 model environment remains intact. App keys, JWTs, installation tokens and the
-control socket never enter this material set. Repository-bound Codex consumers receive
-stock Codex `allow_local_binding = true`, `mode = "full"`, and the exact broker
-hostname allowance; explicit denies prevail. The generated stock profile also
-grants read-only access to `/app/node_modules/openclaw`,
-`/opt/oce/repository-credentials`, and `/run/oce/repository-credentials` so the
-stock app-server package, native binary, Git helper, and generated session
-material remain reachable inside sandboxed Codex tools. The
+control socket never enter this material set. Selected Codex plugins receive
+read-only access to `/app/node_modules/openclaw`,
+`/home/node/.openclaw/plugin-skills`,
+and `/home/node/openclaw-runtime-assets/plugin-skills` so the stock app-server
+package and published plugin skills remain reachable inside sandboxed Codex
+tools. Repository-bound Codex consumers additionally receive stock Codex
+`allow_local_binding = true`, `mode = "full"`, and the exact broker hostname
+allowance; explicit denies prevail. That repository profile also grants
+read-only access to `/opt/oce/repository-credentials` and
+`/run/oce/repository-credentials` so the native binary, Git helper, and generated
+session material remain reachable inside sandboxed Codex tools. The
 [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines dedicated/embedded eligibility. Unbound policy and broker authorization remain unchanged.
 Compute supplies CA trust; TLS verification stays enabled.

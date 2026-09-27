@@ -19,10 +19,12 @@ before claiming coverage. Run prepared infrastructure suites by exact filename,
 one suite at a time. Keep suite variables scoped to one shell or process so
 database, Kubernetes, image, or provider selectors do not accidentally select
 another suite. The test scripts above run `scripts/verify-workspace-boundary.mjs`
-before the Node.js test runner.
+before the Node.js test runner. The conformance suite includes the
+[repository dependency policy test](repository-boundaries.md).
 
 For test audits, proof selection, diff cleanup, and independent review, see
-[Developer skills](developer-skills.md).
+[Developer skills](developer-skills.md). For source dependency analysis with an
+explicit policy, use the [module boundary analyzer](module-boundaries.md).
 For reusable builders, factory composition, resource ownership, and declarative
 cases, follow [Compose fixtures and readable scenarios](fixtures-and-scenarios.md).
 

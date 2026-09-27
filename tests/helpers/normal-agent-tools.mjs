@@ -10,7 +10,13 @@ const repositoryCommandEvidence = String.raw`
       const char = command[index];
       if (quote) {
         if (char === quote) { quote = undefined; continue; }
-        if (quote === '"' && (char === "$" || char.charCodeAt(0) === 96 || char === "\\")) return undefined;
+        if (quote === '"' && char === "\\") {
+          const escaped = command[++index];
+          if (![34, 36, 92, 96].includes(escaped?.charCodeAt(0))) return undefined;
+          word += escaped;
+          continue;
+        }
+        if (quote === '"' && (char === "$" || char.charCodeAt(0) === 96)) return undefined;
         word += char;
         continue;
       }
@@ -231,6 +237,7 @@ export const sessionEvidenceScript = String.raw`
 // display transcript can omit exit status. Never start or replay a model turn.
 export const codexRepositoryEvidenceScript = String.raw`
   const assert = require("node:assert/strict");
+  const WebSocket = require("ws");
   const marker = process.argv[1];
   const expected = JSON.parse(process.argv[2]);
   ${repositoryCommandEvidence}
@@ -261,7 +268,8 @@ export const codexRepositoryEvidenceScript = String.raw`
     try {
       await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
       socket.send(JSON.stringify({ method: "initialized" }));
-      const listed = await request("thread/list", { limit: 20, sourceKinds: ["appServer"], modelProviders: [] });
+      // Client source labels vary across supported bridges; the exact task marker below selects the turn.
+      const listed = await request("thread/list", { limit: 20, modelProviders: [] });
       assert.equal(listed.nextCursor, null, "fresh Agent must have a bounded thread inventory");
       const matches = [];
       for (const candidate of listed.data) {

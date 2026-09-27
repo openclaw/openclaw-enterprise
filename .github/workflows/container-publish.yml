@@ -11,6 +11,10 @@ on:
         description: Successful main push run of CI for exactly source_sha
         required: true
         type: string
+      image_tag:
+        description: Mutable image tag (defaults to latest; overrides it when set)
+        required: false
+        type: string
       publish:
         description: Publish prepared images after automated validation
         required: true
@@ -24,6 +28,7 @@ env:
   SOURCE_SHA: ${{ inputs.source_sha }}
   CI_RUN_ID: ${{ inputs.ci_run_id }}
   NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
 
 jobs:
   validate:

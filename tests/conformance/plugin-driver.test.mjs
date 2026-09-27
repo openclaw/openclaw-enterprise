@@ -57,7 +57,7 @@ function occSelection(overrides = {}) {
   return {
     "occ-plugin:diffs": {
       enabled: true,
-      toolDefaults: { approval: "approve" },
+      toolDefaults: { approval: "none" },
       ...overrides,
     },
   };
@@ -67,7 +67,7 @@ function codexSelection(pluginId = linearPluginId, overrides = {}) {
   return {
     [pluginId]: {
       enabled: true,
-      toolDefaults: { approval: "native" },
+      toolDefaults: { approval: "provider_default" },
       ...overrides,
     },
   };
@@ -182,12 +182,60 @@ test("OpenClaw plugin startup translation renders native install and enablement"
   assert.equal(Object.hasOwn(blocked.configuration, "tools"), false);
 });
 
+test("Plugin approver translation keeps Agent, plugin, and exact scoped tool overrides", () => {
+  const first = { channel: "slack", id: "team:T123:user:U123" };
+  const second = { channel: "slack", id: "team:T123:user:U456" };
+  const toolId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/repos%2Fread";
+  const codex = codexOpenClawConfiguration(
+    codexSelection(linearPluginId, {
+      approvers: [],
+      tools: { [toolId]: { approvers: [second] } },
+    }),
+    [],
+    undefined,
+    [first],
+  );
+  assert.deepEqual(codex.approvals.plugin.slack, {
+    approvers: [first.id],
+    plugins: {
+      linear: { approvers: [], tools: { [toolId]: { approvers: [second.id] } } },
+    },
+  });
+  assert.deepEqual(codexOpenClawConfiguration({}, [], undefined, []), {
+    approvals: { plugin: { slack: { approvers: [] } } },
+  });
+  assert.equal(codexOpenClawConfiguration({}), undefined);
+  assert.deepEqual(
+    codexOpenClawConfiguration(codexSelection(linearPluginId, { approvers: [] })).approvals.plugin
+      .slack,
+    { plugins: { linear: { approvers: [] } } },
+  );
+
+  const native = openClawRuntimeArtifact(
+    occSelection({ approvers: [second], tools: { diffs: { approvers: [] } } }),
+    [],
+    [first],
+  );
+  assert.deepEqual(native.configuration.approvals.plugin.slack, {
+    approvers: [first.id],
+    plugins: { diffs: { approvers: [second.id], tools: { diffs: { approvers: [] } } } },
+  });
+  assert.throws(() =>
+    validatePolicies("openclaw", occSelection({ toolDefaults: { approvers: [] } })),
+  );
+  assert.throws(() =>
+    validatePolicies("openclaw", {}, [{ channel: "slack", id: "team:X123:user:Y456" }]),
+  );
+});
+
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {
   for (const selection of [
-    occSelection({ toolDefaults: { approval: "prompt" } }),
+    occSelection({ toolDefaults: { approval: "all_actions" } }),
+    occSelection({ toolDefaults: { approval: "write_actions" } }),
     occSelection({ toolDefaults: { reviewer: "auto" } }),
     occSelection({ tools: { unknown: { enabled: false } } }),
-    occSelection({ tools: { diffs: { approval: "prompt" } } }),
+    occSelection({ tools: { diffs: { approval: "all_actions" } } }),
+    occSelection({ tools: { diffs: { approval: "write_actions" } } }),
     occSelection({ approvalMode: "never" }),
     { "occ-plugin:unknown": { enabled: true } },
   ]) {
@@ -205,13 +253,68 @@ test("OpenClaw tool enablement overrides tool defaults without enabling a disabl
     tools: { alsoAllow: ["diffs"] },
   });
   const disabledTool = openClawRuntimeArtifact(
-    occSelection({ tools: { diffs: { enabled: false, approval: "approve" } } }),
+    occSelection({ tools: { diffs: { enabled: false, approval: "none" } } }),
   );
   assert.deepEqual(disabledTool.configuration.tools, { alsoAllow: ["diffs"], deny: ["diffs"] });
   selections["occ-plugin:diffs"].enabled = false;
   assert.deepEqual(openClawRuntimeArtifact(selections).configuration, {
     plugins: { entries: { diffs: { enabled: false } } },
   });
+});
+
+test("Hardcoded OpenAI catalog returns curated details without provider requests", async (t) => {
+  const requests = [];
+  t.mock.method(globalThis, "fetch", (url) => {
+    requests.push(String(url));
+    throw new Error("Unexpected provider request");
+  });
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  const page = await driver.discoverCatalog({});
+  assert.equal(page.nextCursor, null);
+  assert.deepEqual(
+    new Set(page.plugins.map((entry) => entry.name)),
+    new Set([
+      "Linear",
+      "Slack",
+      "GitHub",
+      "Notion",
+      "Figma",
+      "Canva",
+      "Datadog",
+      "Sentry",
+      "Adobe",
+      "Coursera Learning",
+      "Google Contacts",
+    ]),
+  );
+  const linear = page.plugins.find((entry) => entry.id === linearPluginId);
+  assert.ok(linear);
+  assert.equal(linear.id, linearPluginId);
+  assert.equal(linear.remoteId, "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c");
+  assert.equal(linear.tools, null);
+  assert.equal(linear.selectableWithoutTools, true);
+  assert.deepEqual(await driver.getCatalogPlugin({ pluginId: linear.remoteId }), linear);
+  const github = page.plugins.find((entry) => entry.name === "GitHub");
+  assert.ok(github);
+  assert.equal(github.remoteId, "plugin_connector_1p_1a69035c238881919c4190932b2df699");
+  assert.deepEqual(await driver.getCatalogPlugin({ pluginId: github.remoteId }), github);
+  // Recorded releases with unsupported components must never be offered for selection.
+  assert.deepEqual(
+    new Set(page.plugins.filter((entry) => entry.available === false).map((entry) => entry.name)),
+    new Set(["Notion", "Figma", "Canva", "Sentry", "Adobe"]),
+  );
+  assert.equal(new Set(page.plugins.map((entry) => entry.remoteId)).size, page.plugins.length);
+  for (const entry of page.plugins) {
+    assert.ok(entry.remoteId);
+    assert.deepEqual(await driver.getCatalogPlugin({ pluginId: entry.remoteId }), entry);
+    if (entry.available === false) {
+      assert.match(entry.unavailableReason, /skills/);
+    }
+  }
+  assert.deepEqual(await driver.listCatalog(context("dedicated")), page.plugins);
+  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }));
+  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }));
+  assert.deepEqual(requests, []);
 });
 
 test("Codex curated catalog discovery projects arbitrary marketplace entries", () => {
@@ -315,6 +418,8 @@ test("Codex bridge configuration carries repository broker network policy withou
         allowLocalBinding: true,
         readOnlyPaths: [
           "/app/node_modules/openclaw",
+          "/home/node/.openclaw/plugin-skills",
+          "/home/node/openclaw-runtime-assets/plugin-skills",
           "/opt/oce/repository-credentials",
           "/run/oce/repository-credentials",
         ],
@@ -324,10 +429,32 @@ test("Codex bridge configuration carries repository broker network policy withou
   });
 });
 
+test("Codex bridge configuration grants plugin skill reads without broker policy", () => {
+  const bridgeConfiguration = codexOpenClawConfiguration(codexSelection());
+
+  assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config.appServer, {
+    networkProxy: {
+      readOnlyPaths: [
+        "/app/node_modules/openclaw",
+        "/home/node/.openclaw/plugin-skills",
+        "/home/node/openclaw-runtime-assets/plugin-skills",
+      ],
+    },
+  });
+  assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config.codexPlugins.plugins.linear, {
+    enabled: true,
+    marketplaceName: "openai-curated-remote",
+    pluginName: "linear",
+    allow_destructive_actions: "auto",
+  });
+});
+
 test("Codex startup translation renders selected marketplace app plugins", () => {
   const selections = {
     ...codexSelection(linearPluginId),
-    ...codexSelection(calendarPluginId, { toolDefaults: { approval: "native", reviewer: "auto" } }),
+    ...codexSelection(calendarPluginId, {
+      toolDefaults: { approval: "provider_default", reviewer: "auto" },
+    }),
     ...codexSelection(thirdPluginId),
   };
   const artifact = codexRuntimeArtifact(selections, codexDetails);
@@ -393,7 +520,12 @@ test("Codex startup translation renders selected marketplace app plugins", () =>
 });
 
 test("Codex startup translation preserves explicit approval defaults and routed reviewer selection", () => {
-  for (const approval of ["native", "prompt", "approve"]) {
+  for (const [approval, nativeApproval] of [
+    ["provider_default", "auto"],
+    ["all_actions", "prompt"],
+    ["write_actions", "writes"],
+    ["none", "approve"],
+  ]) {
     for (const [reviewer, nativeReviewer] of [
       ["human", "user"],
       ["auto", "auto_review"],
@@ -404,10 +536,11 @@ test("Codex startup translation preserves explicit approval defaults and routed 
       });
       const app = codexRuntimeArtifact(selections, codexDetails).configuration.apps
         .asdk_app_69a089a326dc8191b32a3f2553f5be2c;
-      assert.equal(app.default_tools_approval_mode, approval === "native" ? "auto" : approval);
+      assert.equal(app.default_tools_approval_mode, nativeApproval);
       assert.equal(app.approvals_reviewer, nativeReviewer);
       assert.equal(Object.hasOwn(app, "approvals_reviewer"), reviewer !== undefined);
       assert.equal(Object.hasOwn(app, "default_tools_enabled"), false);
+      assert.equal(Object.hasOwn(app, "tools"), false);
       assert.equal(
         codexOpenClawConfiguration(selections).plugins.entries.codex.config.codexPlugins.plugins
           .linear.allow_destructive_actions,
@@ -426,7 +559,7 @@ test("Codex startup translation preserves explicit approval defaults and routed 
   );
 });
 
-test("Codex scoped tools override independent defaults and retain omitted native fields", () => {
+test("Codex scoped tools override write action defaults and retain omitted native fields", () => {
   const appId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
   const inventory = [
     {
@@ -440,10 +573,10 @@ test("Codex scoped tools override independent defaults and retain omitted native
     },
   ];
   const selections = codexSelection(linearPluginId, {
-    toolDefaults: { enabled: false, approval: "prompt", reviewer: "auto" },
+    toolDefaults: { enabled: false, approval: "write_actions", reviewer: "auto" },
     tools: {
       [appId + "/repos%2Fread"]: { enabled: true },
-      [appId + "/repos%2Fwrite"]: { approval: "native" },
+      [appId + "/repos%2Fwrite"]: { approval: "provider_default" },
     },
   });
   const app = codexRuntimeArtifact(selections, codexDetails, [], inventory).configuration.apps[
@@ -452,7 +585,7 @@ test("Codex scoped tools override independent defaults and retain omitted native
   assert.deepEqual(app, {
     enabled: true,
     default_tools_enabled: false,
-    default_tools_approval_mode: "prompt",
+    default_tools_approval_mode: "writes",
     approvals_reviewer: "auto_review",
     tools: {
       "repos/read": { enabled: true },
@@ -484,9 +617,110 @@ test("Codex scoped tools override independent defaults and retain omitted native
   assert.throws(() => codexRuntimeArtifact(selections, codexDetails), /inventory/i);
 });
 
+test("Codex catalog tool policies resolve through owned action metadata to native names", () => {
+  const appId = "catalog-app";
+  const nativeName = "renamed_123.search";
+  const details = [codexDetail("linear", [appId])];
+  const tool = {
+    name: nativeName,
+    _meta: {
+      connector_id: appId,
+      _codex_apps: { resource_uri: "/catalog-app/link_fixture/search" },
+    },
+  };
+  const inventory = [{ name: "codex_apps", tools: { [nativeName]: tool } }];
+  const selections = codexSelection(linearPluginId, {
+    tools: { "catalog-app/search": { enabled: true, approval: "all_actions" } },
+  });
+  assert.deepEqual(
+    codexRuntimeArtifact(selections, details, [], inventory).configuration.apps[appId].tools,
+    { [nativeName]: { enabled: true, approval_mode: "prompt" } },
+  );
+  const writeActionSelection = codexSelection(linearPluginId, {
+    tools: { "catalog-app/search": { approval: "write_actions" } },
+  });
+  assert.deepEqual(
+    codexRuntimeArtifact(writeActionSelection, details, [], inventory).configuration.apps[appId]
+      .tools,
+    { [nativeName]: { approval_mode: "writes" } },
+  );
+
+  // Display prefixes are not identities; missing, malformed or foreign metadata cannot bind them.
+  for (const resourceUri of [
+    undefined,
+    "/other-app/link_fixture/search",
+    "/catalog-app//search",
+    "/catalog-app/link_fixture/search/extra",
+    "catalog-app/link_fixture/search",
+  ]) {
+    const invalid = structuredClone(inventory);
+    invalid[0].tools[nativeName]._meta._codex_apps.resource_uri = resourceUri;
+    assert.throws(
+      () => codexRuntimeArtifact(selections, details, [], invalid),
+      /unknown or unowned tool/,
+    );
+  }
+
+  const ambiguous = structuredClone(inventory);
+  ambiguous[0].tools["another.search"] = { ...tool, name: "another.search" };
+  assert.throws(() => codexRuntimeArtifact(selections, details, [], ambiguous), /ambiguous/);
+  assert.throws(
+    () =>
+      codexRuntimeArtifact(
+        codexSelection(linearPluginId, {
+          tools: {
+            "catalog-app/search": { enabled: true },
+            [appId + "/" + nativeName]: { enabled: false },
+          },
+        }),
+        details,
+        [],
+        inventory,
+      ),
+    /same native tool/,
+  );
+});
+
+test("Codex shared apps accept identical policies using mixed catalog and native IDs", () => {
+  const details = [codexDetail("linear", ["app"]), codexDetail("google-calendar", ["app"])];
+  const inventory = [
+    {
+      name: "codex_apps",
+      tools: Object.fromEntries(
+        ["alpha", "beta"].map((action) => [
+          "prefix." + action,
+          {
+            name: "prefix." + action,
+            _meta: {
+              connector_id: "app",
+              _codex_apps: { resource_uri: "/app/link_fixture/" + action },
+            },
+          },
+        ]),
+      ),
+    },
+  ];
+  // Alias sorting differs, but both plugins request the same native policy.
+  const selections = {
+    ...codexSelection(linearPluginId, {
+      tools: { "app/prefix.alpha": { enabled: true }, "app/beta": { enabled: false } },
+    }),
+    ...codexSelection(calendarPluginId, {
+      tools: { "app/alpha": { enabled: true }, "app/beta": { enabled: false } },
+    }),
+  };
+  assert.deepEqual(
+    codexRuntimeArtifact(selections, details, [], inventory).configuration.apps.app.tools,
+    {
+      "prefix.alpha": { enabled: true },
+      "prefix.beta": { enabled: false },
+    },
+  );
+});
+
 test("Codex destructive defaults project to native config and the hosted-app bridge", () => {
   const selections = codexSelection(linearPluginId, {
-    toolDefaults: { approval: "native", reviewer: "human" },
+    toolDefaults: { approval: "provider_default", reviewer: "human" },
     driverPolicy: { destructiveEnabled: false },
   });
   const app = codexRuntimeArtifact(selections, codexDetails).configuration.apps
@@ -542,10 +776,10 @@ test("Codex startup translation fails selected-only policy gaps at startup", () 
     [
       {
         ...codexSelection(linearPluginId, {
-          toolDefaults: { approval: "native", reviewer: "human" },
+          toolDefaults: { approval: "provider_default", reviewer: "human" },
         }),
         ...codexSelection(thirdPluginId, {
-          toolDefaults: { approval: "native", reviewer: "auto" },
+          toolDefaults: { approval: "provider_default", reviewer: "auto" },
         }),
       },
       [

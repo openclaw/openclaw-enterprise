@@ -8,16 +8,16 @@ installed version, run `occ --help` or add `--help` to a command.
 
 Command-line flags override the corresponding environment variables.
 
-| Flag                 | Environment variable   | What it controls                                                                                                        |
-| -------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment. |
-| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                     |
-| `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `iam`, and `agent` commands. Supply the Namespace ID, not its name.             |
-| `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.       |
-| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                              |
-| `--output`, `-o`     | —                      | Output format: `table` (default), `json`, or `yaml`.                                                                    |
-| `--help`, `-h`       | —                      | Prints help for the command.                                                                                            |
-| `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev` unless release packaging sets a version.                             |
+| Flag                 | Environment variable   | What it controls                                                                                                                 |
+| -------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment.          |
+| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                              |
+| `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
+| `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                |
+| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                       |
+| `--output`, `-o`     | —                      | Output format: `table` (default), `json`, or `yaml`.                                                                             |
+| `--help`, `-h`       | —                      | Prints help for the command.                                                                                                     |
+| `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev` unless release packaging sets a version.                                      |
 
 The service-key JSON must contain a nonempty `data.key` with no line breaks.
 The client sends it as `x-api-key` and does not follow redirects. Use a trusted
@@ -48,6 +48,10 @@ input is not supported. The server validates document fields against the
 | `occ secret get ID`                            | Reads Secret metadata, never its value.                                                                                                                          |
 | `occ secret update ID --file FILE`             | Replaces the Secret value; consumers require explicit redeployment.                                                                                              |
 | `occ secret delete ID`                         | Deletes an unreferenced Namespace Secret.                                                                                                                        |
+| `occ credential-source create --file FILE`     | Registers a Secret with the selected Credential Gateway. See [credential sources](credential-sources.md#register-a-source).                                      |
+| `occ credential-source list`                   | Lists credential sources without live gateway status.                                                                                                            |
+| `occ credential-source get ID`                 | Reads a credential source and its live gateway status, never its value.                                                                                          |
+| `occ credential-source delete ID`              | Deletes an unreferenced credential source and the gateway's copy.                                                                                                |
 | `occ iam role list`                            | Lists Namespace Roles.                                                                                                                                           |
 | `occ iam role get ID`                          | Reads a Namespace Role.                                                                                                                                          |
 | `occ iam role create --file FILE`              | Creates a Namespace Role with explicit permissions.                                                                                                              |

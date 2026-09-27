@@ -108,17 +108,30 @@ OCC_TEST_OPENSHELL_K3D_REAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs
 ```
 
+Both modes compose the `openshell` Backend with the Sandbox and Credential
+Gateway Drivers. They register an `openai` credential source through the
+production API from an OCC Secret holding `OPENAI_API_KEY`, check its live
+`ready` status, and bind the Agent with `credential_source`. The Agent service
+principal receives `operate` on the source only, not on the Secret.
+
 Set `OCC_TEST_OPENSHELL_SECRET_PROJECTION=0` for the stock fail-closed proof. It
 passes the production requirements to v0.1.0 unchanged and expects the Driver to
-reject unsupported Secret projection before the candidate can activate. This
-does not prove provider authentication or model execution.
+reject the `APP_SERVER_TOKEN` Secret projection before the candidate can
+activate. The model key no longer appears among the rejected entries. This does
+not prove provider authentication or model execution.
 
 Set the selector to `1` for the verification-only compatibility proof. The
 strict CI runner forwards the selector and accounts for one stable test identity
 in either mode. The positive scenario uses a test-only operator Job to stage the
-exact Secret values, plugin-runtime files, and projected workload token in
+app-server token, plugin-runtime files, and projected workload token in
 revision-specific PVC subpaths before OpenShell starts the provider-owned
-Harness. The Driver asks OpenShell to expose the app-server port in the original
+Harness. The same bridge mounts writable revision subpaths for runtime assets,
+workspace-node state, and the native state root `/home/node/.openclaw`, where
+the Agent entrypoint publishes plugin skills. Kubernetes Compute backs the
+whole Harness home with an emptyDir. The Job no longer receives the model key. The test asserts that Compute
+rendered no `OPENAI_API_KEY` and exactly one credential attachment, and that
+every Harness process holds only an `openshell:resolve:env:` placeholder, so the
+real model turn proves that the supervisor proxy substituted the key. The Driver asks OpenShell to expose the app-server port in the original
 Sandbox Create request. The test confirms that the returned route reaches the
 protected Codex app server and that v0.1.0 strips its bearer authorization, so the
 upgrade fails with `401` instead of weakening app-server authentication. It then
@@ -139,12 +152,12 @@ use the same name.
 
 The integration uses an operator-owned Helm wrapper to install the OpenShell
 gateway before delegating to the Driver. The bundled Driver does not install
-that gateway. Stock OpenShell `v0.1.0` cannot receive the required exact
-`secretKeyRef` environment entries, plugin-runtime ConfigMap, or projected
-workload identity through its gateway configuration.
+that gateway. Stock OpenShell `v0.1.0` cannot receive the required app-server
+token `secretKeyRef`, plugin-runtime ConfigMap, or projected workload identity
+through its gateway configuration.
 
 Positive mode bridges those shapes only inside this test. Its bootstrap Job
-mounts the production Secret references, immutable `runtime.json` and
+mounts the app-server token Secret reference, immutable `runtime.json` and
 `config.toml` ConfigMap entries, and an audience-bound ServiceAccount token. It
 copies them into private PVC subpaths. The compatibility request mounts the
 credentials, plugin runtime, and workload token read-only; revision-owned node
@@ -165,8 +178,12 @@ requirements. See the
 and the [pre.5 experiment handoff](openshell-pre5-local-experiment.md).
 
 Local `sandbox-driver-startup`, `controller-lifecycle`, and
-`postgres-platform-state` integration tests cover driver selection, revision
-lifecycle, and persistence. They do not exercise these real OpenShell tools.
+`postgres-platform-state` integration tests cover driver selection and Backend
+membership, revision lifecycle, and persistence. The
+`credential-source-occ`, `openshell-gateway-wire`, and `kubernetes-compute`
+conformance tests cover credential source admission, provider RPC encoding, and
+Compute's credential-source rendering. None of these exercises the real
+OpenShell tools.
 
 ### Development profile
 
@@ -176,7 +193,11 @@ and verifies the bootstrap Namespace, RuntimeClass, Agent Sandbox API,
 deployment Gateway, operator label, workspace ServiceAccount, and actual
 matching Workspace through the Gateway API. It then creates another
 OCC Namespace and verifies that the Driver applies the same ServiceAccount and
-creates its matching Workspace without another Helm release:
+creates its matching Workspace without another Helm release. In that
+Namespace it uses the checkout-local `occ` CLI to register a synthetic `openai`
+credential source, reads its live `ready` status, finds the matching provider in
+the Namespace's OpenShell Workspace, creates a `credential_source` IAM Role, and
+deletes the source, which removes the provider:
 
 ```sh
 OCC_TEST_DEV_UP_OPENSHELL_REAL=1 \
@@ -192,8 +213,10 @@ It creates unique cluster, state, API, and Kubernetes port names and removes
 only those resources. Missing selected prerequisites fail.
 
 This case proves development orchestration, the two real charts, Driver-owned
-operator resource reconciliation, and Gateway Workspace creation. It does not
-create an Agent or Sandbox. The
+operator resource reconciliation, Gateway Workspace creation, and the
+credential-source CLI and API path. The synthetic key proves no model
+authentication. It does not create an Agent or Sandbox; for the manual Agent
+walkthrough, see [Use a credential source on the local OpenShell profile](../guides/deploy/openshell-credential-sources.md). The
 `OCC_TEST_OPENSHELL_SECRET_PROJECTION=0` real Sandbox Driver case remains the
 Agent-level proof that the ordinary dedicated Codex workflow rejects unsupported
 Secret projection without creating a Sandbox or Agent Pod.
@@ -210,7 +233,7 @@ scoped environment file for this suite.
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OCC_TEST_OPENSHELL_K3D_REAL`             | Set to `1` to explicitly opt into the real OpenShell integration.                                                                                   |
 | `OCC_TEST_OPENSHELL_SECRET_PROJECTION`    | `0` selects stock fail-closed proof; `1` selects the verification-only v0.1.0 compatibility proof with exposed-route and real model-turn checks.    |
-| `OPENAI_API_KEY`                          | Existing authorized provider credential for the required real model turn.                                                                           |
+| `OPENAI_API_KEY`                          | Existing authorized provider credential, registered as a credential source for the required real model turn.                                        |
 | `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                               |
 | `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                  |
 | `OCC_TEST_KUBERNETES_CONTEXT`             | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                        |

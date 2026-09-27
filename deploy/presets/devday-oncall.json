@@ -30,7 +30,7 @@
           "mode": "local",
           "bind": "lan",
           "controlUi": {
-            "enabled": false
+            "enabled": true
           },
           "auth": {
             "password": {
@@ -164,6 +164,14 @@
                 "users": ["*"]
               },
               "C0C4A0JH2BG": {
+                "requireMention": false,
+                "users": ["*"]
+              },
+              "C0C5KF0JLSC": {
+                "requireMention": false,
+                "users": ["*"]
+              },
+              "C0C5KF0DWLQ": {
                 "requireMention": false,
                 "users": ["*"]
               }

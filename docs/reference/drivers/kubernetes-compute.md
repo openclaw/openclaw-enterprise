@@ -260,6 +260,26 @@ failure. There are no plugin receipt ConfigMaps, Pod finalizers, failure latches
 or post-commit acknowledgment steps. This behavior does not mutate requested
 revision selections, uninstall account-wide plugins, or promise rollback.
 
+### Current runtime diagnostics
+
+Kubernetes Compute implements the optional deployment diagnostics contract. OCC
+authorizes the exact Agent and revision, then the Driver reads the owned
+runtime Pods through the Kubernetes apiserver Pod proxy. The private runtime
+endpoint returns bounded generic checks for the requested revision. The API needs
+Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
+Dedicated Gateways are read in their managed Gateway namespace, while Harnesses
+are read in the tenant namespace. The chart adds these read permissions to the
+unbound tenant API and Gateway observer roles; operators retain control of their
+namespace-local bindings.
+Missing Pods or unavailable private endpoints report unknown diagnostic checks
+instead of mutating deployment status. The Agent container currently returns no
+channel checks.
+
+The bundled gateway currently maps Slack channel status into configuration,
+authentication, and connectivity checks. These diagnostics do not include raw
+Slack responses, credential values, logs, or message text, and they do not post
+a message or run a model turn.
+
 See the [Harness execution topology flow](../../flows/harness-execution-topology.md)
 for additional execution details.
 

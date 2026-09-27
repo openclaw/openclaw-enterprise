@@ -141,8 +141,17 @@ In Kubernetes-only mode, the API is reachable only through the loopback k3d
 publication. The published Service selects a dedicated in-cluster proxy whose
 exact Namespace and Pod labels are admitted by the OCE Helm NetworkPolicy. The
 OCE API itself remains a ClusterIP Service. OCE's worker authenticates to
-Kubernetes in-cluster and reaches OpenShell Gateway through a narrow development
-NetworkPolicy in `oce-system`.
+Kubernetes in-cluster. The API, which registers credential sources, and the
+worker reach OpenShell Gateway through a narrow development NetworkPolicy in
+`oce-system`.
+
+The generated Installation declares an `openshell` Backend for the Gateway
+endpoint and selects both the OpenShell Sandbox and the
+[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md),
+bound to the runtime image's native Codex executable. Agents in this profile
+must authenticate through a [credential source](../../reference/credential-sources.md).
+To register a key and bind it to an Agent in this profile, follow
+[Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
 In Compose control-plane mode, the API uses its existing loopback Compose
 publication and the worker authenticates with the generated kubeconfig. The
@@ -279,8 +288,8 @@ for both scoped RoleBindings.
 - The OpenShell profile installs one central Gateway per cluster. OCC runs in
   the cluster by default or in Compose when explicitly selected, and creates
   tenant resources in separate `oce-*` Namespaces.
-- Stock OpenShell `v0.1.0` remains fail-closed for unsupported Secret and
-  workload-identity projections. Workspace readiness does not prove that an
+- Stock OpenShell `v0.1.0` remains fail-closed for the app-server token Secret
+  and workload-identity projections. Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.
 - OpenShell Gateway permits unauthenticated users only inside this disposable,
   loopback-owned cluster or private Compose-network profile. Do not carry that

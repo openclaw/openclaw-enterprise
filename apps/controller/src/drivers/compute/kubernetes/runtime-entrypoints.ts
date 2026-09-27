@@ -43,20 +43,27 @@ const {
   createHmac,
   randomUUID: pluginRandomUUID,
 } = require("node:crypto");
-const { spawnSync: pluginSpawnSync } = require("node:child_process");
+const { spawn: pluginSpawn, spawnSync: pluginSpawnSync } = require("node:child_process");
 const { createServer: pluginCreateServer } = require("node:http");
+const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
 const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
 const RUNTIME_IMAGE_PATH = "/openclaw/runtime/image";
 const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
-const RUNTIME_FAILURE_CODES = new Set([
+const RUNTIME_DIAGNOSTIC_CODES = new Set([
   "LOGIN_FAILED",
   "MODEL_PROBE_FAILED",
   "MODEL_PROBE_TIMEOUT",
   "UNAVAILABLE",
+  "NOT_CONFIGURED",
+  "AUTHENTICATION_FAILED",
+  "DISCONNECTED",
+  "INCOMPATIBLE_RESPONSE",
+  "PROBE_FAILED",
 ]);
 const pluginBaseAppServerToken = process.env.APP_SERVER_TOKEN;
 
@@ -104,7 +111,8 @@ function readGatewayPluginRuntime() {
   if (
     runtime.manifest?.kind === "codex" &&
     (Object.keys(runtime.manifest.selections ?? {}).length > 0 ||
-      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined)
+      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined ||
+      runtime.manifest.pluginApprovers !== undefined)
   ) {
     return runtime;
   }
@@ -206,7 +214,7 @@ function publishPluginRuntimeStatus(report) {
 function publishRuntimeFailure(check, code) {
   if (runtimeStatusPort() === undefined) return;
   requireNonEmptyString(check, "Runtime failure check");
-  if (!RUNTIME_FAILURE_CODES.has(code)) {
+  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
   runtimeStartupFailure = {
@@ -222,6 +230,20 @@ function publishRuntimeReady() {
   runtimeStartupFailure = undefined;
 }
 
+function runtimeDiagnosticCheck(check, state, checkedAt, code) {
+  requireNonEmptyString(check, "Runtime diagnostic check");
+  if (code !== undefined && !RUNTIME_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Runtime diagnostic code is invalid.");
+  }
+  return {
+    component: runtimeStatusContainer(),
+    check,
+    state,
+    checkedAt,
+    ...(code === undefined ? {} : { code }),
+  };
+}
+
 function runtimeStatusReport() {
   return {
     revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "Runtime status revision ID"),
@@ -231,12 +253,242 @@ function runtimeStatusReport() {
   };
 }
 
+function statusCheckFromBoolean(check, value, checkedAt, failureCode) {
+  if (value === true) return runtimeDiagnosticCheck(check, "succeeded", checkedAt);
+  if (value === false) return runtimeDiagnosticCheck(check, "failed", checkedAt, failureCode);
+  return runtimeDiagnosticCheck(check, "unknown", checkedAt, "INCOMPATIBLE_RESPONSE");
+}
+
+function clearTimer(timer) {
+  clearTimeout(timer);
+}
+
+function armTimer(callback, timeoutMs) {
+  const timer = setTimeout(callback, timeoutMs);
+  if (typeof timer === "object" && typeof timer.unref === "function") timer.unref();
+  return timer;
+}
+
+function runNativeRuntimeJson(args, timeoutMs, abortSignal) {
+  return new Promise((resolve) => {
+    const child = pluginSpawn("node", ["/app/openclaw.mjs", ...args], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    let oversized = false;
+    let failed = false;
+    let aborted = false;
+    let killTimer;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimer(timer);
+      if (killTimer !== undefined) clearTimer(killTimer);
+      abortSignal?.removeEventListener?.("abort", abortChild);
+      resolve(result);
+    };
+    const abortChild = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      child.kill("SIGTERM");
+      killTimer = armTimer(() => child.kill("SIGKILL"), 1000);
+    };
+    const timer = armTimer(abortChild, timeoutMs);
+    if (abortSignal?.aborted) abortChild();
+    else abortSignal?.addEventListener?.("abort", abortChild, { once: true });
+    child.stdout.on("data", (chunk) => {
+      if (oversized) return;
+      stdout += chunk.toString("utf8");
+      if (Buffer.byteLength(stdout, "utf8") > 65536) {
+        oversized = true;
+        child.kill("SIGKILL");
+      }
+    });
+    child.on("error", () => {
+      failed = true;
+    });
+    child.on("close", (code, signal) => {
+      if (oversized) {
+        finish({ ok: false, code: "INCOMPATIBLE_RESPONSE" });
+        return;
+      }
+      if (aborted || signal === "SIGTERM" || signal === "SIGKILL") {
+        finish({ ok: false, code: "UNAVAILABLE" });
+        return;
+      }
+      if (failed || code !== 0) {
+        finish({ ok: false, code: "PROBE_FAILED" });
+        return;
+      }
+      try {
+        finish({ ok: true, value: JSON.parse(stdout) });
+      } catch {
+        finish({ ok: false, code: "INCOMPATIBLE_RESPONSE" });
+      }
+    });
+  });
+}
+
+function unknownSlackChecks(checkedAt, code) {
+  return [
+    runtimeDiagnosticCheck("configuration", "unknown", checkedAt, code),
+    runtimeDiagnosticCheck("authentication", "unknown", checkedAt, code),
+    runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, code),
+  ];
+}
+
+const SAFE_AUTHENTICATION_REJECTION_CODES = new Set([
+  "auth_failed",
+  "authentication_failed",
+  "invalid_auth",
+  "account_inactive",
+  "not_authed",
+  "token_revoked",
+  "missing_token",
+  "missing_user_token",
+]);
+
+function normalizedAuthenticationRejectionCode(value) {
+  const normalizedCode = value?.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  return SAFE_AUTHENTICATION_REJECTION_CODES.has(normalizedCode) ? normalizedCode : undefined;
+}
+
+function probeErrorAuthenticationCode(error) {
+  const direct = normalizedAuthenticationRejectionCode(error);
+  if (direct !== undefined) return direct;
+  const wrapped = error.match(/^An API error occurred:\s*([a-z_][a-z0-9_]*)(?:$|;)/i)?.[1];
+  return normalizedAuthenticationRejectionCode(wrapped);
+}
+
+function credentialRejectionCode(probe) {
+  if (!isPlainObject(probe) || probe.ok !== false) return undefined;
+  const rawCode = typeof probe.error === "string" ? probe.error : undefined;
+  if (rawCode !== undefined && probeErrorAuthenticationCode(rawCode) !== undefined) {
+    return "AUTHENTICATION_FAILED";
+  }
+  return "PROBE_FAILED";
+}
+
+function authenticationCheckFromProbe(probe, checkedAt) {
+  if (!isPlainObject(probe) || typeof probe.ok !== "boolean") {
+    return runtimeDiagnosticCheck("authentication", "unknown", checkedAt, "INCOMPATIBLE_RESPONSE");
+  }
+  if (probe.ok === true) return runtimeDiagnosticCheck("authentication", "succeeded", checkedAt);
+  const code = credentialRejectionCode(probe);
+  return runtimeDiagnosticCheck(
+    "authentication",
+    code === "AUTHENTICATION_FAILED" ? "failed" : "unknown",
+    checkedAt,
+    code,
+  );
+}
+
+function connectivityCheckFromConnected(connected, checkedAt) {
+  if (connected === true) return runtimeDiagnosticCheck("connectivity", "succeeded", checkedAt);
+  if (connected === false) {
+    return runtimeDiagnosticCheck("connectivity", "failed", checkedAt, "DISCONNECTED");
+  }
+  return runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, "INCOMPATIBLE_RESPONSE");
+}
+
+function slackChecksFromStatusPayload(payload, checkedAt) {
+  if (payload?.configOnly === true) {
+    if (!Array.isArray(payload.configuredChannels)) {
+      return unknownSlackChecks(checkedAt, "INCOMPATIBLE_RESPONSE");
+    }
+    const configured = payload.configuredChannels.includes("slack");
+    if (configured !== true) {
+      return [
+        runtimeDiagnosticCheck("configuration", "failed", checkedAt, "NOT_CONFIGURED"),
+        runtimeDiagnosticCheck("authentication", "unknown", checkedAt),
+        runtimeDiagnosticCheck("connectivity", "unknown", checkedAt),
+      ];
+    }
+    return [
+      runtimeDiagnosticCheck("configuration", "succeeded", checkedAt),
+      runtimeDiagnosticCheck("authentication", "unknown", checkedAt, "UNAVAILABLE"),
+      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, "UNAVAILABLE"),
+    ];
+  }
+  const channelSummary = isPlainObject(payload?.channels) ? payload.channels.slack : undefined;
+  const accountsByChannel = isPlainObject(payload?.channelAccounts) ? payload.channelAccounts : undefined;
+  const defaultAccounts = isPlainObject(payload?.channelDefaultAccountId)
+    ? payload.channelDefaultAccountId
+    : undefined;
+  const defaultAccountId =
+    typeof defaultAccounts?.slack === "string" && defaultAccounts.slack.length > 0
+      ? defaultAccounts.slack
+      : undefined;
+  if (!isPlainObject(channelSummary) || !Array.isArray(accountsByChannel?.slack) || defaultAccountId === undefined) {
+    return unknownSlackChecks(checkedAt, "INCOMPATIBLE_RESPONSE");
+  }
+  const accounts = accountsByChannel.slack.filter(isPlainObject);
+  const account = accounts.find((candidate) => candidate.accountId === defaultAccountId);
+  if (!isPlainObject(account)) return unknownSlackChecks(checkedAt, "INCOMPATIBLE_RESPONSE");
+  const configured =
+    typeof channelSummary.configured === "boolean"
+      ? channelSummary.configured
+      : typeof account.configured === "boolean"
+        ? account.configured
+        : undefined;
+  if (configured === false) {
+    return [
+      runtimeDiagnosticCheck("configuration", "failed", checkedAt, "NOT_CONFIGURED"),
+      runtimeDiagnosticCheck("authentication", "unknown", checkedAt),
+      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt),
+    ];
+  }
+  const probe = isPlainObject(account.probe) ? account.probe : undefined;
+  const connected =
+    typeof channelSummary.connected === "boolean"
+      ? channelSummary.connected
+      : typeof account.connected === "boolean"
+        ? account.connected
+        : undefined;
+  return [
+    statusCheckFromBoolean("configuration", configured, checkedAt, "NOT_CONFIGURED"),
+    authenticationCheckFromProbe(probe, checkedAt),
+    connectivityCheckFromConnected(connected, checkedAt),
+  ];
+}
+
+async function slackChannelDiagnosticChecks(checkedAt, abortSignal) {
+  if (runtimeStatusContainer() !== "gateway") return [];
+  const result = await runNativeRuntimeJson(
+    ["channels", "status", "--channel", "slack", "--json", "--probe", "--timeout", "5000"],
+    6000,
+    abortSignal,
+  );
+  if (!result.ok) return unknownSlackChecks(checkedAt, result.code);
+  return slackChecksFromStatusPayload(result.value, checkedAt);
+}
+
+async function runtimeDiagnosticsReport(abortSignal) {
+  const observedAt = new Date().toISOString();
+  return {
+    revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "Runtime status revision ID"),
+    container: runtimeStatusContainer(),
+    podUid: requireNonEmptyString(process.env.OPENCLAW_POD_UID, "Runtime status Pod UID"),
+    observedAt,
+    checks: (await slackChannelDiagnosticChecks(observedAt, abortSignal)).slice(0, 32),
+  };
+}
+
 function startPluginRuntimeStatusServer() {
   const port = runtimeStatusPort() ?? pluginRuntimeStatusPort();
   if (port === undefined) return;
-  const server = pluginCreateServer((request, response) => {
+  const server = pluginCreateServer(async (request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    if (request.method !== "GET" || ![RUNTIME_STATUS_PATH, PLUGIN_STATUS_PATH, RUNTIME_IMAGE_PATH].includes(pathname)) {
+    if (
+      request.method !== "GET" ||
+      ![
+        RUNTIME_STATUS_PATH,
+        RUNTIME_DIAGNOSTICS_PATH,
+        PLUGIN_STATUS_PATH,
+        RUNTIME_IMAGE_PATH,
+      ].includes(pathname)
+    ) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not_found" }));
       return;
@@ -267,6 +519,32 @@ function startPluginRuntimeStatusServer() {
       }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(runtimeStatusReport()));
+      return;
+    }
+    if (pathname === RUNTIME_DIAGNOSTICS_PATH) {
+      if (runtimeStatusPort() === undefined) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "not_found" }));
+        return;
+      }
+      const abortController = new AbortController();
+      const abort = () => abortController.abort();
+      request.on?.("aborted", abort);
+      response.on?.("close", abort);
+      try {
+        const report = await runtimeDiagnosticsReport(abortController.signal);
+        if (abortController.signal.aborted) return;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(report));
+      } catch {
+        if (!abortController.signal.aborted) {
+          response.writeHead(503, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "unavailable" }));
+        }
+      } finally {
+        request.off?.("aborted", abort);
+        response.off?.("close", abort);
+      }
       return;
     }
     if (pluginRuntimeStatusPort() === undefined) {
@@ -373,7 +651,45 @@ function isManagedOpenClawPluginEntry(value) {
   );
 }
 
+function conflictingApproverList(configured, managedList) {
+  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
+    managedList !== undefined &&
+    (!Array.isArray(configured.approvers) ||
+      !pluginDeepEqual(
+        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
+        managedList.map((id) => id.toLowerCase()).sort(),
+      ));
+}
+
 function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
+  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
+  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
+  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
+    // A native child list must not bypass an inherited Agent or plugin approver list.
+    const managedDefault = managedApprovers.approvers;
+    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
+      ? Object.entries(configuredApprovers.plugins)
+      : [];
+    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
+      const managedPlugin = isPlainObject(managedApprovers.plugins)
+        ? managedApprovers.plugins[pluginId]
+        : undefined;
+      const pluginList = managedPlugin?.approvers ?? managedDefault;
+      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
+      const configuredTools = isPlainObject(configuredPlugin?.tools)
+        ? Object.entries(configuredPlugin.tools)
+        : [];
+      return configuredTools.some(([toolId, configuredTool]) => {
+        const managedTool = isPlainObject(managedPlugin?.tools)
+          ? managedPlugin.tools[toolId]
+          : undefined;
+        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
+      });
+    });
+    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
+      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
+    }
+  }
   const baseEntries = objectAtPath(base, ["plugins", "entries"]);
   const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
   if (overlayEntries === undefined) return;
@@ -522,13 +838,14 @@ function samePluginFailures(left, right) {
 
 function openClawPluginConfiguration(runtime, failures = []) {
   if (runtime.manifest?.kind === "openclaw") {
-    return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures).configuration;
+    return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers).configuration;
   }
   if (runtime.manifest?.kind === "codex") {
     return pluginRuntimeTranslator.codexOpenClawConfiguration(
       runtime.manifest.selections ?? {},
       failures,
       runtime.manifest.repositoryBrokerNetworkPolicy,
+      runtime.manifest.pluginApprovers,
     );
   }
   return undefined;
@@ -664,7 +981,7 @@ function verifyOpenClawPluginInstall(plugin) {
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures)
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];
@@ -1547,7 +1864,18 @@ function probeCodexAuthenticationFailureCode() {
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
-      env: { PATH: process.env.PATH, HOME: directory, CODEX_HOME: process.env.CODEX_HOME, RUST_LOG: "error" },
+      // Keep the runtime's TLS trust anchors so a TLS-inspecting egress proxy can serve the probe.
+      env: {
+        PATH: process.env.PATH,
+        HOME: directory,
+        CODEX_HOME: process.env.CODEX_HOME,
+        RUST_LOG: "error",
+        ...Object.fromEntries(
+          ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+            .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
+            .map((name) => [name, process.env[name]]),
+        ),
+      },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
     });

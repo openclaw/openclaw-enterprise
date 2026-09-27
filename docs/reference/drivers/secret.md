@@ -7,7 +7,9 @@ backend references used to deliver them. OpenClaw Control Plane (OCC) owns the
 Secret ID, Namespace, authorization, references, and public metadata. The Driver
 owns backend storage and must verify that stored material still belongs to the
 requested Secret. Compute handles workload delivery; this Driver does not issue
-credentials or return secret values to API readers.
+credentials or return secret values to API readers. OCC reads a value only to
+register a [credential source](../credential-sources.md) with the selected
+Credential Gateway.
 
 Trusted Installation YAML requires the bundled Kubernetes implementation,
 including when Compute is SSH; delivery to SSH hosts is unsupported. Default
@@ -19,13 +21,13 @@ Compose without Installation YAML selects no Secret Driver. See
 The [shared interface](../../../packages/contracts/src/index.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
-| Method                    | Contract                                                                                                                                 |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `create(identity, value)` | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                               |
-| `update(secret, value)`   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                  |
-| `delete(secret)`          | Remove only the backend object belonging to this Secret. Returns no value.                                                               |
-| `resolve(secret)`         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.      |
-| `withValue(secret, use)`  | When supported, verify exact ownership and pass the current value to a transient server-side callback. Never expose it as a public read. |
+| Method                    | Contract                                                                                                                                                                                      |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create(identity, value)` | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                                                                                    |
+| `update(secret, value)`   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                                                                       |
+| `delete(secret)`          | Remove only the backend object belonging to this Secret. Returns no value.                                                                                                                    |
+| `resolve(secret)`         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.                                                           |
+| `withValue(secret, use)`  | When supported, verify exact ownership and pass the current value to a transient server-side callback, such as registering an authorized credential source. Never expose it as a public read. |
 
 The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 `uid`; these are internal metadata, never caller-selected locations. The public
@@ -42,13 +44,25 @@ means no readable Secrets. Exact Secret reads, updates, and deletion require
 they do not call the Driver or return a value. Binding or assigning a Secret
 also requires the caller to have `operate` on it. Deployment requires both the
 deploying actor and the consuming Agent's ServicePrincipal to have `operate` on
-each Secret; the worker rechecks them before preparing delivery. Namespace
+each Secret; the worker rechecks them before preparing delivery. Registering a
+credential source requires the caller's `operate` on each referenced Secret. Namespace
 membership, possession of a reference, and backend permissions grant no OCC
 authority. Cross-Namespace bindings are rejected. Plugin discovery using a Secret also
-requires Agent `create` in the Namespace and caller `operate` on that exact
-Secret; it does not require an Agent ServicePrincipal.
-
-Never expose values in responses, configuration documents, audit, or logs.
+requires caller `operate` on that exact Secret. Create Agent discovery also
+requires Namespace Agent `create`; it does not require an Agent ServicePrincipal.
+Saved-Agent discovery requires exact Agent `read` and `update`, plus `operate`
+for both the caller and the Agent's ServicePrincipal. OCC derives the `codex_pat`
+source from the Agent rather than accepting a Secret ID from the browser. It
+rechecks those grants and the binding after the backend read, before sending
+the value to the selected Plugin Driver. Never expose values in responses,
+configuration documents, audit, or logs. A running revision may still use an
+older projected value.
+For channel directory lookup, the caller selects an existing same-Namespace
+Secret while creating an Agent or editing an Agent or Configuration. OCC requires
+the corresponding create/update permission and exact Secret `operate`, uses
+`withValue` to read the current value, and rechecks the target permission and
+Secret identity before passing it to the selected ChannelDriver in-process.
+The lookup response contains IDs, names, and workspace identity, never the token.
 Backend permissions and encryption remain the operator's responsibility. See
 [Secret binding permissions](../configuration/secrets.md) and [authorization](../authorization.md).
 
@@ -63,16 +77,18 @@ On creation, the Driver writes the value and OCC stores the returned identity.
 OCC registers backend deletion for a known failed transaction; it does not do
 so when the commit outcome is unknown. Updates overwrite the backend value: OCC
 keeps no prior value for rollback, and success means stored, not delivered.
-Deletion is refused while a Configuration, active revision, or pending
-deployment still references the Secret. Otherwise OCC calls the Driver before
+Deletion is refused while a Configuration, credential source, active revision,
+or pending deployment still references the Secret. Otherwise OCC calls the Driver before
 removing its own record.
 
-For plugin discovery, OCC checks both permissions and reads current Secret metadata,
-then calls `withValue` without holding a platform transaction over backend or provider
-I/O. The callback passes the value to the selected PluginDriver and does not persist
-it. A Driver without this optional capability cannot serve Secret-backed discovery.
-Each request reads the current backend value; a concurrent rotation can take effect
-after an in-flight request has already read the prior value. See
+For plugin discovery, OCC checks permissions and reads current Secret metadata,
+then calls `withValue` without holding a platform transaction over backend or
+provider I/O. The callback passes the value to the selected PluginDriver and
+does not persist it. Saved-Agent discovery rechecks grants and the binding
+inside the callback before that PluginDriver call. A Driver without this optional
+capability cannot serve Secret-backed discovery. Each request reads the current
+backend value; a concurrent rotation can take effect after an in-flight request
+has already read the prior value. See
 [plugin discovery](plugin.md#selection-and-catalogs).
 
 During deployment admission, the API asks `resolve` to verify that the current

@@ -47,20 +47,35 @@ export function optionalPluginProofModel() {
 
 function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
   if (realPluginProofSelected) {
+    const scenarioKeys = {
+      openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
+      codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
+      codex_calendar: "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
+      codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
+    };
+    assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");
+    const databases = Object.entries(scenarioKeys).map(([name, key]) => {
+      const url = requiredPluginProofEnv(key);
+      let connection;
+      try {
+        connection = new pg.Client({ connectionString: url }).connectionParameters;
+      } catch {
+        assert.fail(`${key} must be a valid PostgreSQL connection URL.`);
+      }
+      assert.ok(connection.database, `${key} must name a database.`);
+      return [name, JSON.stringify([connection.host, connection.port, connection.database])];
+    });
     assert.ok(
-      databaseUrl && databaseUrl.trim().length > 0,
-      `${scenario} must pass an explicit scenario-specific database URL when OCC_TEST_PLUGIN_DRIVER_REAL=1 is selected.`,
+      databaseUrl === process.env[scenarioKeys[scenario]],
+      `${scenario} must use its scenario-specific database URL.`,
     );
-    const sibling =
-      scenario === "openclaw"
-        ? process.env.OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL
-        : process.env.OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL;
-    if (sibling !== undefined && sibling.trim().length > 0) {
-      assert.notEqual(
-        databaseUrl,
-        sibling,
-        "real plugin-driver scenarios must use separate dedicated databases.",
-      );
+    for (let index = 0; index < databases.length; index += 1) {
+      for (let sibling = index + 1; sibling < databases.length; sibling += 1) {
+        assert.ok(
+          databases[index][1] !== databases[sibling][1],
+          `real plugin-driver scenarios ${databases[index][0]} and ${databases[sibling][0]} must use separate dedicated databases.`,
+        );
+      }
     }
   }
   return databaseUrl ?? requiredPluginProofEnv("OCC_TEST_DATABASE_URL");
@@ -222,6 +237,7 @@ function installationConfiguration({
   gatewayImage,
   codexImage,
   pluginDriverId,
+  pluginDriverConfiguration,
   codexServiceAccountImport,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
@@ -234,7 +250,7 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: {} };
+  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     pluginProofPluginStatusProxyCidrs();
   if (codexServiceAccountImport !== undefined) {
@@ -708,7 +724,7 @@ ${codexLocalAppServerTokenScript}
   for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
     if (!requestedIds.has(entry.id)) continue;
     const [params] = pluginRuntimeTranslator.codexReadParamsForSelections({
-      [entry.id]: { enabled: true, toolDefaults: { approval: "native", reviewer: "auto" } },
+      [entry.id]: { enabled: true, toolDefaults: { approval: "provider_default", reviewer: "auto" } },
     }, listed);
     try {
       const detail = await codexAppServerRequest("plugin/read", params);
@@ -1410,12 +1426,11 @@ function createNativePluginAssertions({
 
 export async function createPluginDriverRealFixture(
   context,
-  { pluginDriverId, databaseUrl, codexCredential },
+  { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
 ) {
   const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
   const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
   const gatewayImage = requiredPluginProofEnv("OCC_TEST_KUBERNETES_GATEWAY_IMAGE");
-  const scenario = pluginDriverId === "codex-plugin" ? "codex_calendar" : "openclaw";
   const codexImage =
     pluginDriverId === "codex-plugin"
       ? (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
@@ -1615,6 +1630,7 @@ export async function createPluginDriverRealFixture(
           gatewayImage,
           codexImage,
           pluginDriverId,
+          pluginDriverConfiguration,
           codexServiceAccountImport,
         }),
       ),
@@ -1629,6 +1645,7 @@ export async function createPluginDriverRealFixture(
           gatewayImage,
           codexImage,
           pluginDriverId,
+          pluginDriverConfiguration,
           codexServiceAccountImport,
         }),
       ),

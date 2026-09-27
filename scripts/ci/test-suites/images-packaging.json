@@ -72,11 +72,13 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-images.test.mjs",
+      "path": "tests/integration/container-registry-real.test.mjs",
       "expectedTests": [
-        "Docker runtime image inspection follows attached images and rejects foreign revisions",
-        "runtime image metadata endpoint validates Enterprise and OpenClaw provenance independently"
+        "publication updates aliases using real Skopeo and a multi-platform registry"
       ]
     }
-  ]
+  ],
+  "env": {
+    "OCC_TEST_CONTAINER_REGISTRY": "1"
+  }
 }

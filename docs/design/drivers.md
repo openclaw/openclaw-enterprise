@@ -85,15 +85,16 @@ execution Driver receives admitted intent only after OCC verifies that
 authorization. A Driver reports its decision, readiness, or operational result
 without acquiring platform-resource ownership or permission to select itself.
 
-| Driver contract        | Responsibility                                                                                                                                                                                                       |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IAMDriver`            | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                              |
-| `ServiceAccountDriver` | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own Backend bindings and credential lifecycle while the provider retains its independent authority. |
-| `InferenceDriver`      | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.               |
-| `ComputeDriver`        | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with exact Namespace, Agent, and revision ownership.         |
-| `SandboxDriver`        | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                        |
-| `SecretDriver`         | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default; broker/substitution delivery is deferred.                                                        |
-| `ChannelDriver`        | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                              |
+| Driver contract           | Responsibility                                                                                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IAMDriver`               | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                                   |
+| `ServiceAccountDriver`    | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own Backend bindings and credential lifecycle while the provider retains its independent authority.      |
+| `InferenceDriver`         | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.                    |
+| `ComputeDriver`           | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with exact Namespace, Agent, and revision ownership.              |
+| `SandboxDriver`           | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                             |
+| `SecretDriver`            | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                       |
+| `CredentialGatewayDriver` | Hold registered credential sources outside Agent workloads and issue per-revision attachments that only its paired `SandboxDriver` can apply. The OpenShell implementation shares one Backend with the OpenShell Sandbox. |
+| `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                                   |
 
 One implementation may satisfy multiple Driver contracts, but OCC selects each
 role explicitly. Authority for one role does not grant another role, resource

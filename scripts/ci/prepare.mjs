@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
@@ -199,7 +199,7 @@ function runPrefix() {
 }
 
 function baseState(lane, statePath) {
-  return {
+  const state = {
     version: 1,
     repositoryRoot,
     lane,
@@ -208,6 +208,18 @@ function baseState(lane, statePath) {
     createdAt: new Date().toISOString(),
     resources: [],
   };
+  if (
+    lane === "images-packaging" &&
+    (process.env.GITHUB_RUN_ID || process.env.GITHUB_RUN_ATTEMPT)
+  ) {
+    const id = process.env.GITHUB_RUN_ID;
+    const attempt = process.env.GITHUB_RUN_ATTEMPT;
+    if (!/^[1-9][0-9]*$/.test(id ?? "") || !/^[1-9][0-9]*$/.test(attempt ?? "")) {
+      throw new Error("Image CI state requires a valid run ID and attempt.");
+    }
+    state.ciRun = { id, attempt };
+  }
+  return state;
 }
 
 async function readState(path) {
@@ -669,7 +681,14 @@ async function buildRuntimeImages(
   ]);
   const env = {};
   const resources = [];
-  const tagBase = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`;
+  const label =
+    state.lane === "images-packaging" && state.ciRun
+      ? createHash("sha256")
+          .update(JSON.stringify([state.ciRun.id, state.ciRun.attempt, state.prefix]))
+          .digest("hex")
+          .slice(0, 17)
+      : state.prefix;
+  const tagBase = `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
     const tag = `${tagBase}/controller:local`;
@@ -1707,6 +1726,14 @@ async function prepareLane({ lane, statePath }) {
     case "postgres":
     case "postgres-application":
       await ensurePostgresServer(resolvedStatePath, state);
+      break;
+    case "runtime-image-fixture":
+      // The test builds and owns its own unique image on the job's engine.
+      // Do not register it with generic force-removal cleanup.
+      env.OCC_RUNTIME_IMAGE_RECEIPT = join(
+        dirname(resolvedStatePath),
+        "runtime-image-fixture-receipt.json",
+      );
       break;
     case "images-packaging":
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);

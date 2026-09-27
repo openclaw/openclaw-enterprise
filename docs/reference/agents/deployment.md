@@ -94,7 +94,11 @@ revision schema. See [SandboxDriver](../drivers/sandbox.md).
 An authorized `POST /namespaces/:namespaceId/agents/:agentId/deploy` has no
 request body. It requires a `ready` Namespace, exact-Agent `deploy`, exact
 Configuration `read`, and, for managed credentials, the selected
-[harness source permissions](../agents.md#harness-authentication). A
+[harness source permissions](../agents.md#harness-authentication). If the selected
+Compute Driver requires generated transport credentials and they are missing
+before the first revision, deployment also requires exact-Agent `read` and
+`operate` to create them. Missing credentials after any historical revision
+block deployment and require operator investigation. A
 successful `202` means the immutable revision was admitted and its work queued;
 it does not mean the workload is ready. Later Configuration edits or changes to
 an account's selected credential reference affect only future deployments. A
@@ -134,7 +138,7 @@ are defined by the [API reference](../api.md).
 
 In the console, open the Agent, select **Stop Agent**, and confirm. Use
 **Refresh stop status** to reread its desired state and selected revision.
-Resume through **New revision** → **Deploy new revision**. See the
+Resume through **Create new version** → **Deploy new version**. See the
 [console controls](../console.md#stop-and-resume-an-agent) for request recovery.
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires

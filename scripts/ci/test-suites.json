@@ -26,7 +26,8 @@
     "repository-credentials-platform": "./test-suites/repository-credentials-platform.json",
     "repository-credentials-installed": "./test-suites/repository-credentials-installed.json",
     "k3d-observability": "./test-suites/k3d-observability.json",
-    "k3d-observability-demo": "./test-suites/k3d-observability-demo.json"
+    "k3d-observability-demo": "./test-suites/k3d-observability-demo.json",
+    "runtime-image-fixture": "./test-suites/runtime-image-fixture.json"
   },
   "groups": {
     "ci": [
@@ -34,6 +35,7 @@
       "postgres",
       "postgres-application",
       "images-packaging",
+      "runtime-image-fixture",
       "k3d-fixture-configuration",
       "k3d-fixture-state",
       "k3d-fixture-plugins",
@@ -47,6 +49,7 @@
       "postgres",
       "postgres-application",
       "images-packaging",
+      "runtime-image-fixture",
       "k3d-fixture-configuration",
       "k3d-fixture-state",
       "k3d-fixture-plugins",

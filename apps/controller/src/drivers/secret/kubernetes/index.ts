@@ -276,12 +276,16 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
+    if (secret.driverId !== this.id) {
+      throw new SecretOwnershipError("Secret Driver identity changed.");
+    }
     const { observed } = await this.readOwnedSecret(secret);
     const encoded = observed.data?.[SECRET_KEY];
     let value: string;
     try {
       if (
         typeof encoded !== "string" ||
+        encoded.length > 4 * Math.ceil(MAX_SECRET_VALUE_BYTES / 3) ||
         !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
       ) {
         throw new Error("Invalid encoding.");

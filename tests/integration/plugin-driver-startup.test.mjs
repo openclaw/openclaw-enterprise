@@ -53,11 +53,26 @@ test("Installation startup accepts explicit native Codex catalog reader configur
   });
 });
 
+test("Installation selects hosted discovery by default and can select the curated catalog", async (t) => {
+  for (const [configuration, credential] of [
+    [{}, "required"],
+    [{ catalogSource: "hosted" }, "required"],
+    [{ catalogSource: "openai-curated" }, "none"],
+  ]) {
+    const loaded = await load(t, { id: "codex-plugin", configuration });
+    assert.equal(loaded.pluginDriver.discoveryCredential, credential);
+    assert.deepEqual(loaded.installation.drivers.plugin.configuration, configuration);
+  }
+});
+
 test("Installation rejects untrusted PluginDriver packages, unknown selections and configuration", async (t) => {
   for (const selection of [
     { id: "unknown-plugin-driver", configuration: {} },
     { id: "occ-plugin", package: "@untrusted/driver", configuration: {} },
     { id: "codex-plugin", configuration: { arbitrarySource: "https://example.test/plugin" } },
+    { id: "codex-plugin", configuration: { catalogSource: "unknown" } },
+    { id: "codex-plugin", configuration: { catalogSource: 1 } },
+    { id: "codex-plugin", configuration: { catalogSource: null } },
     { id: "codex-plugin", configuration: { codexExecutable: "/tmp/codex" } },
     {
       id: "codex-plugin",
@@ -68,6 +83,9 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
       },
     },
   ]) {
-    await assert.rejects(load(t, selection), /drivers\.plugin|codexHome|requestTimeoutMs/);
+    await assert.rejects(
+      load(t, selection),
+      /drivers\.plugin|codexHome|requestTimeoutMs|catalogSource/,
+    );
   }
 });

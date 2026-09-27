@@ -86,6 +86,17 @@ warnings record the observed startup result, not live plugin health.
 A later deployment admits a new revision with its own deployment status and does
 not rewrite the original result.
 
+### Current runtime diagnostics
+
+A bodyless `POST` to
+`/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
+requests fresh checks for the exact revision. It requires Agent read and operate
+plus AgentRevision read. The response has a revision ID, observation time, and
+at most 32 bounded checks. Kubernetes currently probes Slack configuration,
+authentication, and connectivity without sending. Missing Pods yield `unknown`;
+unavailable evidence yields `503`. The call changes no stored deployment state
+and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+
 ## Backend association
 
 An Agent can reference one Installation-configured [experimental Backend](backends.md)
@@ -131,6 +142,10 @@ For an already issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
 This requires dedicated Codex and the account's matching `backendId`. Binding
 an account does not issue its credential or change the model, Harness, or Backend.
+
+For dedicated Codex with a Credential Gateway, use
+`{ "method": "credential_source", "sourceId": "cs_…" }`; see
+[credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
@@ -339,8 +354,8 @@ each deployed Agent still owns its own gateway and stable service principal.
 ## Current limitations
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
-Brokered model credentials and controller API
-authentication for Agent service principals remain unavailable. The optional
+Controller API authentication for Agent service principals remains unavailable.
+The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
 Kubernetes Compute and dedicated Codex. Stock OpenShell cannot provide all the
 required workload credentials; review the documented compatibility limits before

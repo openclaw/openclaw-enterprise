@@ -2,6 +2,10 @@ const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000001";
+const currentVersion =
+  "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
+const candidateVersion =
+  "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start without Preset")];
@@ -33,12 +37,17 @@ const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/s
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+  approvers: { agent: true, plugin: true, tools: true },
   toolDefaults: {
     enabled: true,
-    approval: ["native", "prompt", "approve"],
+    approval: ["provider_default", "all_actions", "write_actions", "none"],
     reviewer: ["human", "auto"],
   },
-  tools: { enabled: true, approval: ["native", "prompt", "approve"], reviewer: [] },
+  tools: {
+    enabled: true,
+    approval: ["provider_default", "all_actions", "write_actions", "none"],
+    reviewer: [],
+  },
   driverPolicySchema: {
     type: "object",
     properties: {
@@ -216,9 +225,9 @@ const pluginSelections = JSON.stringify(
   {
     "codex-plugin:calendar@openai-curated-remote": {
       enabled: true,
-      toolDefaults: { approval: "native", reviewer: "auto" },
+      toolDefaults: { approval: "write_actions", reviewer: "auto" },
       tools: {
-        "app_calendar/create_event": { approval: "prompt" },
+        "app_calendar/create_event": { approval: "all_actions" },
         "app_calendar/delete_event": { enabled: false },
       },
     },
@@ -226,6 +235,11 @@ const pluginSelections = JSON.stringify(
   null,
   2,
 );
+const pluginApproverOverrides = JSON.parse(pluginSelections);
+pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].approvers = [];
+pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].tools[
+  "app_calendar/create_event"
+].approvers = [{ channel: "slack", id: "team:TDEMO123:user:UDEMO124" }];
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 const pluginDiscovery = {
@@ -273,13 +287,10 @@ const account = [{ selector: ".account-toggle", click: true }];
 const devdayRepositorySelector = 'input[value="openclaw/openclaw-enterprise"]';
 const createSlackBotSecret = [
   { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
-  { selector: "#create-slack-bot-token-value", value: "simulated-bot-token" },
+  { selector: "#create-slack-secret-slack-bot-token-value", value: "simulated-bot-token" },
   click("Create Secret"),
 ];
-const allowEveryoneInSlackChannels = [
-  { selector: "#slack-allowed-user-ids", value: "" },
-  { selector: "#slack-allow-everyone", click: true },
-];
+const allowEveryoneInSlackChannels = [{ selector: "#slack-channel-access", value: "everyone" }];
 const createWorkspaceFields = [
   ...form,
   { selector: ".launch-advanced summary", click: true },
@@ -300,7 +311,7 @@ const createProvisioningSecrets = [
   { selector: "#slack-dm-policy", value: "disabled" },
   { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
   ...createSlackBotSecret,
-  { selector: "#slack-channel-ids", value: "CDEMO123" },
+  { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
   ...allowEveryoneInSlackChannels,
   click("Apply channel settings"),
 ];
@@ -319,13 +330,13 @@ const devdayCreateCheckpoint = [
       'details.plugin-tool-row[data-tool="asdk_app_69a089a326dc8191b32a3f2553f5be2c/create_issue"] > summary',
     click: true,
   },
-  { selector: 'select[aria-label="Create issue approval"]', value: "prompt" },
+  { selector: 'select[aria-label="Create issue require approval for"]', value: "all_actions" },
   click("Done"),
   { selector: devdayRepositorySelector, click: true },
   { selector: "#repository-profile-git-write", click: true },
   click("Edit Slack"),
-  { selector: "#slack-allow-everyone", click: true },
-  { selector: "#slack-allowed-user-ids", value: "UDEMO123" },
+  { selector: "#slack-channel-access", value: "selected" },
+  { selector: "#slack-allowed-user-ids-search", value: "UDEMO123", key: "Enter" },
   { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
   click("Apply channel settings"),
@@ -445,6 +456,7 @@ export const scenarios = {
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
       "Tab through the search and creation controls, then search for an Agent and open its detail page.",
+      "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
     ],
   },
@@ -461,12 +473,27 @@ export const scenarios = {
       },
     ],
     description:
-      "Return navigation and Refresh retain previously loaded content during slow reads. Responses are simulated; this story does not prove backend authorization or persistence.",
+      "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access is rechecked before page controls become active. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
     steps: [
       "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
       "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
-      "Open an Agent, visit its tabs, return to Agents, and use Back. Check the selected revision and tab. Refresh and refocus the preview to check pending-read behavior.",
+      "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  },
+  navigationAgentReturn: {
+    group: "Pages/Navigation",
+    name: "Return to Agent panels",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "unsupported",
+    description:
+      "Agent panels retain loaded controls on tab and page returns. This preview uses simulated API data.",
+    steps: [
+      "Wait for Native admin UI, then open Credentials and return to Configuration. The native access result remains visible.",
+      "Expand View admitted native configuration, visit Workspace files, then return. The disclosure stays expanded.",
+      "Return to Agents and use browser Back. Native admin access and expanded panels remain loaded after admission succeeds.",
+      "Click Refresh access to explicitly check the native endpoint again. Page Refresh reloads all panels.",
     ],
   },
   navigationDenied: {
@@ -683,6 +710,53 @@ export const scenarios = {
       "A denied discovery request explains that permission is required without exposing Secret data.",
     gap: "The Secret and denial are simulated; this preview does not verify IAM enforcement.",
   },
+  createPluginsCurated: {
+    group: "Pages/Create Agent",
+    name: "Select Linear from the curated catalog",
+    path: create,
+    pluginCapabilities,
+    pluginDiscoveryCredential: "none",
+    pluginDiscovery: (() => {
+      const linear = {
+        id: "codex-plugin:linear@openai-curated-remote",
+        remoteId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c",
+        name: "Linear",
+        description: "Plan and build products",
+        websiteUrl: "https://linear.app/",
+        privacyPolicyUrl: "https://linear.app/privacy",
+        termsOfServiceUrl: "https://linear.app/terms",
+        selectableWithoutTools: true,
+        tools: null,
+      };
+      return {
+        pages: {
+          initial: {
+            plugins: [linear],
+            nextCursor: null,
+            setup: {
+              message:
+                "This catalog does not verify workspace access, app connections, or tool availability. Configure the Agent's credentials and app access before deployment.",
+              links: [
+                {
+                  label: "Manage workspace plugins",
+                  url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+                },
+              ],
+            },
+          },
+        },
+        details: { [linear.remoteId]: linear },
+      };
+    })(),
+    actions: [...form, click("Configure plugins")],
+    description:
+      "The selected Driver exposes Linear without a discovery token. Its tool inventory remains unknown.",
+    steps: [
+      "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
+      "The catalog does not establish account access or runtime readiness; configure the Agent's actual credentials separately.",
+    ],
+    gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
+  },
   createPluginsDiscovered: {
     group: "Pages/Create Agent",
     name: "Discover plugins with a service account token",
@@ -696,8 +770,8 @@ export const scenarios = {
       "Review the Driver's workspace access and service account setup guidance. Connection status is unverified; catalog availability does not confirm linked credentials. External help links open separately from plugin navigation.",
       "Compare the administrator, plan, and unsupported-runtime reasons in the list. Choose each unavailable plugin to see its reason and help link in detail; Add stays disabled.",
       "Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
-      "Choose Calendar to load its tools, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
-      "Filter this page matches plugins on the current page; Filter tools matches the selected plugin’s tools.",
+      "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
+      "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
     ],
     gap: pluginDiscoveryGap,
@@ -732,7 +806,7 @@ export const scenarios = {
         selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
         click: true,
       },
-      { selector: 'select[aria-label="Create event approval"]', value: "prompt" },
+      { selector: 'select[aria-label="Create event require approval for"]', value: "all_actions" },
     ],
     description:
       "Add writes an enabled selection to the draft JSON. Plugin defaults and expanded tool overrides update the same JSON, and Done keeps those changes for Agent creation.",
@@ -742,6 +816,20 @@ export const scenarios = {
       "Click Done, open Plugin selections JSON, and inspect the policies. Reopen Configure plugins to continue editing.",
     ],
     gap: pluginDiscoveryGap,
+  },
+  createPluginApproversMissingSecret: {
+    group: "Pages/Create Agent",
+    name: "Plugin approvers need a Slack bot Secret",
+    path: create,
+    pluginCapabilities,
+    actions: [
+      ...form,
+      { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
+      { selector: '[aria-label="Default plugin approvers people"]', focus: true },
+    ],
+    description:
+      "New Agents inherit OpenClaw's existing approval routing until an operator selects a default. The directory explains that a Slack bot Secret must be selected under Channels before names can be resolved.",
+    gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",
@@ -773,7 +861,12 @@ export const scenarios = {
     pluginCapabilities,
     actions: [...pluginDiscoveryForm, click("Next page")],
     description:
-      "Catalog pages use upstream cursors and contain up to 20 plugins. Driver setup guidance persists across pages. Filtering applies to the current page, and Previous page restores the prior catalog page.",
+      "Catalog pages use upstream cursors and contain up to 20 plugins. Search plugins waits 300 ms after typing, then searches the catalog from its first page. Enter and page navigation run immediately.",
+    steps: [
+      "Type a plugin name quickly and pause. Verify the matching catalog results appear and Previous page is disabled for the new query.",
+      "Change the query and press Enter before pausing; results load immediately. Clear the query to restore the full catalog, then use Next page and Previous page.",
+      "Type a new query and immediately close the dialog. Reopen it to search the retained query. Configured-plugin and tool filters update immediately without catalog requests.",
+    ],
     gap: pluginDiscoveryGap,
   },
   createPluginsEmpty: {
@@ -885,17 +978,19 @@ export const scenarios = {
       "Browse a fixture catalog in the production plugin modal. Selecting a plugin opens its policies and a collapsed list of tools.",
     steps: [
       "Review the simulated Calendar and Documents logos. Project tracker’s intentionally missing image falls back to its initial. Choose each plugin to check the same logo or fallback in its detail heading.",
-      "Filter this page for Documents, then clear the filter and choose Calendar.",
+      "Search plugins for Documents, then clear the query and choose Calendar.",
       "Click Add Calendar. Its tool defaults remain omitted until you change them.",
-      "Choose the default tool availability, approval behavior, and reviewer, or keep the runtime defaults.",
+      "Choose Require approval for → Write actions. Reviewer stays separate; choose Human or Automatic review, or inherit the Harness reviewer.",
+      "Click Done and confirm toolDefaults.approval is write_actions. New tools inherit this default without needing entries in tools.",
       "Review the Driver-specific policy fields supplied by the capability descriptor.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
+      "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
     ],
     gap: pluginPreviewGap,
   },
   pluginsSelected: {
     group: "Components/Plugins",
-    name: "Selected plugin and tool overrides",
+    name: "Write approval and tool overrides",
     component: "plugins",
     pluginCatalog,
     pluginCapabilities,
@@ -905,11 +1000,14 @@ export const scenarios = {
       { selector: 'button[aria-label="Calendar"]', click: true },
     ],
     description:
-      "Calendar uses native approval and automatic review as its tool defaults, with explicit overrides for creating and deleting events. Tool reviewers inherit because this Driver advertises reviewer selection only at the default scope.",
+      "Calendar requires approval for write actions and uses automatic review, with explicit overrides for creating and deleting events. Tool reviewers inherit because this Driver advertises reviewer selection only at the default scope.",
     steps: [
-      "Change Calendar's default reviewer to Human, click Done, and inspect toolDefaults.reviewer in Plugin selections JSON.",
+      "Type create into Filter tools one character at a time; only Create event remains. Clear the search to restore the other tools.",
+      "Compare Create event's ID beneath its title with its key in Plugin selections JSON after Done.",
+      "Inspect Require approval for: Write actions is selected. Choose Every action, Provider default, or No additional approval to compare the available scopes.",
+      "Change Calendar's default reviewer to Human, click Done, and inspect toolDefaults.approval and toolDefaults.reviewer in Plugin selections JSON.",
       "Choose inheritance to omit the reviewer field without changing default approval or tool overrides.",
-      "Use a tool toggle to set enabled or disabled explicitly; Tool policy opens overrides and lets you restore inheritance. Tool reviewer selection is unavailable for this Driver.",
+      "Use a tool toggle to set enabled or disabled explicitly; Tool policy opens overrides and lets you restore inheritance. Set reviewer for all tools jumps to the plugin default reviewer because this Driver does not support per-tool reviewers.",
     ],
     gap: pluginPreviewGap,
   },
@@ -923,8 +1021,8 @@ export const scenarios = {
       {
         "codex-plugin:calendar@openai-curated-remote": {
           enabled: true,
-          toolDefaults: { approval: "native", reviewer: "auto" },
-          tools: { "app_calendar/create_event": { approval: "prompt", reviewer: "auto" } },
+          toolDefaults: { approval: "provider_default", reviewer: "auto" },
+          tools: { "app_calendar/create_event": { approval: "all_actions", reviewer: "auto" } },
         },
       },
       null,
@@ -1041,15 +1139,15 @@ export const scenarios = {
     },
     pluginCapabilities: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-      tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+      toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+      tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
       driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
     },
     pluginSelections: JSON.stringify(
       {
         "occ-plugin:diffs": {
           enabled: true,
-          toolDefaults: { approval: "prompt" },
+          toolDefaults: { approval: "write_actions" },
         },
       },
       null,
@@ -1057,11 +1155,11 @@ export const scenarios = {
     ),
     actions: [click("Configure plugins"), { selector: 'button[aria-label="Diffs"]', click: true }],
     description:
-      "The simulated native Driver advertises native and approve. An existing prompt default remains visible as unsupported, while new choices use only advertised values.",
+      "The simulated native Driver supports Provider default and No additional approval. Every action and Write actions remain visible but disabled, with an explanation. A saved unsupported choice stays selected until the operator changes it.",
     steps: [
-      "Inspect the saved prompt default and the visible unsupported-policy notice.",
-      "Open the default approval control: new policies can use only the advertised choices.",
-      "Change the unsupported default to Native behavior or inherit, then inspect the updated JSON.",
+      "Inspect the selected Write actions (unsupported) value and the provider support explanation.",
+      "Open Require approval for: Every action and Write actions are visible but disabled.",
+      "Click Done and confirm the saved write_actions value remains unchanged. Reopen the modal, choose Provider default or inherit, then inspect the updated JSON.",
     ],
     gap: pluginPreviewGap,
   },
@@ -1093,7 +1191,7 @@ export const scenarios = {
       { selector: "#slack-dm-policy", value: "disabled" },
     ],
     description:
-      "A new Agent can choose existing simulated Namespace Secrets or create new Slack token Secrets before the Agent resource exists.",
+      "A new Agent can choose existing simulated Namespace Secrets by name or create new Slack token Secrets before the Agent resource exists.",
   },
   createSlackCreateSecretModal: {
     group: "Pages/Create Agent",
@@ -1134,7 +1232,7 @@ export const scenarios = {
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
       click("Apply channel settings"),
     ],
     description:
@@ -1149,7 +1247,7 @@ export const scenarios = {
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
       ...allowEveryoneInSlackChannels,
       click("Apply channel settings"),
     ],
@@ -1639,10 +1737,37 @@ export const scenarios = {
   },
   draft: {
     group: "Pages/Agent detail",
-    name: "New revision",
+    name: "First version",
     path: draft,
     description:
-      "Editable desired configuration, masked authentication summary, deployment gate, and Agent deletion.",
+      "An Agent without a version can edit saved settings and deploy its first immutable version.",
+  },
+  newVersion: {
+    group: "Pages/Agent detail",
+    name: "Create new version",
+    path: draft,
+    deployed: true,
+    description:
+      "Edit and save the current Configuration before deploying a new immutable version. The selected version stays unchanged until activation.",
+    steps: [
+      "Review the selected version and saved draft settings.",
+      "Edit and save Configuration; then deploy the new version.",
+      "Inspect the admitted version and its deployment activity.",
+    ],
+    gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
+  },
+  draftAutomaticCredentials: {
+    group: "Pages/Agent detail",
+    name: "First deployment creates credentials",
+    path: draft,
+    transport: false,
+    description: "A saved draft can deploy without a separate connection-credential action.",
+    steps: [
+      "Check that the Agent has no selected version and does not report a Stop request.",
+      "Confirm Deploy new version is available and the page explains automatic connection setup.",
+      "Select Deploy new version and inspect the admitted version.",
+    ],
+    gap: "The fixture admits a version but does not model server-side credential creation, delivery, or runtime readiness.",
   },
   configurationNavigation: {
     group: "Pages/Agent detail",
@@ -1668,6 +1793,104 @@ export const scenarios = {
     description:
       "Edit native JSON on the current draft. Save Configuration persists values; deployment remains a separate action.",
   },
+  pluginsDraft: {
+    group: "Pages/Agent detail",
+    name: "Edit plugins in new version",
+    path: draft,
+    deployed: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [click("Plugins")],
+    description:
+      "Edit Agent-owned plugin selections on the draft while the admitted version keeps its original snapshot.",
+    steps: [
+      "Review Calendar's saved policy. The catalog loads from the Agent's saved Service Accounts token.",
+      "Open Calendar and inspect the tool IDs beneath their titles. Type create into Filter tools, then clear it; filtering should keep the cursor in the search box.",
+      "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
+      "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
+    ],
+    gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
+  },
+  pluginApproversInherited: {
+    group: "Pages/Agent detail",
+    name: "Plugin approver inheritance",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+      {
+        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+        click: true,
+      },
+    ],
+    description:
+      "The Agent default has one workspace-qualified Slack user. Calendar inherits that list, and Create event inherits Calendar. Clearing a plugin or tool override restores inheritance.",
+    gap: "This is simulated UI and does not prove runtime approval authorization.",
+  },
+  pluginApproversOverrides: {
+    group: "Pages/Agent detail",
+    name: "Plugin and tool approver overrides",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverOverrides,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+      {
+        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
+        click: true,
+      },
+    ],
+    description:
+      "Calendar explicitly has no Slack approvers, while Create event overrides it with a different user. The UI distinguishes both from inherited lists.",
+    steps: [
+      "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
+      "Search Create event tool approvers people to choose between duplicate Alex Chen names by exact ID.",
+    ],
+    gap: "This is simulated UI and does not prove runtime approval authorization.",
+  },
+  pluginApproversLookup: {
+    group: "Pages/Agent detail",
+    name: "Find Slack plugin approvers",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    agentPluginApprovers: [],
+    pluginCapabilities,
+    actions: [
+      click("Plugins"),
+      { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
+      { selector: '[aria-label="Default plugin approvers people"]', focus: true },
+    ],
+    description:
+      "The selected bot Secret resolves names within Demo workspace. Duplicate Alex Chen results show their distinct user IDs; choosing one saves a team-qualified selector.",
+    gap: "The fixture simulates directory data; it does not contact Slack or read a real Secret.",
+  },
+  pluginsAdmitted: {
+    group: "Pages/Agent detail",
+    name: "Plugins in admitted version",
+    path: revision,
+    deployed: true,
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    actions: [click("Plugins")],
+    description: "An admitted version shows its immutable Agent-owned plugin selection and policy.",
+  },
   invalidConfiguration: {
     group: "Pages/Agent detail",
     name: "Invalid Configuration JSON",
@@ -1681,25 +1904,26 @@ export const scenarios = {
   },
   admitted: {
     group: "Pages/Agent detail",
-    name: "Admitted revision",
+    name: "Current version",
     path: revision,
     deployed: true,
     description:
-      "Immutable Configuration snapshot with Deploy new revision targeting the current saved draft. Persisted deployment status does not establish live serving health.",
+      "The selected immutable version has recorded deployment success. It is not proof of current live serving health.",
   },
   repositoryDraft: {
     group: "Pages/Agent detail",
-    name: "Repository access in new revision",
+    name: "Repository access in new version",
     path: draft,
     repositoryBindings: [
       { repositoryRef: "application", profile: "git-write" },
       { repositoryRef: "handbook", profile: "git-read" },
     ],
-    description: "The new revision names Contributor and Read-only access and shows write limits.",
+    description:
+      "The new version draft names Contributor and Read-only access and shows write limits.",
   },
   repositoryAdmitted: {
     group: "Pages/Agent detail",
-    name: "Repository access in admitted revision",
+    name: "Repository access in current version",
     path: revision,
     deployed: true,
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
@@ -1708,20 +1932,114 @@ export const scenarios = {
   },
   deploymentPending: {
     group: "Pages/Agent detail",
-    name: "Deployment pending",
-    path: revision,
+    name: "New version queued",
+    path: candidateVersion,
     deployed: true,
-    deploymentStatus: "queued",
-    description: "An admitted revision with pending simulated worker progress.",
+    candidateDeploymentStatus: "queued",
+    description:
+      "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified.",
+  },
+  deploymentRunning: {
+    group: "Pages/Agent detail",
+    name: "New version in progress",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    description:
+      "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+  },
+  currentVersionDuringDeployment: {
+    group: "Pages/Agent detail",
+    name: "Current version during deployment",
+    path: currentVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    description:
+      "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
   deploymentFailed: {
     group: "Pages/Agent detail",
-    name: "Deployment failed",
-    path: revision,
+    name: "New version failed",
+    path: candidateVersion,
     deployed: true,
-    deploymentStatus: "failed",
+    candidateDeploymentStatus: "failed",
     description:
-      "Persisted startup failure with runtime component, readiness check, and failure code.",
+      "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
+  },
+  deploymentFailedAfterSelection: {
+    group: "Pages/Agent detail",
+    name: "Deployment failed after selection",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSelected: true,
+    description:
+      "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
+  },
+  deploymentSucceeded: {
+    group: "Pages/Agent detail",
+    name: "New version activated",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    description:
+      "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+  },
+  deploymentUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Deployment activity unavailable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007",
+        status: 503,
+      },
+    ],
+    description:
+      "The latest deployment record cannot be read. Version history and the selected version remain distinct from the status error.",
+  },
+  diagnosticsSuccess: {
+    group: "Pages/Agent detail",
+    name: "Current observations for v7",
+    path: candidateVersion,
+    deployed: true,
+    slack: true,
+    candidateDeploymentStatus: "succeeded",
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "An on-demand observation for viewed v7 reports timestamped Slack configuration, authentication, and connectivity checks. It does not change v7's persisted deployment result.",
+  },
+  diagnosticsUnknown: {
+    group: "Pages/Agent detail",
+    name: "Unknown observation for v6",
+    path: currentVersion,
+    deployed: true,
+    slack: true,
+    candidateDeploymentStatus: "running",
+    diagnosticsState: "unknown",
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "While v7 deploys, the operator requests checks for viewed v6. Authentication and connectivity are unknown, not deployment failures.",
+  },
+  diagnosticsUnavailable: {
+    group: "Pages/Agent detail",
+    name: "Current observation unavailable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/diagnostics",
+        method: "POST",
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+      },
+    ],
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "A failed on-demand check reports its own error. The viewed v7 deployment record remains succeeded.",
   },
   agentMissing: {
     group: "Pages/Agent detail",
@@ -1770,13 +2088,13 @@ export const scenarios = {
         status: 403,
       },
     ],
-    actions: [click("Deploy new revision")],
+    actions: [click("Deploy new version")],
     description: "A rejected deployment reports failure and re-enables the action.",
   },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
-    name: "Revision deployment denied",
-    path: revision,
+    name: "New version deployment denied",
+    path: draft,
     deployed: true,
     rules: [
       {
@@ -1785,19 +2103,18 @@ export const scenarios = {
         status: 403,
       },
     ],
-    actions: [click("Deploy new revision")],
+    actions: [click("Deploy new version")],
     description:
-      "A denied deployment from an admitted snapshot leaves the snapshot unchanged and permits an explicit retry.",
+      "A denied deployment from saved settings leaves the current version unchanged and permits an explicit retry.",
   },
   revisionCredentialsMissing: {
     group: "Pages/Agent detail",
-    name: "Revision deployment missing credentials",
-    path: revision,
+    name: "New version missing credentials",
+    path: draft,
     deployed: true,
     transport: false,
-    actions: [click("Deploy new revision")],
     description:
-      "Deployment checks the current draft and refuses missing generated credentials before admission.",
+      "A previous version exists, but generated runtime credentials are missing. Deployment remains blocked pending operator recovery.",
   },
   buildRevision: {
     group: "Components/Navigation",
@@ -1835,8 +2152,13 @@ export const scenarios = {
     group: "Components/Navigation",
     name: "Mobile Namespace selector",
     mobile: true,
+    namespaceName: "Engineering platform operations and infrastructure",
     description:
       "Choose a Namespace directly from the header at 390px, without opening navigation.",
+    steps: [
+      "Check that the long Namespace name truncates before the inset chevron.",
+      "Choose Research, then return to the long Namespace and check the selection.",
+    ],
   },
   mobile: {
     group: "Components/Navigation",
@@ -1874,7 +2196,7 @@ export const scenarios = {
     description:
       "Choose DM access independently of channel senders. Invalid allowlists stay in the drawer without saving.",
     steps: [
-      "Select Allowlist, clear Allowed DM user IDs, and save to inspect the validation error.",
+      "Select Allowlist, remove the selected people, and save to inspect the validation error.",
       "Enter UDIRECT123, save, and reopen Slack to verify the saved selection.",
       'Select Open and save: allowFrom becomes ["*"]. Switch to Allowlist: enter explicit IDs before saving.',
       "Select Disabled for channel-only access; existing channel users and reply overrides stay unchanged.",
@@ -1911,7 +2233,7 @@ export const scenarios = {
     actions: [
       click("Channels"),
       click("Edit Slack"),
-      { selector: "#slack-channel-ids", value: "CNAVIGATION" },
+      { selector: "#slack-channel-ids-search", value: "CNAVIGATION", key: "Enter" },
     ],
     description:
       "An open Slack drawer restores ordinary edits and staged Secret references after browser history navigation.",
@@ -1929,6 +2251,110 @@ export const scenarios = {
     actions: [click("Edit Slack")],
     description:
       "Edit channels, users, mention requirement, and enabled state. Token references remain fixed; token values belong in Credentials.",
+    steps: [
+      "Change the channel IDs, then click inside the panel and drag from its heading onto the gray backdrop. The editor stays open.",
+      "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
+    ],
+  },
+  slackDirectoryChannels: {
+    group: "Components/Channels",
+    name: "Find Slack channels by name",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
+    description:
+      "The picker shows five channels per page with the bot's workspace, names and exact IDs. Next page shows two buffered matches before another directory request. Typing waits 300 ms; Enter searches immediately. Selecting a result saves only its ID.",
+    steps: [
+      "Use Next page to see design and engineering, then Previous page to restore the first five without another directory request.",
+      "Use Next page twice to fetch product and announcements. Type platform and select its result.",
+    ],
+    gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+  },
+  slackDirectorySavedNames: {
+    group: "Components/Channels",
+    name: "Saved Slack IDs show current names",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [click("Edit Slack")],
+    description:
+      "Saved channel and user IDs are resolved with the selected bot Secret when the editor opens. Names appear as removable chips. Exact IDs are available on hover and are the only values saved.",
+    gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+  },
+  slackDirectoryQualifiedNames: {
+    group: "Components/Channels",
+    name: "Qualified Slack targets keep names and IDs",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackChannels: {
+      "team:TDEMO123:channel:CDEMO123": {
+        requireMention: true,
+        users: ["team:TDEMO123:user:UDEMO123"],
+      },
+    },
+    slackAllowFrom: ["user:UDEMO123"],
+    actions: [click("Edit Slack")],
+    description:
+      "Existing workspace-qualified channel and user targets remain editable. Matching names label removable chips, with exact saved targets on hover; the directory picker still inserts bare IDs.",
+    gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+  },
+  slackDirectoryUsers: {
+    group: "Components/Channels",
+    name: "Resolve duplicate Slack people",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [click("Edit Slack"), { selector: "#slack-dm-user-ids-search", focus: true }],
+    description:
+      "People appear five per page. Two share the same display name; their handle and exact Slack user IDs identify which one will be saved. Next page preserves the remaining matches from the directory response.",
+    gap: "Directory data and Secret access are simulated; no Slack API call occurs.",
+  },
+  slackDirectoryDenied: {
+    group: "Components/Channels",
+    name: "Slack directory access denied",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      { suffix: "/channel-directory/lookup", method: "POST", bodyHasIds: false, status: 403 },
+    ],
+    actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
+    description:
+      "A denied lookup keeps manual exact-ID entry available and explains Secret permissions.",
+  },
+  slackDirectoryLoading: {
+    group: "Components/Channels",
+    name: "Slack directory loading",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [{ suffix: "/channel-directory/lookup", method: "POST", bodyHasIds: false, hold: true }],
+    actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
+    description:
+      "While lookup is pending, the picker announces loading and disables page navigation.",
+  },
+  slackDirectorySearchRace: {
+    group: "Components/Channels",
+    name: "New search supersedes pending results",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      {
+        suffix: "/channel-directory/lookup",
+        method: "POST",
+        bodyHasIds: false,
+        delayMs: 500,
+        once: true,
+      },
+    ],
+    actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
+    description:
+      "An older directory request is delayed. Search for platform before it returns; typing cancels the browser request and searches after 300 ms. Escape dismisses results and cancels a queued search. Enter searches immediately.",
+  },
+  slackDirectoryMissingSecret: {
+    group: "Components/Channels",
+    name: "Slack directory needs a bot Secret",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackBindings: "app",
+    actions: [click("Edit Slack"), { selector: "#slack-channel-ids-search", focus: true }],
+    description: "The picker explains that a Slack bot token Secret must be selected first.",
   },
   slackEveryone: {
     group: "Components/Channels",
@@ -1956,7 +2382,7 @@ export const scenarios = {
     actions: [
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
       click("Save configuration"),
     ],
     description:
@@ -1969,7 +2395,21 @@ export const scenarios = {
     slack: true,
     actions: [click("Edit Slack")],
     description:
-      "Search Slack token Secrets by name or ID, use arrow keys and Enter to select, and Escape to retain the current binding. Metadata is simulated within this Namespace.",
+      "Search Slack token Secrets by name or ID; options and selections show names only. Use arrow keys and Enter to select, and Escape to retain the current binding. Metadata is simulated within this Namespace.",
+  },
+  slackSecretNameCollision: {
+    group: "Components/Channels",
+    name: "Slack Secret action name collision",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    extraSecrets: [
+      { id: "sec_story_create_name", name: "Create new Secret..." },
+      { id: "sec_story_none_name", name: "No Secret bound" },
+      { id: "sec_story_bound_name", name: "Bound Secret" },
+    ],
+    actions: [click("Edit Slack")],
+    description:
+      "Open the bot token selector to compare Secret names with matching picker actions. Real Secret names remain unchanged and conflicting actions have a qualifier.",
   },
   slackCreateSecretModal: {
     group: "Components/Channels",
@@ -1982,6 +2422,10 @@ export const scenarios = {
     ],
     description:
       "Create new Secret opens a modal with an editable Agent-prefixed Name, a fixed Slack binding key, and a masked Secret value. Values are simulated and never read back.",
+    steps: [
+      "Enter a dummy value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
+      "Open Create new Secret again and confirm Value is empty. Close it, then click the backdrop again to dismiss the Slack editor.",
+    ],
   },
   slackDuplicateSecret: {
     group: "Components/Channels",
@@ -2130,17 +2574,10 @@ export const scenarios = {
   },
   credentials: {
     group: "Components/Credentials",
-    name: "Stored",
+    name: "Model authentication",
     path: `${draft}&tab=credentials`,
-    description: "Stored harness Secret reference and generated-runtime credential metadata.",
-  },
-  credentialsMissing: {
-    group: "Components/Credentials",
-    name: "Missing generated credentials",
-    path: `${draft}&tab=credentials`,
-    transport: false,
     description:
-      "Provision generated connection credentials before deployment. No values are returned to the console.",
+      "The saved harness authentication source can be reviewed or changed before deployment.",
   },
   credentialsSlack: {
     group: "Components/Credentials",
@@ -2181,7 +2618,7 @@ export const scenarios = {
       },
     ],
     description:
-      "Secret references remain preserved when Secret metadata cannot be listed in this Namespace.",
+      "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
   },
   credentialsSlackGrantDenied: {
     group: "Components/Credentials",
@@ -2210,26 +2647,6 @@ export const scenarios = {
     slackBindings: "app",
     description:
       "The app token is already bound; the missing bot token remains empty and required.",
-  },
-  credentialsLocked: {
-    group: "Components/Credentials",
-    name: "Generated credentials locked",
-    path: `${draft}&tab=credentials`,
-    deployed: true,
-    description:
-      "After the first revision, generated credentials cannot be regenerated here; channel Secrets remain separately editable.",
-  },
-  credentialsError: {
-    group: "Components/Credentials",
-    name: "Metadata unavailable",
-    path: `${draft}&tab=credentials`,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/runtime-credentials",
-        status: 503,
-      },
-    ],
-    description: "Metadata failure disables dependent provisioning and deployment controls.",
   },
   authenticationNavigation: {
     group: "Components/Credentials",
@@ -2265,7 +2682,7 @@ export const scenarios = {
     ],
     actions: [{ selector: "#harness-auth-secret", value: "sec_demo_model_replacement" }],
     description:
-      "The authentication source uses the same Secret picker and stages a different API-key Secret.",
+      "The authentication source picker displays Secret names and stages a different API-key Secret.",
   },
   authSecretReplacement: {
     group: "Components/Credentials",
@@ -2509,7 +2926,7 @@ export const scenarios = {
       "Choose Research assistant, fill Variable: name, then Use Preset.",
       "Review the Configuration, masked pre-existing model Secret reference, and four seeded workspace files; click Create Agent.",
       "Wait for the simulated provisioning and deployment to finish; the Console opens Workspace files for the admitted revision.",
-      "Use AgentRevision to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
+      "Use Versions to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
   },
@@ -2568,7 +2985,7 @@ export const scenarios = {
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-channel-ids", value: "CDEMO123" },
+      { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
       ...allowEveryoneInSlackChannels,
       { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
       ...createSlackBotSecret,
@@ -2635,7 +3052,7 @@ export const scenarios = {
       "Keep the default gpt-6-astra model and click Use Preset. Choose the existing DevDay Codex service account (simulated) Secret, or explicitly create a new simulated Secret. No credential is preselected. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
       "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
       "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
-      "Open Edit Slack. Confirm the four prefilled channels: oce-feedback (C0C49E7CS4A), oce-team (C0C43A2QA11), oce-feedback-test (C0C569NN9ME), and oce-team-test (C0C4A0JH2BG); mentions are not required. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
+      "Open Edit Slack. Confirm the six prefilled channels: oce-feedback (C0C49E7CS4A), oce-team (C0C43A2QA11), oce-feedback-test (C0C569NN9ME), oce-team-test (C0C4A0JH2BG), oce-community (C0C5KF0JLSC), and oce-community-test (C0C5KF0DWLQ); mentions are not required. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
       "Create Agent and keep the Console visible while the fixture progresses through provisioning and deployment activation until Workspace files open for the admitted revision.",
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],
@@ -2737,12 +3154,12 @@ export const scenarios = {
     deployed: true,
     slack: true,
     description:
-      "Edit the new revision while an admitted revision remains unchanged; deploy a new immutable revision.",
+      "Edit saved settings while the current version stays unchanged; deploy a new immutable version.",
     steps: [
-      "Open Edit Slack, add CNEW123 to Slack channel IDs, then Save configuration.",
-      "Select v1 in AgentRevision and open Channels: it still has the original settings.",
-      "While viewing v1, select Deploy new revision. It deploys the saved draft, not the viewed snapshot.",
-      "Refresh deployment and inspect the new revision. The prior snapshot remains readable.",
+      "Open Edit Slack, paste CNEW123 into Channels and press Enter, then Save configuration.",
+      "Select View version v1 and open Channels: it still has the original settings.",
+      "Select Create new version, then Deploy new version. The saved draft is deployed, not the viewed snapshot.",
+      "Refresh deployment and inspect the new version. The prior snapshot remains readable.",
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
     gap: "Native JSON edits use Configuration, while Slack has a dedicated drawer. The Slack drawer preserves existing policies; change unsupported policy fields through native JSON.",
@@ -2762,11 +3179,10 @@ export const scenarios = {
     description:
       "Save channel sender access as everyone, reopen the drawer, and verify the saved setting without changing direct-message access.",
     steps: [
-      "Open Edit Slack. Explicit channel user IDs disable the everyone checkbox.",
-      "Clear Allowed channel user IDs. Allow everyone in these channels becomes available.",
-      "Select Allow everyone in these channels and save the Configuration.",
-      'Reopen Edit Slack. The drawer shows Allow everyone selected for the saved users: ["*"] channel setting.',
-      "Turn everyone off to re-enable ID entry, then enter explicit IDs if you want to restrict channel senders before saving again.",
+      "Open Edit Slack and inspect the Specific people selection and saved people chips.",
+      "Choose Everyone in these channels from the access menu and save the Configuration.",
+      'Reopen Edit Slack. The drawer shows Everyone in these channels for the saved users: ["*"] channel setting.',
+      "Choose Specific people and select users if you want to restrict channel senders before saving again.",
     ],
     gap: "The fixture proves saved Console state and request shape only. Use a live Slack app to prove channel delivery.",
   },
@@ -2817,7 +3233,7 @@ export const scenarios = {
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
-      "Return to New revision and Deploy new revision to request running again.",
+      "Return to Create new version and Deploy new version to request running again.",
     ],
     gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
   },

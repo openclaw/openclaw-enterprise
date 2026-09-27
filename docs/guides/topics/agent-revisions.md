@@ -59,11 +59,18 @@ The commands below also use `jq`.
 
 ## Inspect an earlier revision
 
-In the console, open the Agent's **Configuration** tab and choose a revision
-from the **AgentRevision** selector. **Selected by Agent** identifies the active
-revision. **New revision** shows the current Configuration. Viewing an older
-revision does not select it for deployment. The [HTTP API](../../reference/api.md#agent-revisions)
+In the console, open the Agent's **Versions** list. **Current version** marks
+the revision selected by OCC; selecting a version shows its read-only details
+beside the list. **Create new version** opens the current saved Configuration;
+**Deploy new version** uses those saved settings and Agent plugin selections.
+Viewing an older version does not select it for deployment. The
+[HTTP API](../../reference/api.md#agent-revisions)
 also lists and reads revisions; the CLI has no revision history command.
+
+The **Plugins** tab shows the saved Agent selections in **Create new version** and the
+frozen selections in an admitted revision. Change and save draft plugin policies
+before deploying; editing the reusable Configuration JSON does not update these
+Agent-owned selections.
 
 The public API has no rollback operation. To return to an earlier configuration,
 restore the settings you need from your saved source file, using the older

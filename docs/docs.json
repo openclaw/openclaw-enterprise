@@ -165,6 +165,10 @@
                     "label": "Secrets"
                   },
                   {
+                    "page": "reference/credential-sources",
+                    "label": "Credential Sources"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }
@@ -282,11 +286,29 @@
                     ]
                   },
                   {
+                    "group": "Credential Gateway",
+                    "pages": [
+                      {
+                        "page": "reference/drivers/openshell-credential-gateway",
+                        "label": "OpenShell"
+                      }
+                    ]
+                  },
+                  {
                     "group": "Secrets",
                     "pages": [
                       {
                         "page": "reference/drivers/kubernetes-secret",
                         "label": "Kubernetes"
+                      }
+                    ]
+                  },
+                  {
+                    "group": "Channels",
+                    "pages": [
+                      {
+                        "page": "reference/drivers/slack-channel",
+                        "label": "Slack Directory"
                       }
                     ]
                   },
@@ -616,12 +638,20 @@
                     "group": "Driver Contracts",
                     "pages": [
                       {
+                        "page": "reference/drivers/channel",
+                        "label": "Channel"
+                      },
+                      {
                         "page": "reference/drivers/compute",
                         "label": "Compute"
                       },
                       {
                         "page": "reference/drivers/configuration",
                         "label": "Configuration"
+                      },
+                      {
+                        "page": "reference/drivers/credential-gateway",
+                        "label": "Credential Gateway"
                       },
                       {
                         "page": "reference/drivers/iam",
@@ -694,6 +724,14 @@
                         "label": "Local Tests"
                       },
                       {
+                        "page": "testing/module-boundaries",
+                        "label": "Module Boundaries"
+                      },
+                      {
+                        "page": "testing/repository-boundaries",
+                        "label": "Repository Boundaries"
+                      },
+                      {
                         "page": "testing/fixtures-and-scenarios",
                         "label": "Fixtures and Scenarios"
                       },
@@ -741,6 +779,7 @@
               }
             ],
             "hidden": [
+              "guides/deploy/openshell-credential-sources",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -754,7 +793,9 @@
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
+              "flows/audit-ledger",
               "flows/controller-worker",
+              "flows/agent-deployment-diagnostics",
               "flows/platform-console",
               "flows/platform-console/agent-editing",
               "flows/configuration-driver",
@@ -768,8 +809,11 @@
               "flows/harness-execution-topology",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
+              "flows/credential-source-lifecycle",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
+              "flows/agent-channel-directory",
+              "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
               "flows/kubernetes-existing-namespace-placement",

@@ -7,7 +7,7 @@ import { slack } from "../../apps/controller/src/console/channels/slack.mjs";
 const fields = {
   "#slack-channel-ids": { value: "CEXAMPLE" },
   "#slack-allowed-user-ids": { value: "UEXAMPLE" },
-  "#slack-allow-everyone": { checked: false },
+  "#slack-channel-access": { value: "selected" },
   "#slack-require-mention": { checked: true },
   "#slack-dm-policy": { value: "", dataset: {} },
   "#slack-dm-user-ids": { value: "" },
