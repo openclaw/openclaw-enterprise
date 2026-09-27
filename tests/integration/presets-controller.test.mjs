@@ -804,10 +804,10 @@ test("Community Agent Preset installs and creates a dedicated Agent with communi
   assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
   assert.equal(configuration.data.values.channels.slack.dmPolicy, "disabled");
   assert.deepEqual(configuration.data.values.channels.slack.channels, {
-    C0C49E7CS4A: { requireMention: false, users: ["*"] },
     C0C43A2QA11: { requireMention: false, users: ["*"] },
-    C0C569NN9ME: { requireMention: false, users: ["*"] },
     C0C4A0JH2BG: { requireMention: false, users: ["*"] },
+    C0C5KF0JLSC: { requireMention: false, users: ["*"] },
+    C0C5KF0DWLQ: { requireMention: false, users: ["*"] },
   });
   const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
