@@ -70,6 +70,15 @@
         "native workspace setup preserves empty/exact API content and resumes partial writes without clobbering divergence",
         "native workspace setup rejects stale defaults and hard-linked files without modifying external data"
       ]
+    },
+    {
+      "path": "tests/integration/container-registry-real.test.mjs",
+      "expectedTests": [
+        "publication updates aliases using real Skopeo and a multi-platform registry"
+      ]
     }
-  ]
+  ],
+  "env": {
+    "OCC_TEST_CONTAINER_REGISTRY": "1"
+  }
 }

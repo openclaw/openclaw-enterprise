@@ -231,8 +231,10 @@ end-to-end tests.
 
 Local gate and recovery tests: `node --test tests/integration/container-{release,resume,promote}.test.mjs`.
 Recovery tests use HTTP and transport fixtures; they prove gate ordering, original
-identity, conflict rejection, unchanged existing images, and receipt behavior,
-not a live GHCR transfer.
+identity, conflict rejection, unchanged existing images, and receipt behavior.
+The [registry integration](../docs/testing/images.md#container-publication-registry-proof)
+uses real Skopeo and a disposable registry to check alias replacement and both
+platforms. Neither test proves a live GHCR transfer.
 Workflow syntax: `actionlint .github/workflows/*.yml`.
 Actual no-push builds and the first private-registry transfer still require
 their respective authorized hosted runs; configuration and unit tests alone

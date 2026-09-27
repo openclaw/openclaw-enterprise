@@ -4,6 +4,22 @@ Check packaged controller and runtime images and render the production Helm
 chart. These checks use images present in the local Docker engine, either pulled
 from a registry or built from source. They do not require model credentials.
 
+## Container publication registry proof
+
+The Images and Packaging CI lane runs the publication command against a
+loopback-only disposable Docker Distribution registry using Skopeo 1.13.3. Run it
+locally from the repository root with Docker and that Skopeo version installed:
+
+```sh
+OCC_TEST_CONTAINER_REGISTRY=1 node --test tests/integration/container-registry-real.test.mjs
+```
+
+The test pulls a digest-pinned registry image and removes its own container. It
+uses real multi-platform OCI archives, Skopeo transfers and registry reads, with
+fixture GitHub metadata and a local registry address adapter. It verifies alias
+replacement and the immutable source digests; it does not prove GHCR access,
+GitHub permissions, or hosted publication. Without the selector the test skips.
+
 ## Images and Helm
 
 ### Check published images

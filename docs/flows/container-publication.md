@@ -173,7 +173,10 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 
 - Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
   for platform/archive validation and release gate coverage. The archive case uses
-  real OCI blobs and tar; recovery uses transport fixtures, not a live registry.
+  real OCI blobs and tar; recovery uses transport fixtures.
+- Run the [registry integration](../testing/images.md#container-publication-registry-proof)
+  to check real Skopeo alias replacement against a disposable local registry.
+  This does not prove GHCR access.
 - Run `actionlint .github/workflows/container-publish.yml` for workflow syntax.
 - In a hosted preparation, require smoke output for both architectures of both
   images. A config mismatch, missing platform, or failed startup blocks upload.
