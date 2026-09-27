@@ -243,8 +243,24 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
   assert.ok(linear);
   assert.equal(linear.id, linearPluginId);
   assert.equal(linear.remoteId, "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c");
-  assert.equal(linear.tools, null);
-  assert.equal(linear.selectableWithoutTools, true);
+  assert.equal(linear.selectableWithoutTools, undefined);
+  assert.equal(linear.tools?.length, 42);
+  const linearTools = new Map(linear.tools.map((tool) => [tool.id, tool]));
+  assert.deepEqual(linearTools.get("asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.fetch"), {
+    id: "asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.fetch",
+    ownerId: "asdk_app_69a089a326dc8191b32a3f2553f5be2c",
+    name: "Fetch",
+    description: "Fetch a Linear issue, project, initiative, or document by ID.",
+    writes: false,
+  });
+  assert.equal(
+    linearTools.get("asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.save_issue")?.writes,
+    true,
+  );
+  assert.equal(
+    linearTools.get("asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.save_issue")?.destructive,
+    true,
+  );
   assert.deepEqual(await driver.getCatalogPlugin({ pluginId: linear.remoteId }), linear);
   const github = page.plugins.find((entry) => entry.name === "GitHub");
   assert.ok(github);

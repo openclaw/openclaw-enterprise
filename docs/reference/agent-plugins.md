@@ -26,9 +26,11 @@ Dedicated Codex supports selected concrete apps from the
 `approve`, independent per-tool enablement/approval overrides, a default reviewer,
 and the Codex destructive default in `driverPolicy`. It rejects per-tool reviewers.
 Nothing is selected by default. Scoped tool IDs must match the app's native
-runtime inventory before startup can complete. The internal Codex catalog reader
-currently returns `tools: null`. This policy interface does not provide an HTTP
-catalog discovery endpoint.
+runtime inventory before startup can complete. The hardcoded curated catalog
+lists recorded Linear tools so callers can configure its per-tool policies before
+deployment; other curated entries may still return `tools: null` until their tool
+inventory is verified. This policy interface does not provide an HTTP catalog
+discovery endpoint.
 
 These are contract and translation capabilities. Effective enforcement requires
 compatible OpenClaw and Codex runtime versions and session settings that preserve

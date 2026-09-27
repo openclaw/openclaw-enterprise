@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   normalizePresetTemplate,
@@ -10,6 +11,27 @@ import {
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const otherNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
 const secretId = "sec_00000000-0000-4000-8000-000000000001";
+
+test("bundled Codex Presets preserve human review for native tool calls", async () => {
+  const presetsUrl = new URL("../../deploy/presets/", import.meta.url);
+  const files = await readdir(presetsUrl);
+  const codexPresets = [];
+  for (const file of files.toSorted()) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const artifact = JSON.parse(await readFile(new URL(file, presetsUrl), "utf8"));
+    const appServer =
+      artifact.template?.configuration?.values?.plugins?.entries?.codex?.config?.appServer;
+    if (appServer === undefined) {
+      continue;
+    }
+    codexPresets.push(artifact.name);
+    assert.equal(appServer.approvalPolicy, "on-request", artifact.name);
+    assert.equal(appServer.approvalsReviewer, "user", artifact.name);
+  }
+  assert.notEqual(codexPresets.length, 0);
+});
 
 test("preset variables produce typed launch values and native model keys without interpreting inserted data", () => {
   const template = {

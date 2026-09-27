@@ -61,7 +61,8 @@ fetch settings.
 
 OpenClaw uses the ordinary OpenAI provider endpoint and native harness. It does
 not load the Codex plugin, its app-server configuration, or its hosted cached-search override. The Codex-specific
-sandbox and network proxy settings therefore apply only to **Standard Codex**.
+sandbox, approval, and network proxy settings therefore apply only to
+**Standard Codex**.
 
 ## DevDay custom presets
 
@@ -72,6 +73,9 @@ The `model` variable defaults to `gpt-6-astra` and remains editable; its rendere
 model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
 and `model` variables. After **Use Preset**, choose an existing service account Secret or
 **Create new Secret...** before creating the Agent.
+Their Codex app-server configuration uses `approvalPolicy: on-request` and
+`approvalsReviewer: user`, matching **Standard Codex**, so Codex asks for
+approval instead of silently allowing native tool calls.
 Load a copy beside your YAML as in the example above, or reference the shipped
 container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
 by `includeDefaults` alone.

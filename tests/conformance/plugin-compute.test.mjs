@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -2477,13 +2478,19 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       ],
     },
     {
-      name: "nonzero native exit despite completed assistant turn",
+      name: "completed assistant turn does not wait for native wrapper exit status",
       events: [started, assistant, completed],
+      probeStatus: 1,
+      ready: true,
+    },
+    {
+      name: "nonzero native exit before completed assistant turn",
+      events: [started, assistant],
       probeStatus: 1,
     },
   ];
   for (const scenario of scenarios) {
-    await t.test(scenario.name, () => {
+    await t.test(scenario.name, async () => {
       const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
       const marker = join(directory, "ready");
       writeFileSync(marker, "stale\n", { mode: 0o600 });
@@ -2494,12 +2501,20 @@ test("Codex runtime gates startup and readiness on a successful native authentic
         let statusHandler;
         let appServerStarts = 0;
         let nativeCalls = 0;
+        let probeStarts = 0;
         const sandbox = {
+          Buffer,
           URL,
           console: {
             error(message) {
               diagnostics.push(message);
             },
+          },
+          setTimeout(callback, delay) {
+            return setTimeout(callback, delay);
+          },
+          clearTimeout(timer) {
+            clearTimeout(timer);
           },
           setInterval(callback, delay) {
             idleTimers.push({ callback, delay });
@@ -2520,6 +2535,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
               APP_SERVER_TOKEN: "fixture-transport-token",
               APP_SERVER_PORT: "4500",
             },
+            kill() {},
             on() {},
             exit() {
               assert.fail("startup must either remain unready or start the app server");
@@ -2549,7 +2565,8 @@ test("Codex runtime gates startup and readiness on a successful native authentic
               return {
                 spawnSync(command, args, options) {
                   nativeCalls++;
-                  if (nativeCalls === 1 && scenario.pat) {
+                  assert.equal(nativeCalls, 1);
+                  if (scenario.pat) {
                     assert.equal(command, "codex");
                     assert.deepEqual(Array.from(args), [
                       "-c",
@@ -2559,24 +2576,31 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                     ]);
                     assert.equal(options.input, "at-fixture-token");
                   }
-                  if (nativeCalls === 2) {
+                  return { status: scenario.loginStatus ?? 0 };
+                },
+                spawn(_command, args) {
+                  const child = new EventEmitter();
+                  child.stdout = new EventEmitter();
+                  child.stderr = new EventEmitter();
+                  child.stderr.resume = () => {};
+                  child.kill = () => {};
+                  if (args.includes("exec")) {
+                    probeStarts++;
                     assert.equal(sandbox.process.env.CODEX_ACCESS_TOKEN, undefined);
                     assert.equal(sandbox.process.env.OPENAI_API_KEY, undefined);
                     assert.equal(sandbox.process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
+                    process.nextTick(() => {
+                      child.stdout.emit(
+                        "data",
+                        `${scenario.events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+                      );
+                      child.emit("close", scenario.probeStatus ?? 0);
+                    });
+                    return child;
                   }
-                  // Substitute only native process output; execute the production
-                  // login/probe parser and readiness control flow unmodified.
-                  return nativeCalls === 1
-                    ? { status: scenario.loginStatus ?? 0 }
-                    : {
-                        status: scenario.probeStatus ?? 0,
-                        stdout: scenario.events.map((event) => JSON.stringify(event)).join("\n"),
-                      };
-                },
-                spawn(_command, args) {
                   assert.ok(args.includes("app-server"));
                   appServerStarts++;
-                  return { on() {}, kill() {} };
+                  return child;
                 },
               };
             }
@@ -2584,7 +2608,9 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           },
         };
         vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
-        assert.equal(nativeCalls, scenario.loginStatus === 1 ? 1 : 2);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(nativeCalls, 1);
+        assert.equal(probeStarts, scenario.loginStatus === 1 ? 0 : 1);
         assert.ok(statusHandler);
         const runtimeStatus = readRuntimeStatusFromHandler(statusHandler);
         assert.equal(runtimeStatus.revisionId, revisionId);
@@ -2621,7 +2647,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   }
 });
 
-test("Codex agent app-server uses a per-startup plugin status token", () => {
+test("Codex agent app-server uses a per-startup plugin status token", async () => {
   const directory = mkdtempSync(join(tmpdir(), "oce-plugin-token-"));
   const marker = join(directory, "ready");
   const baseToken = "capability-token-test-value";
@@ -2691,15 +2717,21 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
           };
         }
         if (specifier === "node:child_process") {
-          let nativeCalls = 0;
           return {
             spawnSync() {
-              nativeCalls += 1;
-              return nativeCalls === 1
-                ? { status: 0 }
-                : {
-                    status: 0,
-                    stdout: [
+              return { status: 0 };
+            },
+            spawn(command, args) {
+              const child = new EventEmitter();
+              child.stdout = new EventEmitter();
+              child.stderr = new EventEmitter();
+              child.stderr.resume = () => {};
+              child.kill = () => {};
+              if (args.includes("exec")) {
+                process.nextTick(() => {
+                  child.stdout.emit(
+                    "data",
+                    [
                       { type: "thread.started" },
                       { type: "turn.started" },
                       {
@@ -2709,12 +2741,14 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
                       { type: "turn.completed" },
                     ]
                       .map((event) => JSON.stringify(event))
-                      .join("\n"),
-                  };
-            },
-            spawn(command, args) {
+                      .join("\n") + "\n",
+                  );
+                  child.emit("close", 0);
+                });
+                return child;
+              }
               appServerSpawn = { command, args };
-              return { on() {}, kill() {} };
+              return child;
             },
           };
         }
@@ -2723,6 +2757,7 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
     };
 
     vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.ok(statusHandler);
     assert.equal(appServerSpawn.command, "codex");

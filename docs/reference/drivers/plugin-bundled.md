@@ -32,14 +32,16 @@ drivers:
 ```
 
 The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
-Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
-identities and presentation metadata do not include tool inventory or
-account-specific availability. Notion, Figma, Canva, Sentry, and Adobe are
-unavailable because their recorded releases require unsupported skills or local
-components. Select a plugin and set its default policy; per-tool controls are
-unavailable until the catalog supplies tool details. Startup resolves native
-metadata independently and still requires the Agent's actual authentication and
-provider access. Catalog membership does not grant access or prove execution.
+Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Linear includes
+recorded tool inventory from a verified Codex release, so Create Agent can set
+per-tool policies before deployment. Other entries record identities and
+presentation metadata but not tool inventory or account-specific availability.
+Notion, Figma, Canva, Sentry, and Adobe are unavailable because their recorded
+releases require unsupported skills or local components. Select a plugin and set
+its default policy; set per-tool controls only for catalog entries that list
+tools. Startup resolves native metadata independently and still requires the
+Agent's actual authentication and provider access. Catalog membership does not
+grant access or prove execution.
 
 An optional controller-side native `listCatalog` reader for hosted mode uses a
 separate Codex profile:

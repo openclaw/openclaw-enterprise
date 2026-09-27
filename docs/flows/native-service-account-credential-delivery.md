@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-23
-last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-09-27
+last_updated_session: authoring-run/e7234a7c-3afd-45bb-970e-d6b24ddd56ed
 ---
 
 # Harness Authentication Binding Flow
@@ -155,10 +155,12 @@ and Kubernetes workload identity remain separate credentials.
 Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
 stdin; managed account login forces the admitted workspace. Direct service account token login uses `--with-access-token` without a caller-supplied workspace; native whoami validates and hydrates identity. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
 inputs and failed login prevent app-server startup. A bounded native turn against
-the primary model must then complete successfully. The probe ignores user rules
-and configuration, disables execution and external tools, and applies read-only
-filesystem policy without approval grants. Tool events fail the probe. Login
-state remains in the bounded ephemeral home.
+the primary model must then complete successfully. Codex accepts the completed
+turn event instead of waiting for the native wrapper process to exit naturally,
+then stops the owned probe process and waits only for bounded cleanup. The probe
+ignores user rules and configuration, disables execution and external tools, and
+applies read-only filesystem policy without approval grants. Tool events fail
+the probe. Login state remains in the bounded ephemeral home.
 
 Embedded OpenClaw consumes the selected provider's native API key and runs one bounded native
 primary-model probe in the actual gateway startup, with tools and fallback
@@ -213,6 +215,8 @@ history cannot restore historical Secret values.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 01:07: Clarify that Codex startup accepts a completed model turn before native process exit while keeping the probe bounded. (authoring-run/e7234a7c-3afd-45bb-970e-d6b24ddd56ed - 7c3ecbfce4fa38b19cdd7fbffd179d496cc52e29)
 
 - 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 

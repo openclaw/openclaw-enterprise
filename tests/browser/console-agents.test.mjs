@@ -3775,13 +3775,99 @@ test("Agent detail saves plugin changes for the next revision without changing a
   );
   assert.deepEqual(beforeRetry.data.plugins, originalPlugins);
 
-  const saveResponse = page.waitForResponse(
+  let simulateLostResponse = true;
+  const lostResponseRequestCount = pathRequests(
+    requests,
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  ).length;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    async (route) => {
+      if (route.request().method() === "PATCH" && simulateLostResponse) {
+        simulateLostResponse = false;
+        await route.fetch();
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "DEPENDENCY_UNAVAILABLE",
+              message: "The selected preview simulates this failure.",
+            },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000000435" },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
+  const lostResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
-      response.request().method() === "PATCH",
+      response.request().method() === "PATCH" &&
+      response.status() === 503,
   );
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
-  assert.equal((await saveResponse).status(), 200);
+  assert.equal((await lostResponse).status(), 503);
+  await page.getByText("Outcome unknown. Plugin selections may have been saved.").waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save plugin selections" }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(
+    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).length,
+    lostResponseRequestCount + 1,
+  );
+  const afterLostResponse = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  assert.deepEqual(afterLostResponse.data.plugins, editedPlugins);
+
+  await page.getByRole("button", { name: "Reload plugin selections", exact: true }).click();
+  await page.getByText("No plugin changes to save.").waitFor();
+  assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await json.fill(`\n${JSON.stringify(editedPlugins, null, 2)}\n`);
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  await page.getByText("No plugin changes to save.").waitFor();
+  assert.equal(await json.inputValue(), JSON.stringify(editedPlugins, null, 2));
+  assert.equal(
+    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).length,
+    lostResponseRequestCount + 1,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+
+  const retainedAfterNoop = {
+    ...editedPlugins,
+    [pluginId]: { ...editedPlugins[pluginId], enabled: true },
+  };
+  await json.fill(JSON.stringify(retainedAfterNoop, null, 2));
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("heading", { name: "Plugins", exact: true }).waitFor();
+  assert.deepEqual(
+    JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
+    retainedAfterNoop,
+  );
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await page
+    .getByLabel("Plugin selections JSON")
+    .fill(`\n${JSON.stringify(editedPlugins, null, 2)}\n`);
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  await page.getByText("No plugin changes to save.").waitFor();
+  assert.equal(
+    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).length,
+    lostResponseRequestCount + 1,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+
   assert.deepEqual(
     pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).map(
       ({ body }) => body.plugins,
@@ -3871,8 +3957,22 @@ test("Agent draft browses the curated catalog without a saved Secret", async (t)
     namespace.id,
     "Curated plugin Agent",
     nativeValues("curated-revision", { harnessId: "codex" }),
-    { executionMode: "dedicated" },
+    { executionMode: "dedicated", harnessAuth: null },
   );
+  const linearPluginId = "codex-plugin:linear@openai-curated-remote";
+  const fetchTool = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.fetch";
+  const listIssuesTool = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.list_issues";
+  const saveIssueTool = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.save_issue";
+  const expectedPlugins = {
+    [linearPluginId]: {
+      enabled: true,
+      tools: {
+        [fetchTool]: { approval: "approve" },
+        [listIssuesTool]: { approval: "approve" },
+        [saveIssueTool]: { approval: "prompt" },
+      },
+    },
+  };
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
@@ -3887,12 +3987,47 @@ test("Agent draft browses the curated catalog without a saved Secret", async (t)
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
     [{}],
   );
+  assert.equal(
+    requests.some((request) => request.path.includes("/secrets")),
+    false,
+  );
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
   assert.equal(pathRequests(requests, "GET", `${catalogPath}/capabilities`).length, 1);
-  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
-    "codex-plugin:linear@openai-curated-remote": { enabled: true },
-  });
+  for (const [toolId, label] of [
+    [fetchTool, "Fetch approval"],
+    [listIssuesTool, "List issues approval"],
+    [saveIssueTool, "Save issue approval"],
+  ]) {
+    const row = dialog.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
+    await row.waitFor();
+    await row.locator("summary").click();
+    await dialog
+      .getByLabel(label, { exact: true })
+      .selectOption(toolId === saveIssueTool ? "prompt" : "approve");
+  }
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), expectedPlugins);
+  requests.length = 0;
+  const savedPlugins = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await savedPlugins).status(), 200);
+  assert.deepEqual(
+    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).map(
+      (request) => request.body,
+    ),
+    [{ configurationId: agent.configurationId, plugins: expectedPlugins }],
+  );
+  assert.equal(
+    requests.some((request) => request.path.includes("/secrets")),
+    false,
+  );
+  const savedAgent = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(savedAgent.data.plugins, expectedPlugins);
 });
 
 test("Agent credentials choose existing Secrets for harness authentication", async (t) => {
@@ -5129,6 +5264,18 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
+  const linearPluginId = "codex-plugin:linear@openai-curated-remote";
+  const fetchTool = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.fetch";
+  const saveIssueTool = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/linear.save_issue";
+  const selected = {
+    [linearPluginId]: {
+      enabled: true,
+      tools: {
+        [fetchTool]: { approval: "approve" },
+        [saveIssueTool]: { approval: "prompt" },
+      },
+    },
+  };
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
@@ -5146,12 +5293,15 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   );
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
-  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
-    "codex-plugin:linear@openai-curated-remote": { enabled: true },
-  });
+  assert.equal(await dialog.locator("details.plugin-tool-row").count(), 42);
+  await dialog.locator(`details.plugin-tool-row[data-tool="${fetchTool}"] summary`).click();
+  await dialog.getByLabel("Fetch approval", { exact: true }).selectOption("approve");
+  await dialog.locator(`details.plugin-tool-row[data-tool="${saveIssueTool}"] summary`).click();
+  await dialog.getByLabel("Save issue approval", { exact: true }).selectOption("prompt");
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
   assert.deepEqual(
     pathRequests(requests, "POST", `${catalogPath}/details`).map(({ body }) => body),
-    [{ pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
+    [],
   );
 });
 

@@ -145,6 +145,13 @@ export function renderAgentPlugins(
       feedback.textContent = "Enter a valid Plugin selections JSON object.";
       return;
     }
+    if (JSON.stringify(plugins) === JSON.stringify(baseline.plugins ?? {})) {
+      input.value = initialText;
+      input.setCustomValidity("");
+      updateState();
+      feedback.textContent = "No plugin changes to save.";
+      return;
+    }
     pending = true;
     feedback.textContent = "Checking saved plugin selections…";
     updateState();

@@ -1760,6 +1760,9 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
 
 startPluginRuntimeStatusServer();
+const CODEX_MODEL_PROBE_TIMEOUT_MS = 90000;
+const CODEX_MODEL_PROBE_CLEANUP_MS = 4000;
+const CODEX_MODEL_PROBE_MAX_OUTPUT_BYTES = 262144;
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
@@ -1811,15 +1814,86 @@ const login = spawnSync("codex", loginArguments, {
 if (login.status !== 0 || login.error) {
   holdFailedAuthentication("login", "LOGIN_FAILED");
 } else {
+(async () => {
 delete process.env.CODEX_ACCESS_TOKEN;
 delete process.env.OPENAI_API_KEY;
 delete process.env.CODEX_CHATGPT_WORKSPACE_ID;
 
+function validateCodexProbeEvents(output, complete) {
+  const lines = output.split("\n");
+  const hasIncompleteTrailingLine = !complete && !output.endsWith("\n");
+  if (hasIncompleteTrailingLine) lines.pop();
+  const allowed = new Set(["thread.started", "turn.started", "turn.completed", "item.started", "item.updated", "item.completed"]);
+  let threadStarted = false;
+  let turnStarted = false;
+  let turnCompleted = false;
+  let hasAgentMessage = false;
+  let lastType;
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return "failed";
+    }
+    if (!allowed.has(event.type)) return "failed";
+    if (turnCompleted) return "failed";
+    if (event.type === "thread.started") {
+      if (threadStarted || turnStarted) return "failed";
+      threadStarted = true;
+    } else if (event.type === "turn.started") {
+      if (turnStarted) return "failed";
+      turnStarted = true;
+    } else if (event.type.startsWith("item.")) {
+      const itemType = event.item?.type;
+      if (!["agent_message", "reasoning", "error"].includes(itemType)) return "failed";
+      if (!turnStarted && itemType !== "error") return "failed";
+      if (
+        event.type === "item.completed" &&
+        itemType === "agent_message" &&
+        typeof event.item.text === "string" &&
+        event.item.text.trim().length > 0
+      ) {
+        hasAgentMessage = true;
+      }
+    } else if (event.type === "turn.completed") {
+      if (!turnStarted) return "failed";
+      turnCompleted = true;
+    }
+    lastType = event.type;
+  }
+  if (turnStarted && turnCompleted && hasAgentMessage && lastType === "turn.completed") {
+    return hasIncompleteTrailingLine ? "pending" : "succeeded";
+  }
+  return complete ? "failed" : "pending";
+}
+
+function stopCodexProbeProcess(child) {
+  const terminate = (signal) => {
+    try {
+      if (child.pid !== undefined && process.platform !== "win32") {
+        process.kill(-child.pid, signal);
+      } else {
+        child.kill(signal);
+      }
+    } catch {}
+  };
+  terminate("SIGTERM");
+  const killTimeout = setTimeout(() => terminate("SIGKILL"), 2_000);
+  killTimeout.unref();
+  return killTimeout;
+}
+
 function probeCodexAuthenticationFailureCode() {
   const directory = mkdtempSync("/tmp/codex-auth-probe-");
-  try {
+  return new Promise((resolve) => {
     const selectedModel = process.env.OPENCLAW_HARNESS_MODEL;
-    if (typeof selectedModel !== "string" || !/^(openai|codex)\/.+/.test(selectedModel)) return "UNAVAILABLE";
+    if (typeof selectedModel !== "string" || !/^(openai|codex)\/.+/.test(selectedModel)) {
+      rmSync(directory, { recursive: true, force: true });
+      resolve("UNAVAILABLE");
+      return;
+    }
     // Pinned native features suppress executable and external tools. Metadata may
     // still advertise apply_patch: read-only + never denies its writes. Any tool
     // event makes this probe unsuccessful, including harmless request_user_input.
@@ -1831,7 +1905,7 @@ function probeCodexAuthenticationFailureCode() {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    const result = spawnSync("codex", [
+    const child = spawn("codex", [
       ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -1847,33 +1921,71 @@ function probeCodexAuthenticationFailureCode() {
     ], {
       cwd: directory,
       env: { PATH: process.env.PATH, HOME: directory, CODEX_HOME: process.env.CODEX_HOME, RUST_LOG: "error" },
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    if (result.error?.code === "ETIMEDOUT" || result.signal === "SIGKILL") return "MODEL_PROBE_TIMEOUT";
-    if (result.status !== 0 || result.error) return "MODEL_PROBE_FAILED";
-    const events = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
-    const allowed = new Set(["thread.started", "turn.started", "turn.completed", "item.started", "item.updated", "item.completed"]);
-    // Native item.error is an advisory (for example missing catalog metadata),
-    // distinct from fatal top-level error/turn.failed. A completed model turn is
-    // still required; no tool item can satisfy this authentication check.
-    if (events.some((event) => !allowed.has(event.type) ||
-      (event.type.startsWith("item.") && !["agent_message", "reasoning", "error"].includes(event.item?.type)))) return "MODEL_PROBE_FAILED";
-    return events.filter((event) => event.type === "turn.completed").length === 1 &&
-      events.filter((event) => event.type === "turn.started").length === 1 &&
-      events.at(-1)?.type === "turn.completed" &&
-      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
-        typeof event.item.text === "string" && event.item.text.trim().length > 0)
-        ? undefined
-        : "MODEL_PROBE_FAILED";
-  } catch {
-    return "MODEL_PROBE_FAILED";
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+    let settled = false;
+    let stoppingAfterSuccess = false;
+    let stdout = "";
+    let stdoutBytes = 0;
+    let cleanupTimeout;
+    let killTimeout;
+    const finish = (code, options = {}) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(cleanupTimeout);
+      clearTimeout(killTimeout);
+      if (options.stopChild !== false) stopCodexProbeProcess(child);
+      rmSync(directory, { recursive: true, force: true });
+      resolve(code);
+    };
+    const finishAfterProbeCleanup = () => {
+      if (settled || stoppingAfterSuccess) return;
+      stoppingAfterSuccess = true;
+      killTimeout = stopCodexProbeProcess(child);
+      cleanupTimeout = setTimeout(() => finish(undefined, { stopChild: false }), CODEX_MODEL_PROBE_CLEANUP_MS);
+      cleanupTimeout.unref();
+    };
+    const timeout = setTimeout(() => {
+      const status = validateCodexProbeEvents(stdout, true);
+      if (status === "succeeded") {
+        finishAfterProbeCleanup();
+      } else {
+        finish("MODEL_PROBE_TIMEOUT");
+      }
+    }, CODEX_MODEL_PROBE_TIMEOUT_MS);
+    timeout.unref();
+    child.stdout?.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      stdoutBytes += Buffer.byteLength(text, "utf8");
+      if (stdoutBytes > CODEX_MODEL_PROBE_MAX_OUTPUT_BYTES) {
+        finish("MODEL_PROBE_FAILED");
+        return;
+      }
+      stdout += text;
+      const status = validateCodexProbeEvents(stdout, false);
+      if (status === "succeeded") {
+        finishAfterProbeCleanup();
+      } else if (status === "failed") {
+        finish("MODEL_PROBE_FAILED");
+      }
+    });
+    child.stderr?.resume();
+    child.on("error", () => finish("MODEL_PROBE_FAILED", { stopChild: false }));
+    child.on("close", (code) => {
+      if (settled) return;
+      if (stoppingAfterSuccess) {
+        finish(undefined, { stopChild: false });
+        return;
+      }
+      const status = code === 0 ? validateCodexProbeEvents(stdout, true) : "failed";
+      finish(status === "succeeded" ? undefined : "MODEL_PROBE_FAILED", { stopChild: false });
+    });
+  });
 }
 
-const codexAuthenticationFailureCode = probeCodexAuthenticationFailureCode();
+const codexAuthenticationFailureCode = await probeCodexAuthenticationFailureCode();
 if (codexAuthenticationFailureCode !== undefined) {
   holdFailedAuthentication("model-probe", codexAuthenticationFailureCode);
 } else {
@@ -1938,6 +2050,7 @@ child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 
   }
 })();
 }
+})().catch(() => holdFailedAuthentication("model-probe", "MODEL_PROBE_FAILED"));
 }
 `;
 

@@ -121,9 +121,13 @@ Readiness polling does not repeat model calls.
 Both startup checks call the configured primary model. OpenClaw disables tools
 and model fallback. Codex ignores user configuration and rules, disables execution
 and external tools, and uses read-only filesystem policy without approval grants;
-a tool event cannot satisfy its success check. Each probe has a process timeout
-and captures native output, emitting only a fixed failure message if unsuccessful.
-A failed Codex probe also holds the process unready until restart.
+a tool event cannot satisfy its success check. Codex accepts only one completed
+model turn with a nonempty assistant message, stops the owned probe process after
+success, waits only for bounded cleanup, and fails closed for malformed output,
+failed turns, tool events, or partial output at the deadline. Each probe has a
+bounded deadline and captures native output, emitting only a fixed failure
+message if unsuccessful. A failed Codex probe also holds the process unready
+until restart.
 
 These startup checks make provider requests and may incur model usage charges.
 They do not verify access to every other configured model or guarantee continued validity

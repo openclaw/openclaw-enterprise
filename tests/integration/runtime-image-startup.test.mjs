@@ -1003,6 +1003,7 @@ test(
     const probe = `
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
+const { EventEmitter } = require("node:events");
 const vm = require("node:vm");
 const fs = require("node:fs");
 const { createInterface } = require("node:readline");
@@ -1015,22 +1016,33 @@ const environment = {
 };
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
-  URL, console, setTimeout, setInterval,
+  Buffer, URL, console, setTimeout, clearTimeout, setInterval,
   process: { env: environment, on() {}, exit() {} },
   require(name) {
     if (name !== "node:child_process") return require(name);
     return {
       spawnSync(_command, args) {
-        return args.includes("login") ? { status: 0 } : {
-          status: 0,
-          stdout: [
-            { type: "turn.started" },
-            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
-            { type: "turn.completed" },
-          ].map(JSON.stringify).join("\\n"),
-        };
+        assert.ok(args.includes("login"));
+        return { status: 0 };
       },
       spawn(command, args, options) {
+        if (args.includes("exec")) {
+          const probe = new EventEmitter();
+          probe.stdout = new EventEmitter();
+          probe.stderr = new EventEmitter();
+          probe.stderr.resume = () => {};
+          probe.kill = () => {};
+          process.nextTick(() => {
+            probe.stdout.emit("data", [
+              { type: "thread.started" },
+              { type: "turn.started" },
+              { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+              { type: "turn.completed" },
+            ].map(JSON.stringify).join("\\n") + "\\n");
+            probe.emit("close", 0);
+          });
+          return probe;
+        }
         const appServer = args.indexOf("app-server");
         assert.ok(appServer > 0);
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
@@ -1041,27 +1053,34 @@ vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
     };
   },
 });
-assert.ok(native);
+async function waitForNative() {
+  for (let attempt = 0; attempt < 20 && !native; attempt++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(native);
+}
 const pending = new Map();
 let nextId = 1;
-const lines = createInterface({ input: native.stdout });
-lines.on("line", (line) => {
-  const message = JSON.parse(line);
-  if (pending.has(message.id)) {
-    const { resolve, reject } = pending.get(message.id);
-    pending.delete(message.id);
-    message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
-  }
-});
-native.stderr.resume();
+let lines;
 const rpc = (method, params) => new Promise((resolve, reject) => {
   const id = nextId++;
   pending.set(id, { resolve, reject });
   native.stdin.write(JSON.stringify({ id, method, params }) + "\\n");
 });
-const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1; }, 20000);
+const timeout = setTimeout(() => { native?.kill("SIGKILL"); process.exitCode = 1; }, 20000);
 (async () => {
   try {
+    await waitForNative();
+    lines = createInterface({ input: native.stdout });
+    lines.on("line", (line) => {
+      const message = JSON.parse(line);
+      if (pending.has(message.id)) {
+        const { resolve, reject } = pending.get(message.id);
+        pending.delete(message.id);
+        message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
+      }
+    });
+    native.stderr.resume();
     await rpc("initialize", { clientInfo: { name: "repository-runtime-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
     const { config } = await rpc("config/read", {});
@@ -1080,8 +1099,8 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     process.stdout.write("native-repository-shell-ready\\n");
   } finally {
     clearTimeout(timeout);
-    lines.close();
-    native.kill("SIGTERM");
+    lines?.close();
+    native?.kill("SIGTERM");
   }
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
@@ -1581,6 +1600,7 @@ NODE`;
     const probe = `
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
+const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const { createInterface } = require("node:readline");
@@ -1687,22 +1707,33 @@ fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
 assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), homeControlSentinel);
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
-  URL, console, setTimeout, setInterval,
+  Buffer, URL, console, setTimeout, clearTimeout, setInterval,
   process: { env: environment, on() {}, exit() {} },
   require(name) {
     if (name !== "node:child_process") return require(name);
     return {
       spawnSync(_command, args) {
-        return args.includes("login") ? { status: 0 } : {
-          status: 0,
-          stdout: [
-            { type: "turn.started" },
-            { type: "item.completed", item: { type: "agent_message", text: "READY" } },
-            { type: "turn.completed" },
-          ].map(JSON.stringify).join("\\n"),
-        };
+        assert.ok(args.includes("login"));
+        return { status: 0 };
       },
       spawn(command, args, options) {
+        if (args.includes("exec")) {
+          const probe = new EventEmitter();
+          probe.stdout = new EventEmitter();
+          probe.stderr = new EventEmitter();
+          probe.stderr.resume = () => {};
+          probe.kill = () => {};
+          process.nextTick(() => {
+            probe.stdout.emit("data", [
+              { type: "thread.started" },
+              { type: "turn.started" },
+              { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+              { type: "turn.completed" },
+            ].map(JSON.stringify).join("\\n") + "\\n");
+            probe.emit("close", 0);
+          });
+          return probe;
+        }
         const appServer = args.indexOf("app-server");
         assert.ok(appServer > 0);
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
@@ -1713,20 +1744,16 @@ vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
     };
   },
 });
-assert.ok(native);
+async function waitForNative() {
+  for (let attempt = 0; attempt < 20 && !native; attempt++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(native);
+}
 const pending = new Map();
 let nextId = 1;
-const lines = createInterface({ input: native.stdout });
-lines.on("line", (line) => {
-  const message = JSON.parse(line);
-  if (pending.has(message.id)) {
-    const { resolve, reject } = pending.get(message.id);
-    pending.delete(message.id);
-    message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
-  }
-});
+let lines;
 let stderr = "";
-native.stderr.on("data", (chunk) => { stderr += chunk; });
 const rpc = (method, params) => new Promise((resolve, reject) => {
   const id = nextId++;
   pending.set(id, { resolve, reject });
@@ -1760,11 +1787,22 @@ async function expectFailure(name, script, pattern, permissionProfile = brokerPe
 }
 const timeout = setTimeout(() => {
   console.error(stderr);
-  native.kill("SIGKILL");
+  native?.kill("SIGKILL");
   process.exitCode = 1;
 }, 90000);
 (async () => {
   try {
+    await waitForNative();
+    lines = createInterface({ input: native.stdout });
+    lines.on("line", (line) => {
+      const message = JSON.parse(line);
+      if (pending.has(message.id)) {
+        const { resolve, reject } = pending.get(message.id);
+        pending.delete(message.id);
+        message.error ? reject(new Error(JSON.stringify(message.error))) : resolve(message.result);
+      }
+    });
+    native.stderr.on("data", (chunk) => { stderr += chunk; });
     // Resolve and reach the fixture outside Codex first, so the direct-bypass
     // assertion cannot pass merely because sandboxed DNS is unavailable.
     markStockBrokerStage("fixture-reachability");
@@ -1813,8 +1851,8 @@ const timeout = setTimeout(() => {
     process.stdout.write("stock-codex-repository-broker-ready " + JSON.stringify({ commit }) + "\\n");
   } finally {
     clearTimeout(timeout);
-    lines.close();
-    native.kill("SIGTERM");
+    lines?.close();
+    native?.kill("SIGTERM");
   }
 })().catch((error) => { console.error(error); console.error(stderr); process.exitCode = 1; });
 `;

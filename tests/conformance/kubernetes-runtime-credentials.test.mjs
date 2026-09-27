@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import * as nodeCrypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -10,6 +12,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 
+const { createHash } = nodeCrypto;
 const kubeconfigPath = "/tmp/openclaw-enterprise-conformance/kubeconfig";
 const contextName = "openclaw-enterprise-local";
 const namespace = Object.freeze({
@@ -661,6 +664,252 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
     );
     assert.equal(child.stdout, "");
     assert.doesNotMatch(child.stderr, /fixture-key|fixture-token/);
+  }
+});
+
+test("Codex startup accepts only a complete tool-free model probe stream before app-server startup", async (t) => {
+  function eventLine(event) {
+    return `${JSON.stringify(event)}\n`;
+  }
+  const successfulTurn = [
+    { type: "thread.started" },
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "reasoning" } },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed" },
+  ]
+    .map(eventLine)
+    .join("");
+  const cases = [
+    {
+      name: "completed turn with stopped native process",
+      output: successfulTurn,
+      closeProbe: true,
+      expectedAppServer: true,
+      expectedProbeSignal: { pid: -4321, signal: "SIGTERM" },
+      expectKillCancelled: true,
+    },
+    {
+      name: "completed turn with pre-turn advisory error",
+      output: [
+        { type: "thread.started" },
+        { type: "item.completed", item: { type: "error", message: "missing catalog metadata" } },
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed" },
+      ]
+        .map(eventLine)
+        .join(""),
+      closeProbe: true,
+      expectedAppServer: true,
+      expectedProbeSignal: { pid: -4321, signal: "SIGTERM" },
+      expectKillCancelled: true,
+    },
+    {
+      name: "completed turn with stalled native cleanup",
+      output: successfulTurn,
+      runCleanup: true,
+      expectedAppServer: true,
+      expectedProbeSignal: { pid: -4321, signal: "SIGTERM" },
+    },
+    {
+      name: "tool event",
+      output: [
+        { type: "thread.started" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "tool_call", name: "shell" } },
+      ]
+        .map(eventLine)
+        .join(""),
+      expectedFailure: true,
+    },
+    {
+      name: "pre-turn agent message",
+      output: [
+        { type: "thread.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+      ]
+        .map(eventLine)
+        .join(""),
+      expectedFailure: true,
+    },
+    {
+      name: "partial output after completed turn",
+      output: `${successfulTurn}{`,
+      runTimeout: true,
+      expectedFailure: true,
+    },
+    { name: "malformed event", output: "{\n", expectedFailure: true },
+    {
+      name: "failed turn",
+      output: eventLine({ type: "turn.failed", error: { message: "denied" } }),
+      expectedFailure: true,
+    },
+    {
+      name: "post-completion event",
+      output: `${successfulTurn}${eventLine({ type: "item.completed", item: { type: "reasoning" } })}`,
+      expectedFailure: true,
+    },
+    {
+      name: "completion before start",
+      output: eventLine({ type: "turn.completed" }),
+      expectedFailure: true,
+    },
+    {
+      name: "oversized output",
+      output: " ".repeat(262_145),
+      expectedFailure: true,
+    },
+    {
+      name: "partial stream timeout",
+      output: [{ type: "thread.started" }, { type: "turn.started" }].map(eventLine).join(""),
+      runTimeout: true,
+      expectedFailure: true,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const timers = [];
+      const intervals = [];
+      const killed = [];
+      const spawned = [];
+      const errors = [];
+      const exits = [];
+      let probeChild;
+
+      runInNewContext(AGENT_RUNTIME_ENTRYPOINT, {
+        Buffer,
+        JSON,
+        Promise,
+        URL,
+        console: { error: (value) => errors.push(value) },
+        clearTimeout(timer) {
+          if (timer !== undefined) {
+            timer.cleared = true;
+          }
+        },
+        process: {
+          env: {
+            APP_SERVER_PORT: "7000",
+            APP_SERVER_TOKEN: "transport-token",
+            CODEX_ACCESS_TOKEN: "fixture-token",
+            CODEX_CHATGPT_WORKSPACE_ID: "workspace-fixture",
+            CODEX_HOME: "/codex-home",
+            CODEX_LOGIN_MODE: "chatgpt_service_account",
+            OPENCLAW_HARNESS_MODEL: "openai/gpt-5",
+          },
+          kill(pid, signal) {
+            killed.push({ pid, signal });
+          },
+          on() {},
+          exit(code) {
+            exits.push(code);
+          },
+          platform: "linux",
+        },
+        setInterval(callback, delay) {
+          intervals.push({ callback, delay });
+          return { unref() {} };
+        },
+        setTimeout(callback, delay) {
+          const timer = { callback, delay, cleared: false, unref() {} };
+          timers.push(timer);
+          return timer;
+        },
+        require(specifier) {
+          if (specifier === "node:fs") {
+            return {
+              mkdirSync() {},
+              mkdtempSync() {
+                return "/isolated-probe";
+              },
+              readFileSync() {
+                throw new Error("fixture has no files");
+              },
+              rmSync() {},
+              writeFileSync() {},
+            };
+          }
+          if (specifier === "node:http") {
+            return { createServer: () => ({ listen() {} }) };
+          }
+          if (specifier === "node:child_process") {
+            return {
+              spawn(command, args) {
+                const child = new EventEmitter();
+                child.stdout = new EventEmitter();
+                child.stderr = new EventEmitter();
+                child.stderr.resume = () => {};
+                child.kill = (signal) => killed.push({ pid: "child", signal });
+                child.pid = args.includes("exec") ? 4321 : 9876;
+                spawned.push({ command, args, child });
+                if (args.includes("exec")) {
+                  probeChild = child;
+                }
+                return child;
+              },
+              spawnSync() {
+                return { status: 0, stderr: "" };
+              },
+            };
+          }
+          if (specifier === "node:crypto") {
+            return nodeCrypto;
+          }
+          if (specifier === "node:path") {
+            return { dirname: () => "/", resolve: (...parts) => parts.join("/") };
+          }
+          throw new Error(`unexpected require ${specifier}`);
+        },
+      });
+
+      assert.ok(probeChild, "startup must launch the model probe");
+      if (scenario.output.length > 0) {
+        probeChild.stdout.emit("data", scenario.output);
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      if (scenario.expectedAppServer) {
+        assert.equal(
+          spawned.some(({ args }) => args.includes("app-server")),
+          false,
+          "successful probe must stop and join its native process before app-server startup",
+        );
+      }
+      if (scenario.closeProbe) {
+        probeChild.emit("close", null, "SIGTERM");
+      }
+      if (scenario.runCleanup) {
+        const cleanupTimer = timers.find(({ delay, cleared }) => delay === 4_000 && !cleared);
+        assert.ok(cleanupTimer, "successful probe cleanup must be bounded");
+        cleanupTimer.callback();
+      }
+      if (scenario.runTimeout) {
+        const probeTimer = timers.find(({ delay }) => delay === 90_000);
+        assert.ok(probeTimer, "startup must keep the model probe bounded");
+        probeTimer.callback();
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const appServer = spawned.find(({ args }) => args.includes("app-server"));
+      assert.equal(Boolean(appServer), scenario.expectedAppServer === true);
+      if (scenario.expectedFailure) {
+        assert.equal(intervals.length, 1, "failed startup must hold the runtime unready");
+        assert.deepEqual(errors, ["Harness model authentication probe failed."]);
+        assert.equal(exits.length, 0);
+      } else {
+        assert.equal(intervals.length, 0);
+        assert.deepEqual(errors, []);
+      }
+      if (scenario.expectedProbeSignal !== undefined) {
+        assert.deepEqual(killed[0], scenario.expectedProbeSignal);
+      }
+      if (scenario.expectKillCancelled) {
+        const killTimer = timers.find(({ delay }) => delay === 2_000);
+        assert.ok(killTimer, "successful probe shutdown must arm a bounded SIGKILL fallback");
+        assert.equal(killTimer.cleared, true, "native close must cancel the late SIGKILL fallback");
+      }
+    });
   }
 });
 

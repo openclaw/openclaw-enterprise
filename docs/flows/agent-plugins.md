@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-09-27
-last_updated_session: 01a0e176-b1ee-7641-85e8-c167f10c6a66
+last_updated_session: authoring-run/95e3acba-59f1-4303-b6f0-0b759351005d
 ---
 
 # Agent Plugin Deployment Flow
@@ -83,10 +83,9 @@ reads may use pre-rotation values. Missing, denied, or unavailable Secrets fail
 before provider discovery. Discovery stores no state or credential.
 
 The [Codex Plugin Driver](../../apps/controller/src/drivers/plugin/index.ts)
-selects hosted or curated discovery. Hosted discovery hydrates identity, pages 20
-GLOBAL entries, and loads tools (`null`: unknown). Curated entries require no
-provider I/O; tools and account access remain unknown. Console permits
-supported entries after details; unsupported releases stay unavailable.
+selects hosted or curated discovery. Hosted hydrates identity, pages catalog
+entries, and loads tools. Curated avoids provider I/O; Linear lists tools, while
+other tools and account access stay unknown. Console permits supported entries.
 Filtering is local; hosted reads are bounded and redirect-free. OCC returns
 `no-store` metadata, rejects credential echoes, and suppresses upstream errors
 and artifacts. Driver links and
@@ -296,6 +295,8 @@ completed deployment attempt rather than ongoing runtime health.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 01:46: Recorded Linear tools. (authoring-run/95e3acba-59f1-4303-b6f0-0b759351005d - 9a1bf09ac922e623256d0ef5920ffa56b9928641)
 
 - 2026-09-27 06:07: Expanded the curated catalog and marked unsupported releases unavailable. (01a0e176-b1ee-7641-85e8-c167f10c6a66 - eb3d6c4c0b8881e5f7efe17c03cc05357e7c7734)
 
