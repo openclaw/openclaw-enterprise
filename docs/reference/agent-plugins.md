@@ -258,13 +258,10 @@ An approval request with no authorized Slack destination cannot be approved
 from Slack. This policy applies only when the runtime requests plugin approval;
 it does not create a review prompt or change exec approval policy.
 
-The Console looks up user and channel names through the selected same-Namespace
-`SLACK_BOT_TOKEN` Secret. It displays the bot's workspace and stores only Slack
-IDs. Lookups require Agent create or exact Agent/Configuration update permission
-and `operate` on the Secret. The bot needs `users:read` to list people and
-`channels:read` or `groups:read` to list public or private channels. Lists can
-be incomplete until the next page is loaded; names are display hints, not saved
-approval identities. The Secret value stays on the server.
+The Console resolves display names with the selected same-Namespace bot Secret
+and stores IDs. Lookup requires Agent edit and Secret `operate` permission.
+Workspace display, scopes, and pagination are described in the
+[Slack Channel Driver](drivers/slack-channel.md). The Secret stays on the server.
 
 | `approval` | Requested behavior                                                                     |
 | ---------- | -------------------------------------------------------------------------------------- |
