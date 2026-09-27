@@ -340,9 +340,9 @@ Errors use `{error,meta:{requestId}}`, with no top-level `data` field. The
 Invalid policy writes fail atomically before save. Nonempty selections require
 a selected PluginDriver; a missing Driver produces `501 NOT_IMPLEMENTED`. OCC
 revalidates policy at deployment admission. Catalog membership, native tool
-ownership, authentication, runtime compatibility, and conflicting raw native
-Configuration remain startup checks. Their failures leave the candidate failed
-or unready; they do not retroactively change the earlier Agent write.
+ownership, authentication, runtime compatibility, and raw native approver lists
+that conflict with inherited Agent policy remain startup checks. Their failures
+leave the candidate failed or unready; they do not change the earlier Agent write.
 
 Namespace plugin configuration, arbitrary catalogs, importing an owner's Codex
 configuration, plugin-specific settings/credential APIs, Code Mode, and new

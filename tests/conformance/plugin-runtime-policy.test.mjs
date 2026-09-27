@@ -79,7 +79,7 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "diffs"]);
 });
 
-test("OpenClaw runtime merges disjoint native approver tools and matching values", () => {
+test("OpenClaw runtime merges matching inherited native approvers", () => {
   const agentApprover = "team:T123:user:U123";
   const pluginApprover = "team:T123:user:U456";
   const runtime = openClawRuntime({
@@ -91,7 +91,7 @@ test("OpenClaw runtime merges disjoint native approver tools and matching values
     approvers: [agentApprover],
     plugins: {
       diffs: {
-        tools: { other: { approvers: [agentApprover] }, diffs: { approvers: [] } },
+        tools: { other: { approvers: [pluginApprover] }, diffs: { approvers: [] } },
         approvers: [pluginApprover],
       },
     },
@@ -138,6 +138,27 @@ test("OpenClaw runtime merges disjoint native approver tools and matching values
   });
   assert.match(conflictingTool.error?.message ?? "", /conflicts with managed Agent approvers/);
   assert.deepEqual(conflictingTool.calls, []);
+});
+
+test("OpenClaw startup rejects native approvers that bypass an Agent ancestor", () => {
+  const agentApprover = "team:T123:user:U123";
+  const otherApprover = "team:T123:user:U456";
+  const defaultRuntime = openClawRuntime();
+  defaultRuntime.manifest.pluginApprovers = [];
+  for (const [runtime, configured] of [
+    [defaultRuntime, { plugins: { diffs: { approvers: [otherApprover] } } }],
+    [
+      openClawRuntime({ approvers: [{ channel: "slack", id: agentApprover }] }),
+      { plugins: { diffs: { tools: { other: { approvers: [otherApprover] } } } } },
+    ],
+  ]) {
+    const result = runOpenClawRuntimeHelper(runtime, installedPluginResponses(), {
+      baseConfig: { approvals: { plugin: { slack: configured } } },
+      captureError: true,
+    });
+    assert.match(result.error?.message ?? "", /conflicts with managed Agent approvers/);
+    assert.deepEqual(result.calls, []);
+  }
 });
 
 test("Codex bridge preserves an unrelated native tool approver for the same plugin", () => {

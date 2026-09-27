@@ -57,7 +57,8 @@ default and return to omitted-policy behavior.
 
 The PluginDriver renders workspace-qualified Slack selectors into the
 OpenClaw plugin approval configuration. It preserves unrelated approval
-settings. An omitted Agent default leaves the runtime's legacy Slack account
+settings and rejects native lists that conflict with an inherited managed list.
+An omitted Agent default leaves the runtime's legacy Slack account
 approval destinations in effect for scopes without an override; an explicit
 empty list denies them. The prepared gateway receives this configuration only
 for the admitted revision. A compatible OpenClaw runtime then evaluates each

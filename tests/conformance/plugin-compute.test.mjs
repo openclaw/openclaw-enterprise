@@ -511,21 +511,31 @@ test("plugin-free revisions apply an explicit empty Slack approver default and k
       baseConfig: {
         approvals: {
           exec: { security: "full" },
-          plugin: { slack: { plugins: { unmanaged: { approvers: ["team:T123:user:U123"] } } } },
         },
       },
     });
     const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
     assert.deepEqual(config.approvals, {
       exec: { security: "full" },
-      plugin: {
-        slack: {
-          approvers: [],
-          plugins: { unmanaged: { approvers: ["team:T123:user:U123"] } },
-        },
-      },
+      plugin: { slack: { approvers: [] } },
     });
   }
+});
+
+test("plugin-free Codex Gateway applies explicit Agent approvers at launch", async () => {
+  const runtime = pluginRuntimeSpecForRevision(revision({ pluginApprovers: [] }));
+  const { files } = await runOpenClawRuntimeHelper({ manifest: runtime }, [], {
+    env: {
+      APP_SERVER_URL: "ws://harness.example.test:18790",
+      OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: runtime }),
+    },
+    baseConfig: { approvals: { exec: { security: "full" } } },
+  });
+  const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(config.approvals, {
+    exec: { security: "full" },
+    plugin: { slack: { approvers: [] } },
+  });
 });
 
 test("plugin-free Codex runtime carries broker policy and Slack approvers together", () => {

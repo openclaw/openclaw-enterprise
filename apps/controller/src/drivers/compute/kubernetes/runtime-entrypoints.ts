@@ -111,7 +111,8 @@ function readGatewayPluginRuntime() {
   if (
     runtime.manifest?.kind === "codex" &&
     (Object.keys(runtime.manifest.selections ?? {}).length > 0 ||
-      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined)
+      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined ||
+      runtime.manifest.pluginApprovers !== undefined)
   ) {
     return runtime;
   }
@@ -650,28 +651,37 @@ function isManagedOpenClawPluginEntry(value) {
   );
 }
 
-function conflictingApproverList(configured, managed) {
-  return isPlainObject(configured) && isPlainObject(managed) &&
-    Object.hasOwn(configured, "approvers") && Object.hasOwn(managed, "approvers") &&
-    !pluginDeepEqual(configured.approvers, managed.approvers);
+function conflictingApproverList(configured, managedList) {
+  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
+    managedList !== undefined && !pluginDeepEqual(configured.approvers, managedList);
 }
 
 function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
   const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
   const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
   if (managedApprovers !== undefined && configuredApprovers !== undefined) {
-    const conflictingDefault = conflictingApproverList(configuredApprovers, managedApprovers);
-    const conflictingPlugin = Object.entries(managedApprovers.plugins ?? {}).some(([pluginId, policy]) => {
-      if (!isPlainObject(configuredApprovers.plugins) ||
-          !Object.hasOwn(configuredApprovers.plugins, pluginId)) return false;
-      const configuredPolicy = configuredApprovers.plugins[pluginId];
-      if (conflictingApproverList(configuredPolicy, policy)) return true;
-      return Object.entries(policy.tools ?? {}).some(([toolId, toolPolicy]) =>
-        isPlainObject(configuredPolicy?.tools) &&
-        Object.hasOwn(configuredPolicy.tools, toolId) &&
-        conflictingApproverList(configuredPolicy.tools[toolId], toolPolicy));
+    // A native child list must not bypass an inherited Agent or plugin approver list.
+    const managedDefault = managedApprovers.approvers;
+    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
+      ? Object.entries(configuredApprovers.plugins)
+      : [];
+    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
+      const managedPlugin = isPlainObject(managedApprovers.plugins)
+        ? managedApprovers.plugins[pluginId]
+        : undefined;
+      const pluginList = managedPlugin?.approvers ?? managedDefault;
+      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
+      const configuredTools = isPlainObject(configuredPlugin?.tools)
+        ? Object.entries(configuredPlugin.tools)
+        : [];
+      return configuredTools.some(([toolId, configuredTool]) => {
+        const managedTool = isPlainObject(managedPlugin?.tools)
+          ? managedPlugin.tools[toolId]
+          : undefined;
+        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
+      });
     });
-    if (conflictingDefault || conflictingPlugin) {
+    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
       throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
     }
   }
