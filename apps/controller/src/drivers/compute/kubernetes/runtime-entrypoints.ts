@@ -1159,7 +1159,7 @@ async function installCodexPlugins(runtime, failures = []) {
   assertCodexPluginRuntime(runtime);
   const selections = runtime.manifest.selections ?? {};
   const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
-  let lastError;
+  let lastError = new Error("Codex plugin installation deadline expired before the first attempt.");
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {

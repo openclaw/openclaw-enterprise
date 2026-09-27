@@ -390,7 +390,7 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
   const sandbox = {
     JSON,
     Buffer,
-    Date,
+    Date: options.Date ?? Date,
     WebSocket: FakeWebSocket,
     setTimeout,
     clearTimeout,
@@ -1053,6 +1053,12 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
   ];
   for (const [name, response] of malformedResponses) {
     await t.test(name, async () => {
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
       const result = await runCodexRuntimeHelper(
         runtime,
         (method, _params, requestId) => {
@@ -1069,12 +1075,14 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
             return { status: "ok", version: "test-config-1" };
           }
           if (method === "plugin/install") {
+            now = 1;
             return { __rawMessage: response(requestId) };
           }
           throw new Error(`unexpected request ${method}`);
         },
         {
           captureError: true,
+          Date: FixtureDate,
           env: {
             OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "1",
           },
@@ -1082,8 +1090,30 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
       );
 
       assert.equal(result.error.diagnostic, undefined);
+      assert.ok(result.requests.some((request) => request.method === "plugin/install"));
     });
   }
+});
+
+test("Codex runtime cannot report installation success when its deadline expires before the first attempt", async () => {
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now++;
+    }
+  }
+  const result = await runCodexRuntimeHelper(
+    { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+    () => assert.fail("An expired installation must not contact the app-server"),
+    {
+      captureError: true,
+      Date: FixtureDate,
+      env: { OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "1" },
+    },
+  );
+  assert.match(result.error?.message ?? "", /did not reach readiness/);
+  assert.equal(result.value, undefined);
+  assert.deepEqual(result.requests, []);
 });
 
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {
