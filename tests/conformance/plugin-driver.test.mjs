@@ -315,6 +315,8 @@ test("Codex bridge configuration carries repository broker network policy withou
         allowLocalBinding: true,
         readOnlyPaths: [
           "/app/node_modules/openclaw",
+          "/home/node/.openclaw/plugin-skills",
+          "/home/node/openclaw-runtime-assets/plugin-skills",
           "/opt/oce/repository-credentials",
           "/run/oce/repository-credentials",
         ],

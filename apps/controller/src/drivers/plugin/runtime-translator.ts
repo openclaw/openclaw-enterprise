@@ -71,6 +71,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   const CODEX_MARKETPLACE = "openai-curated-remote";
   const CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS = [
     "/app/node_modules/openclaw",
+    "/home/node/.openclaw/plugin-skills",
+    "/home/node/openclaw-runtime-assets/plugin-skills",
     "/opt/oce/repository-credentials",
     "/run/oce/repository-credentials",
   ];

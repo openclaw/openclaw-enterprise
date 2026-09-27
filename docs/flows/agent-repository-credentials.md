@@ -227,9 +227,11 @@ control socket never enter this material set. Repository-bound Codex consumers r
 stock Codex `allow_local_binding = true`, `mode = "full"`, and the exact broker
 hostname allowance; explicit denies prevail. The generated stock profile also
 grants read-only access to `/app/node_modules/openclaw`,
+`/home/node/.openclaw/plugin-skills`,
+`/home/node/openclaw-runtime-assets/plugin-skills`,
 `/opt/oce/repository-credentials`, and `/run/oce/repository-credentials` so the
-stock app-server package, native binary, Git helper, and generated session
-material remain reachable inside sandboxed Codex tools. The
+stock app-server package, published plugin skills, native binary, Git helper,
+and generated session material remain reachable inside sandboxed Codex tools. The
 [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines dedicated/embedded eligibility. Unbound policy and broker authorization remain unchanged.
 Compute supplies CA trust; TLS verification stays enabled.

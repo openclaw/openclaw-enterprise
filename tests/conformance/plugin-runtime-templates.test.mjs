@@ -82,6 +82,8 @@ test("serialized Agent startup carries repository broker policy into bridge conf
         allowLocalBinding: true,
         readOnlyPaths: [
           "/app/node_modules/openclaw",
+          "/home/node/.openclaw/plugin-skills",
+          "/home/node/openclaw-runtime-assets/plugin-skills",
           "/opt/oce/repository-credentials",
           "/run/oce/repository-credentials",
         ],

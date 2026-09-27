@@ -2683,6 +2683,8 @@ test("Codex gateway supervisor applies broker-only bridge runtime without select
     allowLocalBinding: true,
     readOnlyPaths: [
       "/app/node_modules/openclaw",
+      "/home/node/.openclaw/plugin-skills",
+      "/home/node/openclaw-runtime-assets/plugin-skills",
       "/opt/oce/repository-credentials",
       "/run/oce/repository-credentials",
     ],
