@@ -719,7 +719,10 @@ async function assertProducerBlocked(producer) {
   ]);
   const deadline = Date.now() + producerPauseTimeoutMs;
   let observed = producer.producedBytes();
+  let lastProgressAt = Date.now();
   assert.ok(observed > 0, "producer did not start while consumer was paused");
+  // Keep the consumer paused for the entire window: an early plateau can be
+  // followed by more socket-buffer progress without the consumer resuming.
   while (Date.now() < deadline) {
     await delay(50);
     const current = producer.producedBytes();
@@ -729,16 +732,14 @@ async function assertProducerBlocked(producer) {
     );
     if (current !== observed) {
       observed = current;
-      continue;
+      lastProgressAt = Date.now();
     }
-    await delay(producerStableMs);
-    const stable = producer.producedBytes();
-    if (stable === current) {
-      return stable;
-    }
-    observed = stable;
   }
-  assert.fail(`producer kept advancing while consumer was paused; last observed ${observed} bytes`);
+  assert.ok(
+    Date.now() - lastProgressAt >= producerStableMs,
+    `producer kept advancing while consumer was paused; last observed ${observed} bytes`,
+  );
+  return observed;
 }
 
 test("upstream response timing follows completed upload", { timeout: 15000 }, async (t) => {
