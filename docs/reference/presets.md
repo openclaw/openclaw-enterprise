@@ -77,7 +77,7 @@ container file at `/app/deploy/presets/devday.json`. It is opt-in and is not add
 by `includeDefaults` alone.
 
 [`Community Agent`](../../deploy/presets/devday-partners.json) copies the SWE
-Agent runtime and prefilled Slack channels, with community-focused workspace
+Agent runtime with community-focused workspace
 instructions for answering questions and discussing the roadmap. Direct messages
 are disabled. It checks Linear
 for relevant updates when available and continues with other sources if access fails.
@@ -88,7 +88,7 @@ template, including its Slack and workspace instructions. Their separate file
 entries are commented out in the example Installation YAML, along with SWE Agent
 and Community Agent. Uncomment only the custom presets you want to install.
 
-All four DevDay presets prefill these channels:
+SWE Agent, Q&A Agent, and Oncall Agent prefill these channels:
 
 | Channel           | ID            |
 | ----------------- | ------------- |
@@ -96,6 +96,15 @@ All four DevDay presets prefill these channels:
 | oce-team          | `C0C43A2QA11` |
 | oce-feedback-test | `C0C569NN9ME` |
 | oce-team-test     | `C0C4A0JH2BG` |
+
+Community Agent prefills its own channel list:
+
+| Channel | ID |
+| --- | --- |
+| oce-team | `C0C43A2QA11` |
+| oce-team-test | `C0C4A0JH2BG` |
+| oce-community | `C0C5KF0JLSC` |
+| oce-community-test | `C0C5KF0DWLQ` |
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
 choose allowed senders and bind Slack app/bot Secrets. The presets allow all channel members (`users: ["*"]`)
