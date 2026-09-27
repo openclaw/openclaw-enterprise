@@ -373,7 +373,7 @@ test("ChatGPT startup rejects retired integrations and unsafe backend configurat
         duplicate.id = "other-openai";
         value.backend.push(duplicate);
       },
-      /ServiceAccount Driver cannot belong to multiple Backends/,
+      /A Driver cannot belong to multiple Backends/,
     ],
     [
       (value) => (value.drivers.service_account.configuration.backendId = "openai"),

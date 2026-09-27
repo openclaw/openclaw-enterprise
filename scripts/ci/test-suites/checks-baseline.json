@@ -1,4 +1,7 @@
 {
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
   "files": [
     {
       "path": "tests/conformance/audit.test.mjs"
@@ -14,6 +17,9 @@
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/credential-source-occ.test.mjs"
     },
     {
       "path": "tests/conformance/docker-compute.test.mjs"
@@ -202,6 +208,9 @@
       "path": "tests/browser/console-agents.test.mjs"
     },
     {
+      "path": "tests/browser/console-agent-plugin-approvers.test.mjs"
+    },
+    {
       "path": "tests/browser/console-agent-channels.test.mjs"
     },
     {
@@ -242,6 +251,9 @@
     },
     {
       "path": "tests/conformance/plugin-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-channel-directory.test.mjs"
     },
     {
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"

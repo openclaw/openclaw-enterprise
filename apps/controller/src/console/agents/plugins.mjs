@@ -1,5 +1,6 @@
 import { button, element } from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import { createSlackApproverField } from "./slack-approvers.mjs";
 import { message } from "./list.mjs";
 
 export function renderAgentPlugins(
@@ -17,14 +18,42 @@ export function renderAgentPlugins(
         "This version's plugin selections are immutable. Select Create new version to change them for a future deployment.",
       ),
       element("pre", { tabindex: "0" }, JSON.stringify(snapshot.plugins?.plugins ?? {}, null, 2)),
+      element("h3", {}, "Default plugin approvers"),
+      element(
+        "p",
+        { className: "muted" },
+        snapshot.pluginApprovers === undefined
+          ? "No Agent default was set when this revision was admitted; the existing OpenClaw approval routing applies."
+          : snapshot.pluginApprovers.length === 0
+            ? "Explicit empty list: no Slack user can approve plugins in this revision by default."
+            : "This revision's Agent default approvers are immutable.",
+      ),
+      ...(snapshot.pluginApprovers?.length
+        ? [
+            element(
+              "ul",
+              {},
+              ...snapshot.pluginApprovers.map((entry) =>
+                element("li", {}, element("code", {}, `${entry.channel}: ${entry.id}`)),
+              ),
+            ),
+          ]
+        : []),
     );
   }
 
   const retained = context.drafts.get("plugins");
   const initialText = retained?.initialText ?? JSON.stringify(agent.plugins ?? {}, null, 2);
+  const initialApprovers = Object.hasOwn(retained ?? {}, "initialApprovers")
+    ? retained.initialApprovers
+    : agent.pluginApprovers;
+  let pluginApprovers = Object.hasOwn(retained ?? {}, "pluginApprovers")
+    ? retained.pluginApprovers
+    : structuredClone(initialApprovers);
   const baseline = retained?.baseline ?? {
     configurationId: agent.configurationId,
     plugins: agent.plugins ?? {},
+    pluginApprovers: agent.pluginApprovers,
   };
   let pending = false;
   let outcomeUnknown = retained?.outcomeUnknown ?? false;
@@ -40,6 +69,12 @@ export function renderAgentPlugins(
   let catalogCapabilityError = false;
   const hasBoundCredential =
     agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret";
+  const getSlackBotSecretId = () => {
+    const source = snapshot.secretBindings?.SLACK_BOT_TOKEN?.source;
+    return source?.kind === "secret" && source.namespaceId === context.namespaceId
+      ? source.id
+      : null;
+  };
   const discovery = createPluginDiscovery({
     context,
     input,
@@ -66,7 +101,33 @@ export function renderAgentPlugins(
       catalogCredential === "none"
         ? "Load the Installation's curated plugin catalog. Access and tool availability are checked separately."
         : "Load plugins using this Agent's saved Service Accounts token Secret. Your plugin selections stay unchanged.",
+    createApproverField: (options) =>
+      createSlackApproverField({
+        context,
+        agentId: agent.id,
+        getSecretId: getSlackBotSecretId,
+        ...options,
+      }),
   });
+  const defaultApprovers = createSlackApproverField({
+    context,
+    label: "Default plugin approvers",
+    agentId: agent.id,
+    getSecretId: getSlackBotSecretId,
+    getValue: () => pluginApprovers,
+    onChange: (value) => {
+      pluginApprovers = value;
+      updateState();
+    },
+    inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
+    allowInherit: true,
+    lazyNames: true,
+  });
+  defaultApprovers.hidden = true;
+  discovery.fields.section.insertBefore(
+    defaultApprovers,
+    discovery.fields.section.querySelector(".plugin-json"),
+  );
   const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const save = button("Save plugin selections", () => void savePlugins(), {
@@ -74,6 +135,8 @@ export function renderAgentPlugins(
   });
   const discard = button("Discard changes", () => {
     input.value = initialText;
+    pluginApprovers = structuredClone(initialApprovers);
+    defaultApprovers.refreshValue();
     input.setCustomValidity("");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
@@ -93,11 +156,16 @@ export function renderAgentPlugins(
   );
 
   context.drafts.track("plugins", () => {
-    const dirty = input.value !== initialText;
+    const dirty =
+      input.value !== initialText ||
+      JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     return dirty || pending || outcomeUnknown || reloadRequired
       ? {
+          dirty,
           text: input.value,
           initialText,
+          initialApprovers,
+          pluginApprovers,
           baseline,
           outcomeUnknown: outcomeUnknown || pending,
           reloadRequired,
@@ -106,7 +174,9 @@ export function renderAgentPlugins(
   });
 
   function updateState() {
-    const dirty = input.value !== initialText;
+    const dirty =
+      input.value !== initialText ||
+      JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
     save.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
     discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
@@ -129,7 +199,13 @@ export function renderAgentPlugins(
   });
 
   async function savePlugins() {
-    if (pending || outcomeUnknown || reloadRequired || input.value === initialText) {
+    if (
+      pending ||
+      outcomeUnknown ||
+      reloadRequired ||
+      (input.value === initialText &&
+        JSON.stringify(pluginApprovers) === JSON.stringify(initialApprovers))
+    ) {
       return;
     }
     let plugins;
@@ -156,7 +232,8 @@ export function renderAgentPlugins(
       }
       if (
         freshAgent.configurationId !== baseline.configurationId ||
-        JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(baseline.plugins)
+        JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(baseline.plugins) ||
+        JSON.stringify(freshAgent.pluginApprovers) !== JSON.stringify(baseline.pluginApprovers)
       ) {
         reloadRequired = true;
         return;
@@ -164,7 +241,15 @@ export function renderAgentPlugins(
       mutationStarted = true;
       await context.request(path, {
         method: "PATCH",
-        body: { configurationId: baseline.configurationId, plugins },
+        body: {
+          configurationId: baseline.configurationId,
+          plugins,
+          ...(pluginApprovers === undefined
+            ? initialApprovers === undefined
+              ? {}
+              : { pluginApprovers: null }
+            : { pluginApprovers }),
+        },
       });
       if (context.isCurrent()) {
         pending = false;
@@ -207,6 +292,10 @@ export function renderAgentPlugins(
         catalogCapabilityChecked = true;
         discovery.fields.setCapabilities(capabilities);
         discovery.update();
+        defaultApprovers.hidden = capabilities.approvers?.agent !== true;
+        if (!defaultApprovers.hidden) {
+          defaultApprovers.refreshNames();
+        }
       }
     },
     (error) => {

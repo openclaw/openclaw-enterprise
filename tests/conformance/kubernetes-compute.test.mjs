@@ -455,7 +455,9 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   const revision = routedRevision(driver, {
     plugins: {
       driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
-      plugins: { "codex-plugin:example": { enabled: true, toolDefaults: { approval: "native" } } },
+      plugins: {
+        "codex-plugin:example": { enabled: true, toolDefaults: { approval: "provider_default" } },
+      },
     },
   });
   const operatorSuppliedConfiguration = {
@@ -2590,6 +2592,121 @@ test("direct service account token is confined to the model container and exact 
         agents: { defaults: { model: "anthropic/claude" } },
       }),
     /compatible model provider/i,
+  );
+});
+
+test("credential-source authentication renders no model Secret and requires the paired gateway", () => {
+  const sandboxDriver = { id: "sandbox-openshell", capability: "sandbox", facets: ["networking"] };
+  const credentialGatewayDriver = { id: "credential-gateway", capability: "credential_gateway" };
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const snapshot = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000001",
+    credentialGatewayId: credentialGatewayDriver.id,
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const sourceType = {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  };
+  const revision = {
+    namespaceId: tenant.id,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harnessAuth: snapshot,
+    configuration: { agents: { defaults: { model: "codex/gpt-5" } } },
+  };
+  driver.validateHarnessAuth(revision.harness, snapshot, revision.configuration, {}, sourceType);
+
+  const source = {
+    id: snapshot.sourceId,
+    namespaceId: tenant.id,
+    name: "openai",
+    type: "openai",
+    config: {},
+    secrets: {},
+    driverId: credentialGatewayDriver.id,
+    state: "ready",
+    createdAt: "2026-09-26T00:00:00.000Z",
+  };
+  const prepared = driver.harnessAuthForRevision(
+    revision,
+    { harnessAuth: { ...snapshot, source } },
+    namespace,
+  );
+  // The Sandbox supplies the credential environment, so Compute projects no model Secret.
+  assert.equal(prepared.credentialSource, source);
+  assert.equal(prepared.loginMode, "api_key");
+  assert.equal(
+    prepared.environment.some((entry) => entry.valueFrom?.secretKeyRef !== undefined),
+    false,
+  );
+  assert.equal(
+    prepared.environment.some(({ name }) => name === "OPENAI_API_KEY"),
+    false,
+  );
+  assert.deepEqual(
+    prepared.environment.find(({ name }) => name === "CODEX_LOGIN_MODE"),
+    { name: "CODEX_LOGIN_MODE", value: "api_key" },
+  );
+
+  // A resolved source must match the frozen snapshot exactly and still be ready.
+  for (const changed of [
+    { ...source, state: "deleting" },
+    { ...source, driverId: "other-gateway" },
+    { ...source, type: "anthropic" },
+  ]) {
+    assert.throws(
+      () =>
+        driver.harnessAuthForRevision(
+          revision,
+          { harnessAuth: { ...snapshot, source: changed } },
+          namespace,
+        ),
+      /credential source does not match the admitted source/i,
+    );
+  }
+
+  const incompatible = /paired Sandbox and an OpenAI API key source/;
+  assert.throws(
+    () =>
+      new KubernetesComputeDriver(options(), { sandboxDriver }).validateHarnessAuth(
+        revision.harness,
+        snapshot,
+        revision.configuration,
+        {},
+        sourceType,
+      ),
+    incompatible,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        snapshot,
+        revision.configuration,
+        {},
+        {
+          ...sourceType,
+          harnessAuth: { modelProvider: "anthropic", loginMode: "api_key" },
+        },
+      ),
+    incompatible,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        snapshot,
+        revision.configuration,
+        {},
+        sourceType,
+      ),
+    /incompatible.*topology/i,
   );
 });
 
@@ -6423,7 +6540,7 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
     },
     plugins: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "approve" } } },
+      plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" } } },
     },
   });
   const namespace = kubernetesNamespaceName(revision.namespaceId);

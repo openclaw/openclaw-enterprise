@@ -6,8 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
@@ -25,9 +27,12 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessBindingPostRequests,
+  apiRequests,
   detailUrl,
   expectNoText,
   login,
+  setSlackSelection,
+  slackSelectionValue,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
@@ -37,26 +42,12 @@ import {
   secretPostRequests,
   selectSecret,
 } from "./console-agents-browser-helpers.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 const STARTER_CONTROL_UI = {
   enabled: true,
   allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
 };
-
-function apiRequests(page, origin) {
-  const requests = [];
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.origin === origin) {
-      let body;
-      try {
-        body = request.postDataJSON();
-      } catch {}
-      requests.push({ method: request.method(), path: `${url.pathname}${url.search}`, body });
-    }
-  });
-  return requests;
-}
 
 async function openCreateSecretDialog(scope, label, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
@@ -184,28 +175,6 @@ function configurationPatchRequests(requests, namespaceId, configurationId) {
     "PATCH",
     `/namespaces/${namespaceId}/configurations/${encodeURIComponent(configurationId)}`,
   );
-}
-
-async function createRuntimeAuthFixture(t, namespaceName) {
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const state = new InMemoryPlatformState();
-  const fixture = await createConsoleAppFixture(t, { computeDriver, state });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(namespaceName);
-  await state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  return { fixture, namespace, state };
 }
 
 async function optionValues(locator) {
@@ -450,6 +419,11 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
+  const nestedChannelIds = createChannelDialog.getByRole("combobox", {
+    name: "Channels",
+    exact: true,
+  });
+  await setSlackSelection(nestedChannelIds, "CNESTED123");
   await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   const createSecretDialog = page.getByRole("dialog", {
     name: "Create Slack bot token Secret",
@@ -467,12 +441,35 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     await createSecretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
     "password",
   );
-  await createSecretDialog.getByRole("button", { name: "Cancel" }).click();
+  // Dismissing the topmost dialog discards its token, not the underlying Slack edits.
+  await createSecretDialog.getByLabel("Value", { exact: true }).fill("discarded-secret-value");
+  const secretWritesBeforeDismissal = secretPostRequests(requests, namespace.id).length;
+  const secretBounds = await createSecretDialog.boundingBox();
+  assert.ok(secretBounds);
+  await page.mouse.click(secretBounds.x / 2, secretBounds.y + 8);
+  await createSecretDialog.waitFor({ state: "hidden" });
+  assert.equal(await createChannelDialog.isVisible(), true);
+  assert.equal(await slackSelectionValue(nestedChannelIds), "CNESTED123");
+  assert.equal(await createChannelDialog.getByLabel("Slack bot token").inputValue(), "");
+  assert.equal(secretPostRequests(requests, namespace.id).length, secretWritesBeforeDismissal);
+  await setSlackSelection(nestedChannelIds, "");
   await openCreateSecretDialog(createChannelDialog, "Slack bot token");
-  await page
-    .getByRole("dialog", { name: "Create Slack bot token Secret" })
-    .getByLabel("Value", { exact: true })
-    .fill(createdSlackBotSecretValue);
+  assert.equal(await createSecretDialog.getByLabel("Value", { exact: true }).inputValue(), "");
+  await createSecretDialog.getByLabel("Value", { exact: true }).fill(createdSlackBotSecretValue);
+  const secretReached = Promise.withResolvers();
+  const secretRelease = Promise.withResolvers();
+  t.after(() => secretRelease.resolve());
+  // The real Secret write must finish before its dialog can be dismissed.
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/secrets`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    secretReached.resolve();
+    await secretRelease.promise;
+    await route.fulfill({ response });
+  });
   const botSecretResponse = page.waitForResponse((response) => {
     if (
       response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
@@ -482,10 +479,15 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     }
     return response.request().postDataJSON()?.name === "Console-created Agent Slack bot token";
   });
-  await page
-    .getByRole("dialog", { name: "Create Slack bot token Secret" })
-    .getByRole("button", { name: "Create Secret" })
-    .click();
+  await createSecretDialog.getByRole("button", { name: "Create Secret" }).click();
+  await secretReached.promise;
+  await page.mouse.click(secretBounds.x / 2, secretBounds.y + 8);
+  assert.equal(await createSecretDialog.isVisible(), true);
+  assert.equal(
+    await createSecretDialog.getByRole("button", { name: "Create Secret" }).isDisabled(),
+    true,
+  );
+  secretRelease.resolve();
   const createdSlackBotSecret = (await (await botSecretResponse).json()).data;
   await createChannelDialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
@@ -948,8 +950,11 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the c
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
   await page.getByLabel("Direct-message policy").selectOption("disabled");
-  await page.getByLabel("Slack channel IDs").fill("CREPOSITORY123");
-  await page.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await setSlackSelection(
+    page.getByRole("combobox", { name: "Channels", exact: true }),
+    "CREPOSITORY123",
+  );
+  await page.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
   const savedResponse = page.waitForResponse(
     (result) =>
       result.url().endsWith(`/configurations/${agent.configurationId}`) &&
@@ -1786,18 +1791,27 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   await botSecretDialog.getByLabel("Value", { exact: true }).fill("slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await channelDialog
     .getByText("Enter at least one Slack channel ID for these access settings.")
     .waitFor();
-  await channelDialog.getByLabel("Slack channel IDs").fill("C0123456789");
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").uncheck();
+  await setSlackSelection(
+    channelDialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "C0123456789",
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("selected");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await channelDialog
-    .getByText("Enter allowed channel user IDs or allow everyone in these channels.")
+    .getByText("Choose specific people or select Everyone in these channels.")
     .waitFor();
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
 
   const provisionResponse = page.waitForResponse(
@@ -1899,8 +1913,13 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
   await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
-  await channelDialog.getByLabel("Slack channel IDs").fill("CUNSUPPORTED123");
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await setSlackSelection(
+    channelDialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "CUNSUPPORTED123",
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -1942,11 +1961,19 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.goto(detailUrl(fixture, namespace.id, createdAgent.id, "draft", "channels").href);
   await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
   let savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
-  const everyone = savedDialog.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await everyone.isChecked(), true);
-  assert.equal(await savedDialog.getByLabel("Allowed channel user IDs").isDisabled(), true);
-  await everyone.uncheck();
-  await savedDialog.getByLabel("Allowed channel user IDs").fill("USENDER123");
+  const everyone = savedDialog.getByLabel("Who can use the agent in these channels?");
+  assert.equal(await everyone.inputValue(), "everyone");
+  assert.equal(
+    await savedDialog
+      .getByRole("combobox", { name: "Allowed people in these channels", exact: true })
+      .isVisible(),
+    false,
+  );
+  await everyone.selectOption("selected");
+  await setSlackSelection(
+    savedDialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+    "USENDER123",
+  );
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
@@ -1957,12 +1984,15 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.reload();
   await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
   savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
-  assert.equal(await savedDialog.getByLabel("Allowed channel user IDs").inputValue(), "USENDER123");
   assert.equal(
-    await savedDialog
-      .getByLabel("Allow everyone in these channels to mention the agent")
-      .isDisabled(),
-    true,
+    await slackSelectionValue(
+      savedDialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+    ),
+    "USENDER123",
+  );
+  assert.equal(
+    await savedDialog.getByLabel("Who can use the agent in these channels?").inputValue(),
+    "selected",
   );
   const savedConfiguration = await fixture.request(
     "GET",
@@ -1983,7 +2013,10 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   // An empty or wildcard allowlist must not produce a write or broaden channel access.
   await savedDialog.getByLabel("Direct-message policy").selectOption("allowlist");
   for (const invalid of ["", "*"]) {
-    await savedDialog.getByLabel("Allowed DM user IDs").fill(invalid);
+    await setSlackSelection(
+      savedDialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+      invalid,
+    );
     requests.length = 0;
     await savedDialog.getByRole("button", { name: "Save configuration", exact: true }).click();
     await savedDialog
@@ -2000,9 +2033,23 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
     await savedDialog.getByLabel("Direct-message policy").selectOption(policy);
     if (policy === "allowlist" || policy === "pairing") {
       if (policy === "pairing") {
-        assert.equal(await savedDialog.getByLabel("Allowed DM user IDs").inputValue(), "");
+        assert.equal(
+          await slackSelectionValue(
+            savedDialog.getByRole("combobox", {
+              name: "Allowed people in direct messages",
+              exact: true,
+            }),
+          ),
+          "",
+        );
       }
-      await savedDialog.getByLabel("Allowed DM user IDs").fill(senders.join(", "));
+      await setSlackSelection(
+        savedDialog.getByRole("combobox", {
+          name: "Allowed people in direct messages",
+          exact: true,
+        }),
+        senders.join(", "),
+      );
     }
     const policySaved = page.waitForResponse(
       (response) =>
@@ -2200,8 +2247,13 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await botSecretDialog.getByLabel("Value", { exact: true }).fill("retry-slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Slack channel IDs").fill("CRETRY123");
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await setSlackSelection(
+    channelDialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "CRETRY123",
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   const firstProvisionResponse = page.waitForResponse(
     (response) =>
@@ -2707,7 +2759,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     JSON.stringify({
       "codex-plugin:linear@openai-curated-remote": {
         enabled: true,
-        toolDefaults: { approval: "approve" },
+        toolDefaults: { approval: "none" },
       },
     }),
   );
@@ -2744,7 +2796,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.deepEqual(retried.data.plugins, {
     "codex-plugin:linear@openai-curated-remote": {
       enabled: true,
-      toolDefaults: { approval: "approve" },
+      toolDefaults: { approval: "none" },
     },
   });
   for (const request of attempts) {
@@ -3565,7 +3617,9 @@ test("Agent detail saves plugin changes for the next revision without changing a
     resourceId: tokenSecret.id,
   });
   const pluginId = "codex-plugin:linear@openai-curated-remote";
-  const originalPlugins = { [pluginId]: { enabled: true, toolDefaults: { approval: "prompt" } } };
+  const originalPlugins = {
+    [pluginId]: { enabled: true, toolDefaults: { approval: "all_actions" } },
+  };
   await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,
     harnessAuth: { method: "codex_pat", source: tokenSecret.ref },
@@ -3704,9 +3758,14 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: pluginId, exact: true }).click();
   await dialog.getByLabel(`Enable ${pluginId}`, { exact: true }).uncheck();
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  // Like Done, a backdrop dismissal preserves plugin choices in the surrounding draft.
+  const pluginBounds = await dialog.boundingBox();
+  assert.ok(pluginBounds);
+  await page.mouse.click(pluginBounds.x / 2, pluginBounds.y + 8);
+  await dialog.waitFor({ state: "hidden" });
+  await page.locator("button:focus").filter({ hasText: "Configure plugins" }).waitFor();
   const editedPlugins = {
-    [pluginId]: { enabled: false, toolDefaults: { approval: "prompt" } },
+    [pluginId]: { enabled: false, toolDefaults: { approval: "all_actions" } },
     "codex-plugin:calendar@openai-curated-remote": {
       enabled: true,
       tools: { "app_calendar/events%2Flist": { enabled: false } },
@@ -3887,6 +3946,22 @@ test("Agent draft browses the curated catalog without a saved Secret", async (t)
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
     [{}],
   );
+  // The shared search UI must use the saved-Agent route without supplying a credential.
+  const searched = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${catalogPath}` &&
+      response.request().postDataJSON()?.q === "linear",
+  );
+  await dialog.getByLabel("Search plugins", { exact: true }).fill("linear");
+  assert.equal((await searched).status(), 200);
+  await dialog.locator('.plugin-browser[aria-busy="false"]').waitFor();
+  assert.deepEqual(
+    await dialog
+      .locator(".plugin-list-item")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
+    ["Linear"],
+  );
+  assert.deepEqual(pathRequests(requests, "POST", catalogPath).at(-1).body, { q: "linear" });
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
   assert.equal(pathRequests(requests, "GET", `${catalogPath}/capabilities`).length, 1);
@@ -5201,6 +5276,8 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   const detailStarted = Promise.withResolvers();
   const detailRelease = Promise.withResolvers();
+  const searchStarted = Promise.withResolvers();
+  const searchRelease = Promise.withResolvers();
   const hosted = (name, overrides = {}) => ({
     id: `remote-${name}`,
     name,
@@ -5245,6 +5322,26 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     }
     assert.equal(options.headers["ChatGPT-Account-ID"], "account-plugin-test");
     assert.equal(options.headers["OAI-Product-Sku"], "codex");
+    if (url.pathname.endsWith("/plugins/search")) {
+      assert.equal(url.searchParams.get("scope"), "GLOBAL");
+      assert.equal(url.searchParams.get("limit"), "20");
+      const q = url.searchParams.get("q");
+      if (q === "slow") {
+        searchStarted.resolve();
+        await searchRelease.promise;
+        return Response.json({
+          plugins: [hosted("Stale-result")],
+          pagination: { next_page_token: null },
+        });
+      }
+      assert.equal(q, "linear");
+      const cursor = url.searchParams.get("pageToken");
+      assert.ok(cursor === null || cursor === "linear-page-two");
+      return Response.json({
+        plugins: [hosted(cursor ? "Linear-tools" : "Linear")],
+        pagination: { next_page_token: cursor ? null : "linear-page-two" },
+      });
+    }
     if (url.pathname.endsWith("/plugins/list")) {
       assert.equal(url.searchParams.get("scope"), "GLOBAL");
       if (holdList && options.headers.Authorization === "Bearer at-browser-plugin-one") {
@@ -5316,6 +5413,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   t.after(() => releaseList?.());
   t.after(() => detailRelease.resolve());
+  t.after(() => searchRelease.resolve());
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -5419,16 +5517,63 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("button", { name: "Next page", exact: true }).click();
   await dialog.getByRole("button", { name: "Documents", exact: true }).waitFor();
   assert.equal(await calendar.count(), 0);
-  await dialog.getByRole("button", { name: "Previous page", exact: true }).click();
-  await calendar.waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Documents", exact: true }).count(), 0);
-  const filter = dialog.getByLabel("Filter this page", { exact: true });
-  await filter.fill("Calendar");
-  assert.equal(
-    await dialog.getByRole("button", { name: "Admin-disabled", exact: true }).count(),
-    0,
+  const search = dialog.getByLabel("Search plugins", { exact: true });
+  await page.clock.install({ time: new Date("2026-09-27T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-27T12:00:01Z"));
+  const catalogRequests = () =>
+    requests.filter((request) => request.path.endsWith("/agents/plugins"));
+  const beforeTyping = catalogRequests().length;
+  // Typing coalesces into one catalog search 300 ms after the last edit, without the old cursor.
+  await search.fill("lin");
+  await page.clock.runFor(200);
+  await search.fill("linear");
+  await page.clock.runFor(299);
+  assert.equal(catalogRequests().length, beforeTyping);
+  await page.clock.runFor(1);
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  assert.deepEqual(
+    catalogRequests()
+      .slice(beforeTyping)
+      .map((request) => request.body),
+    [{ accessToken: "at-browser-plugin-one", q: "linear" }],
   );
-  await filter.fill("");
+  assert.equal(
+    await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
+    true,
+  );
+  await dialog.getByRole("button", { name: "Next page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Linear-tools", exact: true }).waitFor();
+  assert.equal(await search.inputValue(), "linear");
+  await dialog.getByRole("button", { name: "Previous page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  // An older request is canceled as soon as input changes, including during the debounce window.
+  const staleSearchCanceled = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.url().endsWith("/agents/plugins") && request.postDataJSON()?.q === "slow",
+  });
+  await search.fill("slow");
+  await page.clock.runFor(300);
+  await searchStarted.promise;
+  await search.fill("linear");
+  await staleSearchCanceled;
+  searchRelease.resolve();
+  const beforeReplacement = catalogRequests().length;
+  await page.clock.runFor(299);
+  assert.equal(catalogRequests().length, beforeReplacement);
+  assert.equal(await dialog.getByRole("button", { name: "Stale-result", exact: true }).count(), 0);
+  await page.clock.runFor(1);
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  // Enter bypasses the delay; it also cancels the scheduled request instead of duplicating it.
+  await search.fill("");
+  await search.press("Enter");
+  await calendar.waitFor();
+  const afterEnter = catalogRequests().length;
+  await page.clock.runFor(300);
+  assert.equal(catalogRequests().length, afterEnter);
+  assert.equal(
+    await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
+    true,
+  );
 
   // Selecting a plugin loads its tools; a rejected upstream body stays private and is retryable.
   await calendar.click();
@@ -5471,8 +5616,20 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "Calendar", exact: true }).waitFor();
+  const beforeLocalFilter = catalogRequests().length;
+  const configuredSearch = dialog.getByLabel("Filter configured plugins", { exact: true });
+  await configuredSearch.fill("missing");
+  assert.equal(await calendar.count(), 0);
+  await configuredSearch.fill("cal");
+  await calendar.waitFor();
+  await page.clock.runFor(300);
+  assert.equal(catalogRequests().length, beforeLocalFilter);
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  // Closing the picker drops a scheduled search; reopening explicitly loads the retained query.
+  await search.fill("linear");
   await closePluginDialog();
+  await page.clock.runFor(300);
+  assert.equal(catalogRequests().length, beforeLocalFilter);
   const reminder = page.locator(".plugin-setup-reminder");
   assert.equal(await reminder.isVisible(), true);
   await reminder
@@ -5487,12 +5644,21 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   );
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  await search.fill("");
+  await search.press("Enter");
+  await calendar.waitFor();
 
-  // A credential change fences an older page response while preserving explicit selections.
+  // Closing cancels an older page request before changing credentials; explicit selections survive.
   holdList = true;
+  const stalePageCanceled = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.url().endsWith("/agents/plugins") && request.postDataJSON()?.cursor === "page-two",
+  });
   await dialog.getByRole("button", { name: "Next page", exact: true }).click();
   await listPending;
   await closePluginDialog();
+  await stalePageCanceled;
   await token.fill("");
   const clearedSetup = page.locator(".plugin-access-help");
   assert.equal(await clearedSetup.locator("a").count(), 0);
@@ -5503,13 +5669,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await token.fill("at-browser-plugin-two");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
-  const staleResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/agents/plugins") &&
-      response.request().postDataJSON().cursor === "page-two",
-  );
   releaseList();
-  await staleResponse;
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Documents", exact: true }).count(), 0);
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
@@ -5590,11 +5750,11 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   const plugins = {
     [pluginId]: {
       enabled: false,
-      toolDefaults: { enabled: true, approval: "native", reviewer: "human" },
+      toolDefaults: { enabled: true, approval: "provider_default", reviewer: "human" },
       tools: {
-        "app_knowledge/search": { enabled: false, approval: "native" },
-        "app_knowledge/summarize": { enabled: true, approval: "approve" },
-        "app_knowledge/unknown-tool": { approval: "native" },
+        "app_knowledge/search": { enabled: false, approval: "provider_default" },
+        "app_knowledge/summarize": { enabled: true, approval: "none" },
+        "app_knowledge/unknown-tool": { approval: "provider_default" },
       },
     },
     [removedPluginId]: { enabled: true },
@@ -5639,7 +5799,9 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   await searchTool.locator("summary").click();
   const pluginEnabled = dialog.getByLabel(`Enable ${pluginId}`, { exact: true });
   const toolEnabled = dialog.getByLabel("Enable app_knowledge/search", { exact: true });
-  const toolApproval = dialog.getByLabel("app_knowledge/search approval", { exact: true });
+  const toolApproval = dialog.getByLabel("app_knowledge/search require approval for", {
+    exact: true,
+  });
   const toolToggle = dialog.getByLabel("app_knowledge/search enabled override", { exact: true });
   assert.equal(await toolToggle.isDisabled(), true);
   assert.equal(await toolEnabled.isDisabled(), true);
@@ -5647,7 +5809,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   await pluginEnabled.check();
   await dialog.getByLabel(`${pluginId} tools enabled by default`, { exact: true }).selectOption("");
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].toolDefaults, {
-    approval: "native",
+    approval: "provider_default",
     reviewer: "human",
   });
   const reviewer = dialog.getByLabel(`${pluginId} default reviewer`, { exact: true });
@@ -5657,33 +5819,38 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   );
   await reviewer.selectOption("");
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].toolDefaults, {
-    approval: "native",
+    approval: "provider_default",
   });
   await reviewer.selectOption("auto");
-  await dialog.getByLabel(`${pluginId} default approval`, { exact: true }).selectOption("prompt");
+  const defaultApproval = dialog.getByLabel(`${pluginId} require approval for`, { exact: true });
+  assert.deepEqual(
+    (await optionValues(defaultApproval)).map(({ value }) => value),
+    ["", "provider_default", "all_actions", "write_actions", "none"],
+  );
+  await defaultApproval.selectOption("write_actions");
 
   // Codex advertises plugin-wide reviewers only; tool approval still inherits independently.
   const toolReviewer = dialog.getByLabel("app_knowledge/search reviewer", { exact: true });
   assert.equal(await toolReviewer.count(), 0);
   await searchTool.getByRole("button", { name: "Set reviewer for all tools" }).click();
   assert.equal(await reviewer.evaluate((node) => node === node.ownerDocument.activeElement), true);
-  await toolApproval.selectOption("approve");
+  await toolApproval.selectOption("none");
   await toolEnabled.selectOption("");
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
-    approval: "approve",
+    approval: "none",
   });
   // The summary toggle edits only enablement; an omitted override remains visibly inherited.
   await searchTool.locator("summary").click();
   assert.equal(await toolToggle.evaluate((node) => node.indeterminate), true);
   await toolToggle.click();
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
-    approval: "approve",
+    approval: "none",
     enabled: true,
   });
   assert.equal(await searchTool.evaluate((node) => node.open), false);
   await toolToggle.click();
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
-    approval: "approve",
+    approval: "none",
     enabled: false,
   });
   await searchTool.locator("summary").click();
@@ -5695,14 +5862,16 @@ test("Agent creation edits Preset plugin policies through the modal and persists
     .locator('details.plugin-tool-row[data-tool="app_knowledge/summarize"] > summary')
     .click();
   await dialog.getByLabel("Enable app_knowledge/summarize", { exact: true }).selectOption("");
-  await dialog.getByLabel("app_knowledge/summarize approval", { exact: true }).selectOption("");
+  await dialog
+    .getByLabel("app_knowledge/summarize require approval for", { exact: true })
+    .selectOption("");
   const expected = {
     [pluginId]: {
       enabled: true,
-      toolDefaults: { approval: "prompt", reviewer: "auto" },
+      toolDefaults: { approval: "write_actions", reviewer: "auto" },
       tools: {
         "app_knowledge/search": { enabled: true },
-        "app_knowledge/unknown-tool": { approval: "native" },
+        "app_knowledge/unknown-tool": { approval: "provider_default" },
       },
     },
   };
@@ -5733,6 +5902,72 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${created.id}`);
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.data.plugins, expected);
+});
+
+test("Plugin approval choices explain unsupported provider modes and preserve the draft until corrected", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Unsupported plugin approvals", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Native plugin Agent",
+    nativeValues("policy"),
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, `${url.pathname}${url.search}`);
+  const json = page.locator("#agent-plugins");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  // A copied policy from another provider remains visible so the operator can correct it.
+  const plugins = {
+    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "write_actions" } },
+  };
+  await json.fill(JSON.stringify(plugins));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "occ-plugin:diffs", exact: true }).click();
+  const approval = dialog.getByLabel("occ-plugin:diffs require approval for", { exact: true });
+  assert.equal(await approval.inputValue(), "write_actions");
+  assert.deepEqual(
+    await approval
+      .locator("option")
+      .evaluateAll((options) => options.map(({ value, disabled }) => [value, disabled])),
+    [
+      ["", false],
+      ["provider_default", false],
+      ["all_actions", true],
+      ["write_actions", true],
+      ["none", false],
+    ],
+  );
+  await dialog
+    .getByText("This plugin provider does not support: Every action, Write actions.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(
+    await approval.locator("option:checked").textContent(),
+    "Write actions (unsupported)",
+  );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(JSON.parse(await json.inputValue()), plugins);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await approval.selectOption("provider_default");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const savedResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith(`/agents/${agent.id}`),
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await savedResponse).status(), 200);
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(saved.data.plugins, {
+    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+  });
 });
 
 test("API-key Presets keep their credential provider fixed while allowing model and runtime changes", async (t) => {
@@ -5839,7 +6074,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   const plugins = {
     "codex-plugin:linear@openai-curated-remote": {
       enabled: true,
-      toolDefaults: { approval: "approve" },
+      toolDefaults: { approval: "none" },
     },
   };
   const secretBindings = { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } };
@@ -6164,13 +6399,17 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
       assert.deepEqual(unchanged.data.values.channels.slack, slack);
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
     }
-    const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
-    const allowEveryone = dialog.getByLabel(
-      "Allow everyone in these channels to mention the agent",
+    const allowedUsers = dialog.getByRole("combobox", {
+      name: "Allowed people in these channels",
+      exact: true,
+    });
+    const allowEveryone = dialog.getByLabel("Who can use the agent in these channels?");
+    assert.equal(await slackSelectionValue(allowedUsers), "UKEEP123");
+    assert.equal(await allowEveryone.inputValue(), "selected");
+    await setSlackSelection(
+      dialog.getByRole("combobox", { name: "Channels", exact: true }),
+      "CKEEP123, CNEW123",
     );
-    assert.equal(await allowedUsers.inputValue(), "UKEEP123");
-    assert.equal(await allowEveryone.isDisabled(), true);
-    await dialog.getByLabel("Slack channel IDs").fill("CKEEP123, CNEW123");
     await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
     const saved = page.waitForResponse(
       (response) =>
@@ -6469,6 +6708,11 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   assert.equal(await secretElement.evaluate((node) => node.isConnected), false);
   await page.goBack();
   await page.getByLabel("API key Secret").waitFor();
+  assert.equal(
+    await secretElement.evaluate((node) => node.isConnected),
+    true,
+    "Returning to Credentials preserves the loaded controls",
+  );
   assert.equal(new URL(page.url()).searchParams.get("tab"), "credentials");
   await page.goForward();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
@@ -7343,7 +7587,7 @@ test("leaving a no-Preset creation form discards its in-progress state", async (
       await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
       await page
         .getByRole("dialog", { name: "Configure Slack" })
-        .getByLabel("Slack channel IDs")
+        .getByRole("combobox", { name: "Channels", exact: true })
         .fill("C12345");
       await page.goBack();
     } else {
@@ -7371,7 +7615,10 @@ test("leaving a no-Preset creation form discards its in-progress state", async (
       assert.equal(await page.getByRole("dialog", { name: "Configure Slack" }).count(), 0);
       await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Configure Slack" });
-      assert.equal(await dialog.getByLabel("Slack channel IDs").inputValue(), "");
+      assert.equal(
+        await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true })),
+        "",
+      );
       await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     }
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -7736,4 +7983,409 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
   await page.getByRole("link", { name: "Draft model", exact: true }).waitFor();
+});
+
+test("Slack directory selections show names and save exact channel IDs", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slack directory picker", { ready: true });
+  const appSecret = await fixture.createSecret(namespace.id, "Slack app token", "xapp-test-secret");
+  const botSecret = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-test-secret");
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "disabled",
+    channels: { CEXIST123: { requireMention: true, users: ["*"] } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Slack Directory Agent",
+    nativeValues("slack-directory", { harnessId: "codex", channels: { slack } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const directoryBodies = [];
+  const pendingDirectory = Promise.withResolvers();
+  const releaseDirectory = Promise.withResolvers();
+  // The browser test owns Console selection and saved API state; only provider directory data is simulated.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      directoryBodies.push(body);
+      if (body.query === "pending") {
+        pendingDirectory.resolve(route.request());
+        await releaseDirectory.promise;
+      }
+      let nextCursor;
+      let candidates;
+      if (body.kind === "users") {
+        candidates = [{ id: "UTEST123", name: "alex", displayName: "Alex" }];
+      } else if (body.query === "GENERALX") {
+        if (!body.cursor) {
+          candidates = Array.from({ length: 7 }, (_, index) => ({
+            id: `CUPPER11${index + 1}`,
+            name: `GENERALX-first-${index + 1}`,
+          }));
+          nextCursor = "upper-next";
+        } else if (body.cursor === "upper-next") {
+          candidates = [];
+          nextCursor = "upper-final";
+        } else {
+          candidates = [{ id: "CUPPER123", name: "GENERALX" }];
+        }
+      } else {
+        candidates = [
+          { id: "CEXIST123", name: "existing-room" },
+          { id: "CTEST456", name: "release-room" },
+          { id: "CGENERAL", name: "general" },
+          { id: "CUPPER123", name: "GENERALX" },
+        ];
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            workspaceId: "TTEST123",
+            workspaceName: "Test workspace",
+            candidates: body.ids
+              ? candidates.filter((candidate) => body.ids.includes(candidate.id))
+              : candidates,
+            complete: !nextCursor,
+            ...(nextCursor ? { nextCursor } : {}),
+          },
+          meta: { requestId: "req_test_slack_directory" },
+        }),
+      });
+    },
+  );
+
+  const channelsUrl = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+  await login(page, fixture, channelsUrl.pathname + channelsUrl.search);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const channelDialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const channelSearch = channelDialog.getByRole("combobox", { name: "Channels", exact: true });
+  const channelPicker = channelSearch.locator("..").locator("..");
+  await channelPicker.getByText("#existing-room", { exact: true }).waitFor();
+  await channelSearch.focus();
+  await channelPicker.getByRole("option", { name: /existing-room.*CEXIST123/ }).waitFor();
+  // Advance browser time explicitly: intermediate keystrokes and dismissed searches must not query.
+  const clockTime = new Date("2026-09-27T12:00:00Z");
+  await page.clock.install({ time: new Date("2026-09-27T11:59:00Z") });
+  await page.clock.pauseAt(clockTime);
+  await channelSearch.fill("g");
+  await page.clock.runFor(200);
+  await channelSearch.fill("ge");
+  await page.clock.runFor(200);
+  await channelSearch.fill("general");
+  await page.clock.runFor(299);
+  assert.deepEqual(
+    directoryBodies.filter((body) => body.query),
+    [],
+  );
+  await page.clock.runFor(1);
+  await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+  assert.deepEqual(
+    directoryBodies.filter((body) => body.query).map((body) => body.query),
+    ["general"],
+  );
+  await channelSearch.fill("dismissed");
+  await channelSearch.press("Escape");
+  await page.clock.runFor(300);
+  assert.equal(
+    directoryBodies.some((body) => body.query === "dismissed"),
+    false,
+  );
+  // A new query aborts the old browser request, even while its provider response is held.
+  await channelSearch.fill("pending");
+  await channelSearch.press("Enter");
+  const pendingRequest = await pendingDirectory.promise;
+  const canceledRequest = page.waitForEvent(
+    "requestfailed",
+    (request) => request === pendingRequest,
+  );
+  await channelSearch.fill("general");
+  await canceledRequest;
+  releaseDirectory.resolve();
+  // Enter submits immediately and removes the queued debounce, so it cannot send the same query twice.
+  await channelSearch.press("Enter");
+  await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+  await page.clock.runFor(300);
+  assert.equal(directoryBodies.filter((body) => body.query === "general").length, 2);
+  await page.clock.resume();
+  assert.equal(await slackSelectionValue(channelSearch), "CEXIST123");
+  assert.equal(await page.getByRole("dialog").count(), 1);
+  assert.ok(directoryBodies.some((body) => body.query === "general" && !body.ids));
+  await channelSearch.press("ArrowUp");
+  assert.equal(
+    await channelSearch.getAttribute("aria-activedescendant"),
+    await channelPicker.getByRole("option").last().getAttribute("id"),
+  );
+  await channelSearch.press("Escape");
+  assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+  assert.equal(await channelDialog.isVisible(), true);
+  await channelSearch.fill("GENERALX");
+  await channelPicker.getByRole("option", { name: /GENERALX-first.*CUPPER111/ }).waitFor();
+  assert.equal(await channelPicker.getByRole("option").count(), 5);
+  // Seven provider matches span two display pages; neither overflow nor Previous rereads the provider.
+  const initialSearchRequests = directoryBodies.filter((body) => body.query === "GENERALX").length;
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  await channelPicker.getByRole("option", { name: /GENERALX-first-6.*CUPPER116/ }).waitFor();
+  assert.equal(await channelPicker.getByRole("option").count(), 2);
+  await channelPicker.getByRole("button", { name: "Previous page" }).click();
+  await channelPicker.getByRole("option", { name: /GENERALX-first-1.*CUPPER111/ }).waitFor();
+  assert.equal(await channelPicker.getByRole("option").count(), 5);
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  assert.equal(
+    directoryBodies.filter((body) => body.query === "GENERALX").length,
+    initialSearchRequests,
+  );
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  await channelPicker
+    .getByText("No results on this page. More results may be available.")
+    .waitFor();
+  // A provider scan without matches still permits continuing to a later matching channel.
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  await channelPicker.getByRole("option", { name: /GENERALX.*CUPPER123/ }).click();
+  assert.equal(await slackSelectionValue(channelSearch), "CEXIST123, CUPPER123");
+  assert.ok(directoryBodies.some((body) => body.ids?.[0] === "GENERALX"));
+  assert.ok(directoryBodies.some((body) => body.query === "GENERALX" && !body.ids));
+  assert.ok(
+    directoryBodies.some((body) => body.query === "GENERALX" && body.cursor === "upper-next"),
+  );
+  await channelPicker.getByRole("button", { name: "Remove CUPPER123", exact: true }).click();
+  await channelSearch.fill("CTEST456");
+  await channelPicker.getByRole("option", { name: /release-room.*CTEST456/ }).waitFor();
+  await channelSearch.press("ArrowDown");
+  await channelSearch.press("Enter");
+  assert.equal(await channelSearch.inputValue(), "");
+  assert.equal(await slackSelectionValue(channelSearch), "CEXIST123, CTEST456");
+  // Clearing specific people must not turn channel access into Everyone.
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("selected");
+  const people = channelDialog.getByRole("combobox", {
+    name: "Allowed people in these channels",
+    exact: true,
+  });
+  await setSlackSelection(people, "UTEST123");
+  await people
+    .locator("..")
+    .locator("..")
+    .getByRole("button", { name: "Remove UTEST123", exact: true })
+    .click();
+  await channelDialog.getByRole("button", { name: "Save configuration" }).click();
+  await channelDialog
+    .getByText("Choose specific people or select Everyone in these channels.")
+    .waitFor();
+  assert.equal(
+    pathRequests(
+      requests,
+      "PATCH",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    ).length,
+    0,
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
+  // Unselected search text is never part of the Configuration save.
+  await channelSearch.fill("unselected search text");
+  const savedChannels = page.waitForResponse(
+    (response) =>
+      response
+        .url()
+        .endsWith(`/namespaces/${namespace.id}/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
+  await channelDialog.getByRole("button", { name: "Save configuration" }).click();
+  assert.equal((await savedChannels).status(), 200);
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.deepEqual(Object.keys(configuration.data.values.channels.slack.channels), [
+    "CEXIST123",
+    "CTEST456",
+  ]);
+  assert.ok(
+    directoryBodies.some(
+      (body) =>
+        body.secretId === botSecret.id &&
+        body.kind === "channels" &&
+        body.configurationId === agent.configurationId &&
+        body.ids?.[0] === "CTEST456",
+    ),
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  await page
+    .getByRole("dialog", { name: "Edit Slack" })
+    .locator('.slack-directory-chip[data-value="CTEST456"]')
+    .getByText("#release-room")
+    .waitFor();
+});
+
+test("Slack editor preserves existing qualified channel and user targets", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Qualified Slack targets", { ready: true });
+  const appSecret = await fixture.createSecret(
+    namespace.id,
+    "Qualified Slack app token",
+    "xapp-qualified",
+  );
+  const botSecret = await fixture.createSecret(
+    namespace.id,
+    "Qualified Slack bot token",
+    "xoxb-qualified",
+  );
+  const channelUsers = [
+    "team:TTEST123:user:UTEST123",
+    "user:UTEST124",
+    "slack:UTEST125",
+    "@legacy-sender",
+  ];
+  const dmUsers = ["user:UTEST123", "slack:UTEST124", "team:TTEST123:user:UTEST125", "@legacy-dm"];
+  const channelIds = ["team:TTEST123:channel:CEXIST123", "channel:GEXIST456", "#legacy-room"];
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    allowFrom: dmUsers,
+    channels: Object.fromEntries(
+      channelIds.map((id) => [id, { requireMention: true, users: channelUsers }]),
+    ),
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Qualified Slack Agent",
+    nativeValues("qualified-slack", { harnessId: "codex", channels: { slack } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      const candidates =
+        body.kind === "channels"
+          ? [{ id: "CEXIST123", name: "existing-room" }]
+          : [{ id: "UTEST123", name: "alex", displayName: "Alex" }];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            workspaceId: "TTEST123",
+            candidates: body.ids
+              ? candidates.filter((candidate) => body.ids.includes(candidate.id))
+              : candidates,
+            complete: true,
+          },
+          meta: { requestId: "req_qualified_slack" },
+        }),
+      });
+    },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  assert.deepEqual(
+    (
+      await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true }))
+    ).split(", "),
+    channelIds,
+  );
+  assert.deepEqual(
+    new Set(
+      (
+        await slackSelectionValue(
+          dialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+        )
+      ).split(", "),
+    ),
+    new Set(channelUsers),
+  );
+  assert.deepEqual(
+    (
+      await slackSelectionValue(
+        dialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+      )
+    ).split(", "),
+    dmUsers,
+  );
+  for (const [label, candidate] of [
+    ["Channels", /existing-room.*CEXIST123/],
+    ["Allowed people in these channels", /Alex.*UTEST123/],
+    ["Allowed people in direct messages", /Alex.*UTEST123/],
+  ]) {
+    const search = dialog.getByRole("combobox", { name: label, exact: true });
+    await search.focus();
+    await search.locator("..").locator("..").getByRole("option", { name: candidate }).click();
+  }
+  assert.equal(await dialog.locator('.slack-directory-chip[data-value="CEXIST123"]').count(), 0);
+  assert.deepEqual(
+    (
+      await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true }))
+    ).split(", "),
+    channelIds,
+  );
+  assert.deepEqual(
+    new Set(
+      (
+        await slackSelectionValue(
+          dialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+        )
+      ).split(", "),
+    ),
+    new Set(channelUsers),
+  );
+  assert.deepEqual(
+    (
+      await slackSelectionValue(
+        dialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+      )
+    ).split(", "),
+    dmUsers,
+  );
+  await dialog.getByLabel("Require a mention").uncheck();
+  const saved = page.waitForResponse(
+    (response) =>
+      response
+        .url()
+        .endsWith(`/namespaces/${namespace.id}/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  assert.equal((await saved).status(), 200);
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  const persisted = configuration.data.values.channels.slack;
+  assert.deepEqual(Object.keys(persisted.channels), channelIds);
+  for (const entry of Object.values(persisted.channels)) {
+    assert.deepEqual(new Set(entry.users), new Set(channelUsers));
+    assert.equal(entry.requireMention, false);
+  }
+  assert.deepEqual(persisted.allowFrom, dmUsers);
 });

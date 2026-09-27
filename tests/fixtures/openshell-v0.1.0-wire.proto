@@ -12,6 +12,11 @@ service OpenShell {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+  rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
+      returns (GetSandboxProviderStatusResponse);
+  rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
+  rpc ImportProviderProfiles(ImportProviderProfilesRequest)
+      returns (ImportProviderProfilesResponse);
 }
 
 message HealthRequest {}
@@ -54,6 +59,7 @@ message DeleteSandboxRequest {
 
 message SandboxSpec {
   SandboxPolicy policy = 7;
+  repeated string providers = 8;
 }
 
 message SandboxPolicy {
@@ -74,10 +80,13 @@ message NetworkBinary {
 
 message NetworkEndpoint {
   string host = 1;
+  uint32 port = 2;
+  string protocol = 3;
   NetworkTlsMode tls = 4;
   NetworkEnforcementMode enforcement = 5;
   NetworkAccessPreset access = 6;
   repeated uint32 ports = 9;
+  string path = 15;
 }
 
 enum NetworkTlsMode {
@@ -117,3 +126,125 @@ message ObjectMeta {
 }
 
 message DeleteSandboxResponse {}
+
+// openshell.datamodel.v1.Provider
+message Provider {
+  reserved 5;
+  reserved "credential_expires_at_ms";
+  ObjectMeta metadata = 1;
+  string type = 2;
+  map<string, string> credentials = 3;
+  map<string, string> config = 4;
+  string profile_workspace = 6;
+}
+
+message CreateProviderRequest {
+  WorkspaceSelector workspace_scope = 2;
+  Provider provider = 1;
+  string request_id = 3;
+}
+
+message ProviderResponse {
+  Provider provider = 1;
+  string mutation_id = 3;
+}
+
+enum ProviderProfileCategory {
+  PROVIDER_PROFILE_CATEGORY_UNSPECIFIED = 0;
+  PROVIDER_PROFILE_CATEGORY_OTHER = 1;
+  PROVIDER_PROFILE_CATEGORY_INFERENCE = 2;
+  PROVIDER_PROFILE_CATEGORY_AGENT = 3;
+  PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL = 4;
+  PROVIDER_PROFILE_CATEGORY_MESSAGING = 5;
+  PROVIDER_PROFILE_CATEGORY_DATA = 6;
+  PROVIDER_PROFILE_CATEGORY_KNOWLEDGE = 7;
+}
+
+message ProviderProfileCredential {
+  string name = 1;
+  string description = 2;
+  repeated string env_vars = 3;
+  bool required = 4;
+  string auth_style = 5;
+  string header_name = 6;
+  string query_param = 7;
+  string path_template = 9;
+}
+
+message ProviderProfile {
+  string id = 1;
+  string display_name = 2;
+  string description = 3;
+  ProviderProfileCategory category = 4;
+  repeated ProviderProfileCredential credentials = 5;
+  repeated NetworkEndpoint endpoints = 6;
+  repeated NetworkBinary binaries = 7;
+  bool inference_capable = 8;
+  uint64 resource_version = 10;
+  map<string, string> annotations = 11;
+  string source = 12;
+  string scope = 13;
+}
+
+message ProviderProfileImportItem {
+  ProviderProfile profile = 1;
+  string source = 2;
+}
+
+message ProviderProfileDiagnostic {
+  string source = 1;
+  string profile_id = 2;
+  string field = 3;
+  string message = 4;
+  string severity = 5;
+}
+
+message ImportProviderProfilesRequest {
+  WorkspaceSelector workspace_scope = 2;
+  repeated ProviderProfileImportItem profiles = 1;
+  string request_id = 3;
+}
+
+message ImportProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  repeated ProviderProfile profiles = 2;
+  bool imported = 3;
+}
+
+message GetSandboxProviderStatusRequest {
+  WorkspaceSelector workspace_scope = 4;
+  string sandbox = 1;
+  string provider = 2;
+  string receipt_id = 3;
+}
+
+message GetSandboxProviderStatusResponse {
+  ProviderReadinessStatus status = 1;
+}
+
+message ProviderReadinessStatus {
+  ProviderReadinessState state = 2;
+  ProviderReadinessReason reason = 3;
+  string network_instance_id = 5;
+}
+
+enum ProviderReadinessState {
+  PROVIDER_READINESS_STATE_UNSPECIFIED = 0;
+  PROVIDER_READINESS_STATE_PERSISTED = 1;
+  PROVIDER_READINESS_STATE_PENDING = 2;
+  PROVIDER_READINESS_STATE_READY = 3;
+  PROVIDER_READINESS_STATE_WITHHELD = 4;
+  PROVIDER_READINESS_STATE_REVOKED = 5;
+  PROVIDER_READINESS_STATE_FAILED = 6;
+  PROVIDER_READINESS_STATE_SUPERSEDED = 7;
+}
+
+enum ProviderReadinessReason {
+  PROVIDER_READINESS_REASON_UNSPECIFIED = 0;
+  PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR = 1;
+  PROVIDER_READINESS_REASON_WAITING_FOR_CREDENTIALS = 2;
+  PROVIDER_READINESS_REASON_WAITING_FOR_POLICY = 3;
+  PROVIDER_READINESS_REASON_WAITING_FOR_PROCESS = 4;
+  PROVIDER_READINESS_REASON_UNSUPPORTED_SUPERVISOR = 5;
+  PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD = 6;
+}

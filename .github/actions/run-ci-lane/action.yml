@@ -35,6 +35,13 @@ runs:
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
+    - name: Install registry transport for image publication test
+      if: inputs.lane == 'images-packaging'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y skopeo
+        skopeo --version | grep -Fx 'skopeo version 1.13.3'
     - name: Enable Kubernetes bridge packet filtering
       if: startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash

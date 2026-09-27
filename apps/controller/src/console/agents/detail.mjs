@@ -347,7 +347,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId) {
     try {
       diagnostics = await context.request(
         `${path}/deployments/${encodeURIComponent(revisionId)}/diagnostics`,
-        { method: "POST" },
+        { method: "POST", readOnly: true },
       );
     } catch (cause) {
       if (!context.isCurrent()) {
@@ -619,7 +619,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     versionLayout,
   );
   let details;
-  let tabGeneration = 0;
+  const retainedTabs = new Map();
+  let mountedTab = null;
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;
@@ -981,7 +982,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     };
     const retainedPlugins = context.drafts.get("plugins");
     const pluginEditorState = {
-      dirty: Boolean(retainedPlugins && retainedPlugins.text !== retainedPlugins.initialText),
+      dirty: Boolean(retainedPlugins?.dirty),
       saving: false,
       outcomeUnknown: retainedPlugins?.outcomeUnknown ?? false,
       reloadRequired: retainedPlugins?.reloadRequired ?? false,
@@ -1222,14 +1223,24 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   async function renderTab() {
-    context.flushDrafts();
+    const resumeDrafts = context.suspendDrafts();
+    if (mountedTab) {
+      mountedTab.resumeDrafts = resumeDrafts;
+      for (const input of content.querySelectorAll('input[type="password"]')) {
+        if (input.value) {
+          mountedTab.reusable = false;
+          input.value = "";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }
+      if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
+        mountedTab.nodes = [...content.childNodes];
+        retainedTabs.set(mountedTab.id, mountedTab);
+      }
+      mountedTab = null;
+    }
     renderDetailHeading();
     versionEvidence.hidden = selectedTab === "workspace";
-    const activeTab = ++tabGeneration;
-    const tabContext = {
-      ...context,
-      isCurrent: () => context.isCurrent() && activeTab === tabGeneration,
-    };
     const tab = selectedTab;
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
@@ -1240,14 +1251,43 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     refreshDeployControls();
-    content.querySelectorAll('input[type="password"]').forEach((input) => {
-      input.value = "";
-    });
+    const retained = retainedTabs.get(tab);
+    retainedTabs.delete(tab);
+    if (retained && retained.mutations === context.mutationVersion()) {
+      mountedTab = retained;
+      content.replaceChildren(...retained.nodes);
+      retained.resumeDrafts();
+      return;
+    }
+    const state = {
+      id: tab,
+      reusable: true,
+      loading: true,
+      pending: 0,
+      mutations: context.mutationVersion(),
+    };
+    mountedTab = state;
+    const tabContext = {
+      ...context,
+      isCurrent: () => context.isCurrent() && mountedTab === state,
+      request: async (path, options) => {
+        state.pending += 1;
+        try {
+          return await context.request(path, options);
+        } catch (error) {
+          state.reusable = false;
+          throw error;
+        } finally {
+          state.pending -= 1;
+        }
+      },
+    };
     // Retain the panel's height during reads so loading does not jump the scroll position.
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
     if (tab === "workspace") {
       content.append(renderWorkspaceFiles(tabContext, agent, path));
+      state.loading = false;
       content.style.minHeight = "";
       return;
     }
@@ -1257,7 +1297,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return;
     }
     content.replaceChildren();
+    state.loading = false;
     if (data?.error) {
+      state.reusable = false;
       content.append(errorPanel(data.error, tabContext, () => change(selected)));
     } else if (data) {
       renderConfigurationTab(tabContext, tab, data);
@@ -1300,6 +1342,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           namespaceId,
           request,
           agentName: agent.name,
+          configurationId: snapshot.id,
           secretBindings: snapshot.secretBindings,
           isCurrent: context.isCurrent,
           onExpired: context.onExpired,

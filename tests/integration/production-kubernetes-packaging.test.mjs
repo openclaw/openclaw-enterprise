@@ -354,6 +354,10 @@ test("production Helm values example renders the backendless default chart", too
       "oce-role": "control",
     });
   }
+  assert.deepEqual(selected("Deployment", "worker").spec.strategy, {
+    type: "RollingUpdate",
+    rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" },
+  });
   assert.ok(
     initialization.spec.template.spec.volumes.some(
       ({ name, secret }) => name === "database-ca" && secret?.secretName === "occ-rds-ca",
@@ -713,6 +717,80 @@ test(
         "github-primary",
       ]);
     }
+  },
+);
+
+test(
+  "repository credential origin helper reports the rendered broker endpoint",
+  tooling,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "broker-origin-helper-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const valuesFile = join(directory, "values.json");
+    await writeFile(
+      valuesFile,
+      JSON.stringify({
+        images: { controller: values["images.controller"] },
+        auth: {
+          baseUrl: values["auth.baseUrl"],
+          secretName: values["auth.secretName"],
+          secretKey: values["auth.secretKey"],
+        },
+        bootstrap: {
+          adminEmail: values["bootstrap.adminEmail"],
+          password: { claimName: values["bootstrap.password.claimName"] },
+        },
+        api: {
+          clients: [
+            {
+              namespace: values["api.clients[0].namespace"],
+              podLabels: { app: values["api.clients[0].podLabels.app"] },
+            },
+          ],
+        },
+        database: { cidrs: [values["database.cidrs[0]"]] },
+        cluster: { cidrs: [values["cluster.cidrs[0]"]] },
+        repositoryCredentials: {
+          enabled: true,
+          image: repositoryCredentialValues["repositoryCredentials.image"],
+          serviceName: "broker",
+          hostname: "broker.openclaw-system.svc",
+          backendId: "github-primary",
+          registryConfigMapName: "repository-registry-v1",
+          serviceConfigSecretName: "repository-config",
+          appKeySecretName: "repository-app-key",
+          tlsSecretName: "repository-tls",
+          publicCaSecretName: "repository-public-ca",
+          upstreamCidrs: ["198.51.100.0/24"],
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const rendered = JSON.parse(
+      (
+        await execute(
+          "node",
+          [
+            "scripts/render-repository-credentials-origin.mjs",
+            "--release",
+            "oce",
+            "--namespace",
+            "openclaw-system",
+            "--values",
+            valuesFile,
+          ],
+          { cwd: repository, maxBuffer: 2_000_000 },
+        )
+      ).stdout,
+    );
+    assert.deepEqual(rendered, {
+      origin: "https://broker.openclaw-system.svc",
+      hostname: "broker.openclaw-system.svc",
+      serviceName: "broker",
+      namespace: "openclaw-system",
+      release: "oce",
+      backendId: "github-primary",
+    });
   },
 );
 
@@ -1344,6 +1422,63 @@ test(
     );
   },
 );
+
+test("Slack directory proxy grants only API egress to its exact endpoint", tooling, async () => {
+  const name = "openclaw-enterprise-api-channel-directory-egress";
+  const defaults = await resources((await render()).stdout);
+  assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
+  const objects = await resources(
+    (await render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" })).stdout,
+  );
+  const policy = objects.find(
+    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  );
+  assert.ok(policy, "configured directory proxy must render API egress");
+  assert.deepEqual(policy.spec, {
+    podSelector: {
+      matchLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+        "app.kubernetes.io/component": "api",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
+        ports: [{ protocol: "TCP", port: 3128 }],
+      },
+    ],
+  });
+  const proxyEnvironment = (objects, component) =>
+    objects
+      .find(
+        ({ kind, spec }) =>
+          kind === "Deployment" &&
+          spec.template.metadata.labels["app.kubernetes.io/component"] === component,
+      )
+      .spec.template.spec.containers[0].env.find(
+        ({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+      );
+  assert.deepEqual(proxyEnvironment(objects, "api"), {
+    name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
+    value: "http://198.51.100.25:3128",
+  });
+  assert.equal(proxyEnvironment(objects, "worker"), undefined);
+  assert.equal(proxyEnvironment(defaults, "api"), undefined);
+  for (const url of [
+    "http://slack.com:3128",
+    "http://198.51.100.25:65536",
+    "http://user:pass@198.51.100.25:3128",
+    "http://198.51.100.25:3128/path",
+    "http://198.51.100.999:3128",
+  ]) {
+    await assert.rejects(
+      render({ "api.channelDirectoryProxyUrl": url }),
+      /api.channelDirectoryProxyUrl/,
+    );
+  }
+});
 
 test(
   "optional database CA Secret mounts into every production database client",

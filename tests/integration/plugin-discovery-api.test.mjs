@@ -148,12 +148,14 @@ function trackSecretValueReads(secretDriver) {
 
 test("Plugin discovery uses the selected Driver through authenticated HTTP without creating resources", async (t) => {
   const fixture = await createFixture(t);
-  const catalog = await fixture.request("POST", fixture.path, { body: { accessToken } });
+  const catalog = await fixture.request("POST", fixture.path, {
+    body: { accessToken, q: "knowledge" },
+  });
   assert.equal(catalog.status, 200);
   assert.equal(catalog.headers.get("cache-control"), "no-store");
   assert.deepEqual(catalog.data, { plugins: [catalogEntry], nextCursor: "second-page" });
   const next = await fixture.request("POST", fixture.path, {
-    body: { accessToken, cursor: catalog.data.nextCursor },
+    body: { accessToken, q: "knowledge", cursor: catalog.data.nextCursor },
   });
   assert.equal(next.status, 200);
   assert.deepEqual(next.data, { plugins: [], nextCursor: null });
@@ -164,8 +166,8 @@ test("Plugin discovery uses the selected Driver through authenticated HTTP witho
   assert.equal(details.headers.get("cache-control"), "no-store");
   assert.deepEqual(details.data, pluginDetails);
   assert.deepEqual(fixture.calls, [
-    { operation: "list", input: { accessToken } },
-    { operation: "list", input: { accessToken, cursor: "second-page" } },
+    { operation: "list", input: { accessToken, q: "knowledge" } },
+    { operation: "list", input: { accessToken, q: "knowledge", cursor: "second-page" } },
     { operation: "details", input: { accessToken, pluginId: remoteId } },
   ]);
   assert.deepEqual(
@@ -235,6 +237,7 @@ test("Plugin discovery validates bounded credential and identity input before Dr
     ["", { accessToken: "" }],
     ["", { accessToken: "x".repeat(16385) }],
     ["", { accessToken, cursor: "x".repeat(8193) }],
+    ["", { accessToken, q: "x".repeat(1025) }],
     ["", { accessToken, accountId: "caller-supplied-authority" }],
     ["/details", { accessToken, pluginId: "" }],
     ["/details", { accessToken, pluginId: "x".repeat(257) }],
@@ -289,12 +292,12 @@ test("Saved Agent plugin discovery uses its current Secret for catalog and tools
   const fixture = await createFixture(t);
   const { secret, path } = await createSavedAgent(fixture);
 
-  // The caller selects only the Agent; OCC resolves the currently bound Secret on each read.
-  const catalog = await fixture.request("POST", path, { body: {} });
+  // Search and pagination preserve Agent-owned credential authority on every read.
+  const catalog = await fixture.request("POST", path, { body: { q: "linear" } });
   assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
   assert.deepEqual(catalog.data, { plugins: [catalogEntry], nextCursor: "second-page" });
   const next = await fixture.request("POST", path, {
-    body: { cursor: catalog.data.nextCursor },
+    body: { cursor: catalog.data.nextCursor, q: "linear" },
   });
   assert.equal(next.status, 200, JSON.stringify(next.body));
   assert.deepEqual(next.data, { plugins: [], nextCursor: null });
@@ -304,8 +307,8 @@ test("Saved Agent plugin discovery uses its current Secret for catalog and tools
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.deepEqual(details.data, pluginDetails);
   assert.deepEqual(fixture.calls, [
-    { operation: "list", input: { accessToken } },
-    { operation: "list", input: { accessToken, cursor: "second-page" } },
+    { operation: "list", input: { accessToken, q: "linear" } },
+    { operation: "list", input: { accessToken, cursor: "second-page", q: "linear" } },
     { operation: "details", input: { accessToken, pluginId: remoteId } },
   ]);
 
@@ -763,6 +766,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   const rotated = "at-rotated-private-fixture";
   const originalFetch = globalThis.fetch;
   const credentials = [];
+  const catalogRequests = [];
   let echoCredential = false;
   const plugin = {
     id: "remote-fixture",
@@ -802,7 +806,9 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
       });
     }
     assert.equal(init.headers["ChatGPT-Account-ID"], "account-fixture");
-    if (address.includes("plugins/list")) {
+    if (address.includes("plugins/list") || address.includes("plugins/search")) {
+      const request = new URL(address);
+      catalogRequests.push({ path: request.pathname, q: request.searchParams.get("q") });
       return Response.json({
         plugins: [
           {
@@ -831,9 +837,12 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     });
   });
 
-  const list = await fixture.request("POST", fixture.path, { body: { secretRef: secret.ref } });
+  const list = await fixture.request("POST", fixture.path, {
+    body: { secretRef: secret.ref, q: "fixture" },
+  });
   assert.equal(list.status, 200);
   assert.equal(list.data.plugins[0].remoteId, "remote-fixture");
+  assert.deepEqual(catalogRequests, [{ path: "/backend-api/ps/plugins/search", q: "fixture" }]);
   const details = await fixture.request("POST", `${fixture.path}/details`, {
     body: { secretRef: secret.ref, pluginId: "remote-fixture" },
   });
@@ -846,7 +855,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     {
       [details.data.id]: {
         enabled: true,
-        tools: { [details.data.tools[0].id]: { enabled: true, approval: "prompt" } },
+        tools: { [details.data.tools[0].id]: { enabled: true, approval: "all_actions" } },
       },
     },
     [
@@ -1088,6 +1097,10 @@ test("Curated discovery admits Linear without provider I/O and saves its selecti
   assert.equal(linear.remoteId, "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c");
   assert.equal(linear.tools, null);
   assert.equal(linear.selectableWithoutTools, true);
+  const search = await fixture.request("POST", path, { body: { q: "  LiNeAr  " } });
+  assert.equal(search.status, 200);
+  assert.deepEqual(search.data.plugins, [linear]);
+  assert.equal(search.data.nextCursor, null);
   const details = await fixture.request("POST", `${path}/details`, {
     body: { pluginId: linear.remoteId },
   });
@@ -1120,7 +1133,7 @@ test("Curated discovery admits Linear without provider I/O and saves its selecti
     { executionMode: "dedicated" },
   );
   const plugins = {
-    [linear.id]: { enabled: true, toolDefaults: { reviewer: "auto" } },
+    [linear.id]: { enabled: true, toolDefaults: { approval: "write_actions", reviewer: "human" } },
     [slack.id]: { enabled: true, toolDefaults: { reviewer: "auto" } },
   };
   const updated = await fixture.updateAgent(namespace.id, agent.id, {

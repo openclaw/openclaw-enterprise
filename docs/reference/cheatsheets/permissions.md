@@ -15,7 +15,7 @@ override grants, and one action never implies another. See
 | `update`     | Change a resource or its credential.                                                                                               |
 | `delete`     | Request deletion of the exact resource.                                                                                            |
 | `deploy`     | Admit a new Agent revision.                                                                                                        |
-| `operate`    | Stop an Agent, provision its runtime credentials, write its workspace files, or use a bound Secret, depending on resource kind.    |
+| `operate`    | Stop an Agent, provision its runtime credentials, write its workspace files, or use a bound Secret or credential source.           |
 | `administer` | Run Installation administration or access the exact Agent’s native admin UI. It does not imply `read`, `deploy`, or other actions. |
 
 ## Resources and scopes
@@ -32,11 +32,12 @@ principal. Rerunning bootstrap does not add missing permissions to existing Role
 | [`preset`](../presets.md)                       | `create`, `read`, `update`, `delete`                                    | Namespace for create; exact Preset otherwise.                                                                                                                               |
 | [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                    | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                               |
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                         | Namespace collection for create/list; list also filters by exact Secret `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used. |
+| [`credential_source`](../credential-sources.md) | `create`, `read`, `delete`, `operate`                                   | Namespace collection for create/list; list also filters by exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed.    |
 | [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer` | Namespace for create; exact Agent otherwise. Native admin requires a human session.                                                                                         |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                  | Exact AgentRevision; deployment-status reads use this permission too.                                                                                                       |
 
-Namespace, Preset, Agent, ServiceAccount, AgentRevision, and Secret lists check
-each returned resource. Listing Agents or ServiceAccounts also requires `namespace:read`;
+Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
+source lists check each returned resource. Listing Agents or ServiceAccounts also requires `namespace:read`;
 listing AgentRevisions also requires `agent:read` on the parent. The
 [HTTP API reference](../api.md#operations) lists exact targets and conditions for
 each operation.
@@ -51,13 +52,21 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
 
 ## Additional checks
 
+- [Channel directory lookup](../api.md#post-namespacesnamespaceidchanneldirectorylookup)
+  requires `agent:create` in the Namespace, or `agent:update` or
+  `configuration:update` on the exact edit target, plus `secret:operate` on the
+  exact same-Namespace Secret used for the lookup.
 - Model discovery for Agent creation requires `agent:create` in the exact
   Namespace. The supplied API key or service account token is used transiently; no resource is created.
 - [Create](../api.md#post-namespacesnamespaceidagents), [update](../api.md#patch-namespacesnamespaceidagentsagentid), and
   [deploy an Agent](../api.md#post-namespacesnamespaceidagentsagentiddeploy) also
   require `configuration:read`, `service_account:read` for current or new
-  associations, and `secret:operate` for bound Secrets. At deployment the
-  Agent’s own service principal also needs `secret:operate` on each bound Secret.
+  associations, `secret:operate` for bound Secrets, and `credential_source:operate`
+  for a bound credential source. At deployment the Agent’s own service principal
+  also needs `secret:operate` on each bound Secret and `credential_source:operate`
+  on its source.
+- [Registering a credential source](../api.md#post-namespacesnamespaceidcredentialsources)
+  also requires `secret:operate` on each referenced Secret.
 - [Create](../api.md#post-namespacesnamespaceidconfigurations) or
   [update a Configuration](../api.md#patch-namespacesnamespaceidconfigurationsconfigurationid)
   with Secret bindings requires `secret:operate` on each bound Secret.
@@ -75,8 +84,9 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   separate permission resource kinds.
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
-all seven action names on `agent`, `agent_revision`, `configuration`, `preset`, `secret`,
-and `service_account`, including combinations no current operation checks.
+all seven action names on `agent`, `agent_revision`, `configuration`,
+`credential_source`, `preset`, `secret`, and `service_account`, including
+combinations no current operation checks.
 It can create bindings only for an identity and an existing exact resource.
 It cannot create Installation or Namespace-wide grants, including the collection
 permission needed to create resources. Existing Namespace-wide and Group

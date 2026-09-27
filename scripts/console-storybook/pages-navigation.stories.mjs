@@ -14,3 +14,5 @@ export const ReturnAccessDenied = { ...story("navigationDenied") };
 export const ReturnSessionExpired = { ...story("navigationExpired") };
 
 export const ReturnBackendAccessDenied = { ...story("navigationBackendDenied") };
+
+export const ReturnToAgentPanels = { ...story("navigationAgentReturn") };

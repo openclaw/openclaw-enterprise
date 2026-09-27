@@ -9,12 +9,13 @@ authenticated client. The bundled ChatGPT client manages upstream service
 accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
 credential configuration for the selected `RepoDriver` and uses the separate
-Agent `repositoryBindings` selection.
+Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
+connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
 Backends have no OCC resource or write API. Installation administrators can
 discover nonsecret configured IDs and types through `GET /backends`.
 
 [Configure the ChatGPT Backend](../guides/integrations/chatgpt.md) for the
-operator workflow. The bundled Backend types are ChatGPT and GitHub.
+operator workflow. The bundled Backend types are ChatGPT, GitHub, and OpenShell.
 
 A **model provider** identifies the service used by a model (for example, OpenAI).
 The **Provider → Model** choice in Agent setup selects model configuration; a
@@ -60,8 +61,8 @@ drivers:
 The singular `backend` key is an array; omission or `[]` means none. IDs are
 unique strings of 1–200 characters without leading/trailing whitespace or ASCII
 control characters. `openai` is an operator-chosen ID. The bundled types are
-`chatgpt` and `github`; each has its own closed configuration and required member
-Driver. A ChatGPT workspace UUID identifies the upstream workspace, not a Namespace.
+`chatgpt`, `github`, and `openshell`; each has its own closed configuration and
+required member Drivers. A ChatGPT workspace UUID identifies the upstream workspace, not a Namespace.
 
 `apiKeyPath` must be an absolute mounted file path. The key needs
 `chatgpt.enterprise.service_account.write` and authority for that workspace.
@@ -109,6 +110,52 @@ and the [operator guide](../guides/repository-credentials.md) for service setup.
 The capability requires the bundled Kubernetes Compute Driver without a Sandbox
 Driver; admitted Agents must use a supported
 [runtime and authentication combination](repository-credentials.md).
+
+### OpenShell gateway
+
+The OpenShell Backend holds the connection to one OpenShell gateway deployment:
+
+```yaml
+backend:
+  - id: openshell
+    type: openshell
+    configuration:
+      endpoint: https://openshell-gateway.openshell-system.svc:8080
+      auth:
+        mode: bearerTokenFile
+        path: /etc/openclaw/openshell/token
+      rootCertificatePath: /etc/openclaw/openshell/ca.crt
+    drivers:
+      sandbox: openshell-sandbox
+      credential_gateway: openshell-credentials
+```
+
+Its closed `configuration` accepts:
+
+- `endpoint`: `host:port`, or an `http` or `https` origin without credentials,
+  path, query, or fragment.
+- `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
+  name is used as-is; a bare name resolves in each tenant namespace. `port`
+  defaults to `8080`, and `scheme` defaults to `https` only when
+  `rootCertificatePath` is set.
+- `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
+  an absolute path.
+- `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
+  limits how late a timed-out credential registration can land.
+- `rootCertificatePath`: an absolute path to the gateway CA.
+- `insecureTransport: network-policy`: required when the connection lacks TLS or
+  bearer-token authentication, and rejected otherwise. It declares that
+  NetworkPolicy restricts the gateway to the OCE API, worker, and OpenShell
+  supervisors. Credential registration sends resolved values over this
+  connection, and OCC cannot verify the NetworkPolicy itself.
+
+Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
+`drivers.credential_gateway` are required and must match the selected bundled
+[OpenShell SandboxDriver](drivers/openshell-sandbox.md) and
+[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). One
+OpenShell Backend is supported. Composition builds one gateway client object
+and injects it into both members, which cache one client per resolved endpoint.
+The API and the worker each construct it, so both need the token file and gateway access.
 
 ## Driver and client contract
 

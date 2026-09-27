@@ -6,6 +6,7 @@ import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
@@ -282,6 +283,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !["embedded", "dedicated"].includes(agent.executionMode)) ||
     (agent.backendId != null && typeof agent.backendId !== "string") ||
     (agent.plugins !== undefined && !isObject(agent.plugins)) ||
+    (agent.pluginApprovers !== undefined &&
+      (!Array.isArray(agent.pluginApprovers) ||
+        !agent.pluginApprovers.every(
+          (entry) =>
+            isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
+        ))) ||
     !hasRenderableWorkspaceFiles ||
     (rendered.configuration?.secretBindings !== undefined &&
       !isObject(rendered.configuration.secretBindings))
@@ -749,6 +756,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     return apiKey.value.trim() ? { accessToken: apiKey.value } : null;
   }
+  let configurationSecretBindings = structuredClone(
+    draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
+  );
+  const getSlackBotSecretId = () => {
+    const source = configurationSecretBindings.SLACK_BOT_TOKEN?.source;
+    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
+  };
   const pluginDiscovery = createPluginDiscovery({
     context,
     input: plugins,
@@ -763,6 +777,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
         : "Load plugins available to the selected service account credential. Your plugin selections stay unchanged.",
+    createApproverField: (options) =>
+      createSlackApproverField({
+        context,
+        getSecretId: getSlackBotSecretId,
+        ...options,
+      }),
   });
   const pluginFields = pluginDiscovery.fields;
   const updatePluginDiscovery = pluginDiscovery.update;
@@ -771,8 +791,25 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   for (const control of [nativeProvider, authMethod, harness]) {
     control.addEventListener("change", resetPluginDiscovery);
   }
-  let configurationSecretBindings = structuredClone(
-    draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
+  let pluginApprovers = structuredClone(
+    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
+  );
+  const defaultApprovers = createSlackApproverField({
+    context,
+    label: "Default plugin approvers",
+    getSecretId: getSlackBotSecretId,
+    getValue: () => pluginApprovers,
+    onChange: (value) => {
+      pluginApprovers = value;
+      edited = true;
+    },
+    inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
+    lazyNames: true,
+  });
+  defaultApprovers.hidden = true;
+  pluginFields.section.insertBefore(
+    defaultApprovers,
+    pluginFields.section.querySelector(".plugin-json"),
   );
   const workspaceInputs = Object.entries(WORKSPACE_DEFAULTS).map(([filename, content]) => {
     const input = element("textarea", {
@@ -1011,6 +1048,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       Object.entries(draftInputs).map(([key, input]) => [key, input.value]),
     ),
     manualModel,
+    pluginApprovers,
     edited,
     pendingModelSettings,
     pendingProviderModel,
@@ -1132,6 +1170,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (options.secretBindings !== undefined) {
           configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
+          defaultApprovers.refreshValue();
+          pluginDiscovery.update();
         }
         configuration.setCustomValidity("");
         setTimeout(() => {
@@ -1324,6 +1364,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       pluginDiscoveryCredential =
         installation.capabilities?.pluginDiscovery?.credential ?? "required";
       pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
+      defaultApprovers.hidden =
+        installation.capabilities?.pluginPolicies?.approvers?.agent !== true;
+      if (!defaultApprovers.hidden) {
+        defaultApprovers.refreshNames();
+      }
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {
@@ -1490,6 +1535,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
       ...(repositoryBindings.length ? { repositoryBindings } : {}),
       ...(Object.keys(desiredPlugins).length ? { plugins: desiredPlugins } : {}),
+      ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
     if (!binding && !passwordAuth && modelCredentialSource?.kind !== "secret") {

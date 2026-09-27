@@ -8,6 +8,8 @@ import {
   detailUrl,
   expectNoText,
   login,
+  setSlackSelection,
+  slackSelectionValue,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
@@ -132,23 +134,26 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   assert.equal(await botSecretLink.getAttribute("href"), botSecretPath);
   await dialog.getByText("Secret menu changes are saved with these channel settings.").waitFor();
 
-  const channelIds = page.getByLabel("Slack channel IDs");
-  const allowedUsers = page.getByLabel("Allowed channel user IDs");
-  const allowEveryone = page.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await allowedUsers.inputValue(), "UOLD123");
+  const channelIds = page.getByRole("combobox", { name: "Channels", exact: true });
+  const allowedUsers = page.getByRole("combobox", {
+    name: "Allowed people in these channels",
+    exact: true,
+  });
+  const allowEveryone = page.getByLabel("Who can use the agent in these channels?");
+  assert.equal(await slackSelectionValue(allowedUsers), "UOLD123");
   assert.equal(await allowedUsers.isDisabled(), false);
-  assert.equal(await allowEveryone.isDisabled(), true);
-  await channelIds.fill("COLD123, CNEW123");
-  await allowedUsers.fill("UNEW123");
-  assert.equal(await allowEveryone.isDisabled(), true);
-  await allowedUsers.fill("");
+  assert.equal(await allowEveryone.inputValue(), "selected");
+  await setSlackSelection(channelIds, "COLD123, CNEW123");
+  await setSlackSelection(allowedUsers, "UNEW123");
+  assert.equal(await allowEveryone.inputValue(), "selected");
+  await setSlackSelection(allowedUsers, "");
   assert.equal(await allowEveryone.isEnabled(), true);
-  await allowEveryone.check();
-  assert.equal(await allowedUsers.isDisabled(), true);
-  await allowEveryone.uncheck();
+  await allowEveryone.selectOption("everyone");
+  assert.equal(await allowedUsers.isVisible(), false);
+  await allowEveryone.selectOption("selected");
   assert.equal(await allowedUsers.isEnabled(), true);
-  await allowedUsers.fill("UNEW123");
-  assert.equal(await allowEveryone.isDisabled(), true);
+  await setSlackSelection(allowedUsers, "UNEW123");
+  assert.equal(await allowEveryone.inputValue(), "selected");
   assert.equal(
     await dialog.getByRole("link", { name: "Open Agent Credentials (opens in new tab)" }).count(),
     0,
@@ -171,8 +176,8 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
   assert.doesNotMatch(secretMetadataText, new RegExp(slackAppSecretValue));
   await appSecretPopup.close();
 
-  assert.equal(await channelIds.inputValue(), "COLD123, CNEW123");
-  assert.equal(await allowedUsers.inputValue(), "UNEW123");
+  assert.equal(await slackSelectionValue(channelIds), "COLD123, CNEW123");
+  assert.equal(await slackSelectionValue(allowedUsers), "UNEW123");
 
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
@@ -318,6 +323,7 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
 
   await login(page, fixture, url.pathname + url.search);
@@ -328,13 +334,34 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
-  const channelIds = dialog.getByLabel("Slack channel IDs");
-  await channelIds.fill("CUNBOUND123, CBOUND456");
+  const channelIds = dialog.getByRole("combobox", { name: "Channels", exact: true });
+  await setSlackSelection(channelIds, "CDISCARD123");
+  await selectSecret(dialog, "Slack app token", slackAppSecret);
+
+  // Panel clicks and drags ending outside keep edits; a backdrop click discards them.
+  const bounds = await dialog.boundingBox();
+  assert.ok(bounds);
+  await page.mouse.click(bounds.x + 8, bounds.y + 8);
+  assert.equal(await dialog.isVisible(), true);
+  await page.mouse.move(bounds.x + 8, bounds.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x / 2, bounds.y + 8);
+  await page.mouse.up();
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await slackSelectionValue(channelIds), "CDISCARD123");
+  await page.mouse.click(bounds.x / 2, bounds.y + 8);
+  await dialog.waitFor({ state: "hidden" });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  assert.equal(await slackSelectionValue(channelIds), "CUNBOUND123");
+  assert.equal(await dialog.getByLabel("Slack app token").inputValue(), "");
+
+  await setSlackSelection(channelIds, "CUNBOUND123, CBOUND456");
   await selectSecret(dialog, "Slack app token", slackAppSecret);
   await dialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   await selectSecret(dialog, "Slack bot token", slackBotSecret);
   await dialog.getByText("Secret binding staged. Save changes to apply it.").nth(1).waitFor();
-  assert.equal(await channelIds.inputValue(), "CUNBOUND123, CBOUND456");
+  assert.equal(await slackSelectionValue(channelIds), "CUNBOUND123, CBOUND456");
   assert.equal(
     await dialog.getByRole("link", { name: "Open Agent Credentials (opens in new tab)" }).count(),
     0,
@@ -344,7 +371,7 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   await page.goForward();
   await dialog.waitFor();
-  assert.equal(await channelIds.inputValue(), "CUNBOUND123, CBOUND456");
+  assert.equal(await slackSelectionValue(channelIds), "CUNBOUND123, CBOUND456");
   assert.equal(
     await dialog.getByLabel("Slack app token").inputValue(),
     secretOptionLabel(slackAppSecret),
@@ -358,7 +385,29 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.equal(beforeSave.data.generation, 1);
+  const saveReached = Promise.withResolvers();
+  const saveRelease = Promise.withResolvers();
+  t.after(() => saveRelease.resolve());
+  // Hold the real save response so dismissal cannot hide an in-flight mutation.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      saveReached.resolve();
+      await saveRelease.promise;
+      await route.fulfill({ response });
+    },
+  );
   await page.getByRole("button", { name: "Save configuration" }).click();
+  await saveReached.promise;
+  await page.mouse.click(bounds.x / 2, bounds.y + 8);
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await dialog.getByRole("button", { name: "Save configuration" }).isDisabled(), true);
+  saveRelease.resolve();
   await page.getByText(/Configuration .*generation 2/).waitFor();
   const configuration = await fixture.request(
     "GET",
@@ -522,16 +571,19 @@ test("Channel drawer does not grant Slack Secret access when Configuration save 
   requests.length = 0;
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
-  const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await allowEveryone.isChecked(), true);
-  assert.equal(await allowedUsers.isDisabled(), true);
+  const allowedUsers = dialog.getByRole("combobox", {
+    name: "Allowed people in these channels",
+    exact: true,
+  });
+  const allowEveryone = dialog.getByLabel("Who can use the agent in these channels?");
+  assert.equal(await allowEveryone.inputValue(), "everyone");
+  assert.equal(await allowedUsers.isVisible(), false);
   await selectSecret(dialog, "Slack app token", slackAppSecret);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await dialog.getByText(/Access denied|permission/i).waitFor();
-  assert.equal(await allowEveryone.isChecked(), true);
+  assert.equal(await allowEveryone.inputValue(), "everyone");
   assert.equal(await allowEveryone.isEnabled(), true);
-  assert.equal(await allowedUsers.isDisabled(), true);
+  assert.equal(await allowedUsers.isVisible(), false);
 
   const configuration = await fixture.request("GET", configurationPath);
   assert.equal(configuration.status, 200);
@@ -566,11 +618,17 @@ test("Channel drawer round trips existing Slack everyone channel access", async 
   await page.getByRole("heading", { name: "Slack Everyone Agent" }).waitFor();
   await page.getByRole("button", { name: "Edit Slack" }).click();
   let dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack channel IDs").fill("CEVERY123, CSECOND123");
-  const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
-  const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await allowEveryone.isChecked(), true);
-  assert.equal(await allowedUsers.isDisabled(), true);
+  await setSlackSelection(
+    dialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "CEVERY123, CSECOND123",
+  );
+  const allowedUsers = dialog.getByRole("combobox", {
+    name: "Allowed people in these channels",
+    exact: true,
+  });
+  const allowEveryone = dialog.getByLabel("Who can use the agent in these channels?");
+  assert.equal(await allowEveryone.inputValue(), "everyone");
+  assert.equal(await allowedUsers.isVisible(), false);
   await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
   const saved = page.waitForResponse(
     (response) =>
@@ -595,10 +653,15 @@ test("Channel drawer round trips existing Slack everyone channel access", async 
   await page.getByRole("button", { name: "Edit Slack" }).click();
   dialog = page.getByRole("dialog", { name: "Edit Slack" });
   assert.equal(
-    await dialog.getByLabel("Allow everyone in these channels to mention the agent").isChecked(),
-    true,
+    await dialog.getByLabel("Who can use the agent in these channels?").inputValue(),
+    "everyone",
   );
-  assert.equal(await dialog.getByLabel("Allowed channel user IDs").isDisabled(), true);
+  assert.equal(
+    await dialog
+      .getByRole("combobox", { name: "Allowed people in these channels", exact: true })
+      .isVisible(),
+    false,
+  );
   assert.equal(await dialog.getByLabel("Require a mention", { exact: true }).isChecked(), false);
 });
 
@@ -1046,7 +1109,10 @@ for (const grantStatus of [403, 429]) {
       await page.getByRole("button", { name: "Channels", exact: true }).click();
       await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-      await dialog.getByLabel("Slack channel IDs").fill("CRUNTIMEFAIL123, CRETAINREFS123");
+      await setSlackSelection(
+        dialog.getByRole("combobox", { name: "Channels", exact: true }),
+        "CRUNTIMEFAIL123, CRETAINREFS123",
+      );
       await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
       await dialog.waitFor({ state: "hidden" });
       const afterChannelEdit = await fixture.request(

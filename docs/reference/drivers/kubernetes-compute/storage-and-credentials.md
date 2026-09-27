@@ -242,7 +242,10 @@ selects the model credential. API keys use the selected OCC Secret Driver's
 exact reference; account tokens use an account-owned CP source. Compute delivers
 only the admitted fields to a revision-owned runtime Secret and selects the
 explicit login mode during workload rendering. Only the combined embedded gateway/Harness or dedicated
-Codex consumer receives it; a dedicated gateway never receives model auth.
+Codex consumer receives it; a dedicated gateway never receives model auth. A
+[credential source](../../credential-sources.md) binding is the exception: Compute
+renders no model Secret and hands the Credential Gateway's attachments to the
+OpenShell Sandbox instead.
 
 If channels are enabled, configure `runtime.channels.proxyUrl`, then store the
 Agent's channel credentials as Namespace Secrets referenced by Configuration

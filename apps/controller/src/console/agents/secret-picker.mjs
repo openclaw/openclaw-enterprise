@@ -1,4 +1,4 @@
-import { element } from "../dom.mjs";
+import { element, dismissOnBackdrop } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 export function secretIdForBinding(binding) {
@@ -540,6 +540,7 @@ export function createSecretReferenceField({
       }
     });
     dialog.append(form);
+    dismissOnBackdrop(dialog);
     document.body.append(dialog);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();

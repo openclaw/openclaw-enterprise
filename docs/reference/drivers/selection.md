@@ -17,7 +17,8 @@ images; individual Agents cannot choose their own implementations.
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
    The table below lists each capability and its allowed choices. Omit optional
-   Sandbox, ServiceAccount, Plugin, and Repo selections unless you need them.
+   Sandbox, Credential Gateway, ServiceAccount, Plugin, and Repo selections
+   unless you need them.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
    worker with the same file and controller image. Follow the
@@ -32,8 +33,8 @@ images; individual Agents cannot choose their own implementations.
 
 Default Docker or Podman Compose can run the control plane for development,
 but its Docker Compute Driver rejects the authentication used for new Agents.
-Stock OpenShell cannot provide the credential and workload-identity projections
-needed to deploy a sandboxed Agent; see its
+Stock OpenShell cannot provide the app-server token and workload-identity
+projections needed to deploy a sandboxed Agent; see its
 [current upstream blockers](openshell-sandbox.md#current-upstream-preconditions).
 
 ## Supported selections
@@ -48,16 +49,18 @@ IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
 Sandbox packages in trusted YAML in either mode.
 
-| Capability        | Shared contract                                                 | Selection boundary                                                                                   |
-| ----------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `configuration`   | [ConfigurationDriver](configuration.md)                         | Required in Installation YAML; bundled Kubernetes or installed package.                              |
-| `iam`             | [IAMDriver](iam.md)                                             | Required in Installation YAML; bundled native IAM or installed package.                              |
-| `compute`         | [ComputeDriver](compute.md)                                     | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                |
-| `secret`          | [SecretDriver](secret.md)                                       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                       |
-| `sandbox`         | [SandboxDriver](sandbox.md)                                     | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute. |
-| `service_account` | [ServiceAccountDriver](service-account.md)                      | Optional bundled ChatGPT Backend member; no installed-package selector.                              |
-| `plugin`          | [PluginDriver](plugin.md)                                       | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                      |
-| `repo`            | [RepoDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; requires bundled Kubernetes Compute without Sandbox.         |
+| Capability           | Shared contract                                                 | Selection boundary                                                                                     |
+| -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `configuration`      | [ConfigurationDriver](configuration.md)                         | Required in Installation YAML; bundled Kubernetes or installed package.                                |
+| `channel`            | [ChannelDriver](channel.md)                                     | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                     |
+| `iam`                | [IAMDriver](iam.md)                                             | Required in Installation YAML; bundled native IAM or installed package.                                |
+| `compute`            | [ComputeDriver](compute.md)                                     | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                  |
+| `secret`             | [SecretDriver](secret.md)                                       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                         |
+| `sandbox`            | [SandboxDriver](sandbox.md)                                     | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.   |
+| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only. |
+| `service_account`    | [ServiceAccountDriver](service-account.md)                      | Optional bundled ChatGPT Backend member; no installed-package selector.                                |
+| `plugin`             | [PluginDriver](plugin.md)                                       | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                        |
+| `repo`               | [RepoDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; requires bundled Kubernetes Compute without Sandbox.           |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -80,7 +83,9 @@ membership, and composition injects the Backend into the concrete member.
 The generic Driver contract has no Backend identity field. All declared members
 are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
 ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
-Driver. There is no per-Agent Driver selection.
+Driver; the bundled OpenShell Backend requires both its Sandbox and Credential
+Gateway Drivers. A selected Credential Gateway must belong to a configured
+Backend. There is no per-Agent Driver selection.
 
 Runtime Backend injection is limited to those bundled Drivers. Installed factory
 arguments remain the contract below; Backend loading or injection into
@@ -171,7 +176,8 @@ IAM, Compute, Configuration, and Sandbox selections accept only `id`, optional
 `package`, and `configuration`. Omit `package` for a bundled Driver. The
 Secret selection accepts only the bundled Kubernetes implementation. The optional
 Repo selection accepts only the bundled GitHub implementation with its declared
-Backend member; neither selection accepts an installed package. Installed implementation identity is
+Backend member, and the optional Credential Gateway selection accepts only the
+bundled OpenShell implementation; none of these selections accepts an installed package. Installed implementation identity is
 `<package-name>@<installed-version>`; bundled identity is intrinsic. Operators
 cannot supply `implementation` or `version`; factory identity and capability
 must match the selection:

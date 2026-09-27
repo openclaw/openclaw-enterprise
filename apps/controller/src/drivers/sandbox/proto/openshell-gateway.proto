@@ -1,8 +1,10 @@
 // Minimal OpenShell v0.1.0 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
-// Workspace and Sandbox lifecycle. Field numbers and wire types match the
-// OpenShell public protos so grpc-js can interoperate with the real gateway.
+// Workspace, Sandbox, and credential provider lifecycle. Field numbers and wire
+// types match the OpenShell public protos so grpc-js can interoperate with the
+// real gateway. Messages from the upstream datamodel and sandbox packages are
+// declared here; package names do not affect their wire encoding.
 syntax = "proto3";
 
 package openshell.v1;
@@ -16,6 +18,19 @@ service OpenShell {
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+  rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
+      returns (GetSandboxProviderStatusResponse);
+  rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
+  rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
+  rpc GetProviderProfile(GetProviderProfileRequest) returns (ProviderProfileResponse);
+  rpc ImportProviderProfiles(ImportProviderProfilesRequest)
+      returns (ImportProviderProfilesResponse);
+  rpc UpdateProviderProfiles(UpdateProviderProfilesRequest)
+      returns (UpdateProviderProfilesResponse);
+  rpc DeleteProviderProfile(DeleteProviderProfileRequest)
+      returns (DeleteProviderProfileResponse);
 }
 
 message HealthRequest {}
@@ -168,6 +183,7 @@ message NetworkEndpoint {
   NetworkEnforcementMode enforcement = 5;
   NetworkAccessPreset access = 6;
   repeated uint32 ports = 9;
+  string path = 15;
 }
 
 enum NetworkTlsMode {
@@ -274,4 +290,196 @@ message SandboxResponse {
 
 message DeleteSandboxResponse {
   bool deleted = 1;
+}
+
+// Upstream openshell.datamodel.v1.Provider. Credential values are write-only for
+// OpenClaw Enterprise: they are sent on create and never read back.
+message Provider {
+  ObjectMeta metadata = 1;
+  string type = 2;
+  map<string, string> credentials = 3;
+  map<string, string> config = 4;
+  // Workspace that stores this provider's profile; empty selects platform scope.
+  string profile_workspace = 6;
+}
+
+message CreateProviderRequest {
+  Provider provider = 1;
+  WorkspaceSelector workspace_scope = 2;
+  string request_id = 3;
+}
+
+message ProviderResponse {
+  Provider provider = 1;
+}
+
+message GetProviderRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 2;
+}
+
+message ListProvidersRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  WorkspaceSelector workspace_scope = 3;
+}
+
+message ListProvidersResponse {
+  repeated Provider providers = 1;
+  string next_page_token = 2;
+}
+
+message DeleteProviderRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 3;
+  bool allow_missing = 4;
+  string request_id = 5;
+}
+
+message DeleteProviderResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+}
+
+enum ProviderProfileCategory {
+  PROVIDER_PROFILE_CATEGORY_UNSPECIFIED = 0;
+  PROVIDER_PROFILE_CATEGORY_OTHER = 1;
+  PROVIDER_PROFILE_CATEGORY_INFERENCE = 2;
+  PROVIDER_PROFILE_CATEGORY_AGENT = 3;
+  PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL = 4;
+  PROVIDER_PROFILE_CATEGORY_MESSAGING = 5;
+  PROVIDER_PROFILE_CATEGORY_DATA = 6;
+  PROVIDER_PROFILE_CATEGORY_KNOWLEDGE = 7;
+}
+
+message ProviderProfileCredential {
+  string name = 1;
+  string description = 2;
+  repeated string env_vars = 3;
+  bool required = 4;
+  string auth_style = 5;
+  string header_name = 6;
+}
+
+message ProviderProfile {
+  string id = 1;
+  string display_name = 2;
+  string description = 3;
+  ProviderProfileCategory category = 4;
+  repeated ProviderProfileCredential credentials = 5;
+  repeated NetworkEndpoint endpoints = 6;
+  repeated NetworkBinary binaries = 7;
+  bool inference_capable = 8;
+  uint64 resource_version = 10;
+  map<string, string> annotations = 11;
+  string source = 12;
+  string scope = 13;
+}
+
+message ProviderProfileImportItem {
+  ProviderProfile profile = 1;
+  string source = 2;
+}
+
+message ProviderProfileDiagnostic {
+  string source = 1;
+  string profile_id = 2;
+  string field = 3;
+  string message = 4;
+  string severity = 5;
+}
+
+message GetProviderProfileRequest {
+  string id = 1;
+  WorkspaceSelector workspace_scope = 2;
+}
+
+message ProviderProfileResponse {
+  ProviderProfile profile = 1;
+}
+
+message ImportProviderProfilesRequest {
+  repeated ProviderProfileImportItem profiles = 1;
+  WorkspaceSelector workspace_scope = 2;
+  string request_id = 3;
+}
+
+message ImportProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  repeated ProviderProfile profiles = 2;
+  bool imported = 3;
+}
+
+message UpdateProviderProfilesRequest {
+  ProviderProfileImportItem profile = 1;
+  uint64 expected_resource_version = 2;
+  string id = 3;
+  WorkspaceSelector workspace_scope = 4;
+  string request_id = 5;
+}
+
+message UpdateProviderProfilesResponse {
+  repeated ProviderProfileDiagnostic diagnostics = 1;
+  ProviderProfile profile = 2;
+  bool updated = 3;
+}
+
+message DeleteProviderProfileRequest {
+  string id = 1;
+  WorkspaceSelector workspace_scope = 2;
+  bool allow_missing = 3;
+  string request_id = 4;
+}
+
+message DeleteProviderProfileResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
+}
+
+message GetSandboxProviderStatusRequest {
+  string sandbox = 1;
+  string provider = 2;
+  string receipt_id = 3;
+  WorkspaceSelector workspace_scope = 4;
+}
+
+message GetSandboxProviderStatusResponse {
+  ProviderReadinessStatus status = 1;
+}
+
+message ProviderReadinessStatus {
+  ProviderReadinessState state = 2;
+  ProviderReadinessReason reason = 3;
+}
+
+enum ProviderReadinessState {
+  PROVIDER_READINESS_STATE_UNSPECIFIED = 0;
+  PROVIDER_READINESS_STATE_PERSISTED = 1;
+  PROVIDER_READINESS_STATE_PENDING = 2;
+  PROVIDER_READINESS_STATE_READY = 3;
+  PROVIDER_READINESS_STATE_WITHHELD = 4;
+  PROVIDER_READINESS_STATE_REVOKED = 5;
+  PROVIDER_READINESS_STATE_FAILED = 6;
+  PROVIDER_READINESS_STATE_SUPERSEDED = 7;
+}
+
+enum ProviderReadinessReason {
+  PROVIDER_READINESS_REASON_UNSPECIFIED = 0;
+  PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR = 1;
+  PROVIDER_READINESS_REASON_WAITING_FOR_CREDENTIALS = 2;
+  PROVIDER_READINESS_REASON_WAITING_FOR_POLICY = 3;
+  PROVIDER_READINESS_REASON_WAITING_FOR_PROCESS = 4;
+  PROVIDER_READINESS_REASON_UNSUPPORTED_SUPERVISOR = 5;
+  PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD = 6;
+  PROVIDER_READINESS_REASON_CREDENTIAL_INSTALL_FAILED = 7;
+  PROVIDER_READINESS_REASON_POLICY_ACTIVATION_FAILED = 8;
+  PROVIDER_READINESS_REASON_PROCESS_INSTALL_FAILED = 9;
+  PROVIDER_READINESS_REASON_SUPERVISOR_DISCONNECTED = 10;
+  PROVIDER_READINESS_REASON_SUPERVISOR_LEASE_EXPIRED = 11;
+  PROVIDER_READINESS_REASON_DESIRED_STATE_CHANGED = 12;
+  PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED = 13;
+  PROVIDER_READINESS_REASON_LOCAL_POLICY = 14;
+  PROVIDER_READINESS_REASON_SNAPSHOT_MISMATCH = 15;
 }

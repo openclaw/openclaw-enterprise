@@ -33,17 +33,29 @@ export function createPluginDiscovery({
   deniedMessage = "Plugin discovery requires Agent create permission in this Namespace. Saved selections can still be edited.",
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
   availableMessage = "Load plugins available to this service account token. Your plugin selections stay unchanged.",
+  createApproverField,
 }) {
   let generation = 0;
+  let searchTimer = null;
+  let requests = new AbortController();
   let catalog = { status: "idle", nextCursor: null };
   const entries = new Map();
   let pageIds = [];
   let cursors = [null];
+  let query = "";
   let pageIndex = 0;
   const fields = createPluginFields({
     input,
     saveHint,
-    onLoadPlugins: (direction) => void loadCatalog(direction),
+    createApproverField,
+    onLoadPlugins: (direction, q) => {
+      if (direction === "search") {
+        scheduleSearch(q);
+      } else {
+        void loadCatalog(direction, q);
+      }
+    },
+    onCancelDiscovery: cancel,
     onLoadTools: (id) => void loadTools(id),
   });
 
@@ -62,9 +74,49 @@ export function createPluginDiscovery({
     });
   }
 
+  function invalidateRequests() {
+    generation += 1;
+    clearTimeout(searchTimer);
+    searchTimer = null;
+    requests.abort();
+    requests = new AbortController();
+    for (const [id, entry] of entries) {
+      if (entry.toolStatus === "loading") {
+        entries.set(id, { ...entry, toolStatus: undefined });
+      }
+    }
+  }
+
+  function cancel() {
+    const pending = searchTimer !== null || catalog.status === "loading";
+    invalidateRequests();
+    if (pending) {
+      pageIds = [];
+      cursors = [null];
+      pageIndex = 0;
+      catalog = { status: "idle", nextCursor: null, setup: catalog.setup };
+    }
+    update();
+  }
+
+  function scheduleSearch(q) {
+    // Invalidate on input, before the delay, so an older response cannot fill this query.
+    invalidateRequests();
+    query = q.trim();
+    pageIds = [];
+    cursors = [null];
+    pageIndex = 0;
+    catalog = { status: "idle", nextCursor: null, setup: catalog.setup };
+    if (context.isCurrent() && canDiscover() && !isPending()) {
+      catalog.status = "loading";
+      searchTimer = setTimeout(() => void loadCatalog("refresh", query), 300);
+    }
+    update();
+  }
+
   function reset() {
     // A catalog belongs to one entered credential; late responses cannot restore it.
-    generation += 1;
+    invalidateRequests();
     entries.clear();
     pageIds = [];
     cursors = [null];
@@ -73,9 +125,23 @@ export function createPluginDiscovery({
     update();
   }
 
-  async function loadCatalog(direction = "refresh") {
-    if (!canDiscover() || isPending() || catalog.status === "loading") {
+  async function loadCatalog(direction = "refresh", q = query) {
+    const search = q.trim();
+    const queryChanged = search !== query;
+    if (
+      !context.isCurrent() ||
+      !canDiscover() ||
+      isPending() ||
+      (catalog.status === "loading" && searchTimer === null && !queryChanged)
+    ) {
       return;
+    }
+    if (queryChanged) {
+      query = search;
+      cursors = [null];
+      pageIndex = 0;
+      pageIds = [];
+      catalog = { status: "idle", nextCursor: null };
     }
     let nextPageIndex = pageIndex;
     let cursor = cursors[nextPageIndex];
@@ -93,16 +159,19 @@ export function createPluginDiscovery({
       cursor = cursors[nextPageIndex];
     }
     // Every page change invalidates in-flight details; the service owns page boundaries.
-    const active = ++generation;
-    for (const [id, entry] of entries) {
-      entries.set(id, { ...entry, toolStatus: undefined });
-    }
+    invalidateRequests();
+    const active = generation;
     catalog = { ...catalog, status: "loading" };
     update();
     try {
       const page = await context.request(catalogPath, {
         method: "POST",
-        body: requestBody(cursor ? { cursor } : {}),
+        readOnly: true,
+        signal: requests.signal,
+        body: requestBody({
+          ...(cursor ? { cursor } : {}),
+          ...(query ? { q: query } : {}),
+        }),
       });
       if (!context.isCurrent() || active !== generation) {
         return;
@@ -151,6 +220,8 @@ export function createPluginDiscovery({
     try {
       const detail = await context.request(`${catalogPath}/details`, {
         method: "POST",
+        readOnly: true,
+        signal: requests.signal,
         body: requestBody({ pluginId: entry.remoteId }),
       });
       if (

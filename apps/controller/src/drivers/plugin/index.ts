@@ -5,6 +5,7 @@ import {
   type PluginCatalogPage,
   type PluginDriver,
   type PluginDesiredState,
+  type PluginApprovers,
   type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
@@ -311,9 +312,13 @@ class BundledPluginDriverBase {
     }
   }
 
-  protected validate(kind: "codex" | "openclaw", selections: PluginDesiredState): void {
+  protected validate(
+    kind: "codex" | "openclaw",
+    selections: PluginDesiredState,
+    defaultApprovers?: PluginApprovers,
+  ): void {
     try {
-      validatePolicies(kind, selections);
+      validatePolicies(kind, selections, defaultApprovers);
     } catch (error) {
       const field =
         error instanceof Error && "policyField" in error ? error.policyField : undefined;
@@ -331,13 +336,14 @@ class BundledPluginDriverBase {
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
-    toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-    tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+    approvers: { agent: true, plugin: true, tools: true },
+    toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+    tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState): void {
-    this.validate("openclaw", selections);
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
+    this.validate("openclaw", selections, defaultApprovers);
   }
 
   static validateConfiguration(configuration: unknown): void {
@@ -357,20 +363,25 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
-  // TODO: gate prompt on enforceable session constraints before this draft ships.
+  // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: {
       enabled: true,
-      approval: ["native", "prompt", "approve"],
+      approval: ["provider_default", "all_actions", "write_actions", "none"],
       reviewer: ["human", "auto"],
     },
-    tools: { enabled: true, approval: ["native", "prompt", "approve"], reviewer: [] },
+    tools: {
+      enabled: true,
+      approval: ["provider_default", "all_actions", "write_actions", "none"],
+      reviewer: [],
+    },
     driverPolicySchema: CODEX_POLICY_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState): void {
-    this.validate("codex", selections);
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
+    this.validate("codex", selections, defaultApprovers);
   }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";
@@ -381,15 +392,20 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   async discoverCatalog(
-    input: { readonly accessToken?: string; readonly cursor?: string },
+    input: { readonly accessToken?: string; readonly cursor?: string; readonly q?: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
     if (this.catalogSource === "openai-curated") {
       if (input.cursor !== undefined) {
         throw new PluginDiscoveryError("invalid_response");
       }
+      const query = input.q?.trim().toLowerCase() ?? "";
       return {
-        plugins: this.catalog(OPENAI_CURATED_CATALOG),
+        plugins: this.catalog(OPENAI_CURATED_CATALOG).filter((entry) =>
+          [entry.name, entry.id, entry.description ?? ""].some((text) =>
+            text.toLowerCase().includes(query),
+          ),
+        ),
         nextCursor: null,
         setup: CURATED_SETUP,
       };
@@ -401,6 +417,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       {
         accessToken: input.accessToken,
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        ...(input.q === undefined ? {} : { q: input.q }),
       },
       signal,
     );

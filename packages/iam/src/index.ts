@@ -131,6 +131,10 @@ export function createAuthPrincipalSeed(
           })),
       ),
       { action: "operate", resourceKind: "secret" },
+      ...(["create", "read", "delete", "operate"] as const).map((action) => ({
+        action,
+        resourceKind: "credential_source" as const,
+      })),
       ...(["create", "read", "update", "delete", "deploy", "operate", "administer"] as const).map(
         (action) => ({
           action,
@@ -205,6 +209,7 @@ const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
   "agent",
   "agent_revision",
   "configuration",
+  "credential_source",
   "secret",
   "service_account",
 ];
@@ -658,6 +663,8 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "service_account" ||
       isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
+    (request.resource.kind !== "credential_source" ||
+      isNonEmptyString(request.resource.namespaceId)) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)
   );

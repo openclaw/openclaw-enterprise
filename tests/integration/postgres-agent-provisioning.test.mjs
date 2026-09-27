@@ -589,7 +589,10 @@ test(
     const secretCreateCallCount = fixture.secretDriver.calls.filter(
       ({ operation }) => operation === "create",
     ).length;
-    const body = provisioningBody(namespace.id, secrets, { repositoryBindings });
+    const body = {
+      ...provisioningBody(namespace.id, secrets, { repositoryBindings }),
+      pluginApprovers: [],
+    };
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -597,6 +600,7 @@ test(
 
     const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
+    assert.deepEqual(queued.plan.pluginApprovers, []);
     assert.equal(queued.agent_id, null);
     const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
@@ -677,10 +681,12 @@ test(
     assert.equal(revisions.length, 1);
     assert.equal(revisions[0].id, status.revisionId);
     assert.equal(revisions[0].configurationGeneration, 1);
+    assert.deepEqual(revisions[0].pluginApprovers, []);
     const agentPath = `/namespaces/${namespace.id}/agents/${status.agentId}`;
     const agent = await fixture.request("GET", agentPath);
     assert.equal(agent.status, 200, JSON.stringify(agent.body));
     assert.deepEqual(agent.data.repositoryBindings, repositoryBindings);
+    assert.deepEqual(agent.data.pluginApprovers, []);
     const revisionPath = `${agentPath}/revisions/${status.revisionId}`;
     const revision = await fixture.request("GET", revisionPath);
     assert.equal(revision.status, 200, JSON.stringify(revision.body));

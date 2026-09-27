@@ -143,6 +143,10 @@ For an already issued ChatGPT account credential, use
 This requires dedicated Codex and the account's matching `backendId`. Binding
 an account does not issue its credential or change the model, Harness, or Backend.
 
+For dedicated Codex with a Credential Gateway, use
+`{ "method": "credential_source", "sourceId": "cs_…" }`; see
+[credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
+
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
 delivers credentials and performs no authentication/model probe. Agent and
@@ -350,8 +354,8 @@ each deployed Agent still owns its own gateway and stable service principal.
 ## Current limitations
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
-Brokered model credentials and controller API
-authentication for Agent service principals remain unavailable. The optional
+Controller API authentication for Agent service principals remains unavailable.
+The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
 Kubernetes Compute and dedicated Codex. Stock OpenShell cannot provide all the
 required workload credentials; review the documented compatibility limits before

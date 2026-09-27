@@ -39,6 +39,10 @@ import type {
   ComputeReadiness,
   ComputePreflightResult,
   ComputeRevisionContext,
+  CredentialGatewayDriver,
+  CredentialSource,
+  CredentialSourceAttachment,
+  CredentialSourceType,
   WorkspaceSetup,
   Driver,
   HarnessWorkloadRequirements,
@@ -390,6 +394,8 @@ interface RuntimeCredentialContext {
 interface PreparedHarnessAuth {
   readonly loginMode: HarnessAuthSnapshot["method"];
   readonly environment: readonly V1EnvVar[];
+  /** Present when the Credential Gateway, not a Secret projection, supplies the credential. */
+  readonly credentialSource?: Readonly<CredentialSource>;
 }
 
 /** One rendering step; neither credential values nor backend lookups belong here. */
@@ -410,6 +416,18 @@ function prepareHarnessAuth(
     environment.push(
       secret(harnessModelAuthentication(configuration).environmentName, resolvedAuth.backendRef),
     );
+  } else if (
+    resolvedAuth.method === "credential_source" &&
+    harness.mode === "dedicated" &&
+    harness.id === "codex"
+  ) {
+    // The paired Sandbox supplies the credential environment; no Secret is projected here.
+    environment.push({ name: "CODEX_LOGIN_MODE", value: resolvedAuth.loginMode });
+    return {
+      loginMode: resolvedAuth.loginMode,
+      environment,
+      credentialSource: resolvedAuth.source,
+    };
   } else if (
     resolvedAuth.method === "codex_pat" &&
     harness.mode === "dedicated" &&
@@ -1085,6 +1103,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   });
   private readonly options: KubernetesComputeDriverOptions;
   private readonly sandboxDriver: SandboxDriver | undefined;
+  private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly nodeEnrollment: GatewayNodeEnrollment | undefined;
   private readonly readNodeCa: (() => Promise<string | undefined>) | undefined;
   private lifecycle: ComputeLifecycleDispatcher;
@@ -1293,6 +1312,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly implementation?: string;
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
+      readonly credentialGatewayDriver?: CredentialGatewayDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
     } = {},
@@ -1308,6 +1328,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.requiresAgentRuntimeCredentials = true;
     }
     this.sandboxDriver = selection.sandboxDriver;
+    if (selection.credentialGatewayDriver !== undefined && selection.sandboxDriver === undefined) {
+      throw new ConfigurationFailure(
+        "The Credential Gateway Driver requires a paired Sandbox Driver.",
+      );
+    }
+    this.credentialGatewayDriver = selection.credentialGatewayDriver;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -1398,6 +1424,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
     secretBindings?: SecretBindings,
+    credentialSourceType?: CredentialSourceType,
   ): void {
     const embedded = harness.mode === "embedded" && harness.id === "openclaw";
     const dedicated = harness.mode === "dedicated" && harness.id === "codex";
@@ -1406,7 +1433,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       !auth ||
       (auth.method !== "api_key" &&
         auth.method !== "codex_pat" &&
-        auth.method !== "chatgpt_service_account") ||
+        auth.method !== "chatgpt_service_account" &&
+        auth.method !== "credential_source") ||
       (embedded && auth.method !== "api_key")
     ) {
       throw new ConfigurationFailure(
@@ -1423,6 +1451,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new OwnershipFailure(
         "Harness authentication credential does not match the admitted account.",
       );
+    }
+    if (auth.method === "credential_source") {
+      // The paired Sandbox injects the credential, so this path never projects a model Secret.
+      if (
+        this.sandboxDriver === undefined ||
+        this.credentialGatewayDriver === undefined ||
+        auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
+        credentialSourceType?.type !== auth.sourceType ||
+        credentialSourceType.harnessAuth?.loginMode !== "api_key" ||
+        credentialSourceType.harnessAuth.modelProvider !== "openai"
+      ) {
+        throw new ConfigurationFailure(
+          "Credential-source Harness authentication requires the paired Sandbox and an OpenAI API key source.",
+        );
+      }
     }
     const agents = asRecord(configuration.agents);
     const defaults = asRecord(agents?.defaults);
@@ -2234,6 +2277,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.harnessAuth,
       admittedRevision.configuration,
       revision.secretBindings,
+      await this.admittedCredentialSourceType(revision),
     );
     const channels = this.enabledChannels(admittedRevision);
     this.verifyGatewayRoutingConfiguration(admittedRevision);
@@ -2671,23 +2715,62 @@ export class KubernetesComputeDriver implements ComputeDriver {
         this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision);
       }
       if (sandboxDriver?.provisionHarness !== undefined) {
+        const sandboxContext = await this.sandboxNamespaceContext(
+          this.sandboxNamespaceForRevision(revision, namespace),
+          namespace,
+        );
+        const credentialContext =
+          harnessAuth.credentialSource === undefined
+            ? undefined
+            : {
+                namespace: sandboxContext.namespace,
+                revision,
+                sources: [harnessAuth.credentialSource],
+                signal: sandboxContext.signal,
+              };
+        const attachments =
+          credentialContext === undefined
+            ? []
+            : await this.requireCredentialGateway().attachForRevision(credentialContext);
         const requirements = this.harnessRequirementsFromDeployment(
           agentDeployment,
           harnessAuth.loginMode,
+          attachments,
         );
         const sandbox = await sandboxDriver.provisionHarness({
-          ...(await this.sandboxNamespaceContext(
-            this.sandboxNamespaceForRevision(revision, namespace),
-            namespace,
-          )),
+          ...sandboxContext,
           revision,
           requirements,
         });
         this.verifySandboxResourceRef(sandbox, revision, namespace);
-        return (await this.providerHarnessReady(revision, namespace, requirements.labels)) &&
-          (await this.workspaceNodeReady(revision, namespace))
-          ? ready()
-          : incomplete();
+        if (
+          !(await this.providerHarnessReady(revision, namespace, requirements.labels)) ||
+          !(await this.workspaceNodeReady(revision, namespace))
+        ) {
+          return incomplete();
+        }
+        if (credentialContext !== undefined) {
+          const statuses = await this.requireCredentialGateway().attachmentStatus({
+            ...credentialContext,
+            sandbox,
+          });
+          if (
+            statuses.some((status) =>
+              ["failed", "withheld", "revoked", "absent"].includes(status.state),
+            )
+          ) {
+            throw new DependencyUnavailableError(
+              "The Sandbox did not apply a required credential attachment.",
+            );
+          }
+          if (
+            statuses.length !== attachments.length ||
+            statuses.some((status) => status.state !== "ready")
+          ) {
+            return incomplete();
+          }
+        }
+        return ready();
       }
       await this.reconcile(agentDeployment, revisionOwnership, namespace);
       const deployment = await this.getOwned(
@@ -2814,6 +2897,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.harnessAuth,
       admittedRevision.configuration,
       revision.secretBindings,
+      await this.admittedCredentialSourceType(revision),
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
@@ -4567,6 +4651,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return currentComputeAbortSignal() ?? new AbortController().signal;
   }
 
+  async resolveSandboxNamespace(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>> {
+    const placement =
+      namespace.existingNamespace === undefined
+        ? await this.resolveNamespace(namespace.id)
+        : { name: namespace.existingNamespace, external: true };
+    if (placement.external && namespace.existingNamespace === undefined) {
+      throw new OwnershipFailure(
+        `Existing Kubernetes namespace ${placement.name} was not explicitly selected.`,
+      );
+    }
+    return Object.freeze({ ...namespace, name: placement.name });
+  }
+
   private sandboxNamespaceContext(
     namespace: Readonly<Namespace>,
     namespaceName: string,
@@ -5177,9 +5274,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
+  /** Dispatch revalidates against the paired gateway's current catalog, not admission's copy. */
+  private async admittedCredentialSourceType(
+    revision: AgentRevision,
+  ): Promise<CredentialSourceType | undefined> {
+    if (revision.harnessAuth.method !== "credential_source") {
+      return undefined;
+    }
+    const sourceType = revision.harnessAuth.sourceType;
+    const catalog = await this.requireCredentialGateway().listSourceTypes({
+      signal: this.operationSignal(),
+    });
+    return catalog.find((entry) => entry.type === sourceType);
+  }
+
+  private requireCredentialGateway(): CredentialGatewayDriver {
+    if (this.credentialGatewayDriver === undefined) {
+      throw new ConfigurationFailure(
+        "The admitted revision requires the Credential Gateway Driver.",
+      );
+    }
+    return this.credentialGatewayDriver;
+  }
+
   private harnessRequirementsFromDeployment(
     deployment: ManagedKubernetesObject,
     loginMode: HarnessWorkloadRequirements["loginMode"],
+    credentialAttachments: readonly CredentialSourceAttachment[] = [],
   ): HarnessWorkloadRequirements {
     const template = asRecord(deployment.spec?.template);
     const metadata = asRecord(template?.metadata);
@@ -5233,6 +5354,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       serviceAccountToken,
       workspaceMounts,
       environment,
+      credentialAttachments: Object.freeze([...credentialAttachments]),
       loginMode,
       labels: harnessLabels,
     };
@@ -7256,6 +7378,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Harness authentication Secret does not match the admitted source.",
         );
       }
+    } else if (auth.method === "credential_source") {
+      const { source, ...snapshot } = auth;
+      if (
+        !isDeepStrictEqual(snapshot, revision.harnessAuth) ||
+        source.id !== snapshot.sourceId ||
+        source.namespaceId !== revision.namespaceId ||
+        source.driverId !== snapshot.credentialGatewayId ||
+        source.type !== snapshot.sourceType ||
+        source.state !== "ready"
+      ) {
+        throw new OwnershipFailure("Harness credential source does not match the admitted source.");
+      }
     } else {
       if (!isDeepStrictEqual(auth, revision.harnessAuth)) {
         throw new OwnershipFailure(
@@ -7662,6 +7796,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           role === "gateway" &&
           !embedded &&
           (Object.keys(pluginRuntime.runtime.selections).length > 0 ||
+            pluginRuntime.runtime.pluginApprovers !== undefined ||
             pluginRuntime.runtime.repositoryBrokerNetworkPolicy !== undefined)));
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&

@@ -45,6 +45,7 @@ const {
 } = require("node:crypto");
 const { spawn: pluginSpawn, spawnSync: pluginSpawnSync } = require("node:child_process");
 const { createServer: pluginCreateServer } = require("node:http");
+const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
 const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
@@ -110,7 +111,8 @@ function readGatewayPluginRuntime() {
   if (
     runtime.manifest?.kind === "codex" &&
     (Object.keys(runtime.manifest.selections ?? {}).length > 0 ||
-      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined)
+      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined ||
+      runtime.manifest.pluginApprovers !== undefined)
   ) {
     return runtime;
   }
@@ -649,7 +651,45 @@ function isManagedOpenClawPluginEntry(value) {
   );
 }
 
+function conflictingApproverList(configured, managedList) {
+  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
+    managedList !== undefined &&
+    (!Array.isArray(configured.approvers) ||
+      !pluginDeepEqual(
+        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
+        managedList.map((id) => id.toLowerCase()).sort(),
+      ));
+}
+
 function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
+  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
+  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
+  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
+    // A native child list must not bypass an inherited Agent or plugin approver list.
+    const managedDefault = managedApprovers.approvers;
+    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
+      ? Object.entries(configuredApprovers.plugins)
+      : [];
+    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
+      const managedPlugin = isPlainObject(managedApprovers.plugins)
+        ? managedApprovers.plugins[pluginId]
+        : undefined;
+      const pluginList = managedPlugin?.approvers ?? managedDefault;
+      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
+      const configuredTools = isPlainObject(configuredPlugin?.tools)
+        ? Object.entries(configuredPlugin.tools)
+        : [];
+      return configuredTools.some(([toolId, configuredTool]) => {
+        const managedTool = isPlainObject(managedPlugin?.tools)
+          ? managedPlugin.tools[toolId]
+          : undefined;
+        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
+      });
+    });
+    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
+      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
+    }
+  }
   const baseEntries = objectAtPath(base, ["plugins", "entries"]);
   const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
   if (overlayEntries === undefined) return;
@@ -798,13 +838,14 @@ function samePluginFailures(left, right) {
 
 function openClawPluginConfiguration(runtime, failures = []) {
   if (runtime.manifest?.kind === "openclaw") {
-    return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures).configuration;
+    return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers).configuration;
   }
   if (runtime.manifest?.kind === "codex") {
     return pluginRuntimeTranslator.codexOpenClawConfiguration(
       runtime.manifest.selections ?? {},
       failures,
       runtime.manifest.repositoryBrokerNetworkPolicy,
+      runtime.manifest.pluginApprovers,
     );
   }
   return undefined;
@@ -940,7 +981,7 @@ function verifyOpenClawPluginInstall(plugin) {
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures)
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];
@@ -1846,7 +1887,18 @@ function probeCodexAuthenticationFailureCode() {
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
-      env: { PATH: process.env.PATH, HOME: directory, CODEX_HOME: process.env.CODEX_HOME, RUST_LOG: "error" },
+      // Keep the runtime's TLS trust anchors so a TLS-inspecting egress proxy can serve the probe.
+      env: {
+        PATH: process.env.PATH,
+        HOME: directory,
+        CODEX_HOME: process.env.CODEX_HOME,
+        RUST_LOG: "error",
+        ...Object.fromEntries(
+          ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+            .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
+            .map((name) => [name, process.env[name]]),
+        ),
+      },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
     });

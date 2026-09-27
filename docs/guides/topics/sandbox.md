@@ -14,8 +14,9 @@ selects it; an Agent cannot choose its own Sandbox.
 
 [OpenShell](../../reference/drivers/openshell-sandbox.md) is the bundled
 integration for dedicated Codex. The stock OpenShell gateway version documented
-there cannot honor the projected identity and Kubernetes Secret references that
-OCC requires. Local verification uses development-only workarounds; it is not a
+there cannot honor the projected identity and app-server token Secret reference
+that OCC requires. Its paired [Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
+keeps the model API key out of the Harness. Local verification uses development-only workarounds; it is not a
 supported production deployment path. If the selected Sandbox cannot enforce
 required containment or preserve workload identity, deployment stops.
 

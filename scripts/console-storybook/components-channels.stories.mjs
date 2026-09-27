@@ -8,6 +8,14 @@ export const SlackEnterpriseDm = { ...story("slackEnterpriseDm") };
 export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
 export const SlackReplyOverride = { ...story("slackReplyOverride") };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor" };
+export const SlackDirectoryChannels = story("slackDirectoryChannels");
+export const SlackDirectorySavedNames = story("slackDirectorySavedNames");
+export const SlackDirectoryQualifiedNames = story("slackDirectoryQualifiedNames");
+export const SlackDirectoryUsers = story("slackDirectoryUsers");
+export const SlackDirectoryDenied = story("slackDirectoryDenied");
+export const SlackDirectoryLoading = story("slackDirectoryLoading");
+export const SlackDirectorySearchRace = story("slackDirectorySearchRace");
+export const SlackDirectoryMissingSecret = story("slackDirectoryMissingSecret");
 export const SlackEveryone = { ...story("slackEveryone"), name: "Slack everyone in channels" };
 export const SlackRestrictedUsers = {
   ...story("slackRestrictedUsers"),

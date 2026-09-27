@@ -107,6 +107,45 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
+{{- $directoryProxyUrl := .Values.api.channelDirectoryProxyUrl }}
+{{- if not (kindIs "string" $directoryProxyUrl) }}
+{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
+{{- end }}
+{{- if $directoryProxyUrl }}
+{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $directoryProxyUrl) }}
+{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
+{{- end }}
+{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $directoryProxyUrl "") }}
+{{- $proxyAddress := index $proxyParts 0 }}
+{{- $proxyPort := int (index $proxyParts 1) }}
+{{- range $octet := splitList "." $proxyAddress }}
+{{- if gt (int $octet) 255 }}
+{{- fail "api.channelDirectoryProxyUrl must contain valid IPv4 octets" }}
+{{- end }}
+{{- end }}
+{{- if gt $proxyPort 65535 }}
+{{- fail "api.channelDirectoryProxyUrl must contain a TCP port from 1 to 65535" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-api-channel-directory-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ $proxyAddress }}/32
+      ports:
+        - protocol: TCP
+          port: {{ $proxyPort }}
+{{- end }}
 {{- if .Values.backend.chatgpt.enabled }}
 {{- $providerCidr := .Values.backend.chatgpt.providerCidr }}
 {{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" $providerCidr) }}

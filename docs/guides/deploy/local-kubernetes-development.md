@@ -124,8 +124,17 @@ In Kubernetes-only mode, the API is reachable only through the loopback k3d
 publication. The published Service selects a dedicated in-cluster proxy whose
 exact Namespace and Pod labels are admitted by the OCE Helm NetworkPolicy. The
 OCE API itself remains a ClusterIP Service. OCE's worker authenticates to
-Kubernetes in-cluster. If OpenShell is selected, it reaches the OpenShell Gateway
-through a narrow development NetworkPolicy in `oce-system`.
+Kubernetes in-cluster. When OpenShell is selected, the API, which registers
+credential sources, and the worker reach OpenShell Gateway through a narrow
+development NetworkPolicy in `oce-system`.
+
+The OpenShell profile declares an `openshell` Backend for the Gateway
+endpoint and selects both the OpenShell Sandbox and the
+[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md),
+bound to the runtime image's native Codex executable. Agents in this profile
+must authenticate through a [credential source](../../reference/credential-sources.md).
+To register a key and bind it to an Agent in this profile, follow
+[Use a credential source on the local OpenShell profile](openshell-credential-sources.md).
 
 The OpenShell Gateway uses an unauthenticated development setting. Tenant
 egress selects only OpenShell supervisor Pods for Gateway callbacks; do not use

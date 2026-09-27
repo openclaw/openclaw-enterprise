@@ -134,6 +134,9 @@ database:
 api:
   port: 8080
   clients: []
+  # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.
+  # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
+  channelDirectoryProxyUrl: ""
   # Optional model-list discovery: API Pod HTTPS egress to provider IPv4 /32 hosts.
   # Operators maintain these addresses; Console model selection does not require it.
   modelDiscoveryCidrs: []

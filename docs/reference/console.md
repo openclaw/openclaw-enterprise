@@ -46,8 +46,10 @@ The console uses a light appearance and OCC-served fonts; no external font
 service is required.
 
 Returning pages retain content during access checks; controls await authorization.
+Unchanged pages and Agent tabs keep their loaded controls and expanded panels.
 Agent detail keeps its mounted editor on refocus while access remains available.
-Refresh rereads saved state. First visits still load. Document-local previews
+Changed data rebuilds the view. Refresh explicitly reloads; first visits still load.
+Document-local views
 are scoped to account, session, route, and Namespace; sign-out, session changes,
 and exit clear them. Failed reads show recovery. Installation-wide Backend
 denial clears all previews.
@@ -96,18 +98,18 @@ unsupported catalog or policy choices.
 
 ## Inspect detail, revisions, and channel drafts
 
-The **Configuration**, **Plugins**, **Channels**, **Credentials**, and **Workspace
-files** tabs change only their panel; Back/Forward restores the selected tab.
+Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive navigation within the document.
-Drafts are scoped to user, Namespace, and Agent. Passwords clear; reload, exit,
-and sign-out clear drafts.
+Drafts are scoped to user, Namespace, and Agent. Passwords clear; reload and
+sign-out clear drafts.
 
-**Cancel**, **Start over**, and editor **Reload** discard edits. Successful
-saves clear drafts; **Refresh** retains unsaved edits. Configuration, plugin,
-and authentication editors retain their save baseline; concurrent changes
-require reload. Unsaved edits block deployment. Pending or uncertain saves
-require readback; navigation never retries mutations.
+**Cancel**, **Start over**, and **Reload** discard edits; **Refresh** retains them.
+Saving clears drafts. Concurrent changes require reload; unsaved edits block
+deployment. Pending or uncertain saves require readback, never automatic retries.
+Backdrop clicks or Escape close the topmost channel, Secret, or plugin editor:
+discard channel edits, clear Secret inputs, retain plugin selections.
+Pending channel saves and Secret creation block dismissal.
 
 **Create new version** edits Configuration JSON and channels; **Plugins** and
 **Credentials** edit Agent selections and authentication. Plugin browsing
@@ -155,15 +157,14 @@ and [deployment reference](agents/deployment.md#revisions-and-deployment).
 
 Channels edits the saved Slack draft. Teams credentials and Bot Framework ingress
 require operator setup; Teams has no editor and blocks Console deployment.
-Its settings remain visible in native Configuration JSON.
-Saving Slack settings patches `values` and includes `secretBindings` only
-for changed token selections, preserving other bindings. Existing plugin
-allowlists are extended; omitted ones stay omitted. Shared Configurations can
+Its settings remain in Configuration JSON.
+Saving Slack patches `values` and includes `secretBindings` only
+for changed tokens. Existing plugin allowlists are extended; omitted ones stay omitted. Shared Configurations can
 affect other Agents' future deployments. Channel allowlists remain native
 Configuration changes.
 
-Before saving, separate Agent and Configuration reads verify the association and
-generation; a concurrent change can still race the PATCH. Refresh after a
+Before saving, Agent and Configuration reads verify association and generation;
+concurrent changes can still race the PATCH. Refresh after a
 conflict or uncertain save. An unconfirmed PATCH shows **Outcome unknown** and
 disables channel writes until Refresh loads saved state. It may have succeeded;
 there is no automatic replay. **Disable Slack** changes only the draft, not

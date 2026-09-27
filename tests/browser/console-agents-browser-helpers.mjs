@@ -7,6 +7,23 @@ import { chromium } from "playwright";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
+export function apiRequests(page, origin) {
+  const requests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.origin === origin) {
+      let body;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        // Some request bodies are not JSON.
+      }
+      requests.push({ method: request.method(), path: `${url.pathname}${url.search}`, body });
+    }
+  });
+  return requests;
+}
+
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
   const directory =
@@ -162,4 +179,28 @@ export function nativeValues(marker, options = {}) {
       },
     },
   };
+}
+
+// Exercise the visible chip control rather than writing its hidden serialized value.
+export async function setSlackSelection(input, value) {
+  const field = input.locator("..").locator("..");
+  const remove = field.locator(".slack-directory-chip button");
+  while (await remove.count()) {
+    await remove.first().click();
+  }
+  await input.fill(value);
+  if (value) {
+    await input.press("Enter");
+  }
+  if ((await input.getAttribute("aria-expanded")) === "true") {
+    await input.press("Escape");
+  }
+}
+
+export async function slackSelectionValue(input) {
+  return input
+    .locator("..")
+    .locator("..")
+    .locator(".slack-directory-chip")
+    .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("title")).join(", "));
 }

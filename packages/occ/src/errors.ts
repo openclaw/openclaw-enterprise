@@ -73,6 +73,18 @@ export class PluginDiscoveryError extends Error {
   }
 }
 
+/** Safe channel-directory outcomes contain no upstream response or token. */
+export class ChannelDirectoryError extends Error {
+  readonly reason:
+    "credentials_rejected" | "missing_scope" | "rate_limited" | "invalid_response" | "unavailable";
+
+  constructor(reason: ChannelDirectoryError["reason"]) {
+    super("Channel directory lookup failed.");
+    this.name = "ChannelDirectoryError";
+    this.reason = reason;
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);

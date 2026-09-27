@@ -33,6 +33,7 @@ const request = createApiClient({
 const retainedViews = new Map();
 let mountedRouteKey = null;
 let mountedAgent = null;
+let mountedViewState = null;
 let resumePending = null;
 
 function sessionOwnerKey(value) {
@@ -98,7 +99,16 @@ function clearRetainedViewsOutsideNamespaces(readable) {
 
 function clearPasswordInputs() {
   document.querySelectorAll('input[type="password"]').forEach((input) => {
-    input.value = "";
+    if (input.value) {
+      if (mountedViewState) {
+        mountedViewState.reusable = false;
+      }
+      input.value = "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (input.dataset.supplied !== undefined) {
+        input.dataset.supplied = "false";
+      }
+    }
   });
 }
 
@@ -110,7 +120,9 @@ function retainMountedView() {
   }
   retainedViews.set(mountedRouteKey, {
     owner,
-    snapshot: view.cloneNode(true),
+    snapshot:
+      mountedViewState?.reusable && mountedViewState.pending === 0 ? view : view.cloneNode(true),
+    state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
     scrollY: window.scrollY,
@@ -136,10 +148,20 @@ function restoreRetainedView(current) {
   if (retained.scope) {
     app.querySelector(".content .scope").textContent = retained.scope;
   }
-  shell.view.replaceChildren(...retained.snapshot.childNodes);
+  shell.view.replaceWith(retained.snapshot);
+  shell.view = retained.snapshot;
+  shell.retained = retained;
+  if (shell.diagnostics && retained.state?.diagnostics) {
+    shell.diagnostics.replaceWith(retained.state.diagnostics);
+    shell.diagnostics = retained.state.diagnostics;
+    shell.diagnostics.inert = true;
+  }
   shell.view.setAttribute("aria-busy", "true");
   shell.view.setAttribute("inert", "");
-  for (const control of shell.view.querySelectorAll("button, input, select, textarea")) {
+  shell.blockedControls = [
+    ...shell.view.querySelectorAll("button, input, select, textarea"),
+  ].filter((control) => !control.disabled);
+  for (const control of shell.blockedControls) {
     control.disabled = true;
   }
   mountedRouteKey = key;
@@ -157,7 +179,11 @@ function markMountedRoute(current) {
 }
 
 function resetReads({ retainView = false } = {}) {
-  drafts.flush();
+  const resumeDrafts = drafts.suspend();
+  if (mountedViewState) {
+    mountedViewState.resumeDrafts = resumeDrafts;
+    mountedViewState.active = null;
+  }
   navigateAgentTab = null;
   mountedAgent = null;
   clearPasswordInputs();
@@ -167,20 +193,12 @@ function resetReads({ retainView = false } = {}) {
   } else {
     mountedRouteKey = null;
   }
+  mountedViewState = null;
   return lifetime.reset();
 }
 
 function renderShell(feature) {
-  const shell = shellUI.renderShell(feature, { session, namespaces, namespaceId });
-  if (shell.diagnostics) {
-    void renderRuntimeImages(shell.diagnostics, {
-      request,
-      namespaceId,
-      lifetime,
-      active: lifetime.capture(),
-    });
-  }
-  return shell;
+  return shellUI.renderShell(feature, { session, namespaces, namespaceId });
 }
 
 function clearPrivate() {
@@ -289,7 +307,7 @@ function showLogin(message = "", returnPath = null) {
   );
 }
 
-async function loadPage({ fromNavigation = false } = {}) {
+async function loadPage({ fromNavigation = false, reuseView = fromNavigation } = {}) {
   if (loggingOut) {
     return;
   }
@@ -305,6 +323,10 @@ async function loadPage({ fromNavigation = false } = {}) {
     discardCreationOnExit &&
     (!current.creating || current.namespace !== discardCreationOnExit.namespaceId);
   const previousMountedRouteKey = mountedRouteKey;
+  // Save/reload actions navigate to the current URL to discard the editor.
+  if (fromNavigation && previousMountedRouteKey === routeKey(current)) {
+    reuseView = false;
+  }
   namespaceId = current.namespace;
   const active = resetReads({ retainView: knownPrivateState });
   if (abandonedCreation) {
@@ -422,7 +444,94 @@ async function loadPage({ fromNavigation = false } = {}) {
         return;
       }
     }
+    const retainedState = shell?.retained?.state;
+    if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
+      const fresh = new Map([["/namespaces", namespaces]]);
+      if (retainedAgent) {
+        fresh.set(
+          `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+          retainedAgent,
+        );
+      } else if (retainedItems && current.feature !== "namespaces") {
+        fresh.set(
+          current.feature === "backends"
+            ? "/backends"
+            : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
+          retainedItems,
+        );
+      }
+      const validations = await Promise.allSettled(
+        [...retainedState.reads.keys()].map(async (path) => {
+          if (!fresh.has(path)) {
+            fresh.set(path, await request(path));
+          }
+        }),
+      );
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      const unchanged =
+        validations.every((result) => result.status === "fulfilled") &&
+        JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
+        [...retainedState.reads].every(
+          ([path, value]) => JSON.stringify(fresh.get(path)) === value,
+        );
+      if (unchanged) {
+        mountedViewState = retainedState;
+        retainedState.active = active;
+        retainedState.resumeDrafts?.();
+        navigateAgentTab = retainedState.tabNavigation;
+        mountedAgent = retainedState.agent;
+        for (const control of shell.blockedControls) {
+          control.disabled = false;
+        }
+        shell.view.removeAttribute("inert");
+        if (shell.diagnostics) {
+          shell.diagnostics.inert = false;
+        }
+        shellUI.updateNamespaces(namespaces);
+        markMountedRoute(current);
+        return;
+      }
+    }
     shell = renderShell(current.feature);
+    const viewState = {
+      active,
+      pending: 0,
+      reusable: true,
+      mutations: 0,
+      reads: new Map(),
+      user: session.user,
+    };
+    mountedViewState = viewState;
+    const viewRequest = async (path, options = {}) => {
+      viewState.pending += 1;
+      if ((options.method ?? "GET") !== "GET" && !options.readOnly) {
+        viewState.reusable = false;
+        viewState.mutations += 1;
+        retainedViews.clear();
+      }
+      try {
+        const result = await request(path, options);
+        if ((options.method ?? "GET") === "GET") {
+          viewState.reads.set(path, JSON.stringify(result));
+        }
+        return result;
+      } catch (error) {
+        viewState.reusable = false;
+        throw error;
+      } finally {
+        viewState.pending -= 1;
+      }
+    };
+    if (shell.diagnostics) {
+      viewState.diagnostics = shell.diagnostics;
+      void renderRuntimeImages(shell.diagnostics, {
+        request: viewRequest,
+        namespaceId,
+        isCurrent: () => lifetime.isCurrent(viewState.active),
+      });
+    }
     if (current.feature === "settings") {
       shell.view.append(
         element(
@@ -459,15 +568,16 @@ async function loadPage({ fromNavigation = false } = {}) {
     }
     const agentContext = {
       drafts: drafts.scope(namespaceId, current.agentId ?? "create"),
-      flushDrafts: () => drafts.flush(),
+      suspendDrafts: () => drafts.suspend(),
       view: shell.view,
       namespaceId,
-      request,
+      request: viewRequest,
+      mutationVersion: () => viewState.mutations,
       navigate,
       pageUrl,
-      isCurrent: () => lifetime.isCurrent(active),
+      isCurrent: () => lifetime.isCurrent(viewState.active),
       onExpired: () => {
-        if (lifetime.isCurrent(active)) {
+        if (lifetime.isCurrent(viewState.active)) {
           showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
         }
       },
@@ -476,7 +586,8 @@ async function loadPage({ fromNavigation = false } = {}) {
       },
       url: current.url,
       setTabNavigation(handler) {
-        if (lifetime.isCurrent(active)) {
+        if (lifetime.isCurrent(viewState.active)) {
+          viewState.tabNavigation = handler;
           navigateAgentTab = handler;
         }
       },
@@ -501,12 +612,20 @@ async function loadPage({ fromNavigation = false } = {}) {
       return;
     }
     if (current.agentId) {
+      if (retainedAgent) {
+        viewState.reads.set(
+          `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+          JSON.stringify(retainedAgent),
+        );
+      }
       const agent = await renderAgentDetail(
         { ...agentContext, agentId: current.agentId },
         { agent: retainedAgent },
       );
       if (lifetime.isCurrent(active)) {
         mountedAgent = agent;
+        viewState.agent = agent;
+        viewState.reusable &&= agent?.status !== "deleting";
         markMountedRoute(current);
       }
       return;
@@ -527,6 +646,14 @@ async function loadPage({ fromNavigation = false } = {}) {
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
+    viewState.reads.set(
+      current.feature === "namespaces"
+        ? "/namespaces"
+        : current.feature === "backends"
+          ? "/backends"
+          : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
+      JSON.stringify(items),
+    );
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items });
     } else {
@@ -761,7 +888,7 @@ function resumePage() {
   const pending =
     current.agentId && mountedRouteKey === routeKey(current)
       ? revalidateMountedAgent(current)
-      : loadPage();
+      : loadPage({ reuseView: true });
   resumePending = pending;
   void pending.finally(() => {
     if (resumePending === pending) {

@@ -6,6 +6,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
+import { setSlackSelection } from "./console-agents-browser-helpers.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 async function openCreateSecretDialog(scope, label) {
@@ -123,8 +124,14 @@ for (const issuesEnabled of [true, false]) {
     await grantModelAccess(agent);
     await page.getByRole("button", { name: "Channels", exact: true }).click();
     await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
-    await page.getByLabel("Slack channel IDs").fill("CDEMO123");
-    await page.getByLabel("Allowed channel user IDs").fill("UDEMO123");
+    await setSlackSelection(
+      page.getByRole("combobox", { name: "Channels", exact: true }),
+      "CDEMO123",
+    );
+    await setSlackSelection(
+      page.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+      "UDEMO123",
+    );
     const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
     // This workflow enables channel mentions without granting direct-message access.
     await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");

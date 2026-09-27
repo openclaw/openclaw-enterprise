@@ -165,7 +165,7 @@ function gatewayName(agentId) {
 function pluginRevisionState() {
   return {
     driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-    plugins: { [pluginId]: { enabled: true, toolDefaults: { approval: "approve" } } },
+    plugins: { [pluginId]: { enabled: true, toolDefaults: { approval: "none" } } },
   };
 }
 

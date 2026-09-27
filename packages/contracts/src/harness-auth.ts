@@ -22,5 +22,8 @@ export function harnessAuthBindingFromSnapshot(snapshot: HarnessAuthSnapshot): H
   if (snapshot.method === "chatgpt_service_account") {
     return { method: snapshot.method, serviceAccountId: snapshot.serviceAccountId };
   }
+  if (snapshot.method === "credential_source") {
+    return { method: snapshot.method, sourceId: snapshot.sourceId };
+  }
   return { method: snapshot.method };
 }

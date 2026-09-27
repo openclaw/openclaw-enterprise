@@ -1,7 +1,7 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import dns from "node:dns";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -83,6 +83,9 @@ const credentialMountPath = "/run/enterprise-credentials";
 const pluginRuntimeMountPath = "/etc/openclaw/plugin-runtime";
 const runtimeAssetsMountPath = "/home/node/openclaw-runtime-assets";
 const nodeStateMountPath = "/home/node/.openclaw-node";
+// Kubernetes Compute backs all of /home/node with an emptyDir; stock OpenShell has no equivalent,
+// so the bridge stages the native state root where the Agent entrypoint publishes plugin skills.
+const openclawHomeMountPath = "/home/node/.openclaw";
 const workspaceMountPath = "/home/node/workspace";
 const bridgedWorkspaceSubPath = "workspace/openshell-home";
 const portableCommandArgumentBytes = 30 * 1024;
@@ -751,15 +754,15 @@ function credentialBridgeResource(context, claimName, subPath) {
                   "mkdir -p /bootstrap/plugin-runtime",
                   "mkdir -p /bootstrap/node-state",
                   "mkdir -p /bootstrap/runtime-assets",
+                  "mkdir -p /bootstrap/openclaw-home",
                   `mkdir -p /bootstrap/service-principal/${tokenParent}`,
                   "mkdir -p /workspace-home/openshell-home/.codex",
                   "chmod 0700 /bootstrap/plugin-runtime /bootstrap/service-principal",
                   "chmod 0700 /bootstrap/node-state",
-                  "chmod 0600 /bootstrap/app-server-token /bootstrap/openai-api-key /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem 2>/dev/null || true",
+                  "chmod 0600 /bootstrap/app-server-token /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem 2>/dev/null || true",
                   "chmod 0600 /bootstrap/plugin-runtime/runtime.json /bootstrap/plugin-runtime/config.toml 2>/dev/null || true",
                   `chmod 0600 /bootstrap/service-principal/${servicePrincipalToken.path} 2>/dev/null || true`,
                   'printf "%s" "$APP_SERVER_TOKEN" > /bootstrap/app-server-token',
-                  'printf "%s" "$OPENAI_API_KEY" > /bootstrap/openai-api-key',
                   ...(nodeSetupCode === undefined
                     ? []
                     : [
@@ -769,7 +772,7 @@ function credentialBridgeResource(context, claimName, subPath) {
                   "cp /source-plugin-runtime/runtime.json /bootstrap/plugin-runtime/runtime.json",
                   "cp /source-plugin-runtime/config.toml /bootstrap/plugin-runtime/config.toml",
                   `cp /source-service-principal/${servicePrincipalToken.path} /bootstrap/service-principal/${servicePrincipalToken.path}`,
-                  "chmod 0444 /bootstrap/app-server-token /bootstrap/openai-api-key",
+                  "chmod 0444 /bootstrap/app-server-token",
                   ...(nodeSetupCode === undefined
                     ? []
                     : ["chmod 0444 /bootstrap/openclaw-node-setup-code"]),
@@ -777,13 +780,12 @@ function credentialBridgeResource(context, claimName, subPath) {
                   "chmod 0444 /bootstrap/plugin-runtime/runtime.json /bootstrap/plugin-runtime/config.toml",
                   `chmod 0444 /bootstrap/service-principal/${servicePrincipalToken.path}`,
                   "chmod 0555 /bootstrap/plugin-runtime /bootstrap/service-principal",
-                  "chmod 0700 /bootstrap/runtime-assets",
+                  "chmod 0700 /bootstrap/runtime-assets /bootstrap/openclaw-home",
                   "chmod 0700 /workspace-home/openshell-home /workspace-home/openshell-home/.codex",
                 ].join("\n"),
               ],
               env: [
                 secretEnvironment(context.requirements, "APP_SERVER_TOKEN"),
-                secretEnvironment(context.requirements, "OPENAI_API_KEY"),
                 ...(nodeSetupCode === undefined ? [] : [nodeSetupCode]),
                 nodeCa,
               ],
@@ -883,12 +885,19 @@ function portableRuntimeCommand(command) {
 }
 
 function bridgeRequirements(context, claimName, subPath) {
+  // The model key reaches Codex only through the Credential Gateway: Compute renders no model
+  // Secret, and the Sandbox receives exactly one attachment for the Agent's credential source.
+  assert.equal(
+    context.requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"),
+    false,
+    "Compute must not project OPENAI_API_KEY when a credential source authenticates the Harness.",
+  );
+  assert.equal(context.requirements.credentialAttachments.length, 1);
   const servicePrincipalToken = context.requirements.serviceAccountToken;
   const nodeSetupCode = optionalSecretEnvironment(context.requirements, "OPENCLAW_NODE_SETUP_CODE");
   literalEnvironment(context.requirements, "OPENCLAW_NODE_CA_PEM");
   const credentialBootstrap = [
     `process.env.APP_SERVER_TOKEN = require("node:fs").readFileSync("${credentialMountPath}/app-server-token", "utf8");`,
-    `process.env.OPENAI_API_KEY = require("node:fs").readFileSync("${credentialMountPath}/openai-api-key", "utf8");`,
     ...(nodeSetupCode === undefined
       ? []
       : [
@@ -903,12 +912,7 @@ ${runtimeCommand[programIndex]}`;
   const environment = context.requirements.environment
     .filter(
       ({ name }) =>
-        ![
-          "APP_SERVER_TOKEN",
-          "OPENAI_API_KEY",
-          "OPENCLAW_NODE_SETUP_CODE",
-          "OPENCLAW_NODE_CA_PEM",
-        ].includes(name),
+        !["APP_SERVER_TOKEN", "OPENCLAW_NODE_SETUP_CODE", "OPENCLAW_NODE_CA_PEM"].includes(name),
     )
     .map((entry) => {
       if (entry.name === "HOME") {
@@ -956,6 +960,12 @@ ${runtimeCommand[programIndex]}`;
         claimName,
         subPath: `${subPath}/runtime-assets`,
         mountPath: runtimeAssetsMountPath,
+        readOnly: false,
+      },
+      {
+        claimName,
+        subPath: `${subPath}/openclaw-home`,
+        mountPath: openclawHomeMountPath,
         readOnly: false,
       },
       {
@@ -1067,6 +1077,55 @@ function integrationGatewayClient(
       gateway.close();
     },
   };
+}
+
+// The supervisor gives Harness processes an OpenShell placeholder and resolves it only in the
+// egress proxy. Only a digest crosses into the Pod, and only shapes come back, so neither the
+// command line nor a failure can expose the key.
+async function assertModelKeyIsPlaceholderOnly(namespace, pod, modelKey) {
+  const container = pod.spec.containers.find(({ name }) => name === "agent");
+  assert.ok(container, "the OpenShell Sandbox must provide its Agent container.");
+  const script = [
+    'const fs = require("node:fs");',
+    'const { createHash } = require("node:crypto");',
+    "const keyDigest = process.argv[1];",
+    'const digest = (value) => createHash("sha256").update(value).digest("hex");',
+    "const values = [];",
+    "let leaked = false;",
+    'for (const entry of fs.readdirSync("/proc")) {',
+    "  if (!/^[0-9]+$/.test(entry)) continue;",
+    "  let environ;",
+    '  try { environ = fs.readFileSync(`/proc/${entry}/environ`, "utf8"); } catch { continue; }',
+    '  for (const variable of environ.split("\\0")) {',
+    '    const separator = variable.indexOf("=");',
+    "    if (separator > 0 && digest(variable.slice(separator + 1)) === keyDigest) leaked = true;",
+    '    if (variable.startsWith("OPENAI_API_KEY=")) values.push(variable.slice(15));',
+    "  }",
+    "}",
+    "process.stdout.write(JSON.stringify({",
+    "  leaked,",
+    "  count: values.length,",
+    '  placeholders: values.every((value) => value.startsWith("openshell:resolve:env:")),',
+    "}));",
+  ].join("\n");
+  const observed = JSON.parse(
+    await kubectl(
+      "exec",
+      pod.metadata.name,
+      "--namespace",
+      namespace,
+      "--container",
+      container.name,
+      "--",
+      "node",
+      "-e",
+      script,
+      createHash("sha256").update(modelKey).digest("hex"),
+    ),
+  );
+  assert.equal(observed.leaked, false, "no Harness process environment may hold the model key.");
+  assert.ok(observed.count > 0, "the Harness must receive the OpenShell credential placeholder.");
+  assert.equal(observed.placeholders, true, "OPENAI_API_KEY must be an OpenShell placeholder.");
 }
 
 async function assertBridgedServicePrincipalToken(namespace, pod, expected) {
@@ -1182,6 +1241,17 @@ function assertBridgedWorkspaceMounts(pod) {
   assert.equal(
     mounts.some(
       ({ mountPath, readOnly, subPath }) =>
+        mountPath === openclawHomeMountPath &&
+        readOnly === false &&
+        subPath.startsWith(".openclaw/openshell-bootstrap/") &&
+        subPath.endsWith("/openclaw-home"),
+    ),
+    true,
+    "the stock OpenShell bridge requires a revision-scoped writable native state root.",
+  );
+  assert.equal(
+    mounts.some(
+      ({ mountPath, readOnly, subPath }) =>
         mountPath === "/home/node/.codex" &&
         readOnly === false &&
         subPath === `${bridgedWorkspaceSubPath}/.codex`,
@@ -1201,10 +1271,66 @@ function throwOpenShellAbortReason(signal) {
 function createIntegrationSandboxDriverFactory(
   OpenShellSandboxDriver,
   GrpcOpenShellGatewayClient,
+  OpenShellGateway,
   operatorKubernetes,
   { enableCompatibilityBridges },
 ) {
   const gatewayState = new Map();
+  const endpointClients = new Map();
+  let backendDrivers;
+
+  function clientForEndpoint(endpoint) {
+    const existing = endpointClients.get(endpoint);
+    if (existing !== undefined) {
+      return existing;
+    }
+    // OCC reports gateway failures only as DEPENDENCY_UNAVAILABLE. Record which call failed and
+    // its gRPC status, never request contents, so a registration regression is actionable.
+    const client = new GrpcOpenShellGatewayClient({ endpoint });
+    const created = new Proxy(client, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") {
+          return value;
+        }
+        return async (...args) => {
+          try {
+            return await value.apply(target, args);
+          } catch (error) {
+            process.stderr.write(
+              `OpenShell gateway ${String(property)} failed: ${error?.code ?? ""} ${error?.details ?? error?.message}\n`,
+            );
+            throw error;
+          }
+        };
+      },
+    });
+    endpointClients.set(endpoint, created);
+    return created;
+  }
+
+  // Each namespace owns a disposable gateway reached through its current port-forward, so the
+  // shared Backend resolves that endpoint at call time for the Credential Gateway Driver.
+  const createBackend = (definition) => {
+    backendDrivers = definition.drivers;
+    return Object.freeze({
+      id: definition.id,
+      drivers: definition.drivers,
+      client: {
+        clientForNamespace(namespaceName) {
+          const state = gatewayState.get(namespaceName);
+          assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
+          return clientForEndpoint(state.endpoint);
+        },
+        close() {
+          for (const client of endpointClients.values()) {
+            client.close();
+          }
+          endpointClients.clear();
+        },
+      },
+    });
+  };
   const provisioningFailures = new Map();
   const harnessServiceUrls = new Map();
   const credentialBridges = new Map();
@@ -1285,9 +1411,8 @@ function createIntegrationSandboxDriverFactory(
   }
 
   const createDriver = (selection) => {
-    function optionsFor(requirements, namespaceName, endpoint) {
+    function optionsFor(requirements, namespaceName) {
       const options = structuredClone(selection.configuration);
-      options.gateway.endpoint = endpoint;
       options.gateway.readiness = {
         ...options.gateway.readiness,
         serviceName: `openshell-${hash(namespaceName, 10)}`,
@@ -1307,25 +1432,29 @@ function createIntegrationSandboxDriverFactory(
       return options;
     }
 
+    function backendFor(gatewayClient) {
+      assert.ok(backendDrivers, "The OpenShell Backend must be composed before its Sandbox.");
+      return Object.freeze({
+        id: "openshell",
+        drivers: backendDrivers,
+        client: new OpenShellGateway({ endpoint: "http://127.0.0.1:1" }, { gatewayClient }),
+      });
+    }
+
     function delegate(requirements, namespaceName, endpoint, context) {
-      return new OpenShellSandboxDriver(optionsFor(requirements, namespaceName, endpoint), {
+      const gatewayClient =
+        context === undefined
+          ? clientForEndpoint(endpoint)
+          : integrationGatewayClient(GrpcOpenShellGatewayClient, endpoint, context, {
+              enableCompatibilityBridge: enableCompatibilityBridges,
+              observeServiceUrl: (serviceUrl) => {
+                harnessServiceUrls.set(context.revision.id, serviceUrl);
+              },
+            });
+      return new OpenShellSandboxDriver(optionsFor(requirements, namespaceName), {
         id: selection.id,
         implementation: "openshell",
-        ...(context === undefined
-          ? {}
-          : {
-              gatewayClient: integrationGatewayClient(
-                GrpcOpenShellGatewayClient,
-                endpoint,
-                context,
-                {
-                  enableCompatibilityBridge: enableCompatibilityBridges,
-                  observeServiceUrl: (serviceUrl) => {
-                    harnessServiceUrls.set(context.revision.id, serviceUrl);
-                  },
-                },
-              ),
-            }),
+        backend: backendFor(gatewayClient),
       });
     }
 
@@ -1335,9 +1464,11 @@ function createIntegrationSandboxDriverFactory(
       implementation: selection.implementation,
       facets: Object.freeze(["networking", "filesystem", "process"]),
       configureAgent(configuration) {
+        // Configuration admission performs no gateway I/O.
         return new OpenShellSandboxDriver(selection.configuration, {
           id: selection.id,
           implementation: "openshell",
+          backend: backendFor(undefined),
         }).configureAgent(configuration);
       },
       async ensureNamespace(context) {
@@ -1452,8 +1583,8 @@ function createIntegrationSandboxDriverFactory(
                 "-ceu",
                 [
                   "chmod -R u+w /bootstrap/plugin-runtime /bootstrap/service-principal",
-                  "rm -f /bootstrap/app-server-token /bootstrap/openai-api-key /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem",
-                  "rm -rf /bootstrap/plugin-runtime /bootstrap/service-principal /bootstrap/node-state /bootstrap/runtime-assets",
+                  "rm -f /bootstrap/app-server-token /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem",
+                  "rm -rf /bootstrap/plugin-runtime /bootstrap/service-principal /bootstrap/node-state /bootstrap/runtime-assets /bootstrap/openclaw-home",
                 ].join("\n"),
               ];
               container.volumeMounts = container.volumeMounts.filter(
@@ -1488,6 +1619,7 @@ function createIntegrationSandboxDriverFactory(
       },
     };
   };
+  createDriver.createBackend = createBackend;
   createDriver.disposeGatewayForwards = disposeGatewayForwards;
   createDriver.provisioningFailures = provisioningFailures;
   createDriver.harnessServiceUrls = harnessServiceUrls;
@@ -1567,6 +1699,7 @@ async function prepareProductionInstallation(
     { kubernetesGatewayNamespaceName, kubernetesNamespaceName },
     { OpenShellSandboxDriver },
     { GrpcOpenShellGatewayClient },
+    { OpenShellGateway },
     { KubeConfig, KubernetesObjectApi },
   ] = await Promise.all([
     import("pg"),
@@ -1577,6 +1710,7 @@ async function prepareProductionInstallation(
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
     import("../../apps/controller/src/drivers/sandbox/openshell.ts"),
     import("../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts"),
+    import("../../apps/controller/src/backends/openshell.ts"),
     import(controllerRequire.resolve("@kubernetes/client-node")),
   ]);
 
@@ -1625,17 +1759,20 @@ async function prepareProductionInstallation(
   const createSandboxDriver = createIntegrationSandboxDriverFactory(
     OpenShellSandboxDriver,
     GrpcOpenShellGatewayClient,
+    OpenShellGateway,
     operatorKubernetes,
     { enableCompatibilityBridges: !expectUnsupportedProjection },
   );
   const drivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { ...driverEnvironment, OCC_CONFIG_PATH: startupPath },
+    createOpenShellBackend: createSandboxDriver.createBackend,
     createSandboxDriver,
   });
   const workerDrivers = await loadInstallationConfiguration({
     mode: "production",
     environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerStartupPath },
+    createOpenShellBackend: createSandboxDriver.createBackend,
     createSandboxDriver,
   });
   // A worker retry intentionally exposes only DEPENDENCY_UNAVAILABLE. Preserve the first
@@ -1646,6 +1783,11 @@ async function prepareProductionInstallation(
   };
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
+  assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
+  assert.equal(
+    workerDrivers.credentialGatewayDriver?.id,
+    configuration.drivers.credential_gateway.id,
+  );
 
   const observerPool = new pg.Pool({
     connectionString: databaseUrl,
@@ -1823,6 +1965,23 @@ async function prepareProductionInstallation(
   });
   assert.equal(modelSecret.status, 201, JSON.stringify(modelSecret.error));
   assert.equal(JSON.stringify(modelSecret).includes(process.env.OPENAI_API_KEY), false);
+  // Registration copies the Secret value into the Namespace's OpenShell gateway through the
+  // regular API. The Secret stays the source of record; the Harness never receives it.
+  const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+    name: `openshell-openai-${randomUUID()}`,
+    type: "openai",
+    secrets: { api_key: modelSecret.data.ref },
+  });
+  assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
+  assert.equal(modelSource.data.state, "ready");
+  assert.deepEqual(modelSource.data.status, { state: "ready" });
+  assert.equal(JSON.stringify(modelSource).includes(process.env.OPENAI_API_KEY), false);
+  const observedSource = await request(
+    "GET",
+    `/namespaces/${namespaceId}/credential-sources/${modelSource.data.id}`,
+  );
+  assert.equal(observedSource.status, 200, JSON.stringify(observedSource.error));
+  assert.deepEqual(observedSource.data.status, { state: "ready" });
 
   const agentConfiguration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
@@ -1833,7 +1992,7 @@ async function prepareProductionInstallation(
     name: `openshell-${randomUUID()}`,
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
-    harnessAuth: { method: "api_key", source: modelSecret.data.ref },
+    harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.error));
 
@@ -1847,28 +2006,22 @@ async function prepareProductionInstallation(
   assert.equal(runtimeCredentials.status, 200, JSON.stringify(runtimeCredentials.error));
   assert.equal(runtimeCredentials.data.transportConfigured, true);
   const transport = await readAgentTransportCredentials(gatewayPlacement, agent.data.id);
-  const {
-    rows: [principal],
-  } = await observerPool.query(
-    "SELECT service_principal_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
-    [namespaceId, agent.data.id],
-  );
-  const roleId = `openshell-secret-operate-${randomUUID()}`;
-  await observerPool.query(
-    "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, $2, $3, $4::jsonb)",
-    [
-      roleId,
-      namespaceId,
-      "Exact model Secret operate",
-      JSON.stringify([{ action: "operate", resourceKind: "secret" }]),
-    ],
-  );
-  await observerPool.query(
-    `INSERT INTO occ.iam_access_bindings
-       (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
-     VALUES ($1, $2, $3, $4, 'secret', $5)`,
-    [randomUUID(), namespaceId, principal.service_principal_id, roleId, modelSecret.data.id],
-  );
+  // Deployment admission and the worker both require the Agent principal to operate the
+  // exact source; it receives no permission on the underlying Secret. The grant goes through
+  // the Namespace IAM API so its credential_source policy support is part of the proof.
+  const sourceRole = await request("POST", `/namespaces/${namespaceId}/iam/roles`, {
+    name: "Exact model credential source operate",
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  assert.equal(sourceRole.status, 201, JSON.stringify(sourceRole.error));
+  const sourceBinding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: agent.data.servicePrincipalId,
+    roleId: sourceRole.data.id,
+    resourceKind: "credential_source",
+    resourceId: modelSource.data.id,
+  });
+  assert.equal(sourceBinding.status, 201, JSON.stringify(sourceBinding.error));
   const deployed = await request(
     "POST",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
@@ -1886,9 +2039,11 @@ async function prepareProductionInstallation(
     const failure = await waitFor("stock OpenShell to explicitly reject Secret projection", () =>
       createSandboxDriver.provisioningFailures.get(deployed.data.id),
     );
+    // The model key no longer needs projection; the app-server token is the first remaining
+    // stock OpenShell blocker.
     assert.match(
       failure.message,
-      /cannot receive secretKeyRef.*upstream Secret projection support is required/,
+      /cannot receive secretKeyRef environment APP_SERVER_TOKEN; upstream Secret projection support is required/,
     );
     await waitFor("failed Sandbox provisioning worker observation", () =>
       events.find(
@@ -1954,6 +2109,7 @@ async function prepareProductionInstallation(
     "OpenShell integration: approved mounts and privileges verified; checking secret exposure.\n",
   );
   await assertNoSecretBytes(placement, [process.env.OPENAI_API_KEY, transport.appServerToken]);
+  await assertModelKeyIsPlaceholderOnly(placement, harnessPod, process.env.OPENAI_API_KEY);
   process.stderr.write(
     "OpenShell integration: secret exposure checks passed; verifying gateway routing.\n",
   );

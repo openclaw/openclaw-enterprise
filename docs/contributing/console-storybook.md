@@ -79,6 +79,13 @@ through real controls after loading fixture data.
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
 
+## Return navigation
+
+Use **Pages/Navigation → Return to loaded pages** and **Return to Agent panels**.
+Search, expanded configuration, native admin access, and Credentials should survive
+Back/Forward and tab changes. Refresh reloads. **Return access denied** and
+**Return session expired** must clear retained content.
+
 ## Agent flows and UI gaps
 
 In **Components → Navigation → Namespace switcher**, use the header selector to
@@ -88,7 +95,7 @@ selector** checks long-name truncation before the chevron and switching without 
 drawer. Existing no-readable, unavailable, loading, and denied stories cover
 restricted selector states.
 
-Saved simulated UI examples show the [desktop selector](../assets/console-namespace-selector/desktop.png),
+Simulated examples: [desktop selector](../assets/console-namespace-selector/desktop.png),
 [mobile empty collection](../assets/console-namespace-selector/mobile.png),
 [Namespaces page without a selector](../assets/console-namespace-selector/namespaces.png),
 and a [switching walkthrough](../assets/console-namespace-selector/namespace-switching.webm).
@@ -110,7 +117,7 @@ OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail.
 
 DevDay previews SWE, Community, Q&A, Oncall, and standard presets with models,
-workspace templates, four Slack channels, model Secrets, Linear, and repository
+workspace templates, six Slack channels, model Secrets, Linear, and repository
 choices. The simulated catalog works with any Preset or Secret choice.
 **Plugins Curated** exercises token-free discovery with simulated Driver responses;
 actual access remains unverified. Hosted discovery requires an eligible Codex
@@ -265,8 +272,7 @@ connect to a gateway, Slack, credentials, or a model.
 
 Open **Stop Agent**, inspect or cancel the confirmation, and confirm the stop.
 The fixture records the requested stopped state; **Refresh stop status** rereads
-it. This demonstrates the controls and request handling; it does not run a Compute
-Driver or prove live shutdown.
+it. It does not prove live shutdown.
 
 Resume with **Create new version** → **Deploy new version**, creating a new revision.
 Disabling Slack does not stop an Agent. See
@@ -308,10 +314,6 @@ When changing console pages, shared components, or lifecycle controls, update th
 corresponding scenarios and flow instructions in the same PR. Add an export to
 the owning story file for a new scenario. Keep visible failure messages owned by
 the console; configure API responses instead of writing replacement UI markup.
-
-Build Storybook, inspect the affected previews, and walk through changed flows.
-Keep backend and runtime verification in the existing code suites; a successful
-storybook fixture is not evidence that the real API or infrastructure works.
 
 ## Debug image walkthrough
 

@@ -156,6 +156,12 @@ grant the consuming Agent service principal exact `operate` permission before
 deployment. See [Configuration secrets and channels](../reference/configuration/secrets.md)
 for binding shape and delivery boundaries.
 
+When the Installation selects a Credential Gateway, register the Secret as a
+credential source and bind the source instead. `occ credential-source create`,
+`list`, `get`, and `delete` follow the same `--file` pattern; `get` also shows
+the gateway's live status. See [credential sources](../reference/credential-sources.md)
+and the [local OpenShell walkthrough](deploy/openshell-credential-sources.md).
+
 ## Manage Namespace IAM
 
 Create a Namespace Role and bind it to the Agent's returned

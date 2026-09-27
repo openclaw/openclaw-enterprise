@@ -30,6 +30,7 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 
 - [Local password authentication](../flows/local-password-authentication.md) and [service API keys](../flows/service-api-keys.md)
 - [Secret storage and delivery](../flows/secret-storage-and-delivery.md)
+- [Credential source lifecycle](../flows/credential-source-lifecycle.md): gateway registration, Agent binding, admission, and retried deletion
 - [Harness authentication binding](../flows/native-service-account-credential-delivery.md) and [ServiceAccount Driver credential delivery](../flows/service-account-driver-credential-delivery.md)
 
 ## Drivers and placement

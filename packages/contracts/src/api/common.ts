@@ -8,6 +8,7 @@ export const PresetId = Type.String({ pattern: `^pre_${UUID_V4}$` });
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
+export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
 export const ConfigurationKindSchema = Type.Literal("agent");
@@ -44,6 +45,17 @@ export const Name = Type.String({
   maxLength: 200,
   pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
 });
+
+export const PluginApproversSchema = Type.Array(
+  Type.Object(
+    {
+      channel: Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9_-]*$" }),
+      id: Type.String({ minLength: 1, maxLength: 200, pattern: "^[^\\u0000-\\u0020\\u007f]+$" }),
+    },
+    { additionalProperties: false },
+  ),
+  { maxItems: 64, uniqueItems: true, $id: "PluginApprovers" },
+);
 
 export const KubernetesNamespaceName = Type.String({
   minLength: 1,
@@ -94,6 +106,11 @@ export const ServiceAccountParams = Type.Object(
 
 export const SecretParams = Type.Object(
   { namespaceId: NamespaceId, secretId: SecretId },
+  { additionalProperties: false },
+);
+
+export const CredentialSourceParams = Type.Object(
+  { namespaceId: NamespaceId, credentialSourceId: CredentialSourceId },
   { additionalProperties: false },
 );
 
@@ -174,7 +191,58 @@ export const HarnessAuthBindingSchema = Type.Union([
     { method: Type.Literal("chatgpt_service_account"), serviceAccountId: ServiceAccountId },
     { additionalProperties: false },
   ),
+  Type.Object(
+    { method: Type.Literal("credential_source"), sourceId: CredentialSourceId },
+    { additionalProperties: false },
+  ),
 ]);
+
+export const CredentialSourceReference = Type.Object(
+  { kind: Type.Literal("credential_source"), namespaceId: NamespaceId, id: CredentialSourceId },
+  {
+    additionalProperties: false,
+    description:
+      'Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`.',
+  },
+);
+
+const CredentialSourceFieldName = Type.String({
+  minLength: 1,
+  maxLength: 64,
+  pattern: "^[a-z][a-z0-9_]{0,63}$",
+});
+
+export const CredentialSourceType = Type.String({
+  minLength: 1,
+  maxLength: 64,
+  pattern: "^[a-z][a-z0-9-]{0,63}$",
+  description: "Source type from the selected Credential Gateway catalog, for example `openai`.",
+});
+
+export const CredentialSourceConfig = Type.Record(
+  CredentialSourceFieldName,
+  Type.String({ minLength: 1, maxLength: 2048 }),
+  {
+    maxProperties: 32,
+    description: "Non-secret source configuration keyed by catalog field name.",
+  },
+);
+
+export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, SecretReference, {
+  maxProperties: 16,
+  description:
+    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+});
+
+export const CreateCredentialSourceBody = Type.Object(
+  {
+    name: Name,
+    type: CredentialSourceType,
+    config: Type.Optional(CredentialSourceConfig),
+    secrets: Type.Optional(CredentialSourceSecrets),
+  },
+  { additionalProperties: false },
+);
 
 export const SecretDelivery = Type.Object(
   { type: Type.Literal("env") },
@@ -246,13 +314,17 @@ const PluginDiscoveryAccessToken = Type.String({
 // At most one credential source is accepted; the selected Driver determines whether it is required.
 export const DiscoverAgentPluginsBody = Type.Union([
   Type.Object(
-    { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })) },
+    {
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+      q: Type.Optional(Type.String({ maxLength: 1024 })),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
     {
       accessToken: PluginDiscoveryAccessToken,
       cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+      q: Type.Optional(Type.String({ maxLength: 1024 })),
     },
     { additionalProperties: false },
   ),
@@ -260,6 +332,7 @@ export const DiscoverAgentPluginsBody = Type.Union([
     {
       secretRef: SecretReference,
       cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+      q: Type.Optional(Type.String({ maxLength: 1024 })),
     },
     { additionalProperties: false },
   ),
@@ -284,7 +357,10 @@ export const DiscoverAgentPluginDetailsBody = Type.Union([
 ]);
 
 export const DiscoverSavedAgentPluginsBody = Type.Object(
-  { cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })) },
+  {
+    cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
+    q: Type.Optional(Type.String({ maxLength: 1024 })),
+  },
   { additionalProperties: false },
 );
 
@@ -312,12 +388,14 @@ export const ResourceKindSchema = Type.Union([
   Type.Literal("secret"),
   Type.Literal("agent"),
   Type.Literal("agent_revision"),
+  Type.Literal("credential_source"),
 ]);
 
 export const NamespacePolicyResourceKindSchema = Type.Union([
   Type.Literal("agent"),
   Type.Literal("agent_revision"),
   Type.Literal("configuration"),
+  Type.Literal("credential_source"),
   Type.Literal("preset"),
   Type.Literal("secret"),
   Type.Literal("service_account"),
@@ -447,6 +525,7 @@ export const CreateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
   },
   { additionalProperties: false },
@@ -472,6 +551,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
   },
   { additionalProperties: false },
@@ -484,10 +564,48 @@ export const UpdateAgentBody = Type.Object(
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
   },
   { additionalProperties: false },
 );
+
+const ChannelDirectoryLookupFields = {
+  secretId: SecretId,
+  kind: Type.Union([Type.Literal("users"), Type.Literal("channels")]),
+  query: Type.Optional(Type.String({ maxLength: 200, pattern: "^[^\\u0000]*$" })),
+  cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 2048, pattern: "^[^\\u0000]*$" })),
+};
+
+const ChannelDirectoryHydrationFields = {
+  secretId: SecretId,
+  kind: Type.Union([Type.Literal("users"), Type.Literal("channels")]),
+  ids: Type.Array(
+    Type.String({ minLength: 1, maxLength: 200, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }),
+    { minItems: 1, maxItems: 20, uniqueItems: true },
+  ),
+};
+
+export const ChannelDirectoryLookupBody = Type.Union([
+  Type.Object(ChannelDirectoryLookupFields, { additionalProperties: false }),
+  Type.Object(
+    { ...ChannelDirectoryLookupFields, agentId: AgentId },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...ChannelDirectoryLookupFields, configurationId: ConfigurationId },
+    { additionalProperties: false },
+  ),
+  Type.Object(ChannelDirectoryHydrationFields, { additionalProperties: false }),
+  Type.Object(
+    { ...ChannelDirectoryHydrationFields, agentId: AgentId },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...ChannelDirectoryHydrationFields, configurationId: ConfigurationId },
+    { additionalProperties: false },
+  ),
+]);
 
 export const UpdateWorkspaceFileBody = Type.Object(
   {
@@ -504,9 +622,10 @@ export const UpdateWorkspaceFileBody = Type.Object(
 export const PluginReviewerSchema = Type.Union([Type.Literal("human"), Type.Literal("auto")]);
 
 export const PluginApprovalModeSchema = Type.Union([
-  Type.Literal("native"),
-  Type.Literal("prompt"),
-  Type.Literal("approve"),
+  Type.Literal("provider_default"),
+  Type.Literal("all_actions"),
+  Type.Literal("write_actions"),
+  Type.Literal("none"),
 ]);
 
 export const ERROR_DETAIL_CODES = Object.freeze([
@@ -545,6 +664,11 @@ export const ERROR_CODES = Object.freeze([
   "PLUGIN_DISCOVERY_RATE_LIMITED",
   "PLUGIN_DISCOVERY_UNAVAILABLE",
   "PLUGIN_DISCOVERY_INVALID_RESPONSE",
+  "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED",
+  "CHANNEL_DIRECTORY_MISSING_SCOPE",
+  "CHANNEL_DIRECTORY_RATE_LIMITED",
+  "CHANNEL_DIRECTORY_INVALID_RESPONSE",
+  "CHANNEL_DIRECTORY_UNAVAILABLE",
 ] as const);
 
 export const ErrorDetail = Type.Object(
@@ -599,6 +723,11 @@ export const ErrorResponse = Type.Object(
           Type.Literal("PLUGIN_DISCOVERY_RATE_LIMITED"),
           Type.Literal("PLUGIN_DISCOVERY_UNAVAILABLE"),
           Type.Literal("PLUGIN_DISCOVERY_INVALID_RESPONSE"),
+          Type.Literal("CHANNEL_DIRECTORY_CREDENTIALS_REJECTED"),
+          Type.Literal("CHANNEL_DIRECTORY_MISSING_SCOPE"),
+          Type.Literal("CHANNEL_DIRECTORY_RATE_LIMITED"),
+          Type.Literal("CHANNEL_DIRECTORY_INVALID_RESPONSE"),
+          Type.Literal("CHANNEL_DIRECTORY_UNAVAILABLE"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
@@ -657,6 +786,7 @@ export type UpdateServiceAccountCredentialBody = Type.Static<
 export type CreateAgentBody = Type.Static<typeof CreateAgentBody>;
 export type ProvisionAgentBody = Type.Static<typeof ProvisionAgentBody>;
 export type UpdateAgentBody = Type.Static<typeof UpdateAgentBody>;
+export type ChannelDirectoryLookupBody = Type.Static<typeof ChannelDirectoryLookupBody>;
 export type UpdateWorkspaceFileBody = Type.Static<typeof UpdateWorkspaceFileBody>;
 export type ErrorDetail = Type.Static<typeof ErrorDetail>;
 export type ErrorResponse = Type.Static<typeof ErrorResponse>;
