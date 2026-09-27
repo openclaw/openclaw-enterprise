@@ -1777,8 +1777,7 @@ export const scenarios = {
     agentPlugins: JSON.parse(pluginSelections),
     pluginCapabilities,
     actions: [click("Plugins")],
-    description:
-      "An admitted version shows its immutable Agent-owned plugin selection and policy.",
+    description: "An admitted version shows its immutable Agent-owned plugin selection and policy.",
   },
   invalidConfiguration: {
     group: "Pages/Agent detail",
