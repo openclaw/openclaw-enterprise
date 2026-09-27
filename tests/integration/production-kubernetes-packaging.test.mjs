@@ -354,6 +354,10 @@ test("production Helm values example renders the backendless default chart", too
       "oce-role": "control",
     });
   }
+  assert.deepEqual(selected("Deployment", "worker").spec.strategy, {
+    type: "RollingUpdate",
+    rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" },
+  });
   assert.ok(
     initialization.spec.template.spec.volumes.some(
       ({ name, secret }) => name === "database-ca" && secret?.secretName === "occ-rds-ca",
@@ -713,6 +717,80 @@ test(
         "github-primary",
       ]);
     }
+  },
+);
+
+test(
+  "repository credential origin helper reports the rendered broker endpoint",
+  tooling,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "broker-origin-helper-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const valuesFile = join(directory, "values.json");
+    await writeFile(
+      valuesFile,
+      JSON.stringify({
+        images: { controller: values["images.controller"] },
+        auth: {
+          baseUrl: values["auth.baseUrl"],
+          secretName: values["auth.secretName"],
+          secretKey: values["auth.secretKey"],
+        },
+        bootstrap: {
+          adminEmail: values["bootstrap.adminEmail"],
+          password: { claimName: values["bootstrap.password.claimName"] },
+        },
+        api: {
+          clients: [
+            {
+              namespace: values["api.clients[0].namespace"],
+              podLabels: { app: values["api.clients[0].podLabels.app"] },
+            },
+          ],
+        },
+        database: { cidrs: [values["database.cidrs[0]"]] },
+        cluster: { cidrs: [values["cluster.cidrs[0]"]] },
+        repositoryCredentials: {
+          enabled: true,
+          image: repositoryCredentialValues["repositoryCredentials.image"],
+          serviceName: "broker",
+          hostname: "broker.openclaw-system.svc",
+          backendId: "github-primary",
+          registryConfigMapName: "repository-registry-v1",
+          serviceConfigSecretName: "repository-config",
+          appKeySecretName: "repository-app-key",
+          tlsSecretName: "repository-tls",
+          publicCaSecretName: "repository-public-ca",
+          upstreamCidrs: ["198.51.100.0/24"],
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const rendered = JSON.parse(
+      (
+        await execute(
+          "node",
+          [
+            "scripts/render-repository-credentials-origin.mjs",
+            "--release",
+            "oce",
+            "--namespace",
+            "openclaw-system",
+            "--values",
+            valuesFile,
+          ],
+          { cwd: repository, maxBuffer: 2_000_000 },
+        )
+      ).stdout,
+    );
+    assert.deepEqual(rendered, {
+      origin: "https://broker.openclaw-system.svc",
+      hostname: "broker.openclaw-system.svc",
+      serviceName: "broker",
+      namespace: "openclaw-system",
+      release: "oce",
+      backendId: "github-primary",
+    });
   },
 );
 

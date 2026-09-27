@@ -8,9 +8,16 @@ metadata:
     {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 4 }}
 spec:
   replicas: 1
-  {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+  {{- if eq $component "worker" }}
   strategy:
+    {{- if $.Values.repositoryCredentials.enabled }}
     type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: "25%"
+      maxUnavailable: "25%"
+    {{- end }}
   {{- end }}
   selector:
     matchLabels:

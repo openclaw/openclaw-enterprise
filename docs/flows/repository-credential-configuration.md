@@ -1,7 +1,7 @@
 ---
 created: 2026-09-18
-updated: "2026-09-25"
-last_updated_session: "authoring-run/656293f4-5523-4894-8d65-6c69b3bc5dee"
+updated: "2026-09-27"
+last_updated_session: "cody/01a0e42f-3192-76d1-89b6-4bec0cb00e64"
 ---
 
 # Repository credential configuration flow
@@ -18,8 +18,11 @@ provider requests or listener startup.
 
 ## Entry Points
 
+- Trigger: `node scripts/render-repository-credentials-origin.mjs --release NAME --namespace NAME --values FILE`
+  before issuing the Kubernetes broker certificate.
 - Trigger: `pnpm credentials:check-config /absolute/path/service.json`.
-- Source: `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`,
+- Source: `scripts/render-repository-credentials-origin.mjs`,
+  `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`,
   `apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration`,
   and `apps/controller/src/composition/repository-credentials/config.ts:loadConfiguration`.
 - Assumptions: Node 24, prepared build output, operator-selected absolute paths,
@@ -52,7 +55,29 @@ graph TD
 
 ## Execution Trace
 
-### 1. Snapshot Kubernetes inputs when selected
+### 1. Render the Kubernetes broker origin before preparing TLS
+
+`scripts/render-repository-credentials-origin.mjs:renderedBroker`
+
+The operator renders the Helm chart after selecting `repositoryCredentials`
+values and before issuing the broker certificate. The helper reads the rendered
+worker sidecar's `--public-origin` argument and returns that origin, hostname,
+Service name, release, namespace, and Backend ID. Certificate issuance uses that
+hostname as its DNS SAN, so the chart-rendered origin remains the input for TLS
+material, startup, and later Agent session material. The helper does not derive
+a second hostname policy; Helm validation owns the supported Service settings.
+
+Helm always renders an explicit worker Deployment strategy. Disabled installs use
+the Kubernetes default RollingUpdate values, `maxSurge: "25%"` and
+`maxUnavailable: "25%"`. Broker-enabled installs render `strategy.type:
+Recreate` and omit `rollingUpdate`, allowing server-side apply to remove the
+previous RollingUpdate fields before Kubernetes validates the Recreate strategy.
+Older disabled releases that did not explicitly own the RollingUpdate fields
+must first refresh with the current disabled chart and no active Agent sessions,
+then opt in to repository credentials. Existing broker-enabled installs already
+use Recreate.
+
+### 2. Snapshot Kubernetes inputs when selected
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 and `apps/controller/src/composition/repository-credentials/protected-file.ts:readProtectedFile`
@@ -139,6 +164,10 @@ startup validation, not live GitHub behavior or platform integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 12:14: Record the server-side apply strategy ownership path for broker-enabled worker Recreate upgrades. (cody/01a0e42f-3192-76d1-89b6-4bec0cb00e64 - 181b0472f9a5)
+
+- 2026-09-27 11:53: Document the Helm-rendered broker origin helper before Kubernetes projection snapshotting. (cody/01a0e42f-3192-76d1-89b6-4bec0cb00e64 - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
 
 - 2026-09-25 23:47: Derive the Kubernetes broker origin from the sidecar deployment argument and validate the projected TLS host. (public authoring-run/656293f4-5523-4894-8d65-6c69b3bc5dee - 7e310b74)
 

@@ -9,6 +9,7 @@ Use the repository-local skills for the relevant development task:
 | Write or review technical docs   | [technical-writing](../../.agents/skills/technical-writing/SKILL.md) covers source-backed prose, runnable instructions, page selection, and specification clarity. |
 | Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.                  |
 | Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                       |
+| Run end-to-end acceptance        | [oceinteg](../../.agents/skills/oceinteg/SKILL.md) runs named real Helm scenarios; `oceinteg main` covers Console, Slack, repositories, Linear, and native UI.     |
 | Explain a change with a diagram  | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries.     |
 | Clean the current diff           | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                    |
 | Run requested independent review | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                           |
