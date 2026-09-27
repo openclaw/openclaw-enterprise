@@ -128,7 +128,8 @@ mapping, release metadata, and configuration are resolved later.
 Compute validates admitted state, Driver, and Harness. Kubernetes projects the
 nonsecret request; Docker uses bounded environment delivery.
 
-SSH Compute rejects nonempty plugin maps before host effects.
+SSH Compute rejects nonempty plugin maps and Agent default plugin approver
+policies before host effects.
 
 Initial embedded Kubernetes gateway preparation applies exact-Agent HTTPS
 egress before installation. For existing gateways, `prepareRevision` avoids
@@ -265,9 +266,9 @@ completed deployment attempt rather than ongoing runtime health.
 - Check missing native packages, release drift, connector authentication, and
   effective policy when readiness fails; preserve credential values in protected
   runtime state rather than copying them into logs.
-- With SSH Compute, any nonempty requested plugin map should fail before host
-  effects. Clear the Agent's plugin map or deploy through a compatible
-  Kubernetes runtime.
+- With SSH Compute, any nonempty requested plugin map or Agent default plugin
+  approver policy should fail before host effects. Clear both on the Agent or
+  deploy through a compatible Kubernetes runtime.
 - For plugin warnings, check deployment status for `PLUGIN_INSTALL_FAILED` or
   `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm the corresponding
   runtime and gateway entries are disabled. Do not infer plugin attribution

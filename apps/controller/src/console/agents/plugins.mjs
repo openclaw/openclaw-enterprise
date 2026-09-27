@@ -161,6 +161,7 @@ export function renderAgentPlugins(
       JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     return dirty || pending || outcomeUnknown || reloadRequired
       ? {
+          dirty,
           text: input.value,
           initialText,
           initialApprovers,

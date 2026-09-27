@@ -522,6 +522,9 @@ export class SshComputeDriver implements ComputeDriver {
     if (revision.sandboxDriverId !== undefined) {
       throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
     }
+    if (revision.pluginApprovers !== undefined) {
+      throw new ConfigurationFailure("SSH Compute does not support plugin approver policy.");
+    }
     if (hasPluginSelections(revision)) {
       throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
     }

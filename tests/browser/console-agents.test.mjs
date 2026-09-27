@@ -4014,6 +4014,48 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   assert.equal(Object.hasOwn(savedAgent, "pluginApprovers"), false);
 });
 
+test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unsaved plugin approvers");
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Approver Draft Agent",
+    nativeValues("approver-draft"),
+    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, url.pathname + url.search);
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  assert.equal(await deploy.isDisabled(), false);
+
+  await page.getByLabel("Default plugin approvers mode").selectOption("none");
+  assert.equal(await deploy.isDisabled(), true);
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
+  await page
+    .getByText(
+      /Configured on the runtime host; not validated by OCC|Save or discard plugin changes before deploying/,
+    )
+    .waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(
+    await page
+      .getByText("Save or discard plugin changes before deploying.", { exact: true })
+      .isVisible(),
+    true,
+  );
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "none");
+});
+
 test("Agent draft plugin browsing explains a missing hosted credential", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

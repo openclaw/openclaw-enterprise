@@ -108,7 +108,8 @@ No PluginDriver is selected by default. Plugin-free deployments remain permitted
 Nonempty selections require valid supported policy and the same compatible Driver
 at startup. Saving does not perform authenticated discovery; saved entries remain
 readable without their original Driver. SSH Compute rejects nonempty plugin maps
-before host effects and supports plugin-free embedded OpenClaw revisions.
+and Agent default plugin approver policies before host effects; plugin-free
+embedded OpenClaw revisions remain supported without that policy.
 
 ## Native mappings and limits
 

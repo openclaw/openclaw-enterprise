@@ -838,6 +838,14 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
     }),
     /PluginDriver installation/,
   );
+  const beforeApproverPolicy = f.calls.length;
+  for (const pluginApprovers of [[], [{ channel: "slack", id: "team:T123:user:U123" }]]) {
+    await assert.rejects(
+      f.driver.prepareRevision({ ...rev, pluginApprovers }),
+      /plugin approver policy/,
+    );
+    assert.equal(f.calls.length, beforeApproverPolicy);
+  }
   for (const configuration of [
     { gateway: { auth: { mode: "oauth" } } },
     { gateway: { auth: { unsupportedField: true } } },

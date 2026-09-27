@@ -981,7 +981,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     };
     const retainedPlugins = context.drafts.get("plugins");
     const pluginEditorState = {
-      dirty: Boolean(retainedPlugins && retainedPlugins.text !== retainedPlugins.initialText),
+      dirty: Boolean(retainedPlugins?.dirty),
       saving: false,
       outcomeUnknown: retainedPlugins?.outcomeUnknown ?? false,
       reloadRequired: retainedPlugins?.reloadRequired ?? false,

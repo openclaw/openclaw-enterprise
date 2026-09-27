@@ -84,9 +84,10 @@ native responses, signals, and unrelated startup failures remain unattributed
 startup failures. Provider-owned Harnesses and non-Kubernetes Compute paths
 retain their existing generic startup-failure behavior.
 
-SSH Compute currently supports plugin-free embedded OpenClaw only. A revision
-with any nonempty requested plugin map is rejected before SSH host effects,
-including when a PluginDriver is selected.
+SSH Compute currently supports embedded OpenClaw without selected plugins or an
+Agent default plugin approver policy. A revision with either a nonempty
+requested plugin map or an Agent default approver policy (even an empty list)
+is rejected before SSH host effects, including when a PluginDriver is selected.
 
 ## HTTP operations
 
