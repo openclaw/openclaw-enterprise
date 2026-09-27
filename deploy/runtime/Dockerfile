@@ -1,4 +1,4 @@
-ARG OPENCLAW_COMMIT=29fe7bd8da2c5cce125c8b21b0238673c81feeb2
+ARG OPENCLAW_COMMIT=b08e73f4426ef65aa88e18c4901b95d7ac11f0a0
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
@@ -28,7 +28,7 @@ FROM ${NODE_BASE_IMAGE} AS openclaw-source
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T23:13:58Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-27T06:07:15Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -36,9 +36,13 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo 'baca838f3cb122771477ca18726ec934428082c76f77323c310ae960eb8e0e27  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    echo 'dde567ccaa03d391d551452a6b17d992c6ef99ffeb1f19f5e1be4de7f2e3b407  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
+# Retain the reviewed broker read-path contract while its upstream PR is pending.
+# Keep the applied patch in the runtime inventory and source provenance.
+COPY deploy/runtime/repository-broker-read-paths.patch patches/oce-repository-broker-read-paths.patch
+RUN git apply patches/oce-repository-broker-read-paths.patch
 # Pin the stock Codex package used by the bundled upstream OpenClaw extension.
 COPY deploy/runtime/stock-codex-0.156.0-dependency-pin.patch /tmp/codex-dependency-pin.patch
 RUN git apply /tmp/codex-dependency-pin.patch
@@ -48,7 +52,7 @@ RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-24T23:13:58Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-27T06:07:15Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./

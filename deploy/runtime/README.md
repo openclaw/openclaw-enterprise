@@ -16,17 +16,21 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin is the reviewed bridge/repository-broker commit from
-[OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724), which retains
-the product runtime assembly while adding the repository broker configuration
-surface needed by OpenClaw Enterprise. The commit and verified codeload archive
-checksum below identify this source build; it is not a published OpenClaw release.
+The source pin includes saved-token reconnect after the setup code expires and
+[OpenClaw #159466](https://github.com/openclaw/openclaw/pull/159466), which recovers
+unopened Codex connections during Harness replacement. The build also applies
+`repository-broker-read-paths.patch` from
+[OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) to preserve the
+reviewed broker read-path configuration pending its upstream merge. This patch
+changes three OpenClaw files; it does not change the Codex binary. Its contents
+are packaged and its hash is recorded in `provenance.json#sourcePatches`.
+The commit and archive checksum below identify this unreleased source build.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `29fe7bd8da2c5cce125c8b21b0238673c81feeb2`                                                                   |
-| Source archive SHA-256                       | `baca838f3cb122771477ca18726ec934428082c76f77323c310ae960eb8e0e27`                                           |
+| OpenClaw source commit                       | `b08e73f4426ef65aa88e18c4901b95d7ac11f0a0`                                                                   |
+| Source archive SHA-256                       | `dde567ccaa03d391d551452a6b17d992c6ef99ffeb1f19f5e1be4de7f2e3b407`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
 
 The source's package version is `2026.9.6`; it does not identify this custom
@@ -72,7 +76,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/29fe7bd8da2c5cce125c8b21b0238673c81feeb2/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/b08e73f4426ef65aa88e18c4901b95d7ac11f0a0/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

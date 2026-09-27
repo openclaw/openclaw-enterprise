@@ -1891,8 +1891,14 @@ assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "c
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.156.0");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "29fe7bd8da2c5cce125c8b21b0238673c81feeb2");
-assert.equal(provenance.sourceArchiveSha256, "baca838f3cb122771477ca18726ec934428082c76f77323c310ae960eb8e0e27");
+assert.equal(provenance.commit, "b08e73f4426ef65aa88e18c4901b95d7ac11f0a0");
+assert.equal(provenance.sourceArchiveSha256, "dde567ccaa03d391d551452a6b17d992c6ef99ffeb1f19f5e1be4de7f2e3b407");
+assert.deepEqual(provenance.sourcePatches, [{
+  path: "patches/oce-repository-broker-read-paths.patch",
+  upstreamPullRequest: "https://github.com/openclaw/openclaw/pull/158724",
+  sha256: "61191f76d881ea0d49f8d63dcda6b17abffc2f025b63fc6355d758dea1d8ad77",
+}]);
+assert.equal(createHash("sha256").update(readFileSync("/app/node_modules/openclaw/patches/oce-repository-broker-read-paths.patch")).digest("hex"), provenance.sourcePatches[0].sha256);
 assert.equal(provenance.codex.version, "0.156.0");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);

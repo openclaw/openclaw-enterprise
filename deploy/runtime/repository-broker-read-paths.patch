@@ -1,0 +1,125 @@
+--- a/extensions/codex/openclaw.plugin.json
++++ b/extensions/codex/openclaw.plugin.json
+@@ -453,6 +453,10 @@
+                   "enum": ["allow", "none"]
+                 }
+               },
++              "readOnlyPaths": {
++                "type": "array",
++                "items": { "type": "string", "minLength": 1 }
++              },
+               "proxyUrl": { "type": "string" },
+               "socksUrl": { "type": "string" },
+               "enableSocks5": { "type": "boolean" },
+@@ -781,6 +785,11 @@
+       "help": "Unix socket allow and none rules for Codex sandboxed networking.",
+       "advanced": true
+     },
++    "appServer.networkProxy.readOnlyPaths": {
++      "label": "Read-Only Paths",
++      "help": "Additional literal absolute filesystem paths to grant read access in the generated Codex permissions profile.",
++      "advanced": true
++    },
+     "appServer.networkProxy.proxyUrl": {
+       "label": "HTTP Proxy URL",
+       "help": "HTTP listener URL used by Codex sandboxed networking.",
+--- a/extensions/codex/src/app-server/config-parsing.ts
++++ b/extensions/codex/src/app-server/config-parsing.ts
+@@ -61,6 +61,7 @@
+   mode: z.enum(["limited", "full"]).optional(),
+   domains: z.record(z.string(), z.enum(["allow", "deny"])).optional(),
+   unixSockets: z.record(z.string(), z.enum(["allow", "none"])).optional(),
++  readOnlyPaths: z.array(z.string().min(1)).optional(),
+   proxyUrl: z.string().trim().min(1).optional(),
+   socksUrl: z.string().trim().min(1).optional(),
+   enableSocks5: z.boolean().optional(),
+--- a/extensions/codex/src/app-server/config-security.ts
++++ b/extensions/codex/src/app-server/config-security.ts
+@@ -1,5 +1,6 @@
+ import { createHash } from "node:crypto";
+ import { hostname as readHostName } from "node:os";
++import path from "node:path";
+ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+ import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
+ import type {
+@@ -66,6 +67,7 @@
+   const profile = {
+     filesystem: {
+       ":minimal": "read",
++      ...resolveNetworkProxyReadOnlyPaths(config),
+       ":project_roots": {
+         ".": fileSystemMode,
+       },
+@@ -113,6 +115,72 @@
+     .map(([key, permission]) => [key.trim(), permission === "none" ? "deny" : permission] as const)
+     .filter(([key]) => key.length > 0);
+   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
++}
++
++function resolveNetworkProxyReadOnlyPaths(
++  config: CodexAppServerNetworkProxyConfig,
++): Record<string, "read"> | undefined {
++  const normalizedPaths = (config.readOnlyPaths ?? []).map((value) =>
++    normalizeNetworkProxyReadOnlyPath(value),
++  );
++  const uniquePaths = [...new Set(normalizedPaths)].toSorted();
++  return uniquePaths.length > 0
++    ? Object.fromEntries(uniquePaths.map((entry) => [entry, "read"]))
++    : undefined;
++}
++
++function normalizeNetworkProxyReadOnlyPath(value: string): string {
++  const trimmed = value.trim();
++  if (!trimmed) {
++    throw invalidNetworkProxyReadOnlyPathsError();
++  }
++  const parser = trimmed.startsWith("/") ? path.posix : path.win32;
++  const normalized = stripTrailingPathSeparators(parser.normalize(trimmed));
++  const parsed = parser.parse(normalized);
++  const originalSegments = trimmed.slice(parser.parse(trimmed).root.length).split(/[\\/]+/u);
++  const segments = normalized.slice(parsed.root.length).split(/[\\/]+/u);
++  if (
++    trimmed.startsWith(":") ||
++    hasControlCharacter(value) ||
++    /[*?[\]{}]/u.test(trimmed) ||
++    !isLiteralAbsolutePath(trimmed) ||
++    normalized === parsed.root ||
++    originalSegments.some((segment) => segment === "..") ||
++    segments.some((segment) => segment === "..")
++  ) {
++    throw invalidNetworkProxyReadOnlyPathsError();
++  }
++  return normalized;
++}
++
++function hasControlCharacter(value: string): boolean {
++  for (const character of value) {
++    const codePoint = character.codePointAt(0);
++    if (codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++function stripTrailingPathSeparators(value: string): string {
++  const rootLength = path.win32.isAbsolute(value)
++    ? path.win32.parse(value).root.length
++    : path.posix.parse(value).root.length;
++  return value.length > rootLength ? value.replace(/[\\/]+$/u, "") : value;
++}
++
++function isLiteralAbsolutePath(value: string): boolean {
++  if (value.startsWith("/")) {
++    return path.posix.isAbsolute(value);
++  }
++  return /^[A-Za-z]:[\\/]/u.test(value) || /^\\\\[^\\]+\\[^\\]+(?:[\\/]|$)/u.test(value);
++}
++
++function invalidNetworkProxyReadOnlyPathsError(): Error {
++  return new Error(
++    'Invalid plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
++  );
+ }
+
+ function removeUndefinedJsonFields(value: Record<string, JsonValue | undefined>): JsonObject {

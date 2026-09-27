@@ -291,7 +291,16 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "baca838f3cb122771477ca18726ec934428082c76f77323c310ae960eb8e0e27",
+        sourceArchiveSha256: "dde567ccaa03d391d551452a6b17d992c6ef99ffeb1f19f5e1be4de7f2e3b407",
+        sourcePatches: [
+          {
+            path: "patches/oce-repository-broker-read-paths.patch",
+            upstreamPullRequest: "https://github.com/openclaw/openclaw/pull/158724",
+            sha256: hash(
+              await readFile(join(root, "patches/oce-repository-broker-read-paths.patch")),
+            ),
+          },
+        ],
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),
