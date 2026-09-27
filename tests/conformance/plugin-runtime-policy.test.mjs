@@ -368,43 +368,18 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   ]);
   assert.deepEqual(transfer.nodes["enrolled-node"].allowReadPaths, [
     "/home/node/workspace",
-    ...[...WORKSPACE_FILE_NAMES, "BOOTSTRAP.md", "MEMORY.md"].map(
-      (name) => "/home/node/workspace/" + name,
-    ),
-    ...["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"].map(
-      (name) => "/home/node/workspace/" + name,
-    ),
+    "/home/node/workspace/**",
     "/home/node/.openclaw",
     ...[
-      "/home/node/workspace/skills",
-      "/home/node/workspace/.agents/skills",
       "/home/node/.openclaw/skills",
       "/home/node/.openclaw/plugin-skills",
       "/home/node/.agents/skills",
       "/home/node/openclaw-runtime-assets/bundled-skills",
       "/home/node/openclaw-runtime-assets/plugin-skills",
     ].flatMap((root) => [root, root + "/**"]),
-    "/home/node/workspace/media/inbound/openclaw-staged-*",
-    "/home/node/workspace/media/inbound/openclaw-staged-*/**",
-    "/home/node/workspace/media/outbound/**",
   ]);
   assert.equal(transfer.nodes["enrolled-node"].followSymlinks, false);
-  // Native bootstrap treats brackets literally. Grant only the configured
-  // document, without admitting sibling files, writes, or out-of-workspace paths.
-  assert.deepEqual(transfer.literalGrants, [
-    {
-      nodeId: "enrolled-node",
-      command: "file.fetch",
-      requestedPath: "/home/node/workspace/team[1]/AGENTS.md",
-      canonicalPath: "/home/node/workspace/team[1]/AGENTS.md",
-    },
-    {
-      nodeId: "enrolled-node",
-      command: "file.stat",
-      requestedPath: "/home/node/workspace/team[1]/AGENTS.md",
-      canonicalPath: "/home/node/workspace/team[1]/AGENTS.md",
-    },
-  ]);
+  assert.equal(transfer.literalGrants, undefined);
   assert.equal(effective.gateway.nodes.commands.allow.includes("existing.command"), true);
   assert.equal(effective.gateway.nodes.commands.allow.includes("dir.list"), true);
   assert.equal(effective.gateway.nodes.commands.allow.includes("file.create"), true);
@@ -412,21 +387,6 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   assert.equal(effective.gateway.nodes.commands.allow.includes("workspace.skills"), true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].args[1], "gateway");
-  for (const hooks of [
-    { internal: { ...baseConfig.hooks.internal, enabled: false } },
-    {
-      internal: {
-        entries: { "bootstrap-extra-files": { paths: ["team[1]/AGENTS.md"], enabled: false } },
-      },
-    },
-  ]) {
-    const disabled = await runOpenClawRuntimeHelper(undefined, [], {
-      baseConfig: { ...baseConfig, hooks },
-      workspaceNodeId: "enrolled-node",
-    });
-    const config = JSON.parse(disabled.files.get("/home/node/.openclaw/openclaw.json"));
-    assert.equal(config.plugins.entries["file-transfer"].config.literalGrants, undefined);
-  }
   const explicit = { nodes: { "*": { ask: "off", allowReadPaths: ["/chosen/AGENTS.md"] } } };
   const configured = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: {

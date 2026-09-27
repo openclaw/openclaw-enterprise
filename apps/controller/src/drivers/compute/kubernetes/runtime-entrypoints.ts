@@ -1370,13 +1370,11 @@ if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
       const appServer = (entries.codex.config ??= {}).appServer ??= {};
       appServer.remoteWorkspaceRoot ??= remoteRoot;
     }
-    // OCC edits four owner documents; bootstrap additionally reads these two.
+    // OCC edits four owner documents; native previews read the Agent workspace.
     const editable = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
-    const readable = [...editable, "BOOTSTRAP.md", "MEMORY.md"];
     const memoryPaths = ["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"]
       .map((name) => remoteRoot + "/" + name);
     const skillRoots = [
-      remoteRoot + "/skills", remoteRoot + "/.agents/skills",
       "/home/node/.openclaw/skills", "/home/node/.openclaw/plugin-skills",
       "/home/node/.agents/skills", "/home/node/openclaw-runtime-assets/bundled-skills",
       "/home/node/openclaw-runtime-assets/plugin-skills",
@@ -1387,13 +1385,9 @@ if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
         ask: "off",
         allowReadPaths: [
           remoteRoot,
-          ...readable.map((name) => remoteRoot + "/" + name),
-          ...memoryPaths,
+          remoteRoot + "/**",
           "/home/node/.openclaw",
           ...skillRoots.flatMap((root) => [root, root + "/**"]),
-          remoteRoot + "/media/inbound/openclaw-staged-*",
-          remoteRoot + "/media/inbound/openclaw-staged-*/**",
-          remoteRoot + "/media/outbound/**",
         ],
         allowWritePaths: [
           ...editable.map((name) => remoteRoot + "/" + name),
@@ -1403,30 +1397,7 @@ if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
         ],
         followSymlinks: false,
       };
-      const hook = config.hooks?.internal?.entries?.["bootstrap-extra-files"];
-      if (config.hooks?.internal?.enabled !== false && hook && hook.enabled !== false) {
-        const declared = [hook.paths, hook.patterns, hook.files]
-          .map((value) => Array.isArray(value)
-            ? value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean)
-            : [])
-          .find((value) => value.length > 0) ?? [];
-        const paths = new Set(declared.filter((value) => !/[?*{}]/u.test(value))
-          .map((value) => pluginResolve(remoteRoot, value))
-          .filter((value) => value.startsWith(remoteRoot + "/")
-            && readable.includes(value.slice(value.lastIndexOf("/") + 1))));
-        // Native bootstrap accepts literal bracketed paths. Reuse command-bound
-        // exact grants instead of interpreting those paths as policy globs.
-        for (const requestedPath of paths) {
-          for (const command of ["file.fetch", "file.stat"]) {
-            (fileConfig.literalGrants ??= []).push({
-              nodeId: workspaceNodeId, command, requestedPath, canonicalPath: requestedPath,
-            });
-          }
-        }
-      }
     }
-    // TODO(workspace-storage-split): support bootstrap glob traversal and contained
-    // symlinks through the node file policy.
     fileConfig.policyVersion ??= 2;
     (fileConfig.workspaces ??= {}).main = { nodeId: workspaceNodeId, remoteRoot };
   }
