@@ -705,6 +705,14 @@ select:not([multiple])[size="1"] {
   overflow-y: auto;
   margin: 14px 0 22px;
 }
+@media (max-width: 1100px) {
+  .agent-version-layout {
+    grid-template-columns: 1fr;
+  }
+  .version-list {
+    max-height: 250px;
+  }
+}
 .version-item,
 .revision-create {
   display: grid;
@@ -1016,12 +1024,8 @@ summary:focus-visible {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
-  .deployment-progress,
-  .agent-version-layout {
+  .deployment-progress {
     grid-template-columns: 1fr;
-  }
-  .version-list {
-    max-height: 250px;
   }
   .repository-options {
     grid-template-columns: 1fr;
@@ -1424,7 +1428,7 @@ summary:focus-visible {
   padding-top: 16px;
   border-top: 1px solid var(--line);
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .plugin-tool-row > summary {
     grid-template-columns: minmax(0, 1fr);
   }
