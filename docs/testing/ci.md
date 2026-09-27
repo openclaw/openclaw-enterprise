@@ -254,6 +254,10 @@ testing the real helper deadline.
 
 #### No GitHub workflow entrypoint
 
+[dev-up-k3d-real.test.mjs](../../tests/integration/dev-up-k3d-real.test.mjs)
+belongs to the CLI-only `dev-up-k3d` lane, outside both workflow groups and
+Full Integration dispatch. See [run the local installation lane](README.md#run-the-local-installation-lane).
+
 [repository-credentials-k3d-real.test.mjs](../../tests/integration/repository-credentials-k3d-real.test.mjs)
 belongs to the explicitly selected `repository-credentials-installed` CLI lane.
 It is excluded from both workflow groups and Full Integration dispatch options.
@@ -288,10 +292,6 @@ and deletion without a model call. The optional `OCC_TEST_SSH_MODEL=1` selector 
 [real provider execution and runtime credential proof](ssh.md#runtime-credential-model-proof).
 Follow [SSH raw hosts](ssh.md#ssh-raw-hosts) for the disposable host, required
 environment settings, and direct test command.
-
-Every current `tests/integration/*.test.mjs` file has a suite-map owner. Ownership
-alone does not mean a workflow runs it; keep this list aligned with both the
-suite-map groups and workflow entrypoints.
 
 ## Related
 

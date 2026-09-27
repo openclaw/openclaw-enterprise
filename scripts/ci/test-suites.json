@@ -11,6 +11,7 @@
     "k3d-fixture-plugins": "./test-suites/k3d-fixture-plugins.json",
     "docker-model": "./test-suites/docker-model.json",
     "k3d-model": "./test-suites/k3d-model.json",
+    "dev-up-k3d": "./test-suites/dev-up-k3d.json",
     "gateway-routing": "./test-suites/gateway-routing.json",
     "production-tui": "./test-suites/production-tui.json",
     "slack": "./test-suites/slack.json",

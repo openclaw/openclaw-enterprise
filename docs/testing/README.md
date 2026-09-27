@@ -49,6 +49,20 @@ process isolation, and cancellation behavior. A valid file selection or a green
 filtered run does not prove that the intended cases ran; inspect the reported
 case and skip counts. Existing suite discovery and CI selection remain available.
 
+### Run the local installation lane
+
+The `dev-up-k3d` lane selects all three real local installation cases and fails
+on skips. Prepare the tools and build the CLI as described in
+[Local Kubernetes installation](kubernetes.md#local-kubernetes-installation).
+The lane uses Docker and creates its own disposable clusters. Run it with a
+fresh results directory:
+
+```sh
+run_dir=$(mktemp -d)
+node scripts/ci/run-tests.mjs run dev-up-k3d \
+  --state "$run_dir/state.json" --results "$run_dir/results.json"
+```
+
 ## Integration tests
 
 For local metrics collection and the provisioned Prometheus/Grafana dashboard,
