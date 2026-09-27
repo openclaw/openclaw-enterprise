@@ -24,6 +24,7 @@ packages:
     resolution: {integrity: sha512-codexlinux}
 `,
     "dist/index.js": "export const ready = true;\n",
+    "patches/oce-repository-broker-read-paths.patch": "repository broker patch fixture\n",
     "openclaw.mjs":
       'import { ready } from "./node-compile-cache.mjs"; process.stdout.write(ready);\n',
     "node-compile-cache.mjs": 'export const ready = "runtime-ready";\n',
@@ -120,6 +121,7 @@ packages:
     "node_modules/.pnpm/dep@2.0.0/node_modules/dep/package.json",
     "node_modules/.pnpm/optional@1.0.0/node_modules/optional/package.json",
     "dist/index.js",
+    "patches/oce-repository-broker-read-paths.patch",
     "docs/help.md",
     "extensions/slack/skills/slack/SKILL.md",
     "LICENSE",
@@ -142,6 +144,15 @@ packages:
     createHash("sha256").update(contents).digest("hex"),
   );
   assert.equal(provenance.codex.version, "0.156.0");
+  assert.deepEqual(provenance.sourcePatches, [
+    {
+      path: "patches/oce-repository-broker-read-paths.patch",
+      upstreamPullRequest: "https://github.com/openclaw/openclaw/pull/158724",
+      sha256: createHash("sha256")
+        .update(files["patches/oce-repository-broker-read-paths.patch"])
+        .digest("hex"),
+    },
+  ]);
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 });
