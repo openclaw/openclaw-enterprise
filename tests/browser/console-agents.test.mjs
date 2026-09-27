@@ -3376,7 +3376,13 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Versions" }).waitFor();
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
-  await page.getByText("Current version · v1", { exact: true }).waitFor();
+  const overview = page.locator(".agent-current-summary > div");
+  await overview.nth(0).getByText("v1", { exact: true }).waitFor();
+  await overview.nth(1).getByText("v2 · Queued").waitFor();
+  await overview.nth(2).getByText("Not verified").waitFor();
+  await page
+    .getByText("v2 deployment is recorded as queued. v1 is selected. Live serving is unverified.")
+    .waitFor();
   const activity = page.locator(".deployment-status");
   await activity.getByRole("heading", { name: "Deployment activity" }).waitFor();
   await activity.getByText("Most recent visible deployment · v2").waitFor();
@@ -3407,7 +3413,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
 
   await page.getByRole("button", { name: "View version v2" }).click();
   await page.getByRole("heading", { name: "Version v2" }).waitFor();
-  await page.getByText("Current version · v1", { exact: true }).waitFor();
+  await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await page.getByRole("button", { name: "View version v1" }).click();
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await activity.getByText("Most recent visible deployment · v2").waitFor();
@@ -3443,11 +3449,13 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await activity.getByText("Most recent visible deployment · v3").waitFor();
   await page.getByRole("button", { name: "View version v3" }).waitFor();
-  await page.getByText("Current version · v1", { exact: true }).waitFor();
+  await overview.nth(0).getByText("v1", { exact: true }).waitFor();
+  await overview.nth(1).getByText("v3 · Queued").waitFor();
   await fixture.activateRevision(namespace.id, agent.id, newer.id, current.revision.id);
   newerStatus = "failed";
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await page.getByText("Current version · v3", { exact: true }).waitFor();
+  await overview.nth(0).getByText("v3", { exact: true }).waitFor();
+  await overview.nth(1).getByText("v3 · Failed").waitFor();
   await activity.getByText("Recorded status: failed").waitFor();
   await activity
     .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")

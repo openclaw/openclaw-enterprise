@@ -551,19 +551,21 @@ select:not([multiple])[size="1"] {
   flex-wrap: wrap;
 }
 .agent-current-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 16px 20px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
 }
 .agent-current-summary > div {
   display: grid;
-  gap: 2px;
-  flex: none;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding: 16px 20px;
+}
+.agent-current-summary > div + div {
+  border-left: 1px solid var(--line);
 }
 .agent-current-summary strong {
   color: var(--text-strong);
@@ -571,6 +573,14 @@ select:not([multiple])[size="1"] {
 }
 .agent-current-summary p {
   margin: 0;
+  font-size: 12px;
+}
+.agent-status-line {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  color: var(--warning);
+  background: var(--warning-subtle);
 }
 .eyebrow {
   color: var(--muted);
@@ -1000,10 +1010,11 @@ summary:focus-visible {
     padding: 18px;
   }
   .agent-current-summary {
-    display: block;
+    grid-template-columns: 1fr;
   }
-  .agent-current-summary p {
-    margin-top: 8px;
+  .agent-current-summary > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
   .deployment-progress,
   .agent-version-layout {

@@ -124,7 +124,7 @@ function deploymentProgress(status) {
   );
 }
 
-function createDeploymentStatusPanel(context, path, revision, onAgentChange) {
+function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
   const section = element("section", { className: "agent-card deployment-status" });
   const state = { loading: false, status: null, error: null, overviewError: false };
 
@@ -180,6 +180,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange) {
       if (context.isCurrent()) {
         state.loading = false;
         render();
+        onStatusChange(state.status?.status ?? null, state.error !== null);
       }
     }
   }
@@ -464,27 +465,51 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     context.navigate(target(revision, tab));
   };
-  const currentBadge = element(
-    "span",
-    { className: "badge" },
-    currentRevisionId ? `Current version · ${shortId(currentRevisionId)}` : "No current version",
+  const headerActions = element(
+    "div",
+    { className: "agent-toolbar-actions" },
+    selected !== "draft"
+      ? button("Create new version", () => change("draft", "configuration"), {
+          className: "primary",
+        })
+      : null,
   );
   const header = element(
     "div",
     { className: "agent-toolbar" },
     link("← Agents", "agents", context),
+    headerActions,
+  );
+  const currentVersionValue = element("strong");
+  const currentVersionNote = element("p", { className: "muted" });
+  const latestDeploymentValue = element("strong", {}, "Loading…");
+  const latestDeploymentNote = element("p", { className: "muted" }, "Reading deployment history.");
+  const currentSummary = element(
+    "section",
+    { className: "agent-current-summary", "aria-label": "Agent state at a glance" },
     element(
       "div",
-      { className: "agent-toolbar-actions" },
-      currentBadge,
-      selected !== "draft"
-        ? button("Create new version", () => change("draft", "configuration"), {
-            className: "primary",
-          })
-        : null,
+      {},
+      element("span", { className: "eyebrow" }, "Current version"),
+      currentVersionValue,
+      currentVersionNote,
+    ),
+    element(
+      "div",
+      {},
+      element("span", { className: "eyebrow" }, "Latest visible deployment"),
+      latestDeploymentValue,
+      latestDeploymentNote,
+    ),
+    element(
+      "div",
+      {},
+      element("span", { className: "eyebrow" }, "Live serving"),
+      element("strong", {}, "Not verified"),
+      element("p", { className: "muted" }, "Serving version and model access are unknown."),
     ),
   );
-  const currentSummary = element("section", { className: "agent-current-summary" });
+  const statusLine = element("p", { className: "agent-status-line", hidden: true });
   function renderCurrentVersion() {
     const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
     const version = current
@@ -492,24 +517,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       : currentRevisionId
         ? shortId(currentRevisionId)
         : "None";
-    currentBadge.textContent = currentRevisionId
-      ? `Current version · ${version}`
-      : "No current version";
-    currentSummary.replaceChildren(
-      element(
-        "div",
-        {},
-        element("span", { className: "eyebrow" }, "Current version"),
-        element("strong", {}, version),
-      ),
-      element(
-        "p",
-        { className: "muted" },
-        currentRevisionId
-          ? "Selected for service. This page does not verify live serving or model access."
-          : "No version is currently selected for service.",
-      ),
-    );
+    currentVersionValue.textContent = version;
+    currentVersionNote.textContent = currentRevisionId
+      ? "Selected for service · live serving unverified"
+      : "No version is currently selected for service.";
   }
   renderCurrentVersion();
   const identity = element("p", { className: "resource-id" }, agent.id);
@@ -519,7 +530,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const deletion = createAgentDeletion(context, path, agent, showDeleting);
   function showDeleting() {
     deleting = true;
-    currentBadge.textContent = "Deleting";
+    headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
     view.replaceChildren(header, identity, deletion);
   }
   if (deleting) {
@@ -590,6 +601,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     header,
     identity,
     currentSummary,
+    statusLine,
     deploymentStatus,
     renderNativeAdminAccess(context, path),
     versionLayout,
@@ -601,6 +613,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let viewedSnapshot = null;
   let detailLoadFinished = false;
   let latestRevisionResult = null;
+  let latestDeploymentStatus = null;
+  let latestDeploymentError = false;
   const revisionsPromise = request(`${path}/revisions`);
 
   function versionNotice() {
@@ -794,6 +808,46 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
 
+  function renderLatestDeployment() {
+    const latest = visibleRevisions[0];
+    if (!latest) {
+      latestDeploymentValue.textContent =
+        latestRevisionResult?.status === "rejected"
+          ? "Unavailable"
+          : latestRevisionResult
+            ? "None"
+            : "Loading…";
+      latestDeploymentNote.textContent =
+        latestRevisionResult?.status === "rejected"
+          ? "Version history could not be read."
+          : latestRevisionResult
+            ? "No readable deployments."
+            : "Reading deployment history.";
+      statusLine.hidden = true;
+      return;
+    }
+    const label = {
+      queued: "Queued",
+      running: "In progress",
+      succeeded: "Succeeded",
+      failed: "Failed",
+    }[latestDeploymentStatus];
+    latestDeploymentValue.textContent = `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`;
+    latestDeploymentNote.textContent = latestDeploymentStatus
+      ? `Recorded status: ${latestDeploymentStatus}`
+      : latestDeploymentError
+        ? "Recorded deployment status could not be read."
+        : "Reading recorded deployment status.";
+    statusLine.hidden = !latestDeploymentStatus;
+    if (latestDeploymentStatus) {
+      const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
+      const selection = currentRevisionId
+        ? `${current ? `v${current.revision}` : shortId(currentRevisionId)} is selected.`
+        : "No version is selected.";
+      statusLine.textContent = `v${latest.revision} deployment is recorded as ${latestDeploymentStatus}. ${selection} Live serving is unverified.`;
+    }
+  }
+
   function renderOverview(revisionResult, snapshot) {
     latestRevisionResult = revisionResult;
     const revisions =
@@ -809,9 +863,23 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
+      latestDeploymentStatus = null;
+      latestDeploymentError = false;
       const nextPanel = mostRecent
-        ? createDeploymentStatusPanel(context, path, mostRecent, (freshAgent, freshRevisions) =>
-            updateCurrentAgent(freshAgent, freshRevisions, snapshot),
+        ? createDeploymentStatusPanel(
+            context,
+            path,
+            mostRecent,
+            (freshAgent, freshRevisions) =>
+              updateCurrentAgent(freshAgent, freshRevisions, snapshot),
+            (status, unavailable) => {
+              if (activityRevisionId !== mostRecent.id) {
+                return;
+              }
+              latestDeploymentStatus = status;
+              latestDeploymentError = unavailable;
+              renderLatestDeployment();
+            },
           )
         : element(
             "section",
@@ -829,6 +897,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       activityPanel = nextPanel;
       activityRevisionId = mostRecent?.id ?? null;
     }
+    renderLatestDeployment();
     return revisions;
   }
 
