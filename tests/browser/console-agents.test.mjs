@@ -124,6 +124,22 @@ function nonAuthWriteRequests(requests) {
   );
 }
 
+function secretOptionLabel(secret) {
+  return `${secret.name} · ${secret.id}`;
+}
+
+async function selectSecret(scope, label, secret, options = {}) {
+  const field = scope.getByLabel(label, { exact: true });
+  await field.fill(options.query ?? secret.name);
+  await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
+}
+
+async function openCreateSecretDialog(scope, label, options = {}) {
+  const field = scope.getByLabel(label, { exact: true });
+  await field.fill(options.query ?? "Create a new Secret");
+  await scope.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+}
+
 async function createModelCredentialSecret(page, secretValue) {
   const picker = page.locator("#provider-credential-secret");
   if ((await picker.count()) === 0 || !(await picker.isVisible())) {
@@ -138,9 +154,10 @@ async function createModelCredentialSecret(page, secretValue) {
     }
     return response.request().postDataJSON()?.value === secretValue;
   });
-  await picker.selectOption("__openclaw_create_secret__");
+  await picker.fill("Create a new Secret");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
-  await dialog.getByLabel("Secret value", { exact: true }).fill(secretValue);
+  await dialog.getByLabel("Value", { exact: true }).fill(secretValue);
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   return (await (await created).json()).data;
@@ -509,7 +526,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   ]);
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();
-  assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "SELECT");
+  assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "INPUT");
   assert.equal(await apiKeySecret.evaluate((node) => node.required), true);
   assert.equal(await page.locator("#plugin-discovery-token").isVisible(), false);
   assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
@@ -567,15 +584,13 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     )
     .waitFor();
   assert.equal(await createChannelDialog.getByRole("link").count(), 0);
-  await createChannelDialog.getByLabel("Slack app token").selectOption(existingSlackAppSecret.id);
+  await selectSecret(createChannelDialog, "Slack app token", existingSlackAppSecret);
   await createChannelDialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   // Separate applications must retain grants for every final selected Secret.
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
-  await createChannelDialog
-    .getByLabel("Slack bot token")
-    .selectOption({ label: "Create new Secret..." });
+  await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   const createSecretDialog = page.getByRole("dialog", {
     name: "Create Slack bot token Secret",
   });
@@ -585,16 +600,18 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(await createSecretDialog.getByLabel("Binding key").inputValue(), "SLACK_BOT_TOKEN");
   assert.equal(await createSecretDialog.getByLabel("Binding key").getAttribute("readonly"), "");
   assert.equal(
-    await createSecretDialog.getByLabel("Secret value").getAttribute("type"),
+    await createSecretDialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Console-created Agent Slack bot token",
+  );
+  assert.equal(
+    await createSecretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
     "password",
   );
   await createSecretDialog.getByRole("button", { name: "Cancel" }).click();
-  await createChannelDialog
-    .getByLabel("Slack bot token")
-    .selectOption({ label: "Create new Secret..." });
+  await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   await page
     .getByRole("dialog", { name: "Create Slack bot token Secret" })
-    .getByLabel("Secret value")
+    .getByLabel("Value", { exact: true })
     .fill(createdSlackBotSecretValue);
   const botSecretResponse = page.waitForResponse((response) => {
     if (
@@ -615,9 +632,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
   // Replacing an earlier selection must not grant the superseded Secret to the Agent.
-  await createChannelDialog
-    .getByLabel("Slack app token")
-    .selectOption(replacementSlackAppSecret.id);
+  await selectSecret(createChannelDialog, "Slack app token", replacementSlackAppSecret);
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   const stagedSecretBindings = {
     SLACK_APP_TOKEN: {
@@ -779,8 +794,8 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   });
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   const savedSecretInput = page.getByLabel("API key Secret");
-  assert.equal(await savedSecretInput.evaluate((node) => node.tagName), "SELECT");
-  assert.equal(await savedSecretInput.inputValue(), secret.id);
+  assert.equal(await savedSecretInput.evaluate((node) => node.tagName), "INPUT");
+  assert.ok((await savedSecretInput.inputValue()).endsWith(secret.id));
   const deniedBinding = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${created.data.id}` &&
@@ -1657,7 +1672,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await page.getByRole("button", { name: "Start a new draft" }).click();
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText(/No approved repositories are available/).waitFor();
-  await page.getByLabel("API key Secret", { exact: true }).selectOption(modelSecret.id);
+  await selectSecret(page, "API key Secret", modelSecret);
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
     await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -1887,14 +1902,14 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   await channelDialog
     .getByText("Choose existing Slack token Secrets or create them here before creating the Agent.")
     .waitFor();
-  await channelDialog.getByLabel("Slack app token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack app token");
   const appSecretDialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
-  await appSecretDialog.getByLabel("Secret value").fill("slack-app-secret");
+  await appSecretDialog.getByLabel("Value", { exact: true }).fill("slack-app-secret");
   await appSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await appSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Slack bot token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack bot token");
   const botSecretDialog = page.getByRole("dialog", { name: "Create Slack bot token Secret" });
-  await botSecretDialog.getByLabel("Secret value").fill("slack-bot-secret");
+  await botSecretDialog.getByLabel("Value", { exact: true }).fill("slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
   await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
@@ -2301,14 +2316,14 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
   await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
-  await channelDialog.getByLabel("Slack app token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack app token");
   const appSecretDialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
-  await appSecretDialog.getByLabel("Secret value").fill("retry-slack-app-secret");
+  await appSecretDialog.getByLabel("Value", { exact: true }).fill("retry-slack-app-secret");
   await appSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await appSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Slack bot token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack bot token");
   const botSecretDialog = page.getByRole("dialog", { name: "Create Slack bot token Secret" });
-  await botSecretDialog.getByLabel("Secret value").fill("retry-slack-bot-secret");
+  await botSecretDialog.getByLabel("Value", { exact: true }).fill("retry-slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
   await channelDialog.getByLabel("Slack channel IDs").fill("CRETRY123");
@@ -2665,15 +2680,14 @@ test("Agent creation reports unavailable Secret storage before creating Configur
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Unavailable Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  const picker = page.locator("#provider-credential-secret");
   const failed = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
       response.request().method() === "POST",
   );
-  await picker.selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(page, "API key Secret");
   const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
-  await dialog.getByLabel("Secret value", { exact: true }).fill("unused-no-driver-key");
+  await dialog.getByLabel("Value", { exact: true }).fill("unused-no-driver-key");
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await failed).status(), 503);
   await dialog
@@ -2708,9 +2722,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page
-    .getByLabel("Service account token Secret", { exact: true })
-    .selectOption(discardedPatSecret.id);
+  await selectSecret(page, "Service account token Secret", discardedPatSecret);
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("discarded-pat-model");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
@@ -2745,7 +2757,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
-    selectedSecret.id,
+    secretOptionLabel(selectedSecret),
   );
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
@@ -2791,7 +2803,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
-    selectedSecret.id,
+    secretOptionLabel(selectedSecret),
   );
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).isDisabled(),
@@ -2966,9 +2978,9 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     await page.getByLabel("Agent name").fill(`Uncertain ${collection} Agent`);
     if (collection === "secrets") {
       await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-      await page.locator("#provider-credential-secret").selectOption("__openclaw_create_secret__");
+      await openCreateSecretDialog(page, "API key Secret");
       const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
-      await dialog.getByLabel("Secret value", { exact: true }).fill("uncertain-artifact-key");
+      await dialog.getByLabel("Value", { exact: true }).fill("uncertain-artifact-key");
       await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
       await dialog
         .getByRole("alert")
@@ -2984,7 +2996,7 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     const selectedSecret = await enterManualModel(page, "uncertain-artifact-key", "gpt-4.1");
     assert.equal(
       await page.getByLabel("API key Secret", { exact: true }).inputValue(),
-      selectedSecret.id,
+      secretOptionLabel(selectedSecret),
     );
     await page.getByRole("button", { name: "Create Agent" }).click();
     await page
@@ -3518,8 +3530,7 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Harness Picker Agent" }).waitFor();
   requests.length = 0;
-  const apiKeySecret = page.getByLabel("API key Secret");
-  await apiKeySecret.selectOption(replacementSecret.id);
+  await selectSecret(page, "API key Secret", replacementSecret);
   await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   const saveResponse = page.waitForResponse(
     (response) =>
@@ -3531,7 +3542,7 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   await page.getByLabel("API key Secret").waitFor({ state: "visible" });
   assert.equal(
     await page.getByLabel("API key Secret").evaluate((node) => node.value),
-    replacementSecret.id,
+    secretOptionLabel(replacementSecret),
   );
 
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -3547,8 +3558,105 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   await page.getByLabel("Authentication source").selectOption("api_key");
   assert.equal(
     await page.getByLabel("API key Secret").evaluate((node) => node.value),
-    replacementSecret.id,
+    secretOptionLabel(replacementSecret),
   );
+});
+
+test("Agent credential Secret picker searches, validates, and preserves duplicate create input", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, { secretDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Credential Secret picker UX", { ready: true });
+  const originalSecret = await fixture.createSecret(
+    namespace.id,
+    "Original picker Secret",
+    "hidden-original-picker",
+  );
+  const keyboardSecret = await fixture.createSecret(
+    namespace.id,
+    "Keyboard replacement Secret",
+    "hidden-keyboard-picker",
+  );
+  const duplicateNameSecret = await fixture.createSecret(
+    namespace.id,
+    "Duplicate picker Secret",
+    "hidden-duplicate-picker",
+  );
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Combobox Agent",
+    nativeValues("credential-picker-ux"),
+    { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Combobox Agent" }).waitFor();
+  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+  await apiKeySecret.fill("keyboard");
+  await apiKeySecret.press("ArrowDown");
+  await apiKeySecret.press("Enter");
+  await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(keyboardSecret));
+  await apiKeySecret.fill("does-not-exist");
+  await page.getByText("No matching Secrets.", { exact: true }).waitFor();
+  await apiKeySecret.press("Escape");
+  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(keyboardSecret));
+
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  assert.equal(await serviceAccountSecret.evaluate((input) => input.validity.customError), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  await serviceAccountSecret.fill("no matching create target");
+  await page.getByText("No matching Secrets.", { exact: true }).waitFor();
+  await serviceAccountSecret.press("ArrowDown");
+  await serviceAccountSecret.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  await dialog.waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Combobox Agent harness authentication",
+  );
+  assert.equal(await dialog.getByLabel("Value", { exact: true }).getAttribute("type"), "password");
+  await dialog.getByLabel("Name", { exact: true }).fill(duplicateNameSecret.name);
+  await dialog.getByLabel("Value", { exact: true }).fill("synthetic-duplicate-value");
+  const duplicate = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
+      response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  assert.equal((await duplicate).status(), 409);
+  await dialog.getByRole("alert").filter({ hasText: "already exists in this Namespace" }).waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    duplicateNameSecret.name,
+  );
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+  assert.equal(secretDriver.valueFor(duplicateNameSecret), "hidden-duplicate-picker");
+
+  const distinctName = "Combobox Agent corrected service account token";
+  await dialog.getByLabel("Name", { exact: true }).fill(distinctName);
+  const created = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
+      response.request().method() === "POST" &&
+      response.request().postDataJSON()?.name === distinctName,
+  );
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const createdSecret = (await (await created).json()).data;
+  await dialog.waitFor({ state: "hidden" });
+  assert.notEqual(createdSecret.id, duplicateNameSecret.id);
+  assert.equal(createdSecret.name, distinctName);
+  assert.equal(secretDriver.valueFor(createdSecret), "synthetic-duplicate-value");
+  assert.equal(await serviceAccountSecret.inputValue(), secretOptionLabel(createdSecret));
 });
 
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
@@ -3594,7 +3702,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Harness Grant Failure Agent" }).waitFor();
   requests.length = 0;
-  await page.getByLabel("API key Secret").selectOption(replacementSecret.id);
+  await selectSecret(page, "API key Secret", replacementSecret);
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page
     .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
@@ -4706,9 +4814,9 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
   assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
   const channelIds = dialog.getByLabel("Slack channel IDs");
   await channelIds.fill("CUNBOUND123, CBOUND456");
-  await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
+  await selectSecret(dialog, "Slack app token", slackAppSecret);
   await dialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
-  await dialog.getByLabel("Slack bot token").selectOption(slackBotSecret.id);
+  await selectSecret(dialog, "Slack bot token", slackBotSecret);
   await dialog.getByText("Secret binding staged. Save changes to apply it.").nth(1).waitFor();
   assert.equal(await channelIds.inputValue(), "CUNBOUND123, CBOUND456");
   assert.equal(
@@ -4722,8 +4830,14 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
   await page.goForward();
   await dialog.waitFor();
   assert.equal(await channelIds.inputValue(), "CUNBOUND123, CBOUND456");
-  assert.equal(await dialog.getByLabel("Slack app token").inputValue(), slackAppSecret.id);
-  assert.equal(await dialog.getByLabel("Slack bot token").inputValue(), slackBotSecret.id);
+  assert.equal(
+    await dialog.getByLabel("Slack app token").inputValue(),
+    secretOptionLabel(slackAppSecret),
+  );
+  assert.equal(
+    await dialog.getByLabel("Slack bot token").inputValue(),
+    secretOptionLabel(slackBotSecret),
+  );
   const beforeSave = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -4776,8 +4890,8 @@ test("Channel drawer grants only the final selected Slack Secret", async (t) => 
   requests.length = 0;
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack app token").selectOption(firstSecret.id);
-  await dialog.getByLabel("Slack app token").selectOption(finalSecret.id);
+  await selectSecret(dialog, "Slack app token", firstSecret);
+  await selectSecret(dialog, "Slack app token", finalSecret);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
 
@@ -4834,8 +4948,8 @@ test("Channel drawer does not grant when Slack Secret selection returns to origi
   requests.length = 0;
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack app token").selectOption(temporarySecret.id);
-  await dialog.getByLabel("Slack app token").selectOption(originalSecret.id);
+  await selectSecret(dialog, "Slack app token", temporarySecret);
+  await selectSecret(dialog, "Slack app token", originalSecret);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
 
@@ -4897,7 +5011,7 @@ test("Channel drawer does not grant Slack Secret access when Configuration save 
   const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
   assert.equal(await allowEveryone.isChecked(), true);
   assert.equal(await allowedUsers.isDisabled(), true);
-  await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
+  await selectSecret(dialog, "Slack app token", slackAppSecret);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await dialog.getByText(/Access denied|permission/i).waitFor();
   assert.equal(await allowEveryone.isChecked(), true);
@@ -5018,7 +5132,7 @@ test("Channel drawer reports partial save when post-PATCH Secret grant is reject
   requests.length = 0;
   await page.getByRole("button", { name: "Edit Slack" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
+  await selectSecret(dialog, "Slack app token", slackAppSecret);
   await page.getByRole("button", { name: "Save configuration" }).click();
   await page
     .getByText(
@@ -5045,8 +5159,8 @@ test("Channel drawer reports partial save when post-PATCH Secret grant is reject
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   const appToken = page.getByLabel("Slack app token");
   await appToken.waitFor();
-  assert.equal(await appToken.evaluate((node) => node.tagName), "SELECT");
-  assert.equal(await appToken.evaluate((node) => node.value), slackAppSecret.id);
+  assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
+  assert.equal(await appToken.evaluate((node) => node.value), secretOptionLabel(slackAppSecret));
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 
@@ -5089,8 +5203,8 @@ test("Agent credentials choose existing Slack Secrets without reading token valu
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Runtime Slack Picker Agent" }).waitFor();
   requests.length = 0;
-  await page.getByLabel("Slack app token").selectOption(slackAppSecret.id);
-  await page.getByLabel("Slack bot token").selectOption(slackBotSecret.id);
+  await selectSecret(page, "Slack app token", slackAppSecret);
+  await selectSecret(page, "Slack bot token", slackBotSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
     .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
@@ -5174,8 +5288,8 @@ test("Agent credentials finish Slack Secret grants after navigating away from sa
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Runtime Slack Navigation Agent" }).waitFor();
   requests.length = 0;
-  await page.getByLabel("Slack app token").selectOption(slackAppSecret.id);
-  await page.getByLabel("Slack bot token").selectOption(slackBotSecret.id);
+  await selectSecret(page, "Slack app token", slackAppSecret);
+  await selectSecret(page, "Slack bot token", slackBotSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await patchPersisted;
   await page.getByRole("button", { name: "Channels", exact: true }).click();
@@ -5281,8 +5395,8 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Runtime Slack Retained Grant Agent" }).waitFor();
   requests.length = 0;
-  await page.getByLabel("Slack app token").selectOption(firstAppSecret.id);
-  await page.getByLabel("Slack bot token").selectOption(botSecret.id);
+  await selectSecret(page, "Slack app token", firstAppSecret);
+  await selectSecret(page, "Slack bot token", botSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
@@ -5298,14 +5412,14 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
 
   denyGrant = false;
   rejectNextConfigurationPatch = true;
-  await page.getByLabel("Slack app token").selectOption(secondAppSecret.id);
+  await selectSecret(page, "Slack app token", secondAppSecret);
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
 
   requests.length = 0;
-  await page.getByLabel("Slack app token").selectOption(secondAppSecret.id);
+  await selectSecret(page, "Slack app token", secondAppSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
     .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
@@ -5387,7 +5501,7 @@ for (const grantStatus of [403, 429]) {
     await login(page, fixture, url.pathname + url.search);
     await page.getByRole("heading", { name: "Runtime Slack Grant Failure Agent" }).waitFor();
     requests.length = 0;
-    await page.getByLabel("Slack app token").selectOption(replacementAppSecret.id);
+    await selectSecret(page, "Slack app token", replacementAppSecret);
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
     await page
       .getByText(
@@ -6351,7 +6465,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Service account token Secret").waitFor();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
-  assert.equal(await page.getByLabel("Service account token Secret").inputValue(), secret.id);
+  assert.ok(
+    (await page.getByLabel("Service account token Secret").inputValue()).endsWith(secret.id),
+  );
   const patched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.data.id}`) &&
@@ -6385,10 +6501,10 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByRole("button", { name: "Use Preset" }).click();
   const presetKey = page.locator("#provider-credential-secret");
   assert.equal(await page.getByLabel("Model ID", { exact: true }).inputValue(), "gpt-4.1");
-  await presetKey.selectOption(presetKeySecrets[0].id);
+  await selectSecret(page, "API key Secret", presetKeySecrets[0]);
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await presetKey.inputValue(), "");
-  await presetKey.selectOption(presetKeySecrets[1].id);
+  await selectSecret(page, "API key Secret", presetKeySecrets[1]);
   await openAdvancedSettings(page);
   const native = page.getByLabel("Configuration JSON");
   const changedProvider = JSON.parse(await native.inputValue());
@@ -6398,7 +6514,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await presetKey.inputValue(), "");
   const mode = page.getByLabel("Execution mode");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  await presetKey.selectOption(presetKeySecrets[2].id);
+  await selectSecret(page, "API key Secret", presetKeySecrets[2]);
   const anthropicConfiguration = JSON.parse(await native.inputValue());
   anthropicConfiguration.agents.defaults.model = "anthropic/claude-account-model";
   await native.fill(JSON.stringify(anthropicConfiguration));
@@ -6970,8 +7086,8 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   assert.equal(await credential.evaluate((input) => input.validity.valueMissing), true);
   assert.equal(nonAuthWriteRequests(requests).length, 0);
 
-  await credential.selectOption(modelSecret.id);
-  assert.equal(await credential.inputValue(), modelSecret.id);
+  await selectSecret(page, "Service account token Secret", modelSecret);
+  assert.equal(await credential.inputValue(), secretOptionLabel(modelSecret));
   assert.deepEqual(
     await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
     { local: {}, session: {} },
@@ -6979,9 +7095,7 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page
-    .getByLabel("Service account token Secret", { exact: true })
-    .selectOption(modelSecret.id);
+  await selectSecret(page, "Service account token Secret", modelSecret);
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-6-astra");
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -7018,7 +7132,7 @@ test("Create Agent model credential picker creates one Secret and reuses it afte
   assert.ok(modelSecret);
   assert.equal(
     await page.getByLabel("API key Secret", { exact: true }).inputValue(),
-    modelSecret.id,
+    secretOptionLabel(modelSecret),
   );
   assert.equal(
     JSON.stringify(
@@ -7191,9 +7305,11 @@ for (const method of ["api_key", "codex_pat"]) {
       `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
     );
     await page.getByLabel("Authentication source").selectOption(method);
-    await page
-      .getByLabel(method === "api_key" ? "API key Secret" : "Service account token Secret")
-      .selectOption(replacement.id);
+    await selectSecret(
+      page,
+      method === "api_key" ? "API key Secret" : "Service account token Secret",
+      replacement,
+    );
     await page.getByRole("button", { name: "Save authentication source" }).click();
     // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
     await page.waitForFunction(
@@ -7272,7 +7388,7 @@ test("Credentials retries denied and interrupted grants without repeating the au
     effect: "deny",
   });
   await page.getByLabel("Authentication source").selectOption("codex_pat");
-  await page.getByLabel("Service account token Secret").selectOption(replacement.id);
+  await selectSecret(page, "Service account token Secret", replacement);
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page
     .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
@@ -7349,7 +7465,7 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
     await route.abort("failed");
   });
   await page.getByLabel("Authentication source").selectOption("api_key");
-  await page.getByLabel("API key Secret").selectOption(replacement.id);
+  await selectSecret(page, "API key Secret", replacement);
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page
     .locator("form.agent-card")
@@ -7371,7 +7487,7 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
   await page.getByLabel("API key Secret").waitFor();
   assert.equal(
     await page.getByLabel("API key Secret").evaluate((node) => node.value),
-    replacement.id,
+    secretOptionLabel(replacement),
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page.waitForFunction(
@@ -7669,7 +7785,7 @@ test("authentication drafts retain Secret references and their original save bas
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
   await login(page, fixture, url.pathname + url.search);
   await page.getByLabel("Authentication source").selectOption("api_key");
-  await page.getByLabel("API key Secret", { exact: true }).selectOption(secret.id);
+  await selectSecret(page, "API key Secret", secret);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   // A saved auth change must not rebase the retained local choice when the page is recreated.
@@ -7680,7 +7796,7 @@ test("authentication drafts retain Secret references and their original save bas
   await page.goBack();
   assert.equal(
     await page.getByLabel("API key Secret", { exact: true }).evaluate((node) => node.value),
-    secret.id,
+    secretOptionLabel(secret),
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page

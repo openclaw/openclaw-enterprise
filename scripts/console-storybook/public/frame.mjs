@@ -67,6 +67,29 @@ try {
       node.click();
     }
     if (action.value !== undefined) {
+      if (node.getAttribute("role") === "combobox") {
+        node.focus();
+        node.value = action.value === "__openclaw_create_secret__" ? "" : action.value;
+        node.dispatchEvent(new Event("input", { bubbles: true }));
+        let option;
+        while (Date.now() < deadline) {
+          const menu = document.getElementById(node.getAttribute("aria-controls"));
+          option = [...(menu?.querySelectorAll('[role="option"]') ?? [])].find((item) =>
+            action.value === "__openclaw_create_secret__"
+              ? item.textContent.includes("Create new Secret")
+              : item.textContent.includes(action.value),
+          );
+          if (option) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+        if (!option) {
+          throw new Error(`Story Secret option unavailable: ${JSON.stringify(action)}`);
+        }
+        option.click();
+        continue;
+      }
       if (node instanceof HTMLSelectElement) {
         while (
           Date.now() < deadline &&

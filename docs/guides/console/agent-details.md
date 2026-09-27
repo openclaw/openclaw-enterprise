@@ -123,18 +123,18 @@ unavailable.
 
 ### Slack editor
 
-| Control                                                   | Purpose                                                                                                        |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Enable Slack**                                          | Enables Slack in the draft when saved.                                                                         |
-| **Slack channel IDs**                                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.        |
-| **Allowed channel user IDs**                              | Comma-separated Slack user IDs allowed to mention the Agent in the selected channels.                          |
-| **Allow everyone in these channels to mention the agent** | Allows any Slack user in the selected channels to mention the Agent. Direct-message access is unchanged.       |
-| **Require a mention**                                     | Applies the mention requirement to the listed channels.                                                        |
-| **Slack app token** / **Slack bot token**                 | Select a readable Secret in this Namespace or **Create new Secret...**. The current binding is selected.       |
-| **Create new Secret...**                                  | Opens a modal with the fixed binding key and a password field for the Secret value.                            |
-| **Open Agent Credentials**                                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials. |
-| **Save configuration**                                    | Saves channel settings and selected Secret bindings to the shared draft.                                       |
-| **Cancel** / **Close**                                    | Discards the drawer's unsaved inputs.                                                                          |
+| Control                                                   | Purpose                                                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Enable Slack**                                          | Enables Slack in the draft when saved.                                                                            |
+| **Slack channel IDs**                                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.           |
+| **Allowed channel user IDs**                              | Comma-separated Slack user IDs allowed to mention the Agent in the selected channels.                             |
+| **Allow everyone in these channels to mention the agent** | Allows any Slack user in the selected channels to mention the Agent. Direct-message access is unchanged.          |
+| **Require a mention**                                     | Applies the mention requirement to the listed channels.                                                           |
+| **Slack app token** / **Slack bot token**                 | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. |
+| **Create new Secret...**                                  | Opens a modal with an editable Agent-prefixed Name, the fixed binding key, and a masked Value.                    |
+| **Open Agent Credentials**                                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials.    |
+| **Save configuration**                                    | Saves channel settings and selected Secret bindings to the shared draft.                                          |
+| **Cancel** / **Close**                                    | Discards the drawer's unsaved inputs.                                                                             |
 
 Saving preserves existing direct-message and group policies. Channel user IDs do
 not edit `allowFrom`, and **No selected channels** describes the saved channel
@@ -143,7 +143,8 @@ See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
 **Create Secret** stores the value immediately. Cancelling the channel drawer
 discards token selections but does not delete that Namespace Secret. The modal
-never reads an existing value.
+never reads an existing value. If the name already exists in this Namespace,
+correct the Name and retry; both fields remain filled and the existing Secret is unchanged.
 See the [Console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
 for binding permissions and save behavior. Apply the saved draft with
 **Deploy new revision** before expecting the running Agent to use it.

@@ -8,6 +8,11 @@ import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
+async function openCreateSecretDialog(scope, label) {
+  await scope.getByLabel(label, { exact: true }).fill("Create a new Secret");
+  await scope.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+}
+
 for (const issuesEnabled of [true, false]) {
   test(`one Dedicated Agent retains repository scope through Slack setup, credentials and deployment admission (issues ${issuesEnabled ? "on" : "off"})`, async (t) => {
     const { fixture, namespace, modelSecret, grantModelAccess } =
@@ -127,10 +132,13 @@ for (const issuesEnabled of [true, false]) {
       ["Slack app token", "xapp-synthetic-demo"],
       ["Slack bot token", "xoxb-synthetic-demo"],
     ]) {
-      await channelDialog.getByLabel(label).selectOption({ label: "Create new Secret..." });
+      await openCreateSecretDialog(channelDialog, label);
       const secretDialog = page.getByRole("dialog", { name: `Create ${label} Secret` });
-      assert.equal(await secretDialog.getByLabel("Secret value").getAttribute("type"), "password");
-      await secretDialog.getByLabel("Secret value").fill(value);
+      assert.equal(
+        await secretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
+        "password",
+      );
+      await secretDialog.getByLabel("Value", { exact: true }).fill(value);
       await secretDialog.getByRole("button", { name: "Create Secret", exact: true }).click();
       await secretDialog.waitFor({ state: "hidden" });
     }

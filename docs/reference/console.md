@@ -173,24 +173,27 @@ Channel edits preserve DM and group policies. Change DM access separately with
 **Direct-message policy** and **Allowed DM user IDs**; see
 [Slack policies](configuration/secrets.md#native-channel-configuration).
 
-Each Slack token field is a menu containing the current binding, readable
-Secrets in the same Namespace, and **Create new Secret...**. The creation modal
-prefills the fixed `SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` binding key and accepts
-the value in a password field. It creates a Namespace Secret immediately;
-cancelling the surrounding channel editor or Agent creation does not delete it.
-The browser never reads stored values. Listing and binding retain the
-[Secret IAM checks](drivers/secret.md#iam).
-An unconfirmed creation blocks another submission in that modal. Refresh and
-inspect Secret metadata before creating another Secret; the first may exist.
+Model, Harness, and Slack credential fields share a searchable Secret picker.
+Filter readable same-Namespace names or IDs; arrow keys and Enter select,
+Escape restores the binding. **Create new Secret...** remains available with
+no matches. Its editable **Name** defaults to the Agent name plus credential
+purpose; **Value** stays masked. Slack also shows the fixed
+`SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` key. Duplicate-name errors retain both
+inputs for correction without overwriting the existing Secret.
 
-Menu choices stay in the drawer until **Save configuration**. Cancel discards
-those choices. Saving patches the Configuration, then grants the Agent access to selected
-Secrets through Namespace IAM; both require caller permission. A failed grant
-leaves the Configuration saved and requires access recovery. Neither saving nor creating a Secret deploys it.
+Creation stores the Secret immediately; cancelling the surrounding editor does
+not delete it. Values are never read back. Existing
+[Secret IAM checks](drivers/secret.md#iam) apply. An uncertain creation blocks
+resubmission: refresh and inspect metadata first, because the Secret may exist.
 
-Bound Secret metadata and **Open Agent Credentials** links open in new tabs,
-preserving unsaved channel inputs. Save channel edits before changing credentials
-in another tab, then refresh the original Agent page before editing again.
+Selections remain staged until **Save configuration**; Cancel discards them.
+Saving patches Configuration, then grants Agent access through Namespace IAM.
+Both require caller permission. Failed grants leave Configuration saved and
+require access recovery. Neither creation nor saving deploys a Secret.
+
+Metadata and **Open Agent Credentials** links open new tabs, preserving edits.
+Save channel changes before editing credentials elsewhere, then refresh the
+original page.
 
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed

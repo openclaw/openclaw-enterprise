@@ -1932,7 +1932,7 @@ export const scenarios = {
     slack: true,
     actions: [click("Edit Slack")],
     description:
-      "Slack token references are menus backed by simulated same-Namespace Secret metadata. Options include readable existing Secrets and Create new Secret.",
+      "Search Slack token Secrets by name or ID, use arrow keys and Enter to select, and Escape to retain the current binding. Metadata is simulated within this Namespace.",
   },
   slackCreateSecretModal: {
     group: "Components/Channels",
@@ -1944,7 +1944,26 @@ export const scenarios = {
       { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
     ],
     description:
-      "Create new Secret opens a modal with the fixed Slack binding key and a password value field. Values are simulated and never read back.",
+      "Create new Secret opens a modal with an editable Agent-prefixed Name, a fixed Slack binding key, and a masked Secret value. Values are simulated and never read back.",
+  },
+  slackDuplicateSecret: {
+    group: "Components/Channels",
+    name: "Slack duplicate Secret name",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
+      {
+        selector: "#create-slack-secret-slack-bot-token-name",
+        value: "Slack bot token (simulated)",
+      },
+      { selector: "#create-slack-secret-slack-bot-token-value", value: "synthetic-demo-token" },
+      click("Create Secret"),
+    ],
+    description:
+      "A simulated duplicate-name rejection preserves Name and the masked value. Change the Name and create again; the existing Secret remains unchanged.",
+    gap: "Simulated UI proof only; the browser integration suite verifies real controller conflict handling.",
   },
   slackSecretStaged: {
     group: "Components/Channels",

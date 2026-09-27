@@ -133,22 +133,24 @@ and native `dm.enabled` remain unchanged. Configuration save persists the
 selection; redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` passes the
-selected Namespace, saved Secret bindings, and draft Credentials URL to the
-channel editor. `apps/controller/src/console/channels/slack.mjs:credentialReferenceField`
-loads metadata through `GET /namespaces/:namespaceId/secrets`. The controller
-authorizes collection read; `packages/occ/src/index.ts:listSecrets` filters each
-record by exact Secret read without calling the Secret Driver. Each token menu
-includes its current binding, readable same-Namespace Secrets, and a creation
-option. Selection stages a binding in the drawer; Cancel discards it.
+`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` supplies Namespace,
+bindings, and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
+It loads `GET /namespaces/:namespaceId/secrets`; collection read is required.
+`packages/occ/src/index.ts:listSecrets` filters records by exact Secret read
+without calling the Secret Driver. Shared `agents/secret-picker.mjs:createSecretReferenceField`
+filters names/IDs in a combobox. Arrows navigate, Enter selects, and Escape
+restores the binding. Typing stages nothing; selection stages a reference,
+Cancel discards it. Creation remains available.
 
-`apps/controller/src/console/channels/slack.mjs:openCreateSecretDialog` prefills
-the fixed environment key and accepts a password input. The Secret POST
-immediately stores the value and returns metadata; the drawer stages that reference. Closing it does not delete the Namespace Secret. The
+`apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
+an editable Agent-prefixed Name, password input, and optional fixed Slack key.
+POST stores the Secret immediately and stages returned metadata; cancellation
+never deletes it. Duplicate rejection retains both inputs without overwriting
+existing Secrets. Success, cancellation, and uncertain outcomes clear passwords;
+uncertain outcomes also block retries pending refresh. The
 [Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
-unknown-outcome recovery. The modal clears passwords after each attempt and
-disables submission on an uncertain result, directing the user to refresh. Metadata and Credentials links
-open in new tabs, preserving unsaved inputs. Secret values are never read back.
+recovery. Metadata and Credentials links open new tabs, preserving edits.
+Values are never read back.
 
 Saving channels first rereads the Agent and Configuration, then checks that the
 Agent still references the same Configuration generation. The PATCH sends
@@ -325,6 +327,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-26 18:38: Trace searchable Secret selection, editable names, and duplicate-name recovery. (01a0e069-9ef8-7d81-802c-82c72c1f1e5d - dc07fe34cd2b0057693777acf4db394d211da393)
 
 - 2026-09-26 00:37: Trace exact Secret metadata reads for draft and immutable revision summaries in the accompanying change. (01a0db1e-7ab2-7bf1-936b-e71c9d6f9911 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
 

@@ -727,6 +727,9 @@ export function installFixture(scenario, evidence) {
           );
         }
         if (method === "POST") {
+          if ([...secrets.values()].some((secret) => secret.name === body.name?.trim())) {
+            return response(undefined, 409, "RESOURCE_CONFLICT");
+          }
           const id = nextId("sec");
           const secret = secretMetadata(id, body.name ?? "Demo Secret (simulated)");
           secrets.set(secret.id, secret);

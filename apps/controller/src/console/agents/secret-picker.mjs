@@ -1,8 +1,6 @@
 import { element } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 
-const CREATE_SECRET_VALUE = "__openclaw_create_secret__";
-
 export function secretIdForBinding(binding) {
   return secretIdForSource(binding?.source);
 }
@@ -147,10 +145,27 @@ export function createSecretReferenceField({
   disabled = false,
   required = false,
 }) {
-  const select = element("select", {
+  const inputClassName = ["secret-typeahead-input", selectClassName].filter(Boolean).join(" ");
+  const input = element("input", {
     id,
-    ...(selectClassName ? { className: selectClassName } : {}),
+    type: "text",
+    role: "combobox",
+    autocomplete: "off",
+    autocapitalize: "off",
+    spellcheck: "false",
+    placeholder: noSecretLabel,
+    ...(inputClassName ? { className: inputClassName } : {}),
     "aria-describedby": `${id}-status`,
+    "aria-controls": `${id}-listbox`,
+    "aria-expanded": "false",
+    "aria-autocomplete": "list",
+  });
+  const listbox = element("div", {
+    id: `${id}-listbox`,
+    className: "secret-typeahead-listbox",
+    role: "listbox",
+    "aria-label": "Available Secrets",
+    hidden: "",
   });
   const status = element("p", { id: `${id}-status`, className: "hint", role: "status" });
   const metadataLink = credentialLink("#", metadataLabel);
@@ -160,6 +175,9 @@ export function createSecretReferenceField({
   let selectedSecret = null;
   let manuallyDisabled = disabled;
   let requiredWhenEnabled = required;
+  let listboxOpen = false;
+  let activeOptionIndex = -1;
+  let searchQuery = "";
 
   function isCurrent() {
     return typeof context.isCurrent !== "function" || context.isCurrent();
@@ -181,59 +199,189 @@ export function createSecretReferenceField({
     metadataLink.href = href;
   }
 
-  function setSecretOptions() {
+  function currentSecretLabel() {
+    const selectedSecretId = currentSecretId();
+    const readableSelected = secrets.find((secret) => secret.id === selectedSecretId);
+    if (selectedSecretId === null) {
+      return "";
+    }
+    return readableSelected === undefined
+      ? `Bound Secret · ${selectedSecretId}`
+      : secretOptionLabel(readableSelected);
+  }
+
+  function allSecretOptions() {
     const selectedSecretId = currentSecretId();
     const readableSelected = secrets.find((secret) => secret.id === selectedSecretId);
     const options = [];
     if (selectedSecretId === null) {
-      options.push(element("option", { value: "", selected: "" }, noSecretLabel));
+      options.push({
+        kind: "none",
+        label: noSecretLabel,
+        searchText: noSecretLabel,
+      });
     } else if (readableSelected === undefined) {
-      options.push(
-        element(
-          "option",
-          { value: selectedSecretId, selected: "" },
-          `Bound Secret · ${selectedSecretId}`,
-        ),
-      );
+      options.push({
+        kind: "current",
+        label: `Bound Secret · ${selectedSecretId}`,
+        searchText: selectedSecretId,
+      });
     }
     for (const secret of secrets) {
-      options.push(
-        element(
-          "option",
-          { value: secret.id, ...(secret.id === selectedSecretId ? { selected: "" } : {}) },
-          secretOptionLabel(secret),
-        ),
-      );
+      options.push({
+        kind: "secret",
+        label: secretOptionLabel(secret),
+        searchText: `${secret.name} ${secret.id}`,
+        secret,
+      });
     }
-    options.push(element("option", { value: CREATE_SECRET_VALUE }, "Create new Secret..."));
-    select.replaceChildren(...options);
-    select.value = selectedSecretId ?? "";
+    options.push({
+      kind: "create",
+      label: "Create new Secret...",
+      searchText: "create new secret",
+    });
+    return options;
+  }
+
+  function filteredSecretOptions() {
+    const query = searchQuery.trim().toLowerCase();
+    return allSecretOptions().filter((option) => {
+      return (
+        option.kind === "create" || query === "" || option.searchText.toLowerCase().includes(query)
+      );
+    });
+  }
+
+  function setActiveOption(index) {
+    activeOptionIndex = index;
+    for (const [optionIndex, option] of [
+      ...listbox.querySelectorAll("[role='option']"),
+    ].entries()) {
+      const active = optionIndex === activeOptionIndex;
+      option.setAttribute("aria-selected", active ? "true" : "false");
+      if (active) {
+        input.setAttribute("aria-activedescendant", option.id);
+        option.scrollIntoView?.({ block: "nearest" });
+      }
+    }
+    if (activeOptionIndex < 0) {
+      input.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  function closeListbox({ restoreSelection = true } = {}) {
+    listboxOpen = false;
+    listbox.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    setActiveOption(-1);
+    if (restoreSelection) {
+      searchQuery = "";
+      input.value = currentSecretLabel();
+    }
+  }
+
+  function renderListbox() {
+    const options = filteredSecretOptions();
+    const selectedSecretId = currentSecretId();
+    const hasReadableMatches = options.some((option) =>
+      ["none", "current", "secret"].includes(option.kind),
+    );
+    const nodes = [
+      ...(hasReadableMatches || input.value.trim() === ""
+        ? []
+        : [element("div", { className: "secret-typeahead-empty" }, "No matching Secrets.")]),
+      ...options.map((option, index) => {
+        const selected =
+          (option.kind === "secret" && option.secret.id === selectedSecretId) ||
+          (option.kind === "current" && selectedSecretId !== null);
+        const node = element(
+          "div",
+          {
+            id: `${id}-option-${index}`,
+            role: "option",
+            className: option.kind === "create" ? "secret-typeahead-create" : "",
+            "aria-selected": selected ? "true" : "false",
+          },
+          option.label,
+        );
+        node.addEventListener("pointerdown", (event) => event.preventDefault());
+        node.addEventListener("click", () => selectOption(option));
+        return node;
+      }),
+    ];
+    listbox.replaceChildren(...nodes);
+    if (activeOptionIndex >= options.length) {
+      activeOptionIndex = options.length - 1;
+    }
+    setActiveOption(activeOptionIndex);
+  }
+
+  function openListbox() {
+    if (manuallyDisabled) {
+      return;
+    }
+    listboxOpen = true;
+    listbox.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    renderListbox();
+  }
+
+  function setSecretOptions({ preserveSearch = false } = {}) {
+    if (!preserveSearch || !listboxOpen) {
+      searchQuery = "";
+      input.value = currentSecretLabel();
+    }
+    if (listboxOpen) {
+      renderListbox();
+    }
     updateMetadataLink();
   }
 
   function updateValidity() {
-    select.required = requiredWhenEnabled;
-    select.disabled = manuallyDisabled;
-    select.setCustomValidity(
+    input.required = requiredWhenEnabled;
+    input.disabled = manuallyDisabled;
+    input.setCustomValidity(
       requiredWhenEnabled && !manuallyDisabled && currentSecretId() === null
         ? `${label} is required.`
         : "",
     );
+    if (manuallyDisabled) {
+      closeListbox({ restoreSelection: true });
+    }
   }
 
   async function bindSecret(secret) {
     if (secret.id === currentSecretId()) {
       return;
     }
-    select.disabled = true;
+    input.disabled = true;
+    closeListbox({ restoreSelection: false });
     status.className = "hint";
     selectedSecret = secret;
-    await onSecretSelected(secret);
-    if (!secrets.some((item) => item.id === secret.id)) {
-      secrets.push(secret);
+    try {
+      await onSecretSelected(secret);
+      if (!secrets.some((item) => item.id === secret.id)) {
+        secrets.push(secret);
+      }
+      setSecretOptions();
+      status.textContent = "Secret binding staged. Save changes to apply it.";
+    } finally {
+      updateValidity();
     }
-    setSecretOptions();
-    status.textContent = "Secret binding staged. Save changes to apply it.";
+  }
+
+  function selectOption(option) {
+    if (option.kind === "create") {
+      closeListbox({ restoreSelection: true });
+      openCreateSecretDialog();
+      return;
+    }
+    if (option.kind === "secret") {
+      closeListbox({ restoreSelection: true });
+      void bindSecret(option.secret);
+      return;
+    }
+    closeListbox({ restoreSelection: true });
     updateValidity();
   }
 
@@ -241,6 +389,13 @@ export function createSecretReferenceField({
     const dialog = element("dialog", {
       className: "channel-dialog credential-secret-dialog",
       "aria-label": createDialogTitle ?? `Create ${label} Secret`,
+    });
+    const name = element("input", {
+      id: `create-${id}-name`,
+      type: "text",
+      required: "",
+      autocomplete: "off",
+      value: createSecretName(),
     });
     const value = element("input", {
       id: `create-${id}-value`,
@@ -281,7 +436,14 @@ export function createSecretReferenceField({
       element(
         "div",
         { className: "form-field" },
-        element("label", { for: value.id }, "Secret value"),
+        element("label", { for: name.id }, "Name"),
+        name,
+        element("p", { className: "hint" }, "Unique within this Namespace."),
+      ),
+      element(
+        "div",
+        { className: "form-field" },
+        element("label", { for: value.id }, "Value"),
         value,
         element(
           "p",
@@ -299,25 +461,33 @@ export function createSecretReferenceField({
       value.value = "";
       dialog.close();
       dialog.remove();
-      select.value = currentSecretId() ?? "";
+      input.value = currentSecretLabel();
     };
     form.querySelector(".channel-drawer-head button").addEventListener("click", close);
     cancel.addEventListener("click", close);
+    name.addEventListener("input", () => name.setCustomValidity(""));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (creating || outcomeUnknown || !form.reportValidity()) {
         return;
       }
+      const secretName = name.value.trim();
+      if (!secretName) {
+        name.setCustomValidity("Name is required.");
+        form.reportValidity();
+        return;
+      }
       creating = true;
       submit.disabled = true;
       cancel.disabled = true;
+      name.disabled = true;
       value.disabled = true;
       feedback.textContent = "";
       let createdSecret;
       try {
         createdSecret = await context.request(`${namespacePath(context.namespaceId)}/secrets`, {
           method: "POST",
-          body: { name: createSecretName(), value: value.value },
+          body: { name: secretName, value: value.value },
         });
         await bindSecret(createdSecret);
         if (currentSecretId() === createdSecret.id) {
@@ -326,6 +496,7 @@ export function createSecretReferenceField({
         } else {
           submit.disabled = false;
           cancel.disabled = false;
+          name.disabled = false;
           value.disabled = false;
         }
       } catch (error) {
@@ -333,15 +504,27 @@ export function createSecretReferenceField({
           createdSecret !== undefined ||
           error.status === undefined ||
           ![400, 403, 404, 409, 429].includes(error.status);
-        feedback.textContent = outcomeUnknown
-          ? "Secret creation outcome could not be confirmed. Refresh before trying again."
-          : credentialMutationError(error);
+        if (outcomeUnknown) {
+          feedback.textContent =
+            "Secret creation outcome could not be confirmed. Refresh before trying again.";
+        } else if (error.status === 409) {
+          feedback.textContent =
+            "A Secret with this name already exists in this Namespace. Choose a different name.";
+        } else {
+          feedback.textContent = credentialMutationError(error);
+        }
         submit.disabled = outcomeUnknown;
         cancel.disabled = false;
+        name.disabled = outcomeUnknown;
         value.disabled = outcomeUnknown;
+        if (error.status === 409) {
+          name.focus();
+        }
       } finally {
         creating = false;
-        value.value = "";
+        if (outcomeUnknown || createdSecret !== undefined) {
+          value.value = "";
+        }
       }
     });
     dialog.append(form);
@@ -354,7 +537,7 @@ export function createSecretReferenceField({
     });
     dialog.addEventListener("close", () => dialog.remove(), { once: true });
     dialog.showModal();
-    value.focus();
+    name.focus();
   }
 
   if (!context.namespaceId || typeof context.request !== "function") {
@@ -384,7 +567,7 @@ export function createSecretReferenceField({
         );
         loaded = true;
         loading = false;
-        setSecretOptions();
+        setSecretOptions({ preserveSearch: true });
         status.className = "hint";
         status.textContent = secrets.length
           ? "Choose an existing Secret or create a new one."
@@ -407,24 +590,57 @@ export function createSecretReferenceField({
       });
   }
 
-  select.addEventListener("change", () => {
-    if (select.value === CREATE_SECRET_VALUE) {
-      select.value = currentSecretId() ?? "";
-      openCreateSecretDialog();
+  input.addEventListener("focus", () => {
+    searchQuery = "";
+    input.select();
+    openListbox();
+  });
+  input.addEventListener("input", () => {
+    searchQuery = input.value;
+    activeOptionIndex = -1;
+    openListbox();
+    updateValidity();
+  });
+  input.addEventListener("keydown", (event) => {
+    const options = filteredSecretOptions();
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (!listboxOpen) {
+        openListbox();
+      }
+      setActiveOption(options.length ? Math.min(activeOptionIndex + 1, options.length - 1) : -1);
       return;
     }
-    const secret = secrets.find((item) => item.id === select.value);
-    if (secret) {
-      void bindSecret(secret);
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!listboxOpen) {
+        openListbox();
+      }
+      setActiveOption(options.length ? Math.max(activeOptionIndex - 1, 0) : -1);
+      return;
     }
-    updateValidity();
+    if (event.key === "Enter" && listboxOpen) {
+      event.preventDefault();
+      if (activeOptionIndex >= 0) {
+        selectOption(options[activeOptionIndex]);
+      }
+      return;
+    }
+    if (event.key === "Escape" && listboxOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeListbox({ restoreSelection: true });
+    }
+  });
+  input.addEventListener("blur", () => {
+    closeListbox({ restoreSelection: true });
   });
 
   const field = element(
     "div",
     { className: fieldClassName },
-    element("label", { for: select.id }, label),
-    select,
+    element("label", { for: input.id }, label),
+    element("div", { className: "secret-typeahead" }, input, listbox),
     metadataLink,
     status,
   );

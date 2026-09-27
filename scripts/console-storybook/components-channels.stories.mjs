@@ -22,6 +22,7 @@ export const SlackCreateSecretModal = {
   ...story("slackCreateSecretModal"),
   name: "Slack create Secret modal",
 };
+export const SlackDuplicateSecret = story("slackDuplicateSecret");
 export const SlackSecretStaged = {
   ...story("slackSecretStaged"),
   name: "Slack staged Secret binding",

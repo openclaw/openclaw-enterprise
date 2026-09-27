@@ -97,6 +97,16 @@ async function expectNoText(page, pattern) {
   );
 }
 
+function secretOptionLabel(secret) {
+  return `${secret.name} · ${secret.id}`;
+}
+
+async function selectSecret(scope, label, secret, options = {}) {
+  const field = scope.getByLabel(label, { exact: true });
+  await field.fill(options.query ?? secret.name);
+  await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
+}
+
 function nativeValues(marker, { slack = false } = {}) {
   const values = createHarnessConfiguration("codex", "gpt-5.1");
   return {
@@ -719,10 +729,10 @@ test("bound Slack credential fields show Secret references without reading value
   const appToken = page.getByLabel("Slack app token");
   const botToken = page.getByLabel("Slack bot token");
   await appToken.waitFor();
-  assert.equal(await appToken.evaluate((node) => node.tagName), "SELECT");
-  assert.equal(await botToken.evaluate((node) => node.tagName), "SELECT");
-  assert.equal(await appToken.evaluate((node) => node.value), appSecret.id);
-  assert.equal(await botToken.evaluate((node) => node.value), botSecret.id);
+  assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
+  assert.equal(await botToken.evaluate((node) => node.tagName), "INPUT");
+  assert.equal(await appToken.evaluate((node) => node.value), secretOptionLabel(appSecret));
+  assert.equal(await botToken.evaluate((node) => node.value), secretOptionLabel(botSecret));
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   assert.deepEqual(channelApi.requests, []);
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
@@ -783,7 +793,7 @@ test("Slack credential replacement switches only selected Secret references", as
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
-  await page.getByLabel("Slack app token").selectOption(replacementAppSecret.id);
+  await selectSecret(page, "Slack app token", replacementAppSecret);
   await expectNoText(page, /xapp-replacement/);
   const saveResponse = page.waitForResponse(
     (response) =>
@@ -829,11 +839,11 @@ test("Slack credential replacement switches only selected Secret references", as
   );
   assert.equal(
     await page.getByLabel("Slack app token").evaluate((node) => node.value),
-    replacementAppSecret.id,
+    secretOptionLabel(replacementAppSecret),
   );
   assert.equal(
     await page.getByLabel("Slack bot token").evaluate((node) => node.value),
-    botSecret.id,
+    secretOptionLabel(botSecret),
   );
   assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
 });
@@ -882,11 +892,11 @@ test("partially bound Slack credentials save only the missing token", async (t) 
   await page.getByRole("heading", { name: "Runtime credentials" }).waitFor();
   assert.equal(
     await page.getByLabel("Slack app token").evaluate((node) => node.value),
-    appSecret.id,
+    secretOptionLabel(appSecret),
   );
   assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack bot token").selectOption(botSecret.id);
+  await selectSecret(page, "Slack bot token", botSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
     .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
@@ -969,9 +979,9 @@ test("missing Slack credential fields require both Secret references before savi
   assert.equal(await page.getByLabel("Slack app token").evaluate((node) => node.value), "");
   assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack bot token").selectOption(botSecret.id);
+  await selectSecret(page, "Slack bot token", botSecret);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await page.getByLabel("Slack app token").selectOption(appSecret.id);
+  await selectSecret(page, "Slack app token", appSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await page
     .getByText("Channel Secret bindings saved. Deploy the new revision to deliver them.")
