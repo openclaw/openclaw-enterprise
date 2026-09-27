@@ -326,6 +326,26 @@ test("Codex bridge configuration carries repository broker network policy withou
   });
 });
 
+test("Codex bridge configuration grants plugin skill reads without broker policy", () => {
+  const bridgeConfiguration = codexOpenClawConfiguration(codexSelection());
+
+  assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config.appServer, {
+    networkProxy: {
+      readOnlyPaths: [
+        "/app/node_modules/openclaw",
+        "/home/node/.openclaw/plugin-skills",
+        "/home/node/openclaw-runtime-assets/plugin-skills",
+      ],
+    },
+  });
+  assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config.codexPlugins.plugins.linear, {
+    enabled: true,
+    marketplaceName: "openai-curated-remote",
+    pluginName: "linear",
+    allow_destructive_actions: "auto",
+  });
+});
+
 test("Codex startup translation renders selected marketplace app plugins", () => {
   const selections = {
     ...codexSelection(linearPluginId),

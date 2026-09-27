@@ -79,20 +79,22 @@ Agent Pod for dedicated Codex, or the gateway for embedded OpenClaw with
 `plugins.driver.implementation: occ/codex-plugin`. Embedded OpenClaw using
 `occ/openclaw-plugin` or no PluginDriver selection receives no Codex projection.
 
-For those consumers with repository bindings, Compute adds the exact broker
+Selected Codex plugins receive a filesystem-only profile that grants read-only
+access to the stock runtime package at `/app/node_modules/openclaw` and
+published plugin skills at `/home/node/.openclaw/plugin-skills` and
+`/home/node/openclaw-runtime-assets/plugin-skills`. This lets sandboxed skill
+reads use the installed runtime and packaged skills without enabling proxy
+networking, granting repository credential paths, granting whole-filesystem
+reads, or changing project write permissions.
+
+For Codex consumers with repository bindings, Compute also adds the exact broker
 hostname from admitted session material to the tool proxy's domain allowlist and
 sets stock Codex `allow_local_binding = true` and `mode = "full"`. An explicit
-deny matching the broker hostname fails closed. Unbound Agents receive none of
-these generated changes; their existing policy remains in effect.
-
-The generated filesystem profile also grants read-only access to the stock
-runtime package at `/app/node_modules/openclaw`, published plugin skills at
-`/home/node/.openclaw/plugin-skills` and
-`/home/node/openclaw-runtime-assets/plugin-skills`, the repository client at
-`/opt/oce/repository-credentials`, and admitted session material at
-`/run/oce/repository-credentials`. These paths let sandboxed Git and skill reads
-use the installed runtime, packaged skills, and broker helper without granting
-whole-filesystem reads or changing project write permissions.
+deny matching the broker hostname fails closed. The repository-bound filesystem
+profile additionally grants read-only access to the repository client at
+`/opt/oce/repository-credentials` and admitted session material at
+`/run/oce/repository-credentials`. Unbound Agents receive none of those network
+or repository-material changes; their existing policy remains in effect.
 
 These settings apply to the Agent's whole tool proxy: local binding is allowed,
 Codex's additional private-address guard is disabled, and every HTTP method is

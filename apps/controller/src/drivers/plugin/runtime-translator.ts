@@ -69,10 +69,13 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   const OCC_DRIVER_ID = "occ-plugin";
   const CODEX_DRIVER_ID = "codex-plugin";
   const CODEX_MARKETPLACE = "openai-curated-remote";
-  const CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS = [
+  const CODEX_PLUGIN_READ_ONLY_PATHS = [
     "/app/node_modules/openclaw",
     "/home/node/.openclaw/plugin-skills",
     "/home/node/openclaw-runtime-assets/plugin-skills",
+  ];
+  const CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS = [
+    ...CODEX_PLUGIN_READ_ONLY_PATHS,
     "/opt/oce/repository-credentials",
     "/run/oce/repository-credentials",
   ];
@@ -659,6 +662,10 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       return undefined;
     }
     const failedPluginIds = failedPluginIdSet(failures);
+    const pluginFilesystemConfiguration =
+      selected.length === 0 || brokerConfiguration !== undefined
+        ? {}
+        : { appServer: { networkProxy: { readOnlyPaths: CODEX_PLUGIN_READ_ONLY_PATHS } } };
     return {
       plugins: {
         entries: {
@@ -666,6 +673,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
             enabled: true,
             config: {
               ...brokerConfiguration,
+              ...pluginFilesystemConfiguration,
               ...(selected.length === 0
                 ? {}
                 : {
