@@ -947,6 +947,7 @@ export const scenarios = {
       "Click Done and confirm toolDefaults.approval is write_actions. New tools inherit this default without needing entries in tools.",
       "Review the Driver-specific policy fields supplied by the capability descriptor.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
+      "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
     ],
     gap: pluginPreviewGap,
   },
@@ -2145,6 +2146,10 @@ export const scenarios = {
     actions: [click("Edit Slack")],
     description:
       "Edit channels, users, mention requirement, and enabled state. Token references remain fixed; token values belong in Credentials.",
+    steps: [
+      "Change the channel IDs, then click inside the panel and drag from its heading onto the gray backdrop. The editor stays open.",
+      "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
+    ],
   },
   slackEveryone: {
     group: "Components/Channels",
@@ -2212,6 +2217,10 @@ export const scenarios = {
     ],
     description:
       "Create new Secret opens a modal with an editable Agent-prefixed Name, a fixed Slack binding key, and a masked Secret value. Values are simulated and never read back.",
+    steps: [
+      "Enter a dummy value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
+      "Open Create new Secret again and confirm Value is empty. Close it, then click the backdrop again to dismiss the Slack editor.",
+    ],
   },
   slackDuplicateSecret: {
     group: "Components/Channels",

@@ -22,3 +22,28 @@ export function button(label, action, attributes = {}) {
   node.addEventListener("click", action);
   return node;
 }
+
+export function dismissOnBackdrop(dialog) {
+  let startedOnBackdrop = false;
+  const isBackdrop = (event) => {
+    const bounds = dialog.getBoundingClientRect();
+    return (
+      event.target === dialog &&
+      (event.clientX < bounds.left ||
+        event.clientX > bounds.right ||
+        event.clientY < bounds.top ||
+        event.clientY > bounds.bottom)
+    );
+  };
+  dialog.addEventListener("pointerdown", (event) => {
+    startedOnBackdrop = event.button === 0 && isBackdrop(event);
+  });
+  dialog.addEventListener("click", (event) => {
+    const dismiss = startedOnBackdrop && isBackdrop(event);
+    startedOnBackdrop = false;
+    // Reuse Escape's cancellation guards and cleanup; dragging out is not dismissal.
+    if (dismiss && dialog.dispatchEvent(new Event("cancel", { cancelable: true }))) {
+      dialog.close();
+    }
+  });
+}

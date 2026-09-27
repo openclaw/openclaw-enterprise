@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, dismissOnBackdrop } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
@@ -437,6 +437,7 @@ function openDrawer(section, state, provider, retained) {
     }
   });
   dialog.append(body);
+  dismissOnBackdrop(dialog);
   section.append(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
   dialog.showModal();

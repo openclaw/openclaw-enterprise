@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-26
-last_updated_session: authoring-run/3aa63184-7716-4d27-90ed-33974110d0f5
+updated: 2026-09-27
+last_updated_session: 01a0e4d1-c52a-7231-9d1f-d2ceadb556d1
 ---
 
 # Console Agent editing and runtime requests
@@ -105,16 +105,18 @@ reads send no bodyless Agent deploy POST; success opens the returned revision.
 An uncertain POST requires revision-history readback before retry. OCC provisions
 first-time transport credentials below. Browser reads are not atomic with admission.
 
-`apps/controller/src/console/drafts.mjs:createDraftStore` keeps document-local
-snapshots. `console.mjs:resetReads` and `detail.mjs:renderTab` capture selected
-fields before teardown, excluding passwords. Namespace and Agent keys isolate
-editors; session expiry, user change, logout, and page exit clear them. Drafts
-never enter browser storage or URLs. Preset variables, Create Agent fields, and
-Agent search share the store. Configuration and authentication retain their save
-baselines, preventing reentry from authorizing an overwrite of concurrent edits.
-Channel snapshots retain opening generation, controls, and staged Secret metadata;
-a changed baseline disables Save until Cancel. Saves clear captures; Cancel and
-reload discard edits. Pending saves retain recovery guards.
+`apps/controller/src/console/drafts.mjs:createDraftStore` holds document-local drafts.
+`console.mjs:resetReads` and `detail.mjs:renderTab` capture fields before teardown,
+excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
+user change, logout, exit, and reload clear them. Nothing enters browser storage
+or URLs. Configuration, authentication, and channel baselines prevent stale saves;
+channel snapshots include controls and staged Secret metadata. Save and Cancel
+clear captures; pending saves retain recovery guards.
+
+`apps/controller/src/console/dom.mjs:dismissOnBackdrop` requires both press and
+click outside the topmost editor. Its `cancel` event follows Escape's cleanup:
+discard channel drafts, clear Secret inputs, retain plugin selections. Pending
+channel saves and Secret creation prevent dismissal.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
 only **Create new version** permits editing. Slack uses unresolved
@@ -335,6 +337,8 @@ subsequent worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 21:44: Trace backdrop dismissal through existing cancellation handlers. (01a0e4d1-c52a-7231-9d1f-d2ceadb556d1 - ab9527bb2615168649438f7f591bd098083b62cb)
 
 - 2026-09-26 18:38: Trace searchable Secret selection, editable names, and duplicate-name recovery. (01a0e069-9ef8-7d81-802c-82c72c1f1e5d - dc07fe34cd2b0057693777acf4db394d211da393)
 

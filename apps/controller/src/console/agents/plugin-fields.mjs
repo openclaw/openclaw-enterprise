@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, dismissOnBackdrop } from "../dom.mjs";
 
 const approvalOptions = [
   ["provider_default", "Provider default"],
@@ -126,6 +126,7 @@ export function createPluginFields({
     className: "plugin-dialog",
     "aria-labelledby": "plugin-dialog-title",
   });
+  dismissOnBackdrop(dialog);
   const configure = button("Configure plugins", () => {
     if (disabled) {
       return;

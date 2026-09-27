@@ -318,6 +318,7 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
     { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
 
   await login(page, fixture, url.pathname + url.search);
@@ -329,6 +330,27 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
   const channelIds = dialog.getByLabel("Slack channel IDs");
+  await channelIds.fill("CDISCARD123");
+  await selectSecret(dialog, "Slack app token", slackAppSecret);
+
+  // Panel clicks and drags ending outside keep edits; a backdrop click discards them.
+  const bounds = await dialog.boundingBox();
+  assert.ok(bounds);
+  await page.mouse.click(bounds.x + 8, bounds.y + 8);
+  assert.equal(await dialog.isVisible(), true);
+  await page.mouse.move(bounds.x + 8, bounds.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x / 2, bounds.y + 8);
+  await page.mouse.up();
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await channelIds.inputValue(), "CDISCARD123");
+  await page.mouse.click(bounds.x / 2, bounds.y + 8);
+  await dialog.waitFor({ state: "hidden" });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  assert.equal(await channelIds.inputValue(), "CUNBOUND123");
+  assert.equal(await dialog.getByLabel("Slack app token").inputValue(), "");
+
   await channelIds.fill("CUNBOUND123, CBOUND456");
   await selectSecret(dialog, "Slack app token", slackAppSecret);
   await dialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
@@ -358,7 +380,29 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.equal(beforeSave.data.generation, 1);
+  const saveReached = Promise.withResolvers();
+  const saveRelease = Promise.withResolvers();
+  t.after(() => saveRelease.resolve());
+  // Hold the real save response so dismissal cannot hide an in-flight mutation.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route) => {
+      if (route.request().method() !== "PATCH") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      saveReached.resolve();
+      await saveRelease.promise;
+      await route.fulfill({ response });
+    },
+  );
   await page.getByRole("button", { name: "Save configuration" }).click();
+  await saveReached.promise;
+  await page.mouse.click(bounds.x / 2, bounds.y + 8);
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await dialog.getByRole("button", { name: "Save configuration" }).isDisabled(), true);
+  saveRelease.resolve();
   await page.getByText(/Configuration .*generation 2/).waitFor();
   const configuration = await fixture.request(
     "GET",
