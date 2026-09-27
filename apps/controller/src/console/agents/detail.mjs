@@ -415,6 +415,11 @@ function createVersionDiagnosticsPanel(context, path, revisionId) {
         { className: "muted" },
         "Checks run on demand against this exact version. Results are timestamped and do not change its recorded deployment outcome.",
       ),
+      element(
+        "p",
+        { className: "muted" },
+        "For Kubernetes Compute, Gateway checks currently cover Slack configuration, authentication, and connectivity. They do not inspect Pod conditions, restarts, Events, logs, or run a model turn.",
+      ),
       ...(error
         ? [
             element(

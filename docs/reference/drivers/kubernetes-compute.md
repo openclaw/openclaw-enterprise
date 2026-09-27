@@ -267,9 +267,11 @@ endpoint returns bounded generic checks for the requested revision. The API need
 Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
 Dedicated Gateways are read in their managed Gateway namespace, while Harnesses
 are read in the tenant namespace. The chart adds these read permissions to the
-unbound tenant API role; operators retain control of its namespace-local bindings.
-Missing Pods, unavailable private endpoints, or unsupported containers report
-unknown diagnostic checks instead of mutating deployment status.
+unbound tenant API and Gateway observer roles; operators retain control of their
+namespace-local bindings.
+Missing Pods or unavailable private endpoints report unknown diagnostic checks
+instead of mutating deployment status. The Agent container currently returns no
+channel checks.
 
 The bundled gateway currently maps Slack channel status into configuration,
 authentication, and connectivity checks. These diagnostics do not include raw

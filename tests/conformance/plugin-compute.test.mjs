@@ -2303,6 +2303,16 @@ test("gateway runtime status maps native Slack channel status without provider d
     "disabled",
   );
 
+  await assertSlackDiagnostics(
+    { gatewayReachable: false, configOnly: true, configuredChannels: ["slack"] },
+    [
+      { check: "configuration", state: "succeeded", code: undefined },
+      { check: "authentication", state: "unknown", code: "UNAVAILABLE" },
+      { check: "connectivity", state: "unknown", code: "UNAVAILABLE" },
+    ],
+    "configured but gateway unavailable",
+  );
+
   for (const error of [
     "invalid_auth",
     "An API error occurred: invalid_auth; code: slack_webapi_platform_error; slack error: invalid_auth",
@@ -2417,7 +2427,7 @@ test("gateway runtime status maps native Slack channel status without provider d
   pendingChannelStatusListeners.close?.(null, "SIGTERM");
   await abortedRequest;
   responseListeners.close?.();
-  assert.equal(channelStatusCalls, 9);
+  assert.equal(channelStatusCalls, 10);
 });
 
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {

@@ -1847,6 +1847,7 @@ export const scenarios = {
     name: "Current observations for v7",
     path: candidateVersion,
     deployed: true,
+    slack: true,
     candidateDeploymentStatus: "succeeded",
     actions: [click("Run diagnostics for this version")],
     description:
@@ -1857,6 +1858,7 @@ export const scenarios = {
     name: "Unknown observation for v6",
     path: currentVersion,
     deployed: true,
+    slack: true,
     candidateDeploymentStatus: "running",
     diagnosticsState: "unknown",
     actions: [click("Run diagnostics for this version")],

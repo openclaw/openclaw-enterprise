@@ -126,10 +126,10 @@ test(
       ]),
     );
     const launch = String.raw`
-const { mkdirSync, writeFileSync } = require("node:fs");
+const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawnSync } = require("node:child_process");
-for (const [relative, content] of JSON.parse(process.argv[1])) {
+for (const [relative, content] of JSON.parse(readFileSync(0, "utf8"))) {
   const target = join("/tmp/proof", relative);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, content);
@@ -138,32 +138,36 @@ const child = spawnSync(process.execPath, ["--test", "/tmp/proof/tests/conforman
 if (child.error) throw child.error;
 process.exit(child.status ?? 1);
 `;
-    const { stdout } = await runDocker([
-      "run",
-      "--rm",
-      "--name",
-      containerName,
-      "--user",
-      "1000:1000",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      "--network",
-      "none",
-      "--tmpfs",
-      "/tmp:size=64m,mode=1777",
-      "--entrypoint",
-      "/usr/bin/tini",
-      image,
-      "-s",
-      "--",
-      "node",
-      "-e",
-      launch,
+    const { stdout } = await runDocker(
+      [
+        "run",
+        "-i",
+        "--rm",
+        "--name",
+        containerName,
+        "--user",
+        "1000:1000",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--network",
+        "none",
+        "--tmpfs",
+        "/tmp:size=64m,mode=1777",
+        "--entrypoint",
+        "/usr/bin/tini",
+        image,
+        "-s",
+        "--",
+        "node",
+        "-e",
+        launch,
+      ],
+      {},
       JSON.stringify(files),
-    ]);
+    );
     assert.match(stdout, /pass 1/);
     assert.match(stdout, /skipped 0/);
   },
@@ -269,12 +273,21 @@ console.log("WORKSPACE_INITIALIZATION_PASSED");
   },
 );
 
-async function runDocker(args, options = {}) {
-  return execute(docker, args, {
+async function runDocker(args, options = {}, input) {
+  const command = execute(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 1_000_000,
     ...options,
   });
+  if (input === undefined) {
+    return command;
+  }
+  const inputComplete = new Promise((resolve, reject) => {
+    command.child.stdin.once("error", reject);
+    command.child.stdin.end(input, resolve);
+  });
+  const [result] = await Promise.all([command, inputComplete]);
+  return result;
 }
 
 const runtimeImageStockBrokerDiagnosticStages = new Set([
@@ -1810,6 +1823,7 @@ const timeout = setTimeout(() => {
       ({ stdout } = await runDocker(
         [
           "run",
+          "-i",
           "--rm",
           "--network",
           networkName,
@@ -1832,10 +1846,10 @@ const timeout = setTimeout(() => {
           "--entrypoint",
           "node",
           image,
-          "-e",
-          probe,
+          "-",
         ],
         { timeout: 150_000 * imageSmokeTimeoutMultiplier, maxBuffer: 2_000_000 },
+        probe,
       ));
     } catch (error) {
       throw annotateRuntimeImageStockBrokerFailure(error);

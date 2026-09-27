@@ -114,7 +114,7 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(agent.executionMode, "dedicated");
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: modelSecret.ref });
     assert.deepEqual(agent.repositoryBindings, expectedBindings);
-    await page.getByRole("heading", { name: "New revision" }).waitFor();
+    await page.getByRole("heading", { name: "Create new version" }).waitFor();
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
       .waitFor();
@@ -145,7 +145,7 @@ for (const issuesEnabled of [true, false]) {
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
     await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
     await page.getByRole("button", { name: "Credentials", exact: true }).click();
-    const deploy = page.getByRole("button", { name: "Deploy new revision", exact: true });
+    const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
     assert.equal(await deploy.isDisabled(), true);
     const provisionResponse = page.waitForResponse(
       (result) =>
@@ -216,10 +216,13 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(deployment.status, 200);
     assert.equal(deployment.data.deploymentId, revision.id);
     assert.equal(deployment.data.status, "queued");
-    await page.getByText("queued", { exact: true }).waitFor();
+    await page
+      .locator(".deployment-outcome")
+      .filter({ hasText: "Recorded status: queued" })
+      .waitFor();
     await page.getByRole("button", { name: "Configuration", exact: true }).click();
     await page
-      .getByRole("heading", { name: `AgentRevision v${revision.revision}`, exact: true })
+      .getByRole("heading", { name: `Version v${revision.revision}`, exact: true })
       .waitFor();
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })

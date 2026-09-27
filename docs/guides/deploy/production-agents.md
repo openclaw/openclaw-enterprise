@@ -37,8 +37,9 @@ after creation. Complete the tenant RoleBindings below, then wait until
 
 ### Grant tenant RoleBindings
 
-Grant the worker runtime role in the data plane. The API needs list-only
-Deployment access there for dedicated credential preflight. Replace the `oce-` prefix if the Helm release name differs:
+Grant the worker runtime role in the data plane. The API lists Deployments for
+credential preflight and reads Pods through the proxy for on-demand diagnostics.
+Replace the `oce-` prefix if the Helm release name differs:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
@@ -68,14 +69,13 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
-The Secret RoleBinding grants tenant-local Secret access and list-only
-Deployment access to the API. The API lists Deployments to check for existing
-Agent workloads before provisioning initial runtime credentials. This binding
-does not replace OCC IAM grants for bound Secrets. Worker permissions in both
-targets allow admitted credential delivery. Workload ServiceAccounts receive no
-Secret API access. For separately supported embedded execution, the API also
-needs the tenant-api role in the data plane to provision its combined transport
-bundle. Wait for Namespace `ready` only after granting both targets.
+The Secret RoleBinding grants Secret access, Deployment list access for preflight,
+and Pod read/proxy access for Gateway diagnostics. The data-plane observer grants
+Deployment list and Pod read/proxy access for Agent diagnostics. OCC IAM grants
+remain required. Worker permissions in both targets allow credential delivery.
+Workload ServiceAccounts receive no Secret API access. Embedded execution also
+needs the tenant-api role in the data plane for its combined transport bundle.
+Wait for Namespace `ready` only after granting both targets.
 
 ## Prepare each Agent
 

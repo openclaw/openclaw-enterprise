@@ -564,6 +564,25 @@ test("deployment diagnostics require exact revision read and Agent operate autho
   assert.deepEqual(fixture.computeDriver.calls, [
     { operation: "diagnostics", agentId: agent.id, revisionId: revision.data.id },
   ]);
+
+  // Revoking revision access must deny an otherwise authorized Agent operator.
+  const revisionBindingIndex = fixture.policy.bindings.findIndex(
+    (binding) => binding.id === "diagnostics-revision-reader-binding",
+  );
+  assert.notEqual(revisionBindingIndex, -1);
+  fixture.policy.bindings.splice(revisionBindingIndex, 1);
+  fixture.computeDriver.calls.length = 0;
+  const missingRevisionRead = await fixture.request("POST", path, { session });
+  assert.equal(missingRevisionRead.status, 403);
+  assert.equal(missingRevisionRead.body.error.code, "FORBIDDEN");
+  assert.equal(fixture.computeDriver.calls.length, 0);
+  const revisionDenial = fixture.auditSink.events.at(-1);
+  assert.equal(revisionDenial.kind, "authorization_denial");
+  assert.deepEqual(revisionDenial.authorization, {
+    principalId: principal.id,
+    action: "read",
+    resource: { kind: "agent_revision", id: revision.data.id, namespaceId: namespace.id },
+  });
 });
 
 test("runtime credential driver and audit failures stay sanitized and recoverable through GET", async (t) => {
@@ -658,7 +677,7 @@ test("deployment diagnostics reject a null Driver response as unavailable", asyn
   assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
-test("deployment diagnostics reject noncanonical timestamps and unsafe identifiers from Drivers", async (t) => {
+test("deployment diagnostics reject invalid Driver evidence", async (t) => {
   const diagnosticOptions = { diagnosticsResult: null };
   const fixture = await createFixture(t, {
     computeDriver: createRuntimeCredentialComputeDriver(diagnosticOptions),
@@ -680,6 +699,7 @@ test("deployment diagnostics reject noncanonical timestamps and unsafe identifie
     checks: [check],
   };
   for (const [name, diagnosticsResult] of [
+    ["revision binding", { ...base, revisionId: `rev_${randomUUID()}` }],
     ["observation time", { ...base, observedAt: "2026-01-02" }],
     ["check time", { ...base, checks: [{ ...check, checkedAt: "2026-01-02" }] }],
     ["component", { ...base, checks: [{ ...check, component: "gateway status" }] }],

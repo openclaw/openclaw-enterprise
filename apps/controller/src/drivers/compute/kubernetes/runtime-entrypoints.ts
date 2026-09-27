@@ -405,8 +405,8 @@ function slackChecksFromStatusPayload(payload, checkedAt) {
     }
     return [
       runtimeDiagnosticCheck("configuration", "succeeded", checkedAt),
-      runtimeDiagnosticCheck("authentication", "unknown", checkedAt, "INCOMPATIBLE_RESPONSE"),
-      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, "INCOMPATIBLE_RESPONSE"),
+      runtimeDiagnosticCheck("authentication", "unknown", checkedAt, "UNAVAILABLE"),
+      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, "UNAVAILABLE"),
     ];
   }
   const channelSummary = isPlainObject(payload?.channels) ? payload.channels.slack : undefined;
