@@ -199,7 +199,15 @@ export async function verifyEnvironment() {
   );
 }
 
+function publicationAlias(value) {
+  const tag = value || "latest";
+  assert.match(tag, /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/, "Invalid image tag.");
+  assert.ok(!/^(?:sha|bootstrap)-/i.test(tag), "Source and bootstrap tags are reserved.");
+  return tag;
+}
+
 async function validate(env) {
+  publicationAlias(env.IMAGE_TAG);
   await verifyMainSource(env);
   assert.equal(
     env.SOURCE_SHA,
@@ -503,7 +511,7 @@ export async function verifyGhcr(image, digest, tag) {
   return existing.length > 0;
 }
 
-export async function publishPrepared(directory, env, producer, verify) {
+export async function publishPrepared(directory, env, producer, verify, aliasTag) {
   await verify();
   const tag = `sha-${env.SOURCE_SHA}`;
   const prepared = [];
@@ -581,13 +589,55 @@ export async function publishPrepared(directory, env, producer, verify) {
         `Verified ${image.destination}:${tag} @ ${image.digest}${remoteDigest ? " (already published)" : ""}`,
       );
     }
+    if (aliasTag !== undefined) {
+      // Both immutable tags must be verified before either mutable alias moves.
+      for (const image of prepared) {
+        await verify();
+        await verifyGhcr(image.destination, image.digest, tag);
+        assert.equal(inspectDigest(`docker://${image.destination}:${tag}`, authfile), image.digest);
+        skopeo(
+          [
+            "copy",
+            "--all",
+            "--preserve-digests",
+            "--authfile",
+            authfile,
+            `oci-archive:${image.archive}`,
+            `docker://${image.destination}:${aliasTag}`,
+          ],
+          { stdio: "inherit" },
+        );
+        assert.equal(
+          inspectDigest(`docker://${image.destination}:${aliasTag}`, authfile),
+          image.digest,
+        );
+      }
+      // A second check catches drift while the other package was being copied.
+      for (const image of prepared) {
+        assert.equal(inspectDigest(`docker://${image.destination}:${tag}`, authfile), image.digest);
+        assert.equal(
+          inspectDigest(`docker://${image.destination}:${aliasTag}`, authfile),
+          image.digest,
+        );
+        console.log(`Verified ${image.destination}:${aliasTag} @ ${image.digest}`);
+      }
+    }
   } finally {
     await rm(authDirectory, { recursive: true, force: true });
   }
-  const receipt = prepared.map(({ archive, ...image }) => ({ ...image, tag }));
+  const receipt = prepared.map(({ archive, ...image }) => ({
+    ...image,
+    tag,
+    ...(aliasTag === undefined ? {} : { aliasTag }),
+  }));
   await appendFile(
     env.GITHUB_STEP_SUMMARY,
-    receipt.map((image) => `- ${image.image}: \`${image.destination}@${image.digest}\`\n`).join(""),
+    receipt
+      .map(
+        (image) =>
+          `- ${image.image}: \`${image.destination}@${image.digest}\`${aliasTag ? ` (tag: \`${aliasTag}\`)` : ""}\n`,
+      )
+      .join(""),
   );
   return receipt;
 }
@@ -610,6 +660,7 @@ async function main() {
       process.env,
       identity(process.env, "controller"),
       () => validate(process.env),
+      publicationAlias(process.env.IMAGE_TAG),
     );
     await writeFile(join(directory, "publication.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   } else {
