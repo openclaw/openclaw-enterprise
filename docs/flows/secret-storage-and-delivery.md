@@ -137,10 +137,9 @@ execution topology.
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
 The [tool](../../scripts/first-agent.mjs) targets the persistent installation
-started with `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev up`.
-Before invoking Compose, Kubernetes, or the OCC API, it requires the current v3
-development marker and state from the same checkout. The state must select
-Kubernetes Compute, a Compose-backed control plane, and
+started with `./bin/occ dev up`. Before invoking Kubernetes or the OCC API, it
+requires the current v3 development marker and state from the same checkout.
+The state must select Kubernetes Compute and
 `sandboxDriver: "none"`. OpenShell state fails with an explicit unsupported-profile
 error because that development profile does not support this model-turn path.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a

@@ -603,6 +603,30 @@ test("dev-up routes Kubernetes Compute through the unified entry point", async (
   assert.match(result.stdout, /occ dev up/);
 });
 
+test("dev-up defaults to the Kubernetes-only control plane", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env };
+  delete env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "default-state");
+
+  // The default must reject Compose arguments before creating state or invoking
+  // a container engine, so accidental legacy overrides cannot start Compose.
+  for (const result of [
+    runDevUp(["--", "--env-file", fixture.emptyEnv], env),
+    spawnSync(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+      cwd: fixture.fixtureRepository,
+      encoding: "utf8",
+      env,
+    }),
+  ]) {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Kubernetes-only profile does not accept Compose options/);
+  }
+  await assert.rejects(stat(env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
 // Serve the existing Installation HTTP contract in a child process so the real
 // synchronous CLI can authenticate without blocking the test runner's event loop.
 async function installationServer(t, fixture, scenario = "success") {
@@ -662,6 +686,7 @@ async function kubernetesFixture(t, scenario = "success") {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture, scenario);
   fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
   fixture.requestLog = await installationServer(t, fixture, scenario);
   fixture.start = (args = []) =>
     runDevUp([...args, "--", "--env-file", fixture.emptyEnv], fixture.env);
@@ -768,6 +793,7 @@ test("Kubernetes dev-up forwards an explicit K3s image to k3d", async (t) => {
 
 test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before reporting readiness", async (t) => {
   const fixture = await kubernetesFixture(t);
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
   fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
   fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
   fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
@@ -1066,8 +1092,8 @@ test("dev-up rejects OpenShell when Kubernetes Compute is not selected", async (
   assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
 });
 
-for (const driver of ["docker", ""]) {
-  test(`dev-down preserves Kubernetes state when Compute selector is ${driver || "default"}`, async (t) => {
+for (const driver of ["docker"]) {
+  test(`dev-down preserves Kubernetes state when Compute selector is ${driver}`, async (t) => {
     const fixture = await createFixture(t);
     await prepareLifecycleCommands(fixture);
     const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
@@ -1211,6 +1237,7 @@ for (const driver of ["docker", "kubernetes"]) {
       const result = runDevUp(["--", ...options], {
         ...fixture.env,
         OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
+        OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
       });
       assert.notEqual(result.status, 0);
       assert.match(
@@ -1260,6 +1287,7 @@ for (const driver of ["docker", "kubernetes"]) {
           {
             ...fixture.env,
             OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
+            OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
             OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
             OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-new",
           },

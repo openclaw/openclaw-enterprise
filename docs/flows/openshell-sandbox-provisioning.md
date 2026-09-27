@@ -80,7 +80,7 @@ graph TD
 
 ### 0. Create the development control plane
 
-`scripts/dev-up`, `internal/occdev/openshell_k3d.go:upOpenShellK3d`,
+`scripts/dev-up`, `internal/occdev/openshell_k3d.go:upK3d`,
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 

@@ -23,6 +23,16 @@ COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/reposito
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
 RUN corepack pnpm credentials:build
 
+# Build the service from the same checkout as the runtime client. Keep the
+# service closure separate from the Agent runtime and its unprivileged client.
+FROM ${NODE_BASE_IMAGE} AS repository-credentials-service
+WORKDIR /app
+COPY --from=repository-client-build /build/.build/repository-credentials/service/package.json ./package.json
+COPY --from=repository-client-build /build/.build/repository-credentials/service/dist ./dist
+RUN chmod -R a=rX /app
+USER node
+ENTRYPOINT ["node", "/app/dist/repository-credentials.js"]
+
 FROM ${NODE_BASE_IMAGE} AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.

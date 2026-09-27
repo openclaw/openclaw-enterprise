@@ -9,20 +9,17 @@ last_updated_session: authoring-run/a81f3e71-1c8e-4692-8e2e-d462ddacc10b
 ## Overview
 
 `./bin/occ dev up` starts local OpenClaw Enterprise development from a checkout.
-The `scripts/dev-up` entry point selects the same profile. Docker Compute is
-selected by default. Setting `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes` keeps
-OCC in Compose but dispatches Compute to the
+The `scripts/dev-up` entry point selects the same profile. By default OCC,
+PostgreSQL, and Kubernetes Compute run in the owned
 [local k3d profile](../guides/deploy/local-kubernetes-development.md).
-That profile can select the OpenShell Sandbox Driver for its supported
-fail-closed path. OpenShell runs the complete control plane in k3d by default;
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` instead keeps PostgreSQL, the API, and
-the worker in Compose. Both modes prepare pinned OpenShell infrastructure and
-give the Sandbox Driver rendered workspace-chart resources to reconcile before
-reporting readiness.
+This flow traces the explicitly selected Compose compatibility paths. The
+Kubernetes profile can select the OpenShell Sandbox Driver for its fail-closed
+path; it prepares pinned OpenShell infrastructure and reconciles rendered
+workspace-chart resources before reporting readiness.
 Compose-backed profiles perform host preflight, select Docker Engine or Podman,
 prepare runtime images, start Compose, and wait for PostgreSQL migration,
-Installation bootstrap, API health, and worker readiness. Kubernetes-only
-OpenShell performs the equivalent readiness checks inside its owned cluster.
+Installation bootstrap, API health, and worker readiness. The default Kubernetes-only profile performs the equivalent readiness checks
+inside its owned cluster.
 Startup proves authenticated Installation access with a protected local
 bootstrap service key; it does not create an Agent or prove model execution.
 
@@ -135,7 +132,7 @@ import, authenticated readiness, and cleanup through the recorded engine.
 
 ### 5. Prepare the optional OpenShell development profile
 
-`internal/occdev/openshell_k3d.go:upOpenShellK3d`,
+`internal/occdev/openshell_k3d.go:upK3d`,
 `internal/occdev/openshell.go:prepareOpenShell`,
 `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 

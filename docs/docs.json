@@ -749,6 +749,7 @@
               }
             ],
             "hidden": [
+              "guides/deploy/local-repository-credentials",
               "reference/settings/development",
               "design/resources",
               "design/access",

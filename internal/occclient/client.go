@@ -222,6 +222,11 @@ func (client *Client) ListAgents(namespaceID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents")
 }
 
+// ListRepositoryOptions lists repositories admitted for Agent creation.
+func (client *Client) ListRepositoryOptions(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", "repository-options")
+}
+
 // GetAgent fetches an Agent.
 func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)

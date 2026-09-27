@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -84,6 +85,43 @@ func (r *runner) writeKubeconfigs(ctx context.Context, s *developmentState) erro
 	}
 	// The directory stays 0700; these two files are individually mounted into non-root containers.
 	return exclusiveWrite(filepath.Join(s.directory, "container-kubeconfig"), data, 0644)
+}
+
+func (r *runner) waitForDevelopmentKubernetesNamespace(ctx context.Context, timeout time.Duration) (string, string, error) {
+	var name string
+	var namespaceID string
+	err := poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		data, err := r.output(ctx, "kubectl", "get", "namespaces", "--selector", "openclaw.dev/namespace", "-o", "json")
+		if err != nil {
+			return false, nil
+		}
+		var list struct {
+			Items []struct {
+				Metadata struct {
+					Name        string            `json:"name"`
+					Labels      map[string]string `json:"labels"`
+					Annotations map[string]string `json:"annotations"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(data, &list); err != nil {
+			return false, fmt.Errorf("invalid Kubernetes Namespace inventory: %w", err)
+		}
+		if len(list.Items) == 0 {
+			return false, nil
+		}
+		if len(list.Items) != 1 {
+			return false, fmt.Errorf("development requires exactly one bootstrap Namespace")
+		}
+		item := list.Items[0].Metadata
+		identifier := item.Labels["openclaw.dev/namespace"]
+		if item.Name == "" || identifier == "" || item.Annotations["openclaw.dev/namespace-id"] != identifier {
+			return false, fmt.Errorf("bootstrap Namespace is missing OCC ownership evidence")
+		}
+		name, namespaceID = item.Name, identifier
+		return true, nil
+	})
+	return name, namespaceID, err
 }
 
 var imageDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -193,7 +231,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 
 // The local profile trusts only Pod loopback; first-agent verifies model access
 // with the separate loopback password. Routed installations supply Envoy source CIDRs.
-func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets) error {
+func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets, codexSeccompProfile string) error {
 	auth := map[string]any{"mode": "kubeconfig", "kubeconfigPath": "/run/openclaw-development/kubeconfig", "context": "k3d-" + s.Cluster}
 	gatewayClientNamespace := "default"
 	if s.DeploymentMode == "k3d" {
@@ -215,6 +253,16 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
 			}},
 		},
+	}
+	if codexSeccompProfile != "" {
+		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
+		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
+	}
+	if s.DeploymentMode == "k3d" && s.SandboxDriver == "none" {
+		config["presets"] = map[string]any{"includeDefaults": true}
+		config["drivers"].(map[string]any)["plugin"] = map[string]any{
+			"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+		}
 	}
 	if s.SandboxDriver == "openshell" {
 		if openShell == nil {

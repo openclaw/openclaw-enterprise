@@ -17,11 +17,13 @@ destinations. Explicit denies and the remaining
 still apply. A working seccomp profile, an operator shell, or a Ready Pod does
 not prove repository access through Codex tools.
 
-Profile installation belongs to your node provisioning process. OCE does not
-install host files, change node sysctls, or provide a privileged installer
-DaemonSet. Review this syscall-policy change before applying it, and use a
-disposable Pod with the exact production runtime digest before enabling it for
-Agents.
+On production or shared clusters, profile installation belongs to your node
+provisioning process. OCE does not install host files on those clusters, change
+node sysctls, or provide a privileged installer DaemonSet. Review this
+syscall-policy change before applying it, and use a disposable Pod with the exact
+production runtime digest before enabling it for Agents. The disposable
+[local Kubernetes launcher](local-kubernetes-development.md#start-the-profile)
+separately prepares and verifies a profile inside its own k3d node.
 
 ## Identify the restriction
 

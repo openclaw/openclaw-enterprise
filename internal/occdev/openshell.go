@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json/v2"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -455,43 +454,6 @@ func extractArchiveSubtree(archive, destination, prefix string) error {
 		return fmt.Errorf("OpenShell source archive does not contain %s", prefix)
 	}
 	return nil
-}
-
-func (r *runner) waitForOpenShellNamespace(ctx context.Context, timeout time.Duration) (string, string, error) {
-	var name string
-	var namespaceID string
-	err := poll(ctx, timeout, func(ctx context.Context) (bool, error) {
-		data, err := r.output(ctx, "kubectl", "get", "namespaces", "--selector", "openclaw.dev/namespace", "-o", "json")
-		if err != nil {
-			return false, nil
-		}
-		var list struct {
-			Items []struct {
-				Metadata struct {
-					Name        string            `json:"name"`
-					Labels      map[string]string `json:"labels"`
-					Annotations map[string]string `json:"annotations"`
-				} `json:"metadata"`
-			} `json:"items"`
-		}
-		if err := json.Unmarshal(data, &list); err != nil {
-			return false, fmt.Errorf("invalid Kubernetes Namespace inventory: %w", err)
-		}
-		if len(list.Items) == 0 {
-			return false, nil
-		}
-		if len(list.Items) != 1 {
-			return false, fmt.Errorf("OpenShell development requires exactly one bootstrap Namespace")
-		}
-		item := list.Items[0].Metadata
-		identifier := item.Labels["openclaw.dev/namespace"]
-		if item.Name == "" || identifier == "" || item.Annotations["openclaw.dev/namespace-id"] != identifier {
-			return false, fmt.Errorf("OpenShell bootstrap Namespace is missing OCC ownership evidence")
-		}
-		name, namespaceID = item.Name, identifier
-		return true, nil
-	})
-	return name, namespaceID, err
 }
 
 func (r *runner) installOpenShellGateway(ctx context.Context, state *developmentState, assets *openShellDevelopmentAssets, namespace string, timeout time.Duration) error {

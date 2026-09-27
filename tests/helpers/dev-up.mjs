@@ -387,6 +387,7 @@ process.exit(86);
     ...process.env,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
+    OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
     OCC_DOCKER_RUNTIME_IMAGE: "",
     OCC_DOCKER_GATEWAY_IMAGE: "",
     OCC_DOCKER_AGENT_IMAGE: "",

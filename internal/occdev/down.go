@@ -17,7 +17,7 @@ func Down(ctx context.Context, opts Options) error {
 	if sandbox != "none" && sandbox != "openshell" {
 		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
 	}
-	switch driver := r.setting("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker"); driver {
+	switch driver := r.setting("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes"); driver {
 	case "docker":
 		if sandbox != "none" {
 			return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")

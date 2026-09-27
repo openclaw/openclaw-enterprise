@@ -183,11 +183,10 @@ and their enforcement limits.
 
 ## Deployment modes
 
-- **Local Kubernetes development:** Compose runs the API, worker, and PostgreSQL
-  on Docker Engine or Podman. Kubernetes Compute runs Agent workloads in a
-  disposable k3d cluster. Follow [Local Setup](guides/quickstart.md) to deploy
-  an Agent locally.
-- **Docker or Podman control-plane preview:** The default Compose profile runs
+- **Local Kubernetes development:** The API, worker, PostgreSQL, and Agent
+  workloads run in an owned k3d cluster hosted by Docker Engine or Podman.
+  Follow [Local Setup](guides/quickstart.md) to deploy an Agent locally.
+- **Docker or Podman control-plane preview:** The explicitly selected Compose profile runs
   the API, worker, and PostgreSQL; the API binds to loopback. Its Docker Compute
   Driver cannot provide the Harness authentication required to deploy Agents
   through OCC. See [Docker Compute](reference/drivers/docker-compute.md) for
