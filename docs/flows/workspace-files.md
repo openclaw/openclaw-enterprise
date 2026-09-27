@@ -206,16 +206,12 @@ The next reconciliation attaches the node to the Harness; its Deployment uses
   `file-transfer.config.workspaces.main` in runtime configuration before Gateway
   starts. Candidate preparation preserves the serving binding; losing it fails
   rather than restoring local reads. The revision ConfigMap remains immutable.
-- Default grants permit reads throughout the Agent's Harness workspace for native
-  file previews, browsing, bootstrap, and outputs. The exact enrolled node remains
-  bound to that Agent. Reads do not follow symlinks or grant access outside the
-  workspace beyond the existing managed skill roots. Explicit operator policies
-  survive unchanged and can restrict these reads.
-- Write grants remain limited to the four owner documents, memory paths, the
-  workspace skill directory, and `media/inbound/openclaw-staged-*/**`. `file.create`
-  preserves Harness edits. Generated output files remain read-only through this API.
-  Binary fetches above 16 MiB remain bounded by caller and node policy. Command
-  admission never substitutes for path authorization.
+- Default reads cover the enrolled Agent's Harness workspace and managed skill
+  roots. Symlinks are not followed; explicit policies remain authoritative. This
+  enables native previews, browsing, bootstrap, and generated outputs.
+- Writes remain restricted to owner documents, memory, skills, and staged inbound
+  files. `file.create` preserves existing files. Reads above 16 MiB retain caller
+  and node limits; command admission does not replace path authorization.
 
 The chart supplies worker credentials/public trust and Compute installs node
 access to Envoy. Memory uses node duplex with existing native file workers;
