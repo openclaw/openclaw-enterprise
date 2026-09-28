@@ -3,12 +3,11 @@
 ## Overview
 
 `ComputeDriver` prepares and removes Namespace infrastructure and runs Agent
-revisions. OpenClaw Control Plane (OCC) selects one Compute Driver per
-Installation, authorizes operations, and records each revision's configuration;
-that record cannot change. Compute manages the Agent gateway, workload identity,
-routing, and activation; it also reports when the workload is ready. Its backend owns the underlying
+revisions. OCC selects one Driver per Installation, authorizes operations, and
+stores immutable revision configurations. Compute owns gateway, workload
+identity, routing, activation, and readiness; its backend owns underlying
 resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
-workload; Compute keeps its other responsibilities.
+workload.
 
 See [Driver selection](selection.md) for supported combinations and package trust,
 the [feature matrix](compute-matrix.md) to compare Drivers, and the
@@ -18,8 +17,23 @@ current and planned placement.
 ## Interface
 
 The [shared contracts](../../../packages/contracts/src/index.ts) define the types.
-Every `ComputeDriver` has an `id`,
-an `implementation`, and `capability: "compute"`.
+Every `ComputeDriver` has an `id`, `implementation`, and
+`capability: "compute"`.
+
+The optional `getRuntimeImages(revision)` method observes containers belonging to
+that admitted revision and returns `{workload, container, image, imageId, commit, openclawCommit}`
+entries. OCC requires exact Agent read authority and calls the Driver pinned by
+the active revision. The `runtime-images` API reports `undeployed` without an
+active revision and `unsupported` when the Driver omits this method.
+
+Docker reads the immutable image attached to each owned container and its OCI
+revision label plus `org.openclaw.image.revision` for the upstream OpenClaw commit,
+even if the configured tag has moved. Kubernetes reads image
+references and IDs from revision-owned Pods, including init and ephemeral
+containers. Its private runtime metadata read is bound to the Pod UID and running
+container ID; both commits apply only to containers with that same image ID.
+Commits must be full lowercase Git SHAs. Missing IDs or provenance remain `null`.
+These observations do not inventory separate Sandbox Driver workloads.
 
 The optional `discoverHarnessModels({provider, apiKey})` method returns native
 model IDs and names for Agent setup without persisting credentials. OCC checks
@@ -54,7 +68,11 @@ activation after authorization.
 | `validateHarnessAuth(harness, auth, configuration)`                    | Deployment requires this check of the Harness, authentication snapshot, and native Configuration. It must have no side effects. A missing method causes a dependency-unavailable error; a thrown error becomes a resource conflict before queueing. |
 | `activateRevision(revision, context?)`, `deactivateRevision(revision)` | Production startup requires both. The worker also calls activation if a development Driver provides it. See [revision stages](#production-revision-stages).                                                                                         |
 | `setLifecycleDrivers(drivers)`                                         | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                                                                                         |
+| `resolveSandboxNamespace(namespace)`                                   | Returns the Sandbox runtime placement for [credential source](credential-gateway.md) registration.                                                                                                                                                  |
 | `activationOrder`, `maintenanceIntervalMs`                             | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                                                          |
+
+`requiresStoppedPredecessors(revision)` opts into [exclusive replacement](#production-revision-stages).
+It must be a side-effect-free declaration derived from the admitted revision.
 
 ### Optional startup preflight
 
@@ -83,20 +101,26 @@ for the bundled route implementation.
 
 ### Optional initial runtime credential provisioning
 
-`getAgentRuntimeCredentialStatus(binding)` returns `transportConfigured`: whether
-complete generated transport credentials are stored for this Agent.
+`getAgentRuntimeCredentialStatus(binding)` returns `transportConfigured` when
+complete generated transport credentials are stored.
 `provisionAgentRuntimeCredentials(binding, input)` accepts an empty input object and
-sets up those transport credentials. Channel credentials use Namespace Secrets and
-Configuration `secretBindings` instead of this endpoint. The caller holds Namespace
-and Agent locks and requires a ready Namespace with no earlier Agent revision. It
-passes approved identities, never physical storage names. Missing methods return an
-error. External writes can survive a database or audit failure; refresh status
-before retrying. See the [initial credential workflow](../console/create-and-deploy.md#initial-runtime-credentials).
+sets up those transport credentials. Channel credentials use Namespace Secrets
+and Configuration `secretBindings`. The caller holds Namespace and Agent locks
+and requires a ready Namespace with no earlier revision. It passes approved
+identities, never storage names. Missing methods fail. External writes can
+survive database or audit failure; refresh status before retrying. See the
+[initial credential workflow](../console/create-and-deploy.md#initial-runtime-credentials).
+
+`requiresAgentRuntimeCredentials: true` means the Driver needs generated
+transport credentials to deploy. OCC checks stored status for these Drivers and
+creates missing credentials before the first revision with the caller's exact
+Agent `read` and `operate` permission. Later revisions cannot regenerate them.
+Other Drivers skip this deployment step.
 
 `deleteAgentRuntimeCredentials(binding)` is the idempotent teardown counterpart.
 During Agent deletion, the worker calls it after retiring every revision and
 before removing the Agent's database identity. Kubernetes Compute deletes
-the admitted Agent-owned private-state and shared-workspace claims, workspace
+the admitted Agent-owned private-state and Harness-workspace claims, workspace
 setup Secret, and transport Secret; absence is success. Revision retirement
 retains those claims. Namespace-owned Harness model authentication survives Agent deletion.
 A Driver that supports provisioning but not deletion fails Agent deletion
@@ -115,6 +139,22 @@ At the convergence deadline, the worker persists that observation with its
 terminal result. The existing [deployment status API](../agents.md#deployment-status)
 returns the saved evidence under the caller's exact-revision read permission.
 It does not invoke Compute while serving the GET request.
+
+### Optional runtime diagnostics
+
+`diagnoseAgentDeployment(binding)` returns current checks for an exact revision
+using its approved Namespace and Agent. OCC first authorizes exact Agent read
+and operate and revision read.
+
+The Driver owns native collection and maps its evidence to generic
+`component`, `check`, `state`, nullable `checkedAt`, and optional safe `code`
+fields. It must verify runtime identity, bound response size and time, and omit
+credentials, raw provider output, and logs. OCC rejects mismatched revisions,
+invalid timestamps, more than 32 checks, and unsupported states.
+
+The call does not update deployment work, rerun the startup probe, send
+messages, or prove a model response. Missing support returns dependency
+unavailable; Drivers unable to collect safe evidence should omit the method.
 
 ### Runtime logging ownership
 
@@ -143,10 +183,12 @@ Reading initial credential status requires Agent `read`; provisioning requires
 Agent `read` and `operate`. Resolving a gateway endpoint also requires access to
 that Agent. See [authorization](../authorization.md).
 
-`ComputeRevisionContext.harnessAuth` contains either the approved API-key source
-and its current backend reference, the managed-account credential reference and
-private Provider binding, or just `{ method: "runtime" }` for operator-managed
-authentication. None contains credential values. The separate `secretEnvironment`
+`ComputeRevisionContext.harnessAuth` contains the approved API-key source and
+its current backend reference, the managed-account credential reference and
+private Backend binding, the current [credential source](../credential-sources.md)
+record, or just `{ method: "runtime" }` for operator-managed authentication.
+None contains credential values.
+The separate `secretEnvironment`
 contains Configuration bindings for gateway credentials. Deliver model credentials
 only to the selected Harness workload. Channel tokens are ordinary Namespace Secrets
 referenced by Configuration bindings; never expose them in responses, Configuration,
@@ -169,7 +211,7 @@ managed resources. See the [Driver loading flow](../../flows/driver-plugin-loadi
 OCC records the Compute identity, Harness placement, and Configuration in the
 immutable revision. Before dispatch, the worker checks that the selected Compute
 still matches, rechecks authorization, and resolves current credential references.
-While preparing a replacement, the worker preserves the previous route until
+By default, while preparing a replacement, the worker preserves the previous route until
 activation checks that the active revision is still the expected one and switches
 the route. Activation lets the candidate serve; it must be safe to repeat and
 requires the configured runtime to be ready and authenticated. Deactivation is a
@@ -182,6 +224,19 @@ first production deployment, it deactivates an unpublished dedicated candidate.
 A Driver that keeps one stable Agent runtime can select `"beforeCommit"`; the
 worker then activates the candidate before publishing it and skips that initial
 deactivation. If a required stage becomes unavailable, the worker cannot proceed.
+
+A Driver may implement `requiresStoppedPredecessors(revision)` to return `true`
+for workloads needing exclusive preparation. Before preparing that revision,
+the worker closes earlier credential sessions and calls `stopRevision` for every
+earlier snapshot, including failed candidates. Stop must wait for resource
+release, preserve durable data, and be safe to repeat. A stop failure prevents
+preparation. The Driver owns backend-specific termination and Sandbox cleanup.
+
+A newer admitted exclusive revision supersedes older reconciliation and
+maintenance, even while the old revision remains the last committed active
+pointer. This prevents an old pass from recreating a competing runtime. This
+mode accepts downtime and has no automatic rollback: restore a configuration by
+deploying a new higher revision. Other Drivers keep the default ordering.
 
 ### SandboxDriver coordination
 
@@ -214,7 +269,8 @@ and original deployment Principal. The worker prepares and activates the revisio
 again; those operations must be safe to repeat. Failed observations, including
 asynchronous binding failures, schedule another authorized pass without changing
 the active revision. Maintenance survives worker restarts and ends when a newer
-revision replaces it. Without an interval, lifecycle work responds to events. New deployments have limited retries.
+revision replaces it, or is admitted with exclusive replacement enabled. Without
+an interval, lifecycle work responds to events. New deployments have limited retries.
 
 ### Plugin startup warnings
 
@@ -257,6 +313,7 @@ prove readiness. See [Kubernetes startup status](kubernetes-compute.md#plugin-st
 
 - [Harness execution](../harness-execution.md) and [Agent lifecycle](../agents.md)
 - [Driver selection](selection.md) and [deployment guide](../../guides/deploy.md)
+- [Agent deployment diagnostics flow](../../flows/agent-deployment-diagnostics.md)
 - [Controller reconciliation](../controller/reconciliation.md) and [Harness execution topology](../../flows/harness-execution-topology.md)
 - [Worker source](../../../apps/controller/src/worker.ts) and [OCC admission and resource operations](../../../packages/occ/src/index.ts)
 - [Docker Compose development flow](../../flows/docker-compose-development.md) and [verification guide](../../testing/README.md)

@@ -1,0 +1,234 @@
+{
+  "uid": "occ-logs",
+  "title": "OCC operational logs (demonstration)",
+  "description": "Summaries use the existing safe operational metadata. Stored event bodies and metadata are unchanged. Filters narrow this operator view; they are not authorization boundaries.",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "custom",
+        "query": "occ-api,occ-worker,openclaw-gateway,codex-app-server",
+        "includeAll": true,
+        "allValue": "occ-api|occ-worker|openclaw-gateway|codex-app-server",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [
+          {
+            "text": "All",
+            "value": "$__all",
+            "selected": true
+          },
+          {
+            "text": "occ-api",
+            "value": "occ-api",
+            "selected": false
+          },
+          {
+            "text": "occ-worker",
+            "value": "occ-worker",
+            "selected": false
+          },
+          {
+            "text": "openclaw-gateway",
+            "value": "openclaw-gateway",
+            "selected": false
+          },
+          {
+            "text": "codex-app-server",
+            "value": "codex-app-server",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "event",
+        "label": "Event",
+        "type": "custom",
+        "query": "http.completed,http.unexpected_error,worker.completed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,listening,startup-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,gateway.operational,codex.operational",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [
+          {
+            "text": "All",
+            "value": "$__all",
+            "selected": true
+          },
+          {
+            "text": "http.completed",
+            "value": "http.completed",
+            "selected": false
+          },
+          {
+            "text": "http.unexpected_error",
+            "value": "http.unexpected_error",
+            "selected": false
+          },
+          {
+            "text": "worker.completed",
+            "value": "worker.completed",
+            "selected": false
+          },
+          {
+            "text": "worker.error",
+            "value": "worker.error",
+            "selected": false
+          },
+          {
+            "text": "worker.health",
+            "value": "worker.health",
+            "selected": false
+          },
+          {
+            "text": "worker.started",
+            "value": "worker.started",
+            "selected": false
+          },
+          {
+            "text": "worker.stopped",
+            "value": "worker.stopped",
+            "selected": false
+          },
+          {
+            "text": "worker.startup-error",
+            "value": "worker.startup-error",
+            "selected": false
+          },
+          {
+            "text": "listening",
+            "value": "listening",
+            "selected": false
+          },
+          {
+            "text": "startup-error",
+            "value": "startup-error",
+            "selected": false
+          },
+          {
+            "text": "installation.bootstrapped",
+            "value": "installation.bootstrapped",
+            "selected": false
+          },
+          {
+            "text": "installation.already-bootstrapped",
+            "value": "installation.already-bootstrapped",
+            "selected": false
+          },
+          {
+            "text": "installation.bootstrap-failed",
+            "value": "installation.bootstrap-failed",
+            "selected": false
+          },
+          {
+            "text": "migration.completed",
+            "value": "migration.completed",
+            "selected": false
+          },
+          {
+            "text": "migration.failed",
+            "value": "migration.failed",
+            "selected": false
+          },
+          {
+            "text": "compute.preflight-warning",
+            "value": "compute.preflight-warning",
+            "selected": false
+          },
+          {
+            "text": "gateway.operational",
+            "value": "gateway.operational",
+            "selected": false
+          },
+          {
+            "text": "codex.operational",
+            "value": "codex.operational",
+            "selected": false
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "logs",
+      "title": "All events",
+      "description": "All retained operational events. Expand a row for request, work and workload identity; use Explore to filter related records.",
+      "datasource": {
+        "type": "loki",
+        "uid": "occ-loki"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=~`${service:regex}`} | event_name=~`${event:regex}` | line_format `{{.service_name}} | {{.event_name}}{{if .http_request_method}} {{.http_request_method}}{{end}}{{if .http_response_status_code}} status={{.http_response_status_code}}{{end}}{{if .duration_ms}} duration={{.duration_ms}}ms{{end}}{{if .work_outcome}} outcome={{.work_outcome}}{{end}}{{if .occ_code}} code={{.occ_code}}{{end}}{{if .work_operation}} op={{.work_operation}}{{end}}{{if .work_attempt}} attempt={{.work_attempt}}{{end}}`",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "Needs attention",
+      "description": "Warnings and errors, HTTP 4xx/5xx, and retry/permanent/failure work outcomes. HTTP and worker failures can have INFO severity.",
+      "datasource": {
+        "type": "loki",
+        "uid": "occ-loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service_name=~`${service:regex}`} | event_name=~`${event:regex}` | severity_text=~\"WARN|ERROR|FATAL\" or http_response_status_code=~\"[45][0-9]{2}\" or work_outcome=~\"retry|permanent|failure\" | line_format `{{.service_name}} | {{.event_name}}{{if .http_request_method}} {{.http_request_method}}{{end}}{{if .http_response_status_code}} status={{.http_response_status_code}}{{end}}{{if .duration_ms}} duration={{.duration_ms}}ms{{end}}{{if .work_outcome}} outcome={{.work_outcome}}{{end}}{{if .occ_code}} code={{.occ_code}}{{end}}{{if .work_operation}} op={{.work_operation}}{{end}}{{if .work_attempt}} attempt={{.work_attempt}}{{end}}`",
+          "queryType": "range"
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,7 @@
 {
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
   "files": [
     {
       "path": "tests/conformance/audit.test.mjs"
@@ -7,10 +10,16 @@
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-seccomp-profile.test.mjs"
+    },
+    {
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/credential-source-occ.test.mjs"
     },
     {
       "path": "tests/conformance/docker-compute.test.mjs"
@@ -49,6 +58,9 @@
       "path": "tests/conformance/platform-state-memory.test.mjs"
     },
     {
+      "path": "tests/conformance/pr-status.test.mjs"
+    },
+    {
       "path": "tests/conformance/presets.test.mjs"
     },
     {
@@ -56,6 +68,9 @@
     },
     {
       "path": "tests/conformance/secret-occ.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-configuration.test.mjs"
     },
     {
       "path": "tests/conformance/service-account-driver.test.mjs"
@@ -115,10 +130,16 @@
       "path": "tests/integration/production-healthcheck.test.mjs"
     },
     {
+      "path": "tests/integration/production-image-upgrade.test.mjs"
+    },
+    {
       "path": "tests/integration/sandbox-driver-startup.test.mjs"
     },
     {
       "path": "tests/integration/secret-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/plugin-discovery-api.test.mjs"
     },
     {
       "path": "tests/integration/runtime-credentials-api.test.mjs"
@@ -141,12 +162,21 @@
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
         "dev-up applies per-image overrides on top of the shared runtime image",
+        "Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell",
+        "Kubernetes dev-up rejects an unsupported control-plane selection",
         "dev-up rejects a public controller port rendered by real Compose",
         "dev-up refuses an existing key destination before invoking Compose",
         "dev-up fails closed when bootstrap exits unsuccessfully",
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
         "dev-up rejects an authenticated installation response for a different Installation"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-startup.test.mjs",
+      "expectedTests": [
+        "first-Agent accepts current Compose-backed Kubernetes development state",
+        "first-Agent rejects OpenShell development state before external calls"
       ]
     },
     {
@@ -166,6 +196,9 @@
       "path": "tests/integration/ci-cleanup.test.mjs"
     },
     {
+      "path": "tests/integration/ci-image-reconciliation.test.mjs"
+    },
+    {
       "path": "tests/integration/ci-prepare.test.mjs"
     },
     {
@@ -176,6 +209,12 @@
     },
     {
       "path": "tests/browser/console-agents.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-plugin-approvers.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-channels.test.mjs"
     },
     {
       "path": "tests/browser/console-repository-dedicated.test.mjs"
@@ -217,16 +256,29 @@
       "path": "tests/conformance/plugin-driver.test.mjs"
     },
     {
+      "path": "tests/conformance/slack-channel-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
+    },
+    {
       "path": "tests/conformance/plugin-runtime-templates.test.mjs"
     },
     {
       "path": "tests/integration/plugin-driver-startup.test.mjs"
     },
     {
+      "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
+    },
+    {
       "path": "tests/conformance/repository-transactions.test.mjs"
     },
     {
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
     },
     {
       "path": "tests/integration/native-admin-access.test.mjs",
@@ -311,6 +363,9 @@
       "path": "tests/conformance/repository-credentials-registry.test.mjs"
     },
     {
+      "path": "tests/conformance/repository-client-environment.test.mjs"
+    },
+    {
       "path": "tests/conformance/repository-runtime-material.test.mjs"
     },
     {
@@ -335,6 +390,19 @@
       "path": "tests/integration/kubernetes-peer-status.test.mjs",
       "expectedTests": [
         "real peer-status HTTPS transport authenticates its revision and verifies server trust"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-assets.test.mjs"
+    },
+    {
+      "path": "tests/conformance/module-boundaries.test.mjs"
+    },
+    {
+      "path": "tests/conformance/module-policy.test.mjs",
+      "expectedTests": [
+        "repository source obeys its dependency policy with exact current exceptions",
+        "repository policy allows a public root and rejects a new HTTP Driver import"
       ]
     }
   ]

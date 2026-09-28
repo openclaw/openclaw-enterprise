@@ -31,7 +31,7 @@ their separate suites.
 Run `node scripts/verify-repository-credentials-boundary.mjs` after changing the
 service. The same check runs through `pnpm check:workspace` in baseline CI. It
 parses `composition/repository-credentials/`, `drivers/repo/credentials/`,
-`drivers/repo/github/` and `providers/repository-credentials/` beneath
+`drivers/repo/github/` and `backends/repository-credentials/` beneath
 `apps/controller/src/`, plus
 `repository-credentials.ts` and `repository-credentials.mjs`, using the workspace's
 pinned Prettier TypeScript parser. Runtime imports and re-exports must stay within the
@@ -309,6 +309,7 @@ qualification image and rendered Compose check.
 | Rendered Compose              | Declared paths and mount separation.                                                                               |
 | Separate running containers   | Delivered image identity and observed client/service custody for the exercised commands.                           |
 | Authorized live smoke         | Real provider behavior and cleanup for the selected repository, grant and client version.                          |
+| Installed Agent turn          | The configured Agent executes Git through its own Harness, tool policy, network path and repository authorization. |
 
 Retain selectors, versions, source/artifact/image identities, pass/fail/skip counts
 and cleanup results. Missing selectors leave evidence unavailable; they do not
@@ -317,6 +318,17 @@ bound to their original artifacts. After changes, record justified equivalence
 for each affected assertion or rerun its owning check. These packaging checks do
 not establish OCC/worker/Compute integration, an installed ordinary-Agent model
 contribution, a real-time thirteen-hour soak or release readiness.
+
+For Codex consumers, do not substitute operator `kubectl exec`, direct container
+Git commands, or runtime-image smoke tests for the installed Agent turn. Those
+checks can prove material delivery, Git configuration and broker authorization
+outside Codex. Exercise stock Codex's generated broker allowance,
+`allow_local_binding = true`, and `mode = "full"` separately. Cover bound/unbound
+dedicated/embedded consumers, broker-host denies, and unallowed hosts. Otherwise allowed private
+addresses are permitted. Require real reads, an authorized temporary write, and
+an unauthorized operation denied by broker authorization.
+For Slack-enabled Agents, start the installed-Agent proof from Slack and verify
+the threaded Agent response instead of using a direct native UI prompt.
 
 ## Run an authorized live smoke
 

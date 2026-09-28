@@ -9,19 +9,32 @@ occ:
   # See [Installation setup](../../../docs/guides/deploy/production-installation.md#configure-the-installation).
   cluster: production-west
 
-# No Provider is configured; add one with its matching ServiceAccount Driver
-# only when using provider-managed accounts.
-# See [Provider configuration](../../../docs/reference/providers.md#installation-configuration).
-provider: []
+# No Backend is configured; add one with its matching ServiceAccount Driver
+# only when using backend-managed accounts.
+# See [Backend configuration](../../../docs/reference/backends.md#installation-configuration).
+backend: []
 
-# Seed bundled Agent Presets without replacing existing same-name copies.
+# Seed standard-codex and standard-openclaw without replacing same-name copies.
 # Omitted or false disables seeding; existing Presets are retained.
 presets:
   includeDefaults: true
+  # Optional: load custom DevDay presets, or mount your own JSON beside this YAML.
+  # Relative paths resolve beside installation.yaml; mount files for API and worker.
+  # files:
+  #   - /app/deploy/presets/devday.json # SWE Agent
+  #   - /app/deploy/presets/devday-partners.json # Community Agent
+  #   - /app/deploy/presets/devday-qa.json # Q&A Agent
+  #   - /app/deploy/presets/devday-oncall.json # Oncall Agent
 
 # Bundled Drivers omit `package`; selection IDs and options are trusted startup inputs.
 # See [Driver selections](../../../docs/reference/drivers/selection.md#supported-selections).
 drivers:
+  # Optional: enable the token-free curated Codex catalog. See Plugin Driver setup:
+  # https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs
+  # plugin:
+  #   id: codex-plugin
+  #   configuration:
+  #     catalogSource: openai-curated
   # Stores each Namespace's native Agent Configuration in its Kubernetes ConfigMaps.
   # See [Kubernetes Configuration](../../../docs/reference/settings/programmatic.md#kubernetes-configuration-driver).
   configuration:
@@ -62,14 +75,14 @@ drivers:
             memory: 128Mi
           limits:
             cpu: 500m
-            memory: 256Mi
+            memory: 2Gi
         agent:
           requests:
             cpu: 100m
             memory: 128Mi
           limits:
             cpu: 500m
-            memory: 256Mi
+            memory: 2Gi
         # Each tenant namespace receives a Pod quota and default container bounds.
         # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
         namespace:
@@ -81,7 +94,7 @@ drivers:
               memory: 128Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 2Gi
       network:
         # With repositoryCredentials.enabled, add this exact service endpoint peer.
         # The instance label must equal the Helm release name; this example uses oce.
@@ -126,10 +139,12 @@ drivers:
         nodeSelector:
           oce-role: agents
         gatewayNodeSelector:
-          oce-role: control-plane
+          oce-role: control
         # Keep each Agent's transport tokens separate from its model API key.
         # See [Runtime credentials](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
         transportSecretPrefix: openclaw-agent-transport
+        # Required for repository-bound dedicated Codex Agents: the runtime image
+        # must understand the narrow broker private-endpoint policy contract.
   # Stores Namespace-owned Secret values and projects approved bindings to gateways.
   # See [Secret Driver](../../../docs/reference/drivers/kubernetes-secret.md#configure-the-driver).
   secret:

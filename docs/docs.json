@@ -6,8 +6,8 @@
     "primary": "#e85d45"
   },
   "logo": {
-    "light": "/assets/lobster-mech-transparent.png",
-    "dark": "/assets/lobster-mech-transparent.png"
+    "light": "/assets/oce-mascot.png",
+    "dark": "/assets/oce-mascot.png"
   },
   "navigation": {
     "languages": [
@@ -165,6 +165,10 @@
                     "label": "Secrets"
                   },
                   {
+                    "page": "reference/credential-sources",
+                    "label": "Credential Sources"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }
@@ -207,6 +211,7 @@
               }
             ],
             "hidden": [
+              "reference/console/debug-fields",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -281,11 +286,29 @@
                     ]
                   },
                   {
+                    "group": "Credential Gateway",
+                    "pages": [
+                      {
+                        "page": "reference/drivers/openshell-credential-gateway",
+                        "label": "OpenShell"
+                      }
+                    ]
+                  },
+                  {
                     "group": "Secrets",
                     "pages": [
                       {
                         "page": "reference/drivers/kubernetes-secret",
                         "label": "Kubernetes"
+                      }
+                    ]
+                  },
+                  {
+                    "group": "Channels",
+                    "pages": [
+                      {
+                        "page": "reference/drivers/slack-channel",
+                        "label": "Slack Directory"
                       }
                     ]
                   },
@@ -343,10 +366,10 @@
                 ]
               },
               {
-                "group": "Providers",
+                "group": "Backends (Experimental)",
                 "pages": [
                   {
-                    "page": "reference/providers",
+                    "page": "reference/backends",
                     "label": "Overview"
                   },
                   {
@@ -390,12 +413,28 @@
                     "label": "Control Plane Setup"
                   },
                   {
+                    "page": "guides/deploy/upgrade-checklist",
+                    "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade",
+                    "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/local-k3d-image-upgrade",
+                    "label": "Local k3d Upgrades"
+                  },
+                  {
                     "page": "guides/deploy/kubernetes",
                     "label": "Kubernetes"
                   },
                   {
                     "page": "guides/deploy/eks",
                     "label": "Amazon EKS"
+                  },
+                  {
+                    "page": "guides/deploy/codex-sandbox",
+                    "label": "Codex Sandbox"
                   },
                   {
                     "group": "Settings",
@@ -456,6 +495,10 @@
                   {
                     "page": "guides/observability/metrics",
                     "label": "Metrics Scraping"
+                  },
+                  {
+                    "page": "guides/observability/demo",
+                    "label": "Demo Stack"
                   },
                   {
                     "page": "reference/metrics",
@@ -560,6 +603,10 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "contributing/rfcs",
+                    "label": "RFCs"
+                  },
+                  {
                     "page": "contributing/design-philosophy",
                     "label": "Design Philosophy"
                   },
@@ -595,12 +642,20 @@
                     "group": "Driver Contracts",
                     "pages": [
                       {
+                        "page": "reference/drivers/channel",
+                        "label": "Channel"
+                      },
+                      {
                         "page": "reference/drivers/compute",
                         "label": "Compute"
                       },
                       {
                         "page": "reference/drivers/configuration",
                         "label": "Configuration"
+                      },
+                      {
+                        "page": "reference/drivers/credential-gateway",
+                        "label": "Credential Gateway"
                       },
                       {
                         "page": "reference/drivers/iam",
@@ -673,6 +728,14 @@
                         "label": "Local Tests"
                       },
                       {
+                        "page": "testing/module-boundaries",
+                        "label": "Module Boundaries"
+                      },
+                      {
+                        "page": "testing/repository-boundaries",
+                        "label": "Repository Boundaries"
+                      },
+                      {
                         "page": "testing/fixtures-and-scenarios",
                         "label": "Fixtures and Scenarios"
                       },
@@ -720,6 +783,9 @@
               }
             ],
             "hidden": [
+              "contributing/rfc-template",
+              "guides/deploy/local-repository-credentials",
+              "guides/deploy/openshell-credential-sources",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -729,10 +795,13 @@
               "reference/settings/programmatic",
               "flows/platform-startup",
               "flows/production-startup",
+              "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
+              "flows/audit-ledger",
               "flows/controller-worker",
+              "flows/agent-deployment-diagnostics",
               "flows/platform-console",
               "flows/platform-console/agent-editing",
               "flows/configuration-driver",
@@ -746,8 +815,11 @@
               "flows/harness-execution-topology",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
+              "flows/credential-source-lifecycle",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
+              "flows/agent-channel-directory",
+              "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
               "flows/kubernetes-existing-namespace-placement",

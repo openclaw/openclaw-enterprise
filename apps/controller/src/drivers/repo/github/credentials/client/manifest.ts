@@ -164,20 +164,13 @@ export async function readRuntimeRepositoryManifest(
     ) {
       throw new Error("invalid-repository-material");
     }
-    const directory = join(
-      finalRoot,
-      "sessions",
-      digest([binding.repositoryRef, binding.sessionId]),
-    );
+    const directoryName = digest([binding.repositoryRef, binding.sessionId]);
+    const directory = join(finalRoot, "sessions", directoryName);
     if (binding.directory !== directory) {
       throw new Error("invalid-repository-material");
     }
     const client = readPublicClient(binding.client);
-    const materialDirectory = join(
-      root,
-      "sessions",
-      digest([binding.repositoryRef, binding.sessionId]),
-    );
+    const materialDirectory = join(root, "sessions", directoryName);
     const configuration = await readClientConfiguration(materialDirectory);
     record(configuration, ["sessionId", "deadlineWallMs", "client", "hasPublicCa"]);
     readPublicClient(configuration.client);
@@ -204,11 +197,13 @@ export async function readRuntimeRepositoryManifest(
     );
   }
   const tuples = bindings.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId]);
-  const sorted = [...tuples].sort((left, right) => {
-    const first = left[0]! < right[0]! ? -1 : left[0]! > right[0]! ? 1 : 0;
-    return first || (left[1]! < right[1]! ? -1 : left[1]! > right[1]! ? 1 : 0);
-  });
-  if (JSON.stringify(tuples) !== JSON.stringify(sorted) || digest(sorted) !== parsed.generation) {
+  // References are unique, so their adjacent order also determines the tuple order.
+  if (
+    bindings.some(
+      (binding, index) => index > 0 && bindings[index - 1]!.repositoryRef > binding.repositoryRef,
+    ) ||
+    digest(tuples) !== parsed.generation
+  ) {
     throw new Error("invalid-repository-material");
   }
   return Object.freeze({ generation: parsed.generation, bindings: Object.freeze(bindings) });

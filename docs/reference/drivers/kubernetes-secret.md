@@ -9,9 +9,14 @@ Configuration `secretBindings` entry for gateway-only credentials.
 The [SecretDriver base contract](secret.md) defines the shared interface, IAM, and
 lifecycle. This page owns Kubernetes setup and operator procedures.
 
-This driver is storage and env delivery only. It does not issue credentials,
-share Secrets across Namespaces, keep value history, restart workloads after an
-update, roll values back, or broker per-access secret reads. Native OpenClaw
+The Driver stores values for environment delivery, transient server-side
+hosted plugin discovery, and [credential source](../credential-sources.md)
+registration. Hosted existing-Agent discovery uses its bound `codex_pat` Secret;
+Create Agent discovery can use a selected Secret. Curated discovery needs no
+Secret. Values never enter Console responses. The Driver does not issue
+credentials, share Secrets across Namespaces, keep value history, restart
+workloads after an update, roll values back, or broker per-access Secret reads.
+Native OpenClaw
 `SecretRef` handling for `env`, `file`, and `exec` configuration remains the
 gateway's responsibility.
 
@@ -20,7 +25,7 @@ gateway's responsibility.
 - The bundled Kubernetes Compute Driver must select or create the backing
   control-plane Kubernetes namespace for the OpenClaw Namespace.
 - The OpenClaw Namespace must be `ready` before Secret create, update, or
-  projection validation can succeed.
+  projection validation or server-side credential use can succeed.
 - The controller API needs tenant-local Kubernetes Secret `get`, `create`,
   `update`, `patch`, and `delete` permission in each tenant control-plane namespace.
   The trusted worker reads admitted sources and manages selected runtime projections
@@ -31,6 +36,7 @@ gateway's responsibility.
   also requires the deploying actor and the consuming Agent's service principal
   to have `operate` on every bound Secret; see
   [binding and deployment requirements](#bind-a-secret-to-gateway-environment).
+  Plugin discovery requires Agent `create` and exact Secret `operate` by the caller.
 - Secret values must be nonempty UTF-8 strings without NUL bytes, at most
   65,536 UTF-8 bytes, and fit the OCC request-body limit.
 
@@ -124,7 +130,9 @@ A successful create returns HTTP `201` with metadata only:
 
 OCC stores the Secret ID, Namespace ID, selected driver ID, and opaque
 Kubernetes backend reference. The value is stored only by the driver and is
-never returned by OCC.
+never returned by OCC. When a credential source is registered, the API reads the
+value with the same labels, annotations, UID, and key checks as `resolve` and
+passes it only to the Credential Gateway.
 
 List readable metadata with `GET /namespaces/:namespaceId/secrets`; see the
 [SecretDriver IAM contract](secret.md#iam) for collection and exact-Secret checks.
@@ -222,17 +230,19 @@ after its reference dependencies are cleared; see [Delete](#delete).
 
 Delete only unreferenced Secrets. This example uses an authenticated human
 session from [service-key recovery](../../guides/deploy/service-keys.md#sign-in-as-a-human-administrator)
-at the configured `OCC_URL`:
+at the configured `OCC_URL`. Set `OCC_ORIGIN` to the configured Console origin
+from `OCC_AUTH_BASE_URL` (scheme, host, and optional port only):
 
 ```bash
 curl -fsS \
   "$OCC_URL/namespaces/$NAMESPACE_ID/secrets/$SECRET_ID" \
   -X DELETE \
+  -H "Origin: $OCC_ORIGIN" \
   -b "$OCC_SESSION_COOKIE_JAR"
 ```
 
 Successful deletion returns HTTP `204`. OCC denies deletion while the Secret is
-referenced by any current Configuration, Agent draft, active revision, or pending deployment.
+referenced by any current Configuration, credential source, Agent draft, active revision, or pending deployment.
 Inactive historical revisions alone do not prevent deletion.
 Namespace removal is also blocked while owned Secrets remain. Agent removal does
 not own or garbage-collect Namespace Secret storage.

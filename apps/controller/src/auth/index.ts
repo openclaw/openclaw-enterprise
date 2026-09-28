@@ -277,27 +277,50 @@ function requireTrustedBrowserOrigin(request: FastifyRequest, expectedOrigin: st
   }
 }
 
+function requireSessionMutationOrigin(headers: Headers, expectedOrigin: string): void {
+  const fetchSite = headers.get("sec-fetch-site");
+  if (
+    headers.get("origin") !== expectedOrigin ||
+    (fetchSite !== null && fetchSite !== "same-origin")
+  ) {
+    throw new AdmissionFailure(403, "FORBIDDEN", "The browser origin is not trusted.");
+  }
+}
+
 function accountName(input: ProvisionAuthAccountInput): string {
   return input.name?.trim() || input.email.trim();
 }
 
 function safeSessionResponse(response: unknown): {
   readonly authenticated: true;
+  readonly sessionKey: string;
   readonly user: { readonly id: string; readonly email: string; readonly name: string };
 } | null {
   if (typeof response !== "object" || response === null) {
     return null;
   }
   const { session, user } = response as { readonly session?: unknown; readonly user?: unknown };
-  if (!session || typeof user !== "object" || user === null) {
+  if (
+    typeof session !== "object" ||
+    session === null ||
+    typeof user !== "object" ||
+    user === null
+  ) {
     return null;
   }
+  const { id: sessionKey } = session as Record<string, unknown>;
   const { id, email, name } = user as Record<string, unknown>;
-  if (!isNonEmptyString(id) || !isNonEmptyString(email) || !isNonEmptyString(name)) {
+  if (
+    !isNonEmptyString(sessionKey) ||
+    !isNonEmptyString(id) ||
+    !isNonEmptyString(email) ||
+    !isNonEmptyString(name)
+  ) {
     return null;
   }
   return {
     authenticated: true,
+    sessionKey,
     user: { id, email, name },
   };
 }
@@ -397,12 +420,32 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
   readonly #installationId: string;
   readonly #issuer: string;
   readonly #sessionCookieName: string;
+  readonly #browserOrigin: string;
 
-  constructor(auth: ControllerBetterAuth, installationId: string, cookieName: string) {
+  constructor(
+    auth: ControllerBetterAuth,
+    installationId: string,
+    cookieName: string,
+    browserOrigin: string,
+  ) {
     this.#auth = auth;
     this.#sessionCookieName = cookieName;
+    this.#browserOrigin = browserOrigin;
     this.#installationId = installationId;
     this.#issuer = betterAuthIssuer(installationId);
+  }
+
+  async verifyControllerRequest(request: AdmissionRequest): Promise<AdmittedCaller> {
+    const headers = authHeaders(request.headers);
+    if (
+      request.authorizationHeader === undefined &&
+      !headers.has(OCC_SERVICE_KEY_HEADER) &&
+      headers.has("cookie") &&
+      !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())
+    ) {
+      requireSessionMutationOrigin(headers, this.#browserOrigin);
+    }
+    return this.verify(request);
   }
 
   async verify(request: AdmissionRequest): Promise<AdmittedCaller> {
@@ -678,7 +721,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       reply,
       () => {
         // Better Auth server API calls skip origin middleware without a Request context.
-        requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
+        requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
         return api.signOut({
           headers: sessionHeaders(request.headers, sessionCookieName),
           asResponse: false,
@@ -731,6 +774,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       auth,
       options.installationId,
       sessionCookieName,
+      expectedBrowserOrigin,
     ),
     createAccount,
     deleteAccount,

@@ -3,6 +3,8 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
@@ -11,7 +13,6 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
-  configureExistingK3dLocalPathSharedFileSystem,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -46,20 +47,35 @@ export function optionalPluginProofModel() {
 
 function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
   if (realPluginProofSelected) {
+    const scenarioKeys = {
+      openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
+      codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
+      codex_calendar: "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
+      codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
+    };
+    assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");
+    const databases = Object.entries(scenarioKeys).map(([name, key]) => {
+      const url = requiredPluginProofEnv(key);
+      let connection;
+      try {
+        connection = new pg.Client({ connectionString: url }).connectionParameters;
+      } catch {
+        assert.fail(`${key} must be a valid PostgreSQL connection URL.`);
+      }
+      assert.ok(connection.database, `${key} must name a database.`);
+      return [name, JSON.stringify([connection.host, connection.port, connection.database])];
+    });
     assert.ok(
-      databaseUrl && databaseUrl.trim().length > 0,
-      `${scenario} must pass an explicit scenario-specific database URL when OCC_TEST_PLUGIN_DRIVER_REAL=1 is selected.`,
+      databaseUrl === process.env[scenarioKeys[scenario]],
+      `${scenario} must use its scenario-specific database URL.`,
     );
-    const sibling =
-      scenario === "openclaw"
-        ? process.env.OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL
-        : process.env.OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL;
-    if (sibling !== undefined && sibling.trim().length > 0) {
-      assert.notEqual(
-        databaseUrl,
-        sibling,
-        "real plugin-driver scenarios must use separate dedicated databases.",
-      );
+    for (let index = 0; index < databases.length; index += 1) {
+      for (let sibling = index + 1; sibling < databases.length; sibling += 1) {
+        assert.ok(
+          databases[index][1] !== databases[sibling][1],
+          `real plugin-driver scenarios ${databases[index][0]} and ${databases[sibling][0]} must use separate dedicated databases.`,
+        );
+      }
     }
   }
   return databaseUrl ?? requiredPluginProofEnv("OCC_TEST_DATABASE_URL");
@@ -139,7 +155,7 @@ function installationAdministratorServicePrincipal(iamState) {
 }
 
 function createAgentPluginApi({ request, namespaceId }) {
-  async function createAgent({ harnessId, executionMode, name, harnessAuth, providerId }) {
+  async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
       values: nativeConfiguration(harnessId),
@@ -149,7 +165,7 @@ function createAgentPluginApi({ request, namespaceId }) {
       name,
       configurationId: configuration.data.id,
       executionMode,
-      ...(providerId === undefined ? {} : { providerId }),
+      ...(backendId === undefined ? {} : { backendId }),
       ...(harnessAuth === undefined ? {} : { harnessAuth }),
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
@@ -167,7 +183,7 @@ function createAgentPluginApi({ request, namespaceId }) {
     const response = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       configurationId: current.configurationId,
       executionMode: current.executionMode,
-      ...(current.providerId === undefined ? {} : { providerId: current.providerId }),
+      ...(current.backendId === undefined ? {} : { backendId: current.backendId }),
       plugins,
     });
     assert.equal(response.status, 200, JSON.stringify(response.error));
@@ -221,6 +237,7 @@ function installationConfiguration({
   gatewayImage,
   codexImage,
   pluginDriverId,
+  pluginDriverConfiguration,
   codexServiceAccountImport,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
@@ -233,11 +250,11 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: {} };
+  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     pluginProofPluginStatusProxyCidrs();
   if (codexServiceAccountImport !== undefined) {
-    configuration.provider = [
+    configuration.backend = [
       {
         id: "openai",
         type: "chatgpt",
@@ -310,7 +327,7 @@ async function deriveCodexWorkspaceId(accessToken) {
 
 function createImportedCodexServiceAccountDriverFactory(imported, compute) {
   const driverId = "chatgpt-service-accounts";
-  const providerId = "openai";
+  const backendId = "openai";
   return (controller, state) => {
     const driver = {
       capability: "service_account",
@@ -321,12 +338,12 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
           state.queryInTransaction(
             unit,
             `INSERT INTO occ.service_account_driver_bindings
-               (service_account_id, namespace_id, provider_id, driver_id, external_account_id, workspace_id)
+               (service_account_id, namespace_id, backend_id, driver_id, external_account_id, workspace_id)
              VALUES ($1, $2, $3, $4, $5, $6)`,
             [
               account.id,
               account.namespaceId,
-              providerId,
+              backendId,
               driverId,
               `imported-${account.id}`,
               imported.workspaceId,
@@ -481,9 +498,15 @@ const sessionEvidenceScript = String.raw`
             .map((tool) => tool?.name)
             .filter((name) => typeof name === "string")
         : undefined;
-    const rows = db
+    const allRows = db
       .prepare("SELECT seq, event_json FROM transcript_events WHERE session_id = ? ORDER BY seq")
       .all(session.current_session_id);
+    // Repeated calls share a session; an earlier allowed result cannot prove this turn.
+    const start = allRows.findLastIndex((row) => {
+      const event = JSON.parse(row.event_json);
+      return event.type === "message" && event.message?.role === "user" && contains(event.message, marker);
+    });
+    const rows = start < 0 ? [] : allRows.slice(start);
     const messages = [];
     const calls = [];
     const results = [];
@@ -570,10 +593,16 @@ const sessionEvidenceScript = String.raw`
           toolCallId: message.toolCallId,
           toolName: message.toolName,
           isError: message.isError === true,
+          // Native Codex emits this terminal reason when MCP approval is denied.
+          deniedByUser: textOf(message.content).includes("user rejected MCP tool call"),
           matchesResult: resultPattern
             ? contains(message, resultPattern) || textOf(message.content).includes(resultPattern)
             : hasStructuredResult(message.content),
           mirrorIdentity,
+          approvalReviews: (message.details?.approvalReviews ?? []).map((review) => ({
+            id: review.id,
+            status: review.status,
+          })),
         });
       }
       if (message.role === "toolResult" && typeof message.toolName === "string") {
@@ -695,7 +724,7 @@ ${codexLocalAppServerTokenScript}
   for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
     if (!requestedIds.has(entry.id)) continue;
     const [params] = pluginRuntimeTranslator.codexReadParamsForSelections({
-      [entry.id]: { enabled: true, approvalMode: "auto", approvalsReviewer: "auto_review" },
+      [entry.id]: { enabled: true, toolDefaults: { approval: "provider_default", reviewer: "auto" } },
     }, listed);
     try {
       const detail = await codexAppServerRequest("plugin/read", params);
@@ -745,6 +774,35 @@ ${codexLocalAppServerTokenScript}
   }));
 })().catch(() => {
   process.stderr.write("Native Codex installed-plugin query failed.");
+  process.exitCode = 1;
+});
+`;
+
+// Read raw names and connector ownership from the authenticated native catalog.
+// This is discovery metadata; it is not a policy-filtered model tool inventory.
+const codexPluginToolInventoryScript = String.raw`
+${PLUGIN_RUNTIME_HELPERS}
+${codexLocalAppServerTokenScript}
+(async () => {
+  await useLocalPluginRuntimeAppServerToken();
+  const appIds = new Set(JSON.parse(process.argv[1]));
+  const servers = (await readCodexToolStatuses()).filter((server) => server.name === "codex_apps");
+  const server = servers[0];
+  if (servers.length !== 1 || !isPlainObject(server.tools) || server.toolsError != null) {
+    throw new Error("Native app tool inventory is unavailable.");
+  }
+  const tools = Object.values(server.tools).flatMap((tool) => {
+    const appId = tool?._meta?.connector_id;
+    if (!appIds.has(appId)) return [];
+    if (typeof tool.name !== "string" || !tool.name) throw new Error("Native tool name is missing.");
+    return [{
+      appId, name: tool.name, transcriptName: server.name + "." + tool.name,
+      annotations: tool.annotations ?? {},
+    }];
+  });
+  process.stdout.write(JSON.stringify(tools));
+})().catch(() => {
+  process.stderr.write("Native Codex tool inventory query failed.");
   process.exitCode = 1;
 });
 `;
@@ -893,27 +951,122 @@ function createNativePluginAssertions({
     prompt,
     expectedPatterns,
     secrets = [],
+    humanReview,
   }) {
     const gateway = await gatewayUrl(agent);
     const password = gatewayPassword ?? gateway.gatewayPassword;
     assert.ok(password, "normal Agent turn requires a gateway password.");
+    const abort = new AbortController();
+    let reviewer;
+    let approvalCount = 0;
+    let approvalCompleted = Promise.resolve();
+    const approvalFailure = Promise.withResolvers();
+    // Attach before connecting so a rejected handshake cannot become unhandled.
+    approvalFailure.promise.catch(() => undefined);
     try {
       await assertGatewayChatCompletionsEnabled(agent);
-      const response = await fetch(`${gateway.url}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${password}`,
-          "content-type": "application/json",
-          "x-openclaw-session-key": sessionKey,
-        },
-        body: JSON.stringify({
-          model: "openclaw/default",
-          stream: false,
-          messages: [{ role: "user", content: prompt }],
-        }),
-        signal: AbortSignal.timeout(240_000),
-      });
-      const body = await response.text();
+      if (humanReview !== undefined) {
+        const controllerRequire = createRequire(
+          new URL("../../apps/controller/package.json", import.meta.url),
+        );
+        const { GatewayClient } = await import(
+          pathToFileURL(controllerRequire.resolve("@openclaw/gateway-client")).href
+        );
+        const connected = Promise.withResolvers();
+        reviewer = new GatewayClient({
+          url: gateway.url.replace(/^http/, "ws"),
+          password,
+          clientName: "gateway-client",
+          mode: "backend",
+          role: "operator",
+          // This test operator owns the disposable gateway; the HTTP turn has
+          // a different requester connection, so approval visibility needs admin.
+          scopes: ["operator.admin"],
+          caps: ["plugin-approvals"],
+          deviceIdentity: null,
+          onHelloOk: (hello) => {
+            if (!hello.auth?.scopes?.includes("operator.admin")) {
+              connected.reject(new Error("plugin approval reviewer requires operator.admin"));
+              return;
+            }
+            connected.resolve();
+          },
+          onConnectError: (error) => {
+            connected.reject(error);
+            approvalFailure.reject(error);
+          },
+          onEvent: (event) => {
+            const approval = event.payload;
+            if (
+              event.event !== "plugin.approval.requested" ||
+              approval?.request?.sessionKey !== sessionKey
+            ) {
+              return;
+            }
+            approvalCount += 1;
+            approvalCompleted = (async () => {
+              assert.equal(approvalCount, 1, "each requested read must require its own approval");
+              assert.equal(approval.request.toolName, "codex_mcp_tool_approval");
+              assert.deepEqual([...approval.request.allowedDecisions].sort(), [
+                "allow-once",
+                "deny",
+              ]);
+              const pending = await sessionEvidence(agent, {
+                sessionKey,
+                ...humanReview,
+                resultPattern: "",
+              });
+              assert.equal(
+                pending.exists,
+                true,
+                "the pending approval must belong to the live session",
+              );
+              assert.equal(
+                pending.userMarkerSeen,
+                true,
+                "the pending approval must follow this request",
+              );
+              assert.equal(pending.results.length, 0, "a pending read must not have a tool result");
+              await reviewer.request("plugin.approval.resolve", {
+                id: approval.id,
+                decision: humanReview.decision,
+              });
+            })();
+            approvalCompleted.catch(approvalFailure.reject);
+          },
+        });
+        const connectTimer = setTimeout(
+          () => connected.reject(new Error("plugin approval reviewer connection timed out")),
+          15_000,
+        );
+        try {
+          reviewer.start();
+          await connected.promise;
+        } finally {
+          clearTimeout(connectTimer);
+        }
+      }
+      const { response, body } = await Promise.race([
+        fetch(`${gateway.url}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${password}`,
+            "content-type": "application/json",
+            "x-openclaw-session-key": sessionKey,
+          },
+          body: JSON.stringify({
+            model: "openclaw/default",
+            stream: false,
+            messages: [{ role: "user", content: prompt }],
+          }),
+          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(240_000)]),
+        }).then(async (response) => ({ response, body: await response.text() })),
+        approvalFailure.promise,
+      ]);
+      await approvalCompleted;
+      if (humanReview !== undefined) {
+        assert.equal(approvalCount, 1, "the normal Agent turn must request human review");
+      }
       assertNoSecretMaterial(
         body,
         [password, ...secrets],
@@ -938,6 +1091,9 @@ function createNativePluginAssertions({
       }
       return content;
     } finally {
+      abort.abort();
+      reviewer?.stop();
+      await reviewer?.stopAndWait?.({ timeoutMs: 1_000 });
       await gateway.close?.();
     }
   }
@@ -1037,6 +1193,18 @@ function createNativePluginAssertions({
         )}`,
       );
     }
+    const approvedReviews = result.approvalReviews.filter((review) => review.status === "approved");
+    if (options.requireAutomaticReview) {
+      assert.equal(
+        evidence.calls.length,
+        1,
+        "the reviewed turn must perform exactly the requested read",
+      );
+      assert.ok(
+        approvedReviews.length > 0,
+        "the successful native read must carry an approved automatic review",
+      );
+    }
     return {
       runtime: evidence.runtime,
       sessionId: evidence.sessionId,
@@ -1045,7 +1213,32 @@ function createNativePluginAssertions({
       promptAdvertised: proofMode === "openclaw",
       ...(proofMode === "codex" ? { codexMirrorTurnVerified: true } : {}),
       resultMatched: true,
+      approvedReviewIds: approvedReviews.map((review) => review.id),
     };
+  }
+
+  async function assertSessionToolDeniedEvidence(agent, options) {
+    const evidence = await sessionEvidence(agent, options);
+    assert.equal(evidence.userMarkerSeen, true);
+    assert.equal(evidence.assistantMarkerSeen, true);
+    assert.equal(
+      evidence.calls.length,
+      1,
+      "the denied turn must attempt exactly the requested read",
+    );
+    assert.equal(evidence.results.length, 1, "the denied call must have a terminal result");
+    assert.equal(evidence.results[0].toolCallId, evidence.calls[0].id);
+    assert.equal(evidence.results[0].isError, true, "denial must prevent a successful native read");
+    assert.equal(
+      evidence.results[0].deniedByUser,
+      true,
+      "the native failure must come from denied approval, not a provider error",
+    );
+    assert.equal(
+      evidence.results[0].matchesResult,
+      false,
+      "denial must not expose the provider result",
+    );
   }
 
   async function assertNoSessionToolCallEvidence(agent, options) {
@@ -1066,20 +1259,29 @@ function createNativePluginAssertions({
       false,
       `${options.sessionKey} assistant turn must succeed.`,
     );
-    assert.ok(
-      Array.isArray(evidence.promptToolNames),
-      `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot.`,
-    );
-    assert.equal(
-      evidence.promptToolNames.includes(options.toolName),
-      false,
-      `${options.sessionKey} prompt tools still advertised ${options.toolName}: ${JSON.stringify({
-        runtime: evidence.runtime,
-        sessionId: evidence.sessionId,
-        promptReportSource: evidence.promptReportSource,
-        promptToolNames: evidence.promptToolNames,
-      })}`,
-    );
+    if (proofMode === "openclaw") {
+      assert.ok(
+        Array.isArray(evidence.promptToolNames),
+        `${options.sessionKey} must have a run-sourced systemPromptReport.tools.entries snapshot.`,
+      );
+      assert.equal(
+        evidence.promptToolNames.includes(options.toolName),
+        false,
+        `${options.sessionKey} prompt tools still advertised ${options.toolName}: ${JSON.stringify({
+          runtime: evidence.runtime,
+          sessionId: evidence.sessionId,
+          promptReportSource: evidence.promptReportSource,
+          promptToolNames: evidence.promptToolNames,
+        })}`,
+      );
+    } else {
+      // The gateway prompt report does not include native Codex tools. Require
+      // the completed native turn as well as zero calls, not just an empty mirror.
+      assert.ok(
+        evidence.codexTurns.some((turn) => turn.promptSeen && turn.terminalAssistantSeen),
+        `${options.sessionKey} must include a completed marker-bearing native Codex turn.`,
+      );
+    }
     assert.equal(
       evidence.calls.length,
       0,
@@ -1122,6 +1324,19 @@ function createNativePluginAssertions({
       entry.remotePluginId,
     ]);
     return { runtime: execution.label, ...JSON.parse(execution.stdout) };
+  }
+
+  async function codexPluginToolInventory(agent, entry) {
+    assert.equal(proofMode, "codex", "native tool inventory requires Codex proof mode.");
+    const execution = await execCodex(agent, [
+      "node",
+      "-e",
+      codexPluginToolInventoryScript,
+      JSON.stringify(entry.appIds),
+    ]);
+    const tools = JSON.parse(execution.stdout);
+    assert.ok(Array.isArray(tools) && tools.length > 0, "selected app tool inventory is empty.");
+    return tools;
   }
 
   async function codexAppConfiguration(agent) {
@@ -1196,10 +1411,13 @@ function createNativePluginAssertions({
   return {
     normalGatewayTurn,
     assertSessionToolCallEvidence,
+    assertSessionToolDeniedEvidence,
     assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy,
     listCodexNativeCatalog,
     codexNativePluginDetail,
+    codexPluginToolInventory,
+    codexAppConfiguration,
     codexEffectivePluginConfiguration,
     writeWorkspaceSentinel,
     readWorkspaceSentinel,
@@ -1208,12 +1426,11 @@ function createNativePluginAssertions({
 
 export async function createPluginDriverRealFixture(
   context,
-  { pluginDriverId, databaseUrl, codexCredential },
+  { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
 ) {
   const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
   const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
   const gatewayImage = requiredPluginProofEnv("OCC_TEST_KUBERNETES_GATEWAY_IMAGE");
-  const scenario = pluginDriverId === "codex-plugin" ? "codex_calendar" : "openclaw";
   const codexImage =
     pluginDriverId === "codex-plugin"
       ? (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
@@ -1246,7 +1463,6 @@ export async function createPluginDriverRealFixture(
     databaseUrl: selectedDatabaseUrl,
   });
 
-  await configureExistingK3dLocalPathSharedFileSystem({ kubeconfigPath, kubernetesContext });
   await validatePrerequisites();
   let worker;
   let app;
@@ -1414,6 +1630,7 @@ export async function createPluginDriverRealFixture(
           gatewayImage,
           codexImage,
           pluginDriverId,
+          pluginDriverConfiguration,
           codexServiceAccountImport,
         }),
       ),
@@ -1428,6 +1645,7 @@ export async function createPluginDriverRealFixture(
           gatewayImage,
           codexImage,
           pluginDriverId,
+          pluginDriverConfiguration,
           codexServiceAccountImport,
         }),
       ),
@@ -1651,7 +1869,7 @@ export async function createPluginDriverRealFixture(
     );
     assert.equal(account.status, 201, JSON.stringify(account.error));
     const binding = await pool.query(
-      `SELECT external_account_id, workspace_id, provider_id, driver_id
+      `SELECT external_account_id, workspace_id, backend_id, driver_id
        FROM occ.service_account_driver_bindings
        WHERE namespace_id = $1 AND service_account_id = $2`,
       [createdNamespace.data.id, account.data.id],
@@ -1659,7 +1877,7 @@ export async function createPluginDriverRealFixture(
     assert.equal(binding.rowCount, 1, "ServiceAccount creation must persist provider binding.");
     assert.equal(binding.rows[0].external_account_id, `imported-${account.data.id}`);
     assert.equal(binding.rows[0].workspace_id, codexServiceAccountImport.workspaceId);
-    assert.equal(binding.rows[0].provider_id, "openai");
+    assert.equal(binding.rows[0].backend_id, "openai");
     assert.equal(binding.rows[0].driver_id, "chatgpt-service-accounts");
 
     const issued = await request(
@@ -2009,10 +2227,13 @@ export async function createPluginDriverRealFixture(
     restartActiveCodexAgentPod,
     normalGatewayTurn: nativeAssertions.normalGatewayTurn,
     assertSessionToolCallEvidence: nativeAssertions.assertSessionToolCallEvidence,
+    assertSessionToolDeniedEvidence: nativeAssertions.assertSessionToolDeniedEvidence,
     assertNoSessionToolCallEvidence: nativeAssertions.assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
+    codexPluginToolInventory: nativeAssertions.codexPluginToolInventory,
+    codexAppConfiguration: nativeAssertions.codexAppConfiguration,
     codexEffectivePluginConfiguration: nativeAssertions.codexEffectivePluginConfiguration,
     writeWorkspaceSentinel: nativeAssertions.writeWorkspaceSentinel,
     readWorkspaceSentinel: nativeAssertions.readWorkspaceSentinel,

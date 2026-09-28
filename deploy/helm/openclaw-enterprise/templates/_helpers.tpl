@@ -1,5 +1,5 @@
 {{- define "openclaw.validate" -}}
-{{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under provider.chatgpt" -}}{{- end -}}
+{{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$" $image) -}}
@@ -55,6 +55,7 @@
 {{- end -}}
 {{- end -}}
 {{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) (not (kindIs "map" .Values.controlPlane.nodeSelector)) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
+{{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
 {{- end -}}
@@ -91,11 +92,41 @@
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$" $credentials.image) -}}
 {{- fail "repositoryCredentials.image must be an approved immutable SHA-256 image reference" -}}
 {{- end -}}
-{{- range $name := list "providerId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
+{{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
+{{- if and .Release.IsUpgrade (not $credentials.serviceName) -}}
+{{- fail "repositoryCredentials.serviceName must be explicit during upgrades; keep the current Service name until active repository sessions drain, then switch deliberately" -}}
+{{- end -}}
+{{- if or (gt (len $serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $serviceName)) -}}
+{{- fail "repositoryCredentials.serviceName must be a valid Kubernetes Service DNS-1035 label" -}}
+{{- end -}}
+{{- if not (kindIs "string" $credentials.clusterDomain) -}}
+{{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
+{{- end -}}
+{{- $clusterDomain := include "openclaw.repositoryCredentials.clusterDomain" . -}}
+{{- if or (gt (len $clusterDomain) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $clusterDomain)) -}}
+{{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
+{{- end -}}
+{{- range $label := splitList "." $clusterDomain -}}
+{{- if gt (len $label) 63 -}}
+{{- fail "repositoryCredentials.clusterDomain must be a valid Kubernetes cluster DNS domain" -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "string" $credentials.hostname) -}}
+{{- fail "repositoryCredentials.hostname must be a string" -}}
+{{- end -}}
+{{- $serviceHost := printf "%s.%s.svc" $serviceName .Release.Namespace -}}
+{{- if and $credentials.hostname (ne $credentials.hostname $serviceHost) (ne $credentials.hostname (printf "%s.%s" $serviceHost $clusterDomain)) -}}
+{{- fail "repositoryCredentials.hostname must match this Service's namespace-qualified or cluster-qualified DNS name" -}}
+{{- end -}}
+{{- $hostname := include "openclaw.repositoryCredentials.hostname" . -}}
+{{- if gt (len $hostname) 253 -}}
+{{- fail "repository credential broker hostname must not exceed 253 characters" -}}
+{{- end -}}
+{{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
 {{- $secrets := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName -}}
-{{- if .Values.provider.chatgpt.enabled -}}{{- $_ := set $secrets "chatgpt" .Values.provider.chatgpt.secretName -}}{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}{{- $_ := set $secrets "chatgpt" .Values.backend.chatgpt.secretName -}}{{- end -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- $_ := set $secrets "executionApi" .Values.executionCluster.apiKubeconfigSecretName -}}
 {{- $_ := set $secrets "executionWorker" .Values.executionCluster.workerKubeconfigSecretName -}}
@@ -145,17 +176,17 @@
 {{- if or (eq $tlsSecretName .Values.installation.secretName) (eq $tlsSecretName .Values.database.secretName) (eq $tlsSecretName .Values.auth.secretName) -}}
 {{- fail "gatewayRouting.tlsSecretName must differ from installation, database, and auth Secrets" -}}
 {{- end -}}
-{{- if and .Values.provider.chatgpt.enabled (eq $tlsSecretName .Values.provider.chatgpt.secretName) -}}{{- fail "gatewayRouting.tlsSecretName must differ from the ChatGPT provider Secret" -}}{{- end -}}
+{{- if and .Values.backend.chatgpt.enabled (eq $tlsSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.tlsSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
 {{- if or (eq $rootSecretName $tlsSecretName) (eq $rootSecretName $routing.apiKeySecretName) (eq $rootSecretName .Values.installation.secretName) (eq $rootSecretName .Values.database.secretName) (eq $rootSecretName .Values.auth.secretName) -}}
 {{- fail "generated gatewayRouting root CA Secret must differ from leaf TLS, API key, installation, database, and auth Secrets" -}}
 {{- end -}}
-{{- if and .Values.provider.chatgpt.enabled (eq $rootSecretName .Values.provider.chatgpt.secretName) -}}{{- fail "generated gatewayRouting root CA Secret must differ from the ChatGPT provider Secret" -}}{{- end -}}
+{{- if and .Values.backend.chatgpt.enabled (eq $rootSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "generated gatewayRouting root CA Secret must differ from the ChatGPT Backend Secret" -}}{{- end -}}
 {{- if or $routing.caSecretName $routing.caSecretKey -}}
 {{- if or (not $routing.caSecretName) (not $routing.caSecretKey) -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey must be set together" -}}{{- end -}}
 {{- if or (eq $routing.caSecretName $tlsSecretName) (eq $routing.caSecretName $routing.apiKeySecretName) (eq $routing.caSecretName .Values.installation.secretName) (eq $routing.caSecretName .Values.database.secretName) (eq $routing.caSecretName .Values.auth.secretName) -}}
 {{- fail "gatewayRouting.caSecretName must differ from leaf TLS, API key, installation, database, and auth Secrets" -}}
 {{- end -}}
-{{- if and .Values.provider.chatgpt.enabled (eq $routing.caSecretName .Values.provider.chatgpt.secretName) -}}{{- fail "gatewayRouting.caSecretName must differ from the ChatGPT provider Secret" -}}{{- end -}}
+{{- if and .Values.backend.chatgpt.enabled (eq $routing.caSecretName .Values.backend.chatgpt.secretName) -}}{{- fail "gatewayRouting.caSecretName must differ from the ChatGPT Backend Secret" -}}{{- end -}}
 {{- end -}}
 {{- if or (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
 {{- fail "gatewayRouting.tenantGatewayPort must be a valid TCP port" -}}
@@ -219,7 +250,21 @@ capabilities:
 {{- printf "%s-root" (include "openclaw.gatewayRouting.serviceName" .) -}}
 {{- end -}}
 
+{{- define "openclaw.repositoryCredentials.serviceName" -}}
+{{- default "git" .Values.repositoryCredentials.serviceName -}}
+{{- end -}}
 
+{{- define "openclaw.repositoryCredentials.clusterDomain" -}}
+{{- .Values.repositoryCredentials.clusterDomain -}}
+{{- end -}}
+
+{{- define "openclaw.repositoryCredentials.hostname" -}}
+{{- default (printf "%s.%s.svc.%s" (include "openclaw.repositoryCredentials.serviceName" .) .Release.Namespace (include "openclaw.repositoryCredentials.clusterDomain" .)) .Values.repositoryCredentials.hostname -}}
+{{- end -}}
+
+{{- define "openclaw.repositoryCredentials.origin" -}}
+{{- printf "https://%s" (include "openclaw.repositoryCredentials.hostname" .) -}}
+{{- end -}}
 
 {{- define "openclaw.gatewayRouting.envoyNetworkPolicyName" -}}
 {{- printf "%s-%s-envoy-dataplane" (.Release.Name | trunc 34 | trimSuffix "-") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}

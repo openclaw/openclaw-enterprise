@@ -8,9 +8,9 @@ last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
 
 ## Overview
 
-OCC starts with Installation Provider composition, then creates a
+OCC starts with Installation Backend composition, then creates a
 Namespace-owned account, separately issues its provider-backed credential, and
-deploys an associated dedicated Codex Agent. The API owns the provider client
+deploys an associated dedicated Codex Agent. The API owns the Backend client
 and upstream account calls; worker reconciliation repeats metadata checks before
 Compute projects the account Secret to Codex. This flow stops after Codex starts
 with the projected access token and workspace.
@@ -24,7 +24,7 @@ with the projected access token and workspace.
   `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver`,
   `packages/occ/src/index.ts:OpenClawController`.
 - Requires PostgreSQL, a ready Namespace, exact OCC permissions, the selected
-  ChatGPT Provider and member ServiceAccount Driver, an API-only credential for
+  ChatGPT Backend and member ServiceAccount Driver, an API-only credential for
   the configured ChatGPT workspace, and a dedicated Codex runtime for managed
   access-token deployment.
 
@@ -33,9 +33,9 @@ with the projected access token and workspace.
 ```mermaid
 graph TD
   subgraph Composition["Installation composition"]
-    A["Validate Provider and selected Driver"] --> B["API builds ChatGPT client"]
-    B --> C["Inject Provider into ServiceAccount Driver"]
-    A --> D["Worker keeps nonsecret Provider metadata"]
+    A["Validate Backend and selected Driver"] --> B["API builds ChatGPT client"]
+    B --> C["Inject Backend into ServiceAccount Driver"]
+    A --> D["Worker keeps nonsecret Backend metadata"]
   end
   subgraph API["OCC API"]
     C --> E["Authorize and create OCC account"]
@@ -43,13 +43,13 @@ graph TD
     F --> G["Authorize separate credential issuance"]
     G --> H["Issue token and store account Secret"]
     H --> I["Persist credential ID and Secret reference"]
-    I --> J["Save nullable Agent providerId"]
+    I --> J["Save nullable Agent backendId"]
     J --> K["Validate binding and freeze revision"]
   end
   subgraph Worker["Worker and Compute"]
     D --> L["Reauthorize deployment actor"]
     K --> L
-    L --> M["Recheck Provider and binding metadata"]
+    L --> M["Recheck Backend and binding metadata"]
     M -->|valid dedicated Codex| N["Project account Secret into Codex"]
     M -->|mismatch| O["Fail candidate"]
     N --> P["Codex pins workspace and starts app server"]
@@ -58,31 +58,31 @@ graph TD
 
 ## Execution Trace
 
-### 1. Compose the Provider and its ServiceAccount Driver
+### 1. Compose the Backend and its ServiceAccount Driver
 
 `apps/controller/src/server.mjs:start`
 
-`loadInstallationConfiguration` validates the singular `provider` array and
-requires each ChatGPT Provider to declare the selected `service_account` member
+`loadInstallationConfiguration` validates the singular `backend` array and
+requires each ChatGPT Backend to declare the selected `service_account` member
 Driver. `server.mjs:start` then reads the mounted `apiKeyPath`, constructs
-`Provider<ChatGPTClient>`, and injects it into the bundled
+`Backend<ChatGPTClient>`, and injects it into the bundled
 `ChatGPTServiceAccountDriver` factory. That client and admin key stay on the API
-side. The worker receives only nonsecret Provider definitions so it can reject
+side. The worker receives only nonsecret Backend definitions so it can reject
 stale or mismatched deployment snapshots before Compute effects.
 
-### 2. Create the account and private provider binding
+### 2. Create the account and private Backend binding
 
 `packages/occ/src/index.ts:OpenClawController.createServiceAccount`
 
 `OpenClawController.createServiceAccount` authorizes the exact Namespace and
 allocates its `sa_*` identity. `ChatGPTServiceAccountDriver.create` creates the
-upstream account, registers rollback, and persists its private provider binding
-in the same PostgreSQL transaction, including Provider, Driver, Namespace,
+upstream account, registers rollback, and persists its private Backend binding
+in the same PostgreSQL transaction, including Backend, Driver, Namespace,
 account, and workspace identity.
 
 Account creation and credential issuance are separate operations. Creating the
 account does not issue a token, and later issuance or deletion requires that
-exact binding to match the current configured Provider and member Driver.
+exact binding to match the current configured Backend and member Driver.
 
 Before deletion, OCC locks the Namespace and account, then checks Agent drafts,
 active revisions, and queued or claimed revision work through
@@ -102,23 +102,23 @@ the workspace ID in one account-owned control-plane Secret. The private credenti
 credential reference, and audit changes commit together;
 confirmed failures compensate created provider and Kubernetes resources.
 
-### 4. Save Agent provider intent and admit the revision
+### 4. Save Agent Backend intent and admit the revision
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`, `deployAgent`
 
-Agent `providerId` is nullable. Create omission saves `null`; PATCH omission
+Agent `backendId` is nullable. Create omission saves `null`; PATCH omission
 preserves the current value; explicit `null` clears it; and a nonnull ID must
-name a configured Provider. Saving or changing the draft Agent reference makes
+name a configured Backend. Saving or changing the draft Agent reference makes
 no upstream call. The Agent selects the issued account through
 `harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`.
 
 `deployAgent` authorizes the Agent, Configuration, and associated account, then
 validates `access_token` ownership with
-`validateServiceAccountProviderBinding`. Managed access-token deployment requires
-the exact nonnull Provider, selected member Driver, workspace, account, recorded
+`validateServiceAccountBackendBinding`. Managed access-token deployment requires
+the exact nonnull Backend, selected member Driver, workspace, account, recorded
 credential issuance, and dedicated Codex execution. An account without an issued
 credential cannot deploy. Admission freezes the account identity, exact credential
-reference, private Provider binding, and Agent `providerId` in the revision.
+reference, private Backend binding, and Agent `backendId` in the revision.
 Supplied API keys use the same [harness binding path](native-service-account-credential-delivery.md)
 through an OCC Secret; native account references are not model-auth selectors.
 
@@ -126,10 +126,10 @@ through an OCC Secret; native account references are not model-auth selectors.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
 
-`ControllerWorker.resolveRevisionProvider` runs after IAM reauthorization and
-before Compute reconciliation. It rejects a missing configured Provider as
-`PROVIDER_UNAVAILABLE` and a metadata mismatch as
-`SERVICE_ACCOUNT_PROVIDER_MISMATCH`. Only Provider, Driver, workspace, account,
+`ControllerWorker.resolveRevisionBackend` runs after IAM reauthorization and
+before Compute reconciliation. It rejects a missing configured Backend as
+`BACKEND_UNAVAILABLE` and a metadata mismatch as
+`SERVICE_ACCOUNT_BACKEND_MISMATCH`. Only Backend, Driver, workspace, account,
 and issuance metadata leave the repository; upstream account IDs, admin keys,
 and credential values stay private.
 
@@ -167,7 +167,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Related docs
 
-- [Providers](../reference/providers.md)
+- [Backends](../reference/backends.md)
 - [Service accounts](../reference/service-accounts.md)
 - [Service Account Driver specification](../../specs/.archive/11-service-account-driver.md)
 - [Platform design](../design.md)

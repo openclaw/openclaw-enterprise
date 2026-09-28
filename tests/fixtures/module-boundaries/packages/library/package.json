@@ -1,0 +1,14 @@
+{
+  "name": "@fixture/library",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./leaf": "./src/leaf.ts",
+    "./conditional": {
+      "types": "./src/conditional.d.ts",
+      "import": "./src/conditional.mjs",
+      "require": "./src/conditional.cjs"
+    },
+    "./blocked": null
+  }
+}

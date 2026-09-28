@@ -5,11 +5,12 @@ A Secret stores a credential for one OpenClaw Namespace. OpenClaw Control Plane
 for model authentication, or its Configuration can map a Secret to a gateway
 environment variable. Use the path that matches the consumer:
 
-| Credential                                | Where to bind it                                                                                                              |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Model API key                             | [Agent `harnessAuth`](../../reference/agents.md#harness-authentication); the selected Harness receives it.                    |
-| Gateway credential, such as a Slack token | [Configuration `secretBindings`](../../reference/configuration/secrets.md#secret-bindings); the selected gateway receives it. |
-| Provider-issued model access token        | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                           |
+| Credential                                 | Where to bind it                                                                                                              |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Model API key                              | [Agent `harnessAuth`](../../reference/agents.md#harness-authentication); the selected Harness receives it.                    |
+| Gateway credential, such as a Slack token  | [Configuration `secretBindings`](../../reference/configuration/secrets.md#secret-bindings); the selected gateway receives it. |
+| Backend-issued model access token          | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                           |
+| Model API key held by a Credential Gateway | [Credential source](../../reference/credential-sources.md); the Harness receives only a placeholder. OpenShell only.          |
 
 ## Create and bind a Secret
 

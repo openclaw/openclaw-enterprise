@@ -1,8 +1,7 @@
 # Understand the Agent detail page
 
-Open **Agents**, then select an Agent to inspect its configuration, deployment
-record, credentials, and workspace. This walkthrough explains the page from top
-to bottom, including controls revealed by **New revision**. For initial setup, use
+Open **Agents**, then select an Agent to inspect its versions, saved settings,
+and workspace. For initial setup, use
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
 
 Available actions depend on your Installation and permissions. Stored settings
@@ -10,71 +9,89 @@ do not confirm that an Agent or its Slack connection is currently healthy.
 
 ## Navigation and Agent identity
 
-| Component                  | What it does                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------- |
-| **Control Plane**          | Identifies the OpenClaw Control Plane (OCC) console.                                |
-| **Agents** / **← Agents**  | Opens the Agents list in the selected Namespace.                                    |
-| **Namespaces**             | Lists the Namespaces you can read.                                                  |
-| Agent name                 | Human-readable name of this Agent.                                                  |
-| **Namespace · name**       | Namespace containing the Agent.                                                     |
-| **Refresh**                | Reloads the current page's data. It does not restart the Agent.                     |
-| **Selected revision · vN** | Revision selected by the Agent, which may differ from the snapshot you are viewing. |
-| `agt_…`                    | Stable Agent identifier for API calls and support.                                  |
+| Component                     | What it does                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| **Control Plane**             | Identifies the OpenClaw Control Plane (OCC) console.                                        |
+| **Agents** / **← Agents**     | Opens the Agents list in the selected Namespace.                                            |
+| **Namespaces**                | Lists the Namespaces you can read.                                                          |
+| Agent name                    | Human-readable name of this Agent.                                                          |
+| **Namespace · name**          | Namespace containing the Agent.                                                             |
+| **Refresh**                   | Reloads the Agent page. It does not retry or restart deployment.                            |
+| **Current version**           | Version in the Agent's `activeRevisionId`. It may differ from the latest or viewed version. |
+| **Latest visible deployment** | Newest readable version and its recorded deployment status.                                 |
+| **Live serving**              | Remains unverified by this page and its limited diagnostics.                                |
+| **Deployment activity**       | Most recent visible version and its persisted deployment status.                            |
+| `agt_…`                       | Stable Agent identifier for API calls and support.                                          |
 
 The bottom **OpenClaw Enterprise** menu contains **Namespace**, **Settings**,
 and **Logout**. Namespace selection changes your scope; from Agent detail it
 returns to the new Namespace's Agents list. Settings displays your account;
 it does not offer configurable settings. Logout ends your console session.
 
-## Deployment status
+## Follow deployment activity
 
-**Deployment status** appears when viewing a revision and reads its persisted
-startup record:
+**Deployment activity** follows the latest readable version, even while viewing
+another version or the draft. Its milestones use the persisted record:
 
-| Component                        | Meaning                                                                                    |
-| -------------------------------- | ------------------------------------------------------------------------------------------ |
-| **Status**                       | Recorded deployment outcome. `succeeded` describes that deployment, not continuous health. |
-| **Deployment**                   | Identifier of the deployment record, matching the revision ID.                             |
-| **No persisted startup failure** | No startup failure is stored in that record; this is not a live probe.                     |
-| Failure details, when present    | Identify the runtime component, failed check, error code, and check time.                  |
-| **Refresh deployment**           | Rereads that record; it does not retry deployment.                                         |
+| Milestone               | Evidence                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| **Admitted**            | OCC saved an immutable AgentRevision and queued its work.                       |
+| **Deployment work**     | `queued` awaits a claim; `running` records a worker claim.                      |
+| **Completion recorded** | `succeeded` means the original work completed activation or was already active. |
 
-The console has no live serving-health indicator. To establish health, verify
-the installed runtime and a real model or
-channel response using [Agent troubleshooting](../topics/agent-troubleshoot.md).
+A `failed` result shows the stored error. Startup evidence may identify the
+runtime component, failed check, code, and check time. Plugin warnings describe
+that attempt. An unavailable record has unknown status. **Refresh deployment**
+rereads it and the selected version without retrying work.
 
-Historical revisions retain their deployment and startup-failure details.
-Browsing an older revision does not change the selected revision.
+**Current version** is OCC's selection, not live health. Deployment may still
+be in progress; a successful historical record does not confirm a response.
+Verify the runtime and a real response with
+[Agent troubleshooting](../topics/agent-troubleshoot.md).
 
 <span id="browse-revisions-or-open-the-saved-draft"></span>
 
-## Browse revisions or open New revision
+## Browse versions or create a new version
 
-An **AgentRevision** is an immutable deployment snapshot. A **Configuration** is
-the reusable, mutable input from which a new revision is created.
+An **AgentRevision** is an immutable version created by deployment. A
+**Configuration** is the reusable, mutable input for the next version.
 
-| Component                                 | What it does                                                                                                                                       |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AgentRevision** dropdown                | Selects the new revision or a historical snapshot to inspect. Revision entries include version, creation time, and whether the Agent selects them. |
-| **Older revision** / **Newer revision**   | Browses history; disabled at the corresponding end. Browsing does not activate a revision.                                                         |
-| **New revision**                          | Opens the current Configuration and supported editing controls.                                                                                    |
-| **View current revision**                 | Returns to the snapshot currently selected by the Agent.                                                                                           |
-| `rev_…`                                   | Identifies the viewed immutable revision.                                                                                                          |
-| **Source Configuration … · generation N** | Identifies the Configuration and generation captured for that revision. The draft instead shows its current generation.                            |
-| Read-only snapshot notice                 | Explains whether the viewed revision is selected and that its admitted settings cannot be edited.                                                  |
+The **Versions** list marks the current version. **View version vN** opens
+read-only details: creation time, source Configuration generation, recorded
+deployment status, and captured settings. The activity panel still follows the
+latest visible deployment. **Available versions** jumps to readable versions;
+Configuration and Channels show further details, including admitted native JSON.
+The `rev_…` ID identifies an exact version for API calls and support. Viewing
+does not deploy or activate it.
+
+**Run diagnostics for this version** requests fresh, on-demand observations of
+the viewed version. Checks include a time and `succeeded`, `failed`, or
+`unknown` state; unavailable requests show retryable errors. Diagnostics do
+not change deployment history, activate a version, repeat the startup model
+probe, or prove message delivery. You need Agent `read` and `operate` plus
+read access to that version.
 
 There is no rollback or redeploy-old-revision button. See
 [Agent Revisions](../topics/agent-revisions.md) for the lifecycle.
 
-**Deploy new revision** submits the saved Configuration for a new revision. It
-checks freshness and required credential metadata; missing prerequisites or a
-changed draft require correction or refresh. A successful request opens the new
-revision's Workspace files view. The credential notice below the button reports
-stored metadata, not successful authentication or a working channel.
+Select **Create new version** to open the current saved settings. Edit and save
+Configuration, plugin selections, channel settings, or credentials as needed.
+**Deploy new version** submits those saved settings for a new revision; it does
+not redeploy a version you were viewing. It
+checks freshness and required model and channel credentials; missing prerequisites
+or a changed draft require correction or refresh. Select **Set up credentials**
+beside the disabled button when a model or channel credential needs your input.
+When Kubernetes Compute requires them, OCC generates missing connection
+credentials during the first deployment.
+If they are missing after a revision exists, ask an operator to investigate;
+OCC cannot regenerate them through initial provisioning. A successful request
+opens the new revision's Workspace files view. Bound channel Secrets do not
+prove successful authentication or a working channel.
 
-The **Configuration**, **Channels**, **Credentials**, and **Workspace files** tabs
-change the panel below. Credentials is available only on the new revision.
-Browser Back and Forward restore the selected tab. Leaving a tab clears entered token values. The workspace remains live regardless of the selected revision.
+The **Configuration**, **Plugins**, **Channels**, **Credentials**, and **Workspace files** tabs
+change the panel below. Credentials is available only on the new version draft.
+Browser Back and Forward restore the selected tab. Leaving a tab clears entered
+token values. The workspace remains live regardless of the viewed version.
 
 ## Configuration tab
 
@@ -82,21 +99,21 @@ Browser Back and Forward restore the selected tab. Leaving a tab clears entered 
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Model**                              | Primary model configured for the Agent.                                                                          |
 | **Execution mode**                     | Embedded runs the harness within the gateway; Dedicated runs it separately.                                      |
-| **Provider**                           | Installation-configured Provider associated with this Agent; model credentials come from Harness authentication. |
+| **Backend (experimental)**             | Installation-configured Backend associated with this Agent; model credentials come from Harness authentication.  |
 | **Harness authentication**             | Saved authentication binding, such as a ChatGPT service account ID. It is not a credential value or login check. |
 | **Created**                            | Creation time of the displayed Configuration or revision.                                                        |
 | **Harness**                            | Revision's harness identifier and integration version. This is not the installed Codex CLI version.              |
 | **Compute**                            | Revision's Compute Driver identifier and implementation.                                                         |
 | **View admitted native configuration** | Expands the revision's formatted native JSON. The draft uses **View native Configuration**.                      |
 
-In **New revision**, select **Edit Configuration** to edit the native JSON,
+In **Create new version**, select **Edit Configuration** to edit the native JSON,
 including model and gateway settings. **Save Configuration** requires a JSON
 object and updates the saved draft; **Cancel** discards unsaved edits. On an
 admitted snapshot, **Edit current Configuration** opens the current draft, not
 a copy of the historical snapshot.
 
 Save does not deploy or change existing AgentRevisions. Select **Deploy new
-revision** after saving to apply the new values. Deployment, tab switching, and revision navigation are blocked while edits are unsaved, a save is
+version** after saving to apply the new values. Deployment, tab switching, and revision navigation are blocked while edits are unsaved, a save is
 pending, or a stale or unknown result requires reload. Other Agents sharing this
 Configuration also use the updated values on their next deployment.
 
@@ -105,8 +122,42 @@ Configuration or Agent association before saving. A stale draft requires reload;
 this preflight cannot prevent another write racing with the save. If the outcome
 is unknown, inspect the saved Configuration through a successful reload before
 saving again. Invalid JSON and failed saves retain the text for correction.
-Provider, execution mode, and Harness authentication are Agent fields, not native
+Backend, execution mode, and Harness authentication are Agent fields, not native
 Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
+
+## Plugins tab
+
+In **Create new version** → **Plugins**, edit the Agent's existing selections and
+tool policies with **Configure plugins** or **Plugin selections JSON**. With a bound
+Service Accounts token Secret, the tab preloads the first catalog page for the
+picker. Search and tool lookups show loading indicators. Dedicated Codex browsing
+requires exact active Agent `read`/`update` and a catalog-capable Plugin Driver. The
+curated catalog needs no Secret. Hosted discovery uses the bound Service Accounts
+token Secret server-side and requires caller and Agent ServicePrincipal Secret
+`operate`; the browser never receives the token. Other execution modes cannot
+browse this catalog. Hosted results use the draft credential, which may differ
+from the running revision's; neither catalog proves installation or runtime
+access. Existing
+selections and **Plugin selections JSON** remain editable when browsing is
+unavailable.
+
+An open Slack approver search keeps its query and results when you return to the
+browser tab and still have Agent access. Moving to another Console control closes
+the results; focus the search field to open them again. Switching Agent tabs and
+returning keeps a completed query.
+
+Select **Save plugin selections** to update the Agent's desired plugin map, then
+**Deploy new version** to apply it. Saving does not alter an admitted revision
+or the reusable Configuration. An empty map removes all Agent-owned plugin
+selections on the next deployment. The selected Plugin Driver validates policy
+at save and deployment; installation and app access are checked later during
+startup. A rejected save leaves the running revision unchanged. For policy
+limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
+
+When viewing an admitted revision, the **Plugins** tab shows that revision's
+immutable selection. Return to **Create new version** to make another edit.
+Native `values.plugins` in **Edit Configuration** controls the runtime's native
+plugin allowlist and is separate from these Agent-owned selections.
 
 ## Channels tab
 
@@ -114,7 +165,7 @@ The Slack card shows **Not configured**, **Disabled**, or
 **Configured (enabled)** based on saved settings: Socket Mode, selected channels, and allowed users. This is not a
 live connection indicator.
 
-Revision cards are read-only. On the new revision, **Configure** or **Edit** opens
+Version cards are read-only. On the new version draft, **Configure** or **Edit** opens
 a drawer; **Disable** saves a disabled channel setting. These changes affect
 future deployments, including other Agents sharing that Configuration. They do
 not stop a running channel or modify an existing revision. Channels require
@@ -123,18 +174,18 @@ unavailable.
 
 ### Slack editor
 
-| Control                                                   | Purpose                                                                                                        |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Enable Slack**                                          | Enables Slack in the draft when saved.                                                                         |
-| **Slack channel IDs**                                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.        |
-| **Allowed channel user IDs**                              | Comma-separated Slack user IDs allowed to mention the Agent in the selected channels.                          |
-| **Allow everyone in these channels to mention the agent** | Allows any Slack user in the selected channels to mention the Agent. Direct-message access is unchanged.       |
-| **Require a mention**                                     | Applies the mention requirement to the listed channels.                                                        |
-| **Slack app token** / **Slack bot token**                 | Select a readable Secret in this Namespace or **Create new Secret...**. The current binding is selected.       |
-| **Create new Secret...**                                  | Opens a modal with the fixed binding key and a password field for the Secret value.                            |
-| **Open Agent Credentials**                                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials. |
-| **Save configuration**                                    | Saves channel settings and selected Secret bindings to the shared draft.                                       |
-| **Cancel** / **Close**                                    | Discards the drawer's unsaved inputs.                                                                          |
+| Control                                                   | Purpose                                                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Enable Slack**                                          | Enables Slack in the draft when saved.                                                                            |
+| **Slack channel IDs**                                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.           |
+| **Allowed channel user IDs**                              | Comma-separated Slack user IDs allowed to mention the Agent in the selected channels.                             |
+| **Allow everyone in these channels to mention the agent** | Allows any Slack user in the selected channels to mention the Agent. Direct-message access is unchanged.          |
+| **Require a mention**                                     | Applies the mention requirement to the listed channels.                                                           |
+| **Slack app token** / **Slack bot token**                 | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. |
+| **Create new Secret...**                                  | Opens a modal with an editable Agent-prefixed Name, the fixed binding key, and a masked Value.                    |
+| **Open Agent Credentials**                                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials.    |
+| **Save configuration**                                    | Saves channel settings and selected Secret bindings to the shared draft.                                          |
+| **Cancel** / **Close**                                    | Discards the drawer's unsaved inputs.                                                                             |
 
 Saving preserves existing direct-message and group policies. Channel user IDs do
 not edit `allowFrom`, and **No selected channels** describes the saved channel
@@ -143,10 +194,11 @@ See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
 **Create Secret** stores the value immediately. Cancelling the channel drawer
 discards token selections but does not delete that Namespace Secret. The modal
-never reads an existing value.
+never reads an existing value. If the name already exists in this Namespace,
+correct the Name and retry; both fields remain filled and the existing Secret is unchanged.
 See the [Console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
 for binding permissions and save behavior. Apply the saved draft with
-**Deploy new revision** before expecting the running Agent to use it.
+**Deploy new version** before expecting the running Agent to use it.
 
 Microsoft Teams has no console editor. Existing Teams settings remain visible
 in native Configuration JSON, but a Teams-enabled draft cannot deploy through
@@ -158,38 +210,47 @@ the console. Use the operator workflow for those Agents.
 
 **Authentication source** determines how the harness gets model credentials:
 
-| Choice                           | Required input and effect                                                                           |
-| -------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **None**                         | No binding; deployment remains blocked.                                                             |
-| **API key**                      | Existing Namespace Secret ID, not the API key value.                                                |
-| **Service Accounts**             | Existing Namespace Secret ID containing a service account token; available for Dedicated execution. |
-| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                             |
-| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.       |
+| Choice                           | Required input and effect                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **None**                         | No binding; deployment remains blocked.                                                          |
+| **API key**                      | Select a Namespace Secret containing the API key, or create one through the picker.              |
+| **Service Accounts**             | Select a Namespace Secret containing a service account token; available for Dedicated execution. |
+| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                          |
+| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.    |
 
 **Save authentication source** saves the Agent binding for a future deployment.
-The account availability message describes discovery, not model readiness.
+For API keys and Service Accounts tokens, it also grants the Agent access to
+that exact Secret through your authorized Namespace IAM operations. If the
+binding saves but the grant fails, ask a Namespace administrator to confirm
+`secret:operate` for this Agent on that Secret, then use **Retry credential
+access**. The retry checks the saved binding and does not resave it. If the
+binding changed, or the save outcome is unknown, use **Reload authentication source** first.
+Deployment authorization failures remain visible beside **Deploy new version**;
+check both your deployment permission and the Agent's credential access.
+Changing between **API key** and **Service Accounts** clears the selected Secret
+so a token is not silently reused for another authentication method. The account
+availability message describes discovery, not model readiness.
 See [harness authentication](../../reference/harness-execution.md#harness-authentication).
 
-### Runtime and Slack credentials
+### Channel Secrets
 
-| Component                                         | Purpose                                                                                                                                                                       |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Generated runtime credentials: Stored/Missing** | Reports stored connection-credential metadata. First-time provisioning creates these before the first revision; ordinary draft Agents may still need the manual action below. |
-| **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                                                                                        |
-| **Refresh status**                                | Reloads credential metadata.                                                                                                                                                  |
-| **Provision generated runtime credentials**       | Provisions initial connection credentials for ordinary draft Agents. Locked after the first revision; not a rotation action.                                                  |
-| **Slack app token** / **Slack bot token** inputs  | Bound tokens show a synthetic mask. Focus to replace; leave empty to keep a bound token. Missing tokens need a value.                                                         |
-| **Save channel Secrets**                          | Stores Namespace Secrets, grants the Agent access, and updates Configuration bindings. Deploy explicitly to apply them.                                                       |
+This section appears when Slack is enabled in the saved Configuration.
 
-Runtime controls apply to managed authentication. Provisioning requires Agent
-`read` and `operate`; saving channel Secrets additionally requires Secret,
+| Component                                         | Purpose                                                                                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                           |
+| **Slack app token** / **Slack bot token** pickers | Select a readable Namespace Secret or **Create new Secret...**. Missing tokens need a selected binding.          |
+| **Save channel Secrets**                          | Saves Configuration Secret bindings, grants the Agent access, and requires an explicit deployment to apply them. |
+
+First-deployment credential generation requires Agent `read` and `operate` when
+generated credentials are missing; deployment also requires `deploy`.
+Saving channel Secrets additionally requires Secret,
 Configuration, and Namespace IAM permissions. These are multiple writes, so a
 failure can leave partial progress. **Outcome unknown** means refresh and inspect
-saved state before retrying. Save requires at least one replacement and a bound
-or entered value for each token. Only entered replacements are written; an
-unchanged bound token stays intact. Existing values are never fetched or
-displayed, and the mask is never submitted. Entered values clear after a save
-attempt; bound fields return to their mask.
+saved state before retrying. Save requires at least one changed selection and a
+bound Secret for each token. Changing the picker switches the referenced Secret;
+it does not overwrite an existing shared Secret value. Existing values are never
+fetched or displayed.
 
 ## Workspace files tab
 
@@ -238,7 +299,7 @@ permission on this Agent, regardless of the revision or tab you are viewing.
 An accepted stop requests shutdown; it does not prove that the runtime has
 finished. **Refresh stop status** reads the desired state and selected revision.
 An uncertain result blocks another stop until a successful refresh. To resume,
-open **New revision** and select **Deploy new revision**, which creates a new
+open **Create new version** and select **Deploy new version**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
 ## Delete Agent and error recovery

@@ -1,5 +1,5 @@
 {
-  "name": "standard-codex",
+  "name": "Standard Codex",
   "template": {
     "variables": {
       "name": {
@@ -18,7 +18,7 @@
     "agent": {
       "name": "{{ vars.name }}",
       "executionMode": "dedicated",
-      "providerId": null,
+      "backendId": null,
       "harnessAuth": {
         "method": "api_key",
         "secret": "{{ vars.modelSecret }}"
@@ -31,7 +31,7 @@
           "mode": "local",
           "bind": "lan",
           "controlUi": {
-            "enabled": false
+            "enabled": true
           },
           "auth": {
             "password": {
@@ -98,7 +98,7 @@
                   "transport": "websocket",
                   "url": "${APP_SERVER_URL}",
                   "authToken": "${APP_SERVER_TOKEN}",
-                  "approvalPolicy": "never",
+                  "approvalPolicy": "on-request",
                   "sandbox": "workspace-write",
                   "networkProxy": {
                     "enabled": true,

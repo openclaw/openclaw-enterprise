@@ -51,7 +51,7 @@ and AgentRevision responses can include the configured provider ID, which is
 persisted on the mutable Agent row and immutable AgentRevision row. Credential
 bytes stay out of OCC resources, AgentRevision snapshots, ConfigMaps, responses,
 and audit records. Upstream account, credential, and workspace identifiers remain
-private: the internal immutable auth snapshot retains verified Provider/workspace
+private: the internal immutable auth snapshot retains verified Backend/workspace
 ownership, while public responses expose only safe references. The runtime
 Secret retains the credential material required for authentication.
 
@@ -77,11 +77,11 @@ ownership checks do not eliminate this namespace-level trust; independently
 enforced workload admission is required for stronger isolation.
 
 The upstream ChatGPT admin key is read only by the API-side `ChatGPTClient`
-owned by its configured [Provider](../providers.md); it
+owned by its configured [Backend](../backends.md); it
 never appears in startup YAML, persistence, public account data, workload Pods,
 or the worker. Restrict provider TLS egress to the API Pod and an explicitly
 approved provider/proxy CIDR. The worker receives no provider egress exception.
-Managed account bindings carry exact Provider, Driver, and workspace identity.
+Managed account bindings carry exact Backend, Driver, and workspace identity.
 Issuance/deletion, deployment, and worker reconciliation reject conflicting
 ownership; the worker validates binding metadata and confirms issuance. Its Compute Driver
 reads admitted credential bytes only to deliver selected runtime fields; it does
@@ -107,8 +107,9 @@ Harness workload. The Compute-owned Pod templates above do not independently
 prove the containment of a provider-owned workload.
 
 The bundled OpenShell provider supports dedicated Codex and delegates containment
-outside the inner Codex sandbox. It requires upstream support for the workload's
-Secret references and projected identity. Stock gateway incompatibilities fail
+outside the inner Codex sandbox. Its paired Credential Gateway keeps the model
+API key outside the Harness. It still requires upstream support for the
+app-server token Secret reference and projected identity. Stock gateway incompatibilities fail
 explicitly, and test-only bridges are not production support. Do not infer a
 complete pre-execution policy barrier or command-level sandbox admission from
 Driver selection alone. See the [Sandbox overview](../../guides/topics/sandbox.md),

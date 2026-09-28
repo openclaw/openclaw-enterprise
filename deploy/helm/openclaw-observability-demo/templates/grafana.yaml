@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: OCC Prometheus
+        uid: occ-prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ .Release.Name }}-prometheus:9090
+        isDefault: true
+        editable: false
+      - name: OCC operational logs
+        uid: occ-loki
+        type: loki
+        access: proxy
+        url: http://{{ .Release.Name }}-loki:3100
+        editable: false
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: OCC demonstration
+        folder: OCC
+        type: file
+        options:
+          path: /etc/occ-dashboard
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-dashboards
+data:
+  metrics.json: |
+    {{- .Files.Get "files/dashboard.json" | nindent 4 }}
+  logs.json: |
+    {{- .Files.Get "files/logs-dashboard.json" | nindent 4 }}

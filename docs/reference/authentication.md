@@ -87,20 +87,29 @@ File existence alone is not proof of successful initialization.
 
 ## Browser request origin
 
-Browser sign-in and sign-out requests must use the origin configured by
-`OCC_AUTH_BASE_URL`. An explicit untrusted or malformed `Origin` is rejected
-before password verification or session revocation. A request marked
-`Sec-Fetch-Site: cross-site` without an Origin is also rejected. Rejection leaves
-an existing session intact. Command-line clients that send neither browser
-header keep the documented sign-in/sign-out flow.
+Controller API requests that use a session cookie for a mutation must include an
+`Origin` matching the origin of `OCC_AUTH_BASE_URL`. This includes sign-out. A missing,
+malformed, or different origin is rejected with `403`. If `Sec-Fetch-Site` is
+present, it must be `same-origin`. Safe reads do not require an Origin.
+
+Sign-in rejects an explicitly untrusted or malformed Origin and also rejects
+`Sec-Fetch-Site: cross-site` when Origin is missing. Command-line sign-in may
+omit both headers. For later cookie-authenticated mutations, command-line clients
+must provide the configured Origin. An explicitly supplied service API key does
+not require Origin, and an invalid key never falls back to a session cookie.
 
 ## Session lifecycle
 
 | Operation                      | Supported behavior                                                                                                                                          |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /api/auth/sign-in/email` | Verifies an existing account's email and password and issues a session cookie. The JSON response confirms authentication without returning a session token. |
-| `GET /api/auth/session`        | Returns safe account identity for a valid session or `data: null` without one. Inspecting the session is optional.                                          |
+| `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                    |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                           |
+
+The `sessionKey` identifies the current session record, stays stable across reads,
+and changes on a new sign-in, including for the same account. It cannot authenticate
+requests; the session token remains in its HttpOnly cookie. Console uses this key
+to discard retained content and drafts when the session changes.
 
 For example, the sign-in body is:
 

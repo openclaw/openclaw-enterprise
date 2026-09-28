@@ -1,5 +1,6 @@
 # Operators must select an approved, immutable Node 24 base image explicitly.
 ARG NODE_BASE_IMAGE
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 FROM ${NODE_BASE_IMAGE} AS dependencies
 
 WORKDIR /app
@@ -30,6 +31,7 @@ COPY --chown=node:node apps/controller apps/controller
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations migrations
 COPY --chown=node:node scripts scripts
+COPY --chown=node:node deploy/presets deploy/presets
 RUN mkdir -p /app/.development/configurations /var/lib/openclaw/bootstrap \
     && chown -R node:node /app/.development \
     && chown 1000:1000 /var/lib/openclaw/bootstrap \
@@ -39,7 +41,7 @@ USER node
 ENTRYPOINT ["node"]
 CMD ["apps/controller/src/server.mjs"]
 
-FROM ${NODE_BASE_IMAGE} AS runtime
+FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

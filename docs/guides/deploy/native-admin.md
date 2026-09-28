@@ -120,28 +120,34 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the returned `data.origin` into the Agent Configuration, preserving the existing model, Harness, channel, and gateway settings:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
 
-```yaml
-gateway:
-  auth:
-    mode: trusted-proxy
-    trustedProxy:
-      userHeader: x-occ-identity
-      allowUsers:
-        - occ-workspace-files
-      deviceAutoApprove:
-        enabled: true
-        scopes:
-          - operator.admin
-    identityScopes:
-      occ-workspace-files:
-        - operator.admin
-  controlUi:
-    enabled: true
-    allowedOrigins:
-      - https://agent-<opaque-hash>.agents.oce.example.com
+```json
+{
+  "gateway": {
+    "auth": {
+      "mode": "trusted-proxy",
+      "trustedProxy": {
+        "userHeader": "x-occ-identity",
+        "allowUsers": ["occ-workspace-files"],
+        "deviceAutoApprove": {
+          "enabled": true,
+          "scopes": ["operator.admin"]
+        }
+      },
+      "identityScopes": {
+        "occ-workspace-files": ["operator.admin"]
+      }
+    },
+    "controlUi": {
+      "enabled": true,
+      "allowedOrigins": ["https://agent-<opaque-hash>.agents.oce.example.com"]
+    }
+  }
+}
 ```
+
+Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
 
 Do not set unsupported gateway authentication fields, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. A stopped Agent with no active revision returns only `data.status: "stopped"`; deploy it if native admin access is intended. If the response is `data.status: "unavailable"`, check active revision selection before saving the native configuration; OCC cannot derive the Agent origin until it can select the active revision.
 

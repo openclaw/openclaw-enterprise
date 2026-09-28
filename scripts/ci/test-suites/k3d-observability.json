@@ -1,0 +1,31 @@
+{
+  "env": {
+    "OCC_TEST_PRODUCTION_OBSERVABILITY": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_IMAGE",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+    "OCC_TEST_PRODUCTION_NODE_IMAGE",
+    "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE"
+  ],
+  "prepare": {
+    "k3d": true,
+    "requiresPreparedStateForFile": true,
+    "nodeBaseImage": true,
+    "defaultEnv": {
+      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df",
+      "OCC_TEST_PRODUCTION_POSTGRES_IMAGE": "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
+    }
+  },
+  "files": [
+    {
+      "path": "tests/integration/production-observability-k3d.test.mjs",
+      "expectedTests": [
+        "Helm defaults expose private OCC metrics and operational logs through real collection"
+      ]
+    }
+  ]
+}

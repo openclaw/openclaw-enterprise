@@ -21,7 +21,7 @@ If you are still learning the product, start with [Concepts](guides/concepts.md)
 | Section                                       | Use it to                                                                |
 | --------------------------------------------- | ------------------------------------------------------------------------ |
 | [Topics](guides/topics/README.md)             | Understand Agents, access and security, plugins, and configuration.      |
-| [Integrations](guides/integrations/README.md) | Choose and configure Drivers, Providers, and channels.                   |
+| [Integrations](guides/integrations/README.md) | Choose and configure Drivers, experimental Backends, and channels.       |
 | [Operate](guides/operate/README.md)           | Install and run the platform, manage credentials, and diagnose failures. |
 | [Reference](reference/README.md)              | Look up OCC CLI commands and HTTP API operations.                        |
 | [Contribute](contributing/README.md)          | Set up a development environment and change the platform or its docs.    |

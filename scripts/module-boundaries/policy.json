@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "sourceRoots": [
+    "apps/controller/src",
+    "packages/utils/src",
+    "packages/contracts/src",
+    "packages/occ/src",
+    "packages/iam/src",
+    "packages/audit/src"
+  ],
+  "packages": [
+    "apps/controller",
+    "packages/utils",
+    "packages/contracts",
+    "packages/occ",
+    "packages/iam",
+    "packages/audit"
+  ],
+  "workspaceNamespaces": ["@openclaw-enterprise/"],
+  "packageImports": {
+    "sourcePaths": "error",
+    "internalRoot": "allow"
+  },
+  "cycles": {
+    "runtime": "error",
+    "typeOnly": "report"
+  },
+  "boundaries": [
+    {
+      "rule": "domain-to-implementation",
+      "from": ["packages/contracts/src/**", "packages/occ/src/**"],
+      "exceptFrom": ["packages/occ/src/state/**", "packages/occ/src/auth-persistence/**"],
+      "specifiers": [
+        "pg",
+        "pg/**",
+        "drizzle-orm",
+        "drizzle-orm/**",
+        "@kubernetes/client-node",
+        "@kubernetes/client-node/**",
+        "dockerode",
+        "dockerode/**",
+        "fastify",
+        "fastify/**"
+      ],
+      "message": "Domain code must not import concrete database, HTTP or provider dependencies."
+    },
+    {
+      "rule": "domain-to-implementation",
+      "from": ["packages/contracts/src/**"],
+      "to": ["apps/**", "packages/**"],
+      "exceptTo": ["packages/contracts/src/**", "packages/utils/src/**"],
+      "message": "Resource and Driver contracts may depend on neutral utilities, not other workspace implementations."
+    },
+    {
+      "rule": "domain-to-implementation",
+      "from": ["packages/occ/src/**"],
+      "exceptFrom": [
+        "packages/occ/src/state/**",
+        "packages/occ/src/auth-persistence/**",
+        "packages/occ/src/index.ts"
+      ],
+      "to": [
+        "packages/occ/src/state/**",
+        "packages/occ/src/auth-persistence/**",
+        "apps/controller/src/**"
+      ],
+      "message": "OCC domain code must use neutral contracts, ports and errors rather than storage, HTTP or provider implementations."
+    },
+    {
+      "rule": "domain-to-implementation",
+      "from": ["packages/occ/src/index.ts"],
+      "to": [
+        "packages/occ/src/state/**",
+        "packages/occ/src/auth-persistence/**",
+        "apps/controller/src/**"
+      ],
+      "kinds": ["import", "import-type", "require", "dynamic-import", "dependency-anchor", "path"],
+      "message": "The OCC root may re-export adapters; its service imports must use neutral contracts, ports and errors."
+    },
+    {
+      "rule": "http-to-provider",
+      "from": [
+        "apps/controller/src/index.ts",
+        "apps/controller/src/http/**",
+        "apps/controller/src/routes/**",
+        "apps/controller/src/channels/**"
+      ],
+      "to": ["apps/controller/src/drivers/**"],
+      "message": "HTTP code must consume a domain service or neutral contract rather than a Driver implementation."
+    },
+    {
+      "rule": "cross-provider-implementation",
+      "from": ["apps/controller/src/drivers/compute/docker/**"],
+      "to": [
+        "apps/controller/src/drivers/compute/kubernetes/**",
+        "apps/controller/src/drivers/compute/ssh/**"
+      ],
+      "message": "Shared Compute behavior must live in a provider-neutral module."
+    },
+    {
+      "rule": "cross-provider-implementation",
+      "from": ["apps/controller/src/drivers/compute/kubernetes/**"],
+      "to": [
+        "apps/controller/src/drivers/compute/docker/**",
+        "apps/controller/src/drivers/compute/ssh/**"
+      ],
+      "message": "Shared Compute behavior must live in a provider-neutral module."
+    },
+    {
+      "rule": "cross-provider-implementation",
+      "from": ["apps/controller/src/drivers/compute/ssh/**"],
+      "to": [
+        "apps/controller/src/drivers/compute/docker/**",
+        "apps/controller/src/drivers/compute/kubernetes/**"
+      ],
+      "message": "Shared Compute behavior must live in a provider-neutral module."
+    }
+  ],
+  "diagnosticLimit": 30
+}

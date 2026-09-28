@@ -2,6 +2,7 @@ import {
   type AgentRevision,
   type PluginDesiredState,
   validPluginRevisionState,
+  validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
@@ -31,17 +32,36 @@ remote_plugin = true
 enabled = false
 `;
 
+export interface CodexRepositoryBrokerNetworkPolicy {
+  readonly host: string;
+  readonly domains: Readonly<Record<string, "allow" | "deny">>;
+}
+
 export type PluginRuntimeSpec =
-  | { readonly kind: "openclaw"; readonly selections: PluginDesiredState }
-  | { readonly kind: "codex"; readonly selections: PluginDesiredState };
+  | {
+      readonly kind: "openclaw";
+      readonly selections: PluginDesiredState;
+      readonly pluginApprovers?: AgentRevision["pluginApprovers"];
+    }
+  | {
+      readonly kind: "codex";
+      readonly selections: PluginDesiredState;
+      readonly pluginApprovers?: AgentRevision["pluginApprovers"];
+      readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+    };
 
 function validateDriverMatchesRuntime(
   revision: Readonly<AgentRevision>,
   runtime: PluginRuntimeSpec,
 ): void {
   if (runtime.kind === "codex") {
-    if (revision.harness.id !== "codex" || revision.harness.mode !== "dedicated") {
-      throw new Error("Codex plugin runtime artifacts require a dedicated Codex Harness.");
+    if (!(
+      (revision.harness.id === "codex" && revision.harness.mode === "dedicated") ||
+      (revision.harness.id === "openclaw" && revision.harness.mode === "embedded")
+    )) {
+      throw new Error(
+        "Codex plugin runtime artifacts require a dedicated Codex Harness or embedded OpenClaw Harness.",
+      );
     }
     if (revision.plugins?.driver.implementation !== "occ/codex-plugin") {
       throw new Error("Codex plugin runtime artifacts require the Codex PluginDriver.");
@@ -58,27 +78,60 @@ function validateDriverMatchesRuntime(
 
 function pluginFreeRuntimeForRevision(
   revision: Readonly<AgentRevision>,
+  repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
 ): PluginRuntimeSpec | undefined {
+  if (!validPluginApprovers(revision.pluginApprovers)) {
+    throw new Error("AgentRevision plugin approvers are invalid.");
+  }
   if (revision.harness.id === "codex" && revision.harness.mode === "dedicated") {
-    return { kind: "codex", selections: {} };
+    return {
+      kind: "codex",
+      selections: {},
+      ...(revision.pluginApprovers === undefined
+        ? {}
+        : { pluginApprovers: revision.pluginApprovers }),
+      ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
+    };
+  }
+  if (repositoryBrokerNetworkPolicy !== undefined) {
+    throw new Error("Repository credential broker network policy requires Codex plugin runtime.");
+  }
+  if (
+    revision.pluginApprovers !== undefined &&
+    revision.harness.id === "openclaw" &&
+    revision.harness.mode === "embedded"
+  ) {
+    return { kind: "openclaw", selections: {}, pluginApprovers: revision.pluginApprovers };
   }
   return undefined;
 }
 
 export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
+  repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
   if (state === undefined) {
-    return pluginFreeRuntimeForRevision(revision);
+    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy);
   }
-  if (!validPluginRevisionState(state)) {
+  if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
+  }
+  if (
+    repositoryBrokerNetworkPolicy !== undefined &&
+    state.driver.implementation !== "occ/codex-plugin"
+  ) {
+    throw new Error("Repository credential broker network policy requires the Codex PluginDriver.");
   }
   const runtime: PluginRuntimeSpec =
     state.driver.implementation === "occ/codex-plugin"
-      ? { kind: "codex", selections: state.plugins }
-      : { kind: "openclaw", selections: state.plugins };
+      ? {
+          kind: "codex",
+          selections: state.plugins,
+          pluginApprovers: revision.pluginApprovers,
+          ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
+        }
+      : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
   validateDriverMatchesRuntime(revision, runtime);
   return runtime;
 }
@@ -121,5 +174,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
   return {
     kind: runtime.kind,
     selections: runtime.selections,
+    ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
+    ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined
+      ? { repositoryBrokerNetworkPolicy: runtime.repositoryBrokerNetworkPolicy }
+      : {}),
   };
 }

@@ -59,7 +59,7 @@ export async function loadConfiguration(path: string, clock: Clock): Promise<Loa
     if (backendInput.kind === "github-app-registry") {
       if (
         Object.keys(backendInput).some(
-          (key) => !["kind", "providerId", "registryFile", "privateKeyFile"].includes(key),
+          (key) => !["kind", "backendId", "registryFile", "privateKeyFile"].includes(key),
         )
       ) {
         throw new Error("invalid-configuration");
@@ -71,7 +71,7 @@ export async function loadConfiguration(path: string, clock: Clock): Promise<Loa
       );
       const registry = validateGitHubRepositoryRegistry(
         JSON.parse(registryBytes.toString("utf8")),
-        string(backendInput.providerId),
+        string(backendInput.backendId),
       );
       if (config.sessionPolicy.maximumDurationSeconds > registry.maximumDurationSeconds) {
         throw new Error("invalid-configuration");

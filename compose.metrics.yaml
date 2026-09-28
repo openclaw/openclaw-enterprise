@@ -57,7 +57,7 @@ services:
     ports: ["127.0.0.1:${OCC_GRAFANA_PORT:-3001}:3000"]
     volumes:
       - ./deploy/metrics/development/grafana:/etc/grafana/provisioning:ro
-      - ./deploy/metrics/development/dashboard.json:/etc/occ-dashboard/occ.json:ro
+      - ./deploy/helm/openclaw-observability-demo/files/dashboard.json:/etc/occ-dashboard/occ.json:ro
     depends_on: [prometheus]
     networks: [development]
     mem_limit: 512m

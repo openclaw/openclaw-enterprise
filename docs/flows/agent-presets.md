@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-24
-last_updated_session: codex/01a0cfbd-e4cc-7d62-8542-c1358ab1bc5b
+updated: 2026-09-27
+last_updated_session: authoring-run/c1812a3c-f760-4167-80ca-f4a66d8572e4
 ---
 
 # Agent Presets flow
@@ -16,8 +16,9 @@ continues through [revision admission](configuration-driver/persistence-and-revi
 ## Entry Points
 
 - [Installation loader](../../apps/controller/src/composition/installation-config.ts):
-  `loadInstallationConfiguration` reads `presets.includeDefaults` and the shipped
-  artifact. Production and PostgreSQL development composition pass generic
+  `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
+  Bundled defaults are **Standard Codex** and **Standard OpenClaw**; custom DevDay
+  files are loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
   name/template definitions to OCC and call `initializeDefaultPresets`.
 
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
@@ -47,7 +48,10 @@ graph TD
   S --> H["Configuration API admits and saves"]
   G -->|Existing credential binding| H
   H --> I["Agent API admits and saves"]
-  I --> J["Independent Agent draft"]
+  I -->|Model Secret selected| O["Grant Agent access to the selected model Secret"]
+  I -->|No model Secret| J
+  O --> J["Independent Agent draft"]
+  O -->|Grant fails| R["Retain Agent and retry credential access"]
   F -->|Invalid variable| E
   I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
   J --> L["Credential preparation and revision admission"]
@@ -64,15 +68,18 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
-The loader validates the opt-in boolean and loads the bundled JSON only when
-enabled. [Production composition](../../apps/controller/src/composition/production.ts)
+The loader validates the opt-in boolean and file list. It loads bundled JSON
+when enabled, resolves explicit JSON paths beside the startup YAML, validates
+each name/template definition, and rejects missing, malformed, invalid, or
+duplicate-name definitions before composition. API and worker share the startup
+snapshot and its source path; files are not watched. [Production composition](../../apps/controller/src/composition/production.ts)
 and [development composition](../../apps/controller/src/composition/development-postgres.ts)
 pass generic definitions into `ControllerOptions.defaultPresets`, select an
 authorized persisted administrator through IAM, and initialize defaults after
 selecting Configuration and IAM Drivers. Native template contents
 remain in the application bundle; OCC owns generic Preset lifecycle. The
 [standard Codex artifact](../../deploy/presets/standard-codex.json) requests
-cached hosted search and grants the exact build hosts documented in the
+on-request approvals with the user as reviewer, cached hosted search, and the exact build hosts in the
 [standard Preset guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
 Seeding and rendering copy that native policy; the deployed Codex plugin owns
 its enforcement. Updating the bundle does not replace already installed copies.
@@ -118,18 +125,42 @@ path records mutations and denials without template or variable contents.
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
 lists only readable Presets, then reads the selected resource once. The user
-fills typed inputs, including masked password fields, and selects **Use Preset**. The shared
+reviews prefilled scalar defaults and fills typed inputs. The bound password
+variable offers a new masked token or an existing same-Namespace Secret. The
+chooser fetches only Secret metadata, validates the original template, and replaces
+the password token with the selected reference in a temporary copy. Mode changes
+clear discarded tokens; stale catalog responses cannot replace a later selection.
+The user then selects **Use Preset**. The shared
 [`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
 Rendering makes no requests and fetches no credentials. On success, the chooser
 is replaced by the ordinary Agent form; the form keeps only the rendered
-settings. Password values move into the ordinary masked credential input; the
+settings and, when selected, ephemeral existing-Secret metadata for access grants.
+The chooser lists Presets alphabetically by display name.
+Password values move into the ordinary masked credential input; the
 chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
 **Start over** discards the unsaved draft after confirmation and opens a fresh
 chooser. After a save succeeds or its outcome becomes uncertain, restart is
 disabled so the user follows ordinary creation recovery.
+
+`apps/controller/src/console/console.mjs:loadPage`
+
+Before resetting the view, Console captures the unsaved form's raw editor text,
+model controls, workspace files, repository selections, and staged Secret
+references. The in-memory map is scoped to the signed-in user and Namespace.
+Returning to a Preset form through navigation or browser history reconstructs it
+from that copy; capability and repository discovery run again against current
+access. A form started without a Preset registers for discard on exit. After
+flushing captures, `loadPage` removes its creation and channel snapshots and its
+retained view when navigation leaves creation or changes Namespace. Re-entry
+opens the initial choices; resources already saved through the API remain.
+Invalid JSON survives as text. Password controls and plugin discovery results
+are excluded. Start over removes the copy; session loss, logout, a different
+signed-in user, and page exit clear the map. Starting a save removes its capture
+before any mutation, so a later route return cannot replay a pre-save copy as a
+new Agent. Existing partial-save recovery remains local to its form.
 
 ### 4. Save an independent draft
 
@@ -137,6 +168,31 @@ disabled so the user follows ordinary creation recovery.
 
 [The creation form](../../apps/controller/src/console/agents/create.mjs) copies
 rendered settings into editable fields and checks their form representation.
+A method-only Preset authentication default selects API key or Service Accounts
+without binding a Secret. The shared Secret picker requires a same-Namespace
+selection. **Create new Secret...** saves immediately and stages the reference;
+the browser never reads existing Secret bytes. Final Agent admission still
+requires a complete authentication binding.
+Rendered `agent.pluginApprovers` remains ordinary Agent draft data. Omission
+inherits the form default, an empty array keeps the explicit no-approver default,
+and selected channel identities are submitted through the normal Agent create
+body. The Agent API and selected Plugin Driver validate the concrete approvers
+after variable rendering.
+Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
+including explicit empty strings. The shared Preset validator checks supported
+filenames, Unicode, NUL, and byte limits before and after expansion; password
+variables remain confined to the credential field. User-edited workspace bytes
+follow the existing private workspace setup path in both regular and provisioning
+creation. The form keeps Secret bindings internally and exposes channel-specific
+Secret controls rather than a raw bindings editor.
+Selected model Secret metadata and references survive draft navigation; raw
+passwords do not. Provider or authentication-method changes clear the selection.
+For an existing selection or a Secret reference already bound in the Preset,
+Save uses the reference without creating another Secret. Ordinary creation grants
+the new Agent's service principal exact Secret `operate` access and retains the
+reference through Agent-conflict and grant retries. The caller needs permission to
+manage the grant; if it fails, the saved Agent remains and the form offers a retry.
+Provisioning derives the grant from `harnessAuth.source`.
 For a password input, Save first creates a same-Namespace Secret, clears the
 credential input, and retains the returned reference. It then creates a
 Configuration and an Agent that refers to the Configuration and Secret, and
@@ -193,6 +249,20 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-09-27 00:28: Discard no-Preset creation state when leaving the flow. (authoring-run/c1812a3c-f760-4167-80ca-f4a66d8572e4 - ea187c93468f399b00ebb504fcbbed5ab21ddd8e)
+
+- 2026-09-26 13:34: Trace main-form Secret selection, immediate creation, and metadata-only draft restoration. (authoring-run/33370d63-d3f8-4d66-8ad2-02dab55954e2 - 5b9fa853a23c47d410e3b7338a20ee0509041493)
+
+- 2026-09-26 00:31: Grant ordinary drafts access to model Secrets already bound in Presets. (authoring-run/27646efe-b5bb-44a4-8d76-0506bd266237 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
+
+- 2026-09-24 21:39: Retain unsaved Console draft edits across navigation in memory, clearing credentials and preserving explicit discard (codex/01a0d557-f6e3-7da2-af52-993d05735554 - 12fc35b9c358c7992c09f7f23ffb5d4df349a19c)
+
+- 2026-09-24 12:03: Default SWE Agent to GPT-6-Astra with Codex service-account authentication; allow existing or new model Secrets in the Preset chooser (codex/01a0d172-2f0a-7ec3-91ff-323d532464c7 - a4733ed0759840ff65907be03b49cf8979256ecf)
+
+- 2026-09-24: Seed both standard harness presets and keep named DevDay copies opt-in.
+
+- 2026-09-24 11:03: Load installation-linked JSON Presets and carry rendered workspace contents through Agent creation (codex/01a0d172-2f0a-7ec3-91ff-323d532464c7 - 935f91072adee63fc569e63db5fb2a5e64c77c5b)
 
 - 2026-09-24 03:19: Grant observed clean-build hosts in the standard Codex Preset while retaining cached search and limited native networking (codex/01a0cfbd-e4cc-7d62-8542-c1358ab1bc5b - 63a70947fed440a875b2e6338d0a22500f9a9f5e)
 

@@ -30,7 +30,7 @@ areas; each responsibility still needs an explicit handoff.
 | Business workflow      | Who approves actions, checks result quality, handles exceptions, and can suspend the work.                | [Agent deployment](production-agents.md)                                                                |
 | Access and credentials | Who admits users, grants resource access, renews credentials, and handles compromise or staff departures. | [Authorization](../../reference/authorization.md), [credential lifecycle](credential-lifecycle.md)      |
 | Data and evidence      | Which data may leave each workload, where logs and backups live, and their access and retention rules.    | [Runtime security](../../reference/security/runtime-isolation.md), [observability](../observability.md) |
-| Usage and cost         | Who owns provider billing, expected request volume, budget alerts, and the response to quota exhaustion.  | [Provider ownership](../../reference/providers.md)                                                      |
+| Usage and cost         | Who owns provider billing, expected request volume, budget alerts, and the response to quota exhaustion.  | [Model credentials](../../reference/agents.md#harness-authentication)                                   |
 
 Kubernetes resource quotas constrain the configured infrastructure resources; they
 do not impose a model-spending budget. Use the provider's available spending or
@@ -86,8 +86,9 @@ references rather than values.
 
 ## Connect alerts to a response
 
-Use [platform observability](../observability.md) to configure collection and
-prove backend receipt. Then assign alert thresholds and a response owner for the
+Verify each private API/worker metrics target using [Pod discovery](../observability/metrics.md),
+and use [platform observability](../observability.md) to connect operational logs
+and prove backend receipt. Default local output does not prove remote delivery. Then assign alert thresholds and a response owner for the
 workload. Keep an alert route that does not depend on the affected Agent replying.
 
 | Signal                                                          | First operator response                                                                                                                                                                              |
@@ -119,7 +120,7 @@ Record the protection and recovery owner for each required asset:
 - Startup, authentication, provider, and runtime Secrets; protected bootstrap
   output; and any private routing certificates and keys.
 - Each Agent's private gateway state claim and, for dedicated execution, its
-  shared workspace claim. Review the exact [persistent and ephemeral storage
+  Harness workspace claim. Review the exact [persistent and ephemeral storage
   boundary](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 - External Configuration and Secret stores required by the selected Drivers.
 

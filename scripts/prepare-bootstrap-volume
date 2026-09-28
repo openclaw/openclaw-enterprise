@@ -78,9 +78,11 @@ add_node_selector() {
   value=${selector#*=}
   is_label_key "$key" || die "--node-selector key must be a Kubernetes label key."
   is_label_value "$value" || die "--node-selector value must be a nonempty Kubernetes label value."
-  for existing in "${node_selectors[@]}"; do
-    [[ "${existing%%=*}" != "$key" ]] || die "--node-selector repeats key $key."
-  done
+  if ((${#node_selectors[@]})); then
+    for existing in "${node_selectors[@]}"; do
+      [[ "${existing%%=*}" != "$key" ]] || die "--node-selector repeats key $key."
+    done
+  fi
   node_selectors+=("$selector")
 }
 

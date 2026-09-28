@@ -7,6 +7,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rename,
   symlink,
   unlink,
@@ -42,11 +43,12 @@ async function project(directory, generation, values) {
 }
 
 async function fixture(t) {
-  const directory = await temporaryDirectory(t, "repository-projections-");
+  // Canonicalize macOS's /var alias and leave room for the 104-character socket limit.
+  const directory = await realpath(await temporaryDirectory(t, "rp-"));
   const inputsDirectory = join(directory, "inputs");
   const registryDirectory = join(directory, "registry");
   const privateVolume = join(directory, "private-volume");
-  const controlVolume = join(directory, "control-volume");
+  const controlVolume = join(directory, "control");
   for (const path of [inputsDirectory, registryDirectory, privateVolume, controlVolume]) {
     await mkdir(path, { mode: 0o755 });
   }
@@ -58,7 +60,7 @@ async function fixture(t) {
     privateDirectory: join(privateVolume, "private"),
     controlSocket: join(controlVolume, "private", "control.sock"),
     expectedOrigin: "https://credentials.example.test",
-    providerId: "github-primary",
+    backendId: "github-primary",
   };
   const tls = await createTlsMaterial(t);
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
@@ -75,7 +77,7 @@ async function fixture(t) {
     },
     backend: {
       kind: "github-app-registry",
-      providerId: options.providerId,
+      backendId: options.backendId,
       registryFile: options.registryFile,
       privateKeyFile: join(inputsDirectory, "private-key.pem"),
     },
@@ -87,7 +89,7 @@ async function fixture(t) {
   };
   const registry = {
     version: 1,
-    providerId: options.providerId,
+    backendId: options.backendId,
     providerInstanceId: "github-production",
     appId: "123",
     githubInstallationId: "456",
@@ -165,6 +167,30 @@ test("projected service inputs become owned private files accepted by the real l
   restarted.close();
 });
 
+test("projection startup derives the broker origin from the trusted deployment argument", async (t) => {
+  const f = await fixture(t);
+  const gateway = { ...f.config.gateway };
+  delete gateway.publicOrigin;
+  await project(f.options.inputsDirectory, "..derived-origin", {
+    ...f.values,
+    "config.json": JSON.stringify({ ...f.config, gateway }),
+  });
+  const loaded = await f.prepare();
+  assert.equal(loaded.config.gateway.publicOrigin, f.options.expectedOrigin);
+  loaded.close();
+});
+
+test("projection startup rejects a serving certificate without the broker host", async (t) => {
+  const f = await fixture(t);
+  f.options.expectedOrigin = "https://git.example.test";
+  const gateway = { ...f.config.gateway, publicOrigin: f.options.expectedOrigin };
+  await project(f.options.inputsDirectory, "..wrong-cert-host", {
+    ...f.values,
+    "config.json": JSON.stringify({ ...f.config, gateway }),
+  });
+  await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
+});
+
 test("projection startup rejects a writable ancestor above its private snapshot", async (t) => {
   const f = await fixture(t);
   const loaded = await f.prepare();
@@ -223,7 +249,7 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
     },
     { ...f.config, gateway: { ...f.config.gateway, listen: "0.0.0.0:443" } },
     { ...f.config, gateway: { ...f.config.gateway, controlSocket: "/tmp/other.sock" } },
-    { ...f.config, backend: { ...f.config.backend, providerId: "different-provider" } },
+    { ...f.config, backend: { ...f.config.backend, backendId: "different-provider" } },
   ]) {
     await project(f.options.inputsDirectory, `..invalid-${generation++}`, {
       ...f.values,
@@ -237,7 +263,7 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
   });
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
   await project(f.options.inputsDirectory, "..restored", f.values);
-  const badRegistry = { ...f.registry, providerId: "different-provider" };
+  const badRegistry = { ...f.registry, backendId: "different-provider" };
   await unlink(join(f.registryGeneration, "registry.json"));
   await writeFile(join(f.registryGeneration, "registry.json"), JSON.stringify(badRegistry), {
     mode: 0o440,

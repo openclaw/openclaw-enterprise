@@ -109,12 +109,12 @@ async function loadLocalInstallation() {
     );
   }
   await privateOwned(directory, true);
-  for (const file of [".openclaw-development", "state.json", "compose.yaml", "kubeconfig"]) {
+  for (const file of [".openclaw-development", "state.json", "kubeconfig"]) {
     await privateOwned(join(directory, file));
   }
   if (
     (await readFile(join(directory, ".openclaw-development"), "utf8")) !==
-    "openclaw-enterprise-development-v2\n"
+    "openclaw-enterprise-development-v3\n"
   ) {
     throw new Error("The selected directory was not created by Kubernetes Local Setup.");
   }
@@ -123,10 +123,18 @@ async function loadLocalInstallation() {
     "The recorded Local Setup state",
   );
   if (
-    state.version !== 2 ||
+    state.version !== 3 ||
     state.computeDriver !== "kubernetes" ||
+    !["none", "openshell"].includes(state.sandboxDriver) ||
     !["docker", "podman"].includes(state.containerEngine) ||
-    !/^[a-z0-9][a-z0-9_-]*$/.test(state.composeProject ?? "") ||
+    !["", undefined, "k3d"].includes(state.deploymentMode) ||
+    (state.deploymentMode === "k3d"
+      ? state.composeProject !== "" ||
+        !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(state.platformNamespace ?? "") ||
+        !Number.isInteger(state.apiPort) ||
+        state.apiPort < 1 ||
+        state.apiPort > 65535
+      : !/^[a-z0-9][a-z0-9_-]*$/.test(state.composeProject ?? "")) ||
     !/^occ-dev-[a-z0-9][a-z0-9-]*$/.test(state.cluster ?? "") ||
     !state.dockerHost?.startsWith("unix:///") ||
     typeof state.repository !== "string" ||
@@ -137,6 +145,14 @@ async function loadLocalInstallation() {
     (state.keyOwned && state.keyPath !== join(directory, "initial-admin-service-key.json"))
   ) {
     throw new Error("The recorded Kubernetes Local Setup state does not belong to this checkout.");
+  }
+  if (state.sandboxDriver === "openshell") {
+    throw new Error(
+      "The local first-Agent workflow does not support the OpenShell Sandbox Driver. Start Local Setup with OCC_DEVELOPMENT_SANDBOX_DRIVER=none.",
+    );
+  }
+  if (state.deploymentMode !== "k3d") {
+    await privateOwned(join(directory, "compose.yaml"));
   }
   await privateOwned(state.keyPath);
   if (
@@ -186,14 +202,19 @@ async function loadLocalInstallation() {
       { ...options, env: environment },
     );
   };
-  const endpoints = (await compose("port", "controller", "3000"))
-    .trim()
-    .split("\n")
-    .filter(Boolean);
-  if (endpoints.length !== 1) {
-    throw new Error("Local Setup did not publish exactly one loopback controller endpoint.");
+  let origin;
+  if (state.deploymentMode === "k3d") {
+    origin = loopbackOrigin(`http://127.0.0.1:${state.apiPort}`);
+  } else {
+    const endpoints = (await compose("port", "controller", "3000"))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (endpoints.length !== 1) {
+      throw new Error("Local Setup did not publish exactly one loopback controller endpoint.");
+    }
+    origin = loopbackOrigin(`http://${endpoints[0]}`);
   }
-  const origin = loopbackOrigin(`http://${endpoints[0]}`);
   if (process.env.OCC_URL && loopbackOrigin(process.env.OCC_URL).port !== origin.port) {
     throw new Error("OCC_URL does not match the controller port recorded by Local Setup.");
   }
@@ -214,28 +235,29 @@ async function loadLocalInstallation() {
       }
       return ["--set", `${name}=${value}`];
     });
-    return run(
-      state.containerEngine,
-      [
-        ...composeBase,
-        "exec",
-        "-T",
-        "postgres",
-        "psql",
-        "-X",
-        "-q",
-        "-t",
-        "-A",
-        "--set",
-        "ON_ERROR_STOP=1",
-        ...args,
-        "--username",
-        "postgres",
-        "--dbname",
-        "openclaw_enterprise",
-      ],
-      { env: environment, input: sql },
-    );
+    const psql = [
+      "psql",
+      "-X",
+      "-q",
+      "-t",
+      "-A",
+      "--set",
+      "ON_ERROR_STOP=1",
+      ...args,
+      "--username",
+      "postgres",
+      "--dbname",
+      "openclaw_enterprise",
+    ];
+    if (state.deploymentMode === "k3d") {
+      return kubectl("-n", state.platformNamespace, "exec", "-i", "pod/postgres", "--", ...psql, {
+        input: sql,
+      });
+    }
+    return run(state.containerEngine, [...composeBase, "exec", "-T", "postgres", ...psql], {
+      env: environment,
+      input: sql,
+    });
   };
   return { directory, key, origin, kubectl, database };
 }
@@ -447,11 +469,11 @@ function assertManagedAgent(agent, record) {
     agent.harnessAuth.source?.namespaceId !== record.namespaceId ||
     agent.harnessAuth.source?.id !== record.secretId ||
     agent.executionMode !== "embedded" ||
-    agent.providerId !== null ||
+    agent.backendId !== null ||
     Object.keys(agent.plugins ?? {}).length
   ) {
     throw new Error(
-      "The Agent's Configuration, credentials, Provider, or tools changed outside this helper. Use a different name or manage this Agent through OCC.",
+      "The Agent's Configuration, credentials, Backend, or tools changed outside this helper. Use a different name or manage this Agent through OCC.",
     );
   }
 }
@@ -491,7 +513,7 @@ function assertManagedRevision(revision, record, expected) {
     revision.harnessAuth.source?.kind !== "secret" ||
     revision.harnessAuth.source?.namespaceId !== record.namespaceId ||
     revision.harnessAuth.source?.id !== record.secretId ||
-    revision.providerId !== null ||
+    revision.backendId !== null ||
     Object.keys(revision.secretBindings ?? {}).length ||
     revision.plugins !== undefined
   ) {

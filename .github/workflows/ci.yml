@@ -20,6 +20,16 @@ env:
   NODE_VERSION: "24.16.0"
 
 jobs:
+  native-images:
+    name: Native Container Verification
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/container-check.yml
+    with:
+      source_sha: ${{ github.sha }}
+      ci_run_id: ${{ github.run_id }}
+      ci_attempt: ${{ github.run_attempt }}
+      node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
   audit:
     name: Suite Audit
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -41,7 +51,7 @@ jobs:
   pr-safe:
     name: ${{ matrix.title }}
     # NetworkPolicy proofs need a runner kernel with bridge netfilter support.
-    runs-on: ${{ startsWith(matrix.lane, 'k3d-fixture-') && 'ubuntu-22.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability') && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -61,7 +71,7 @@ jobs:
             timeout: 25
           - lane: images-packaging
             title: Images and Packaging
-            profile: images
+            profile: full
             timeout: 45
           - lane: k3d-fixture-configuration
             title: k3d Fixture and Configuration
@@ -73,6 +83,10 @@ jobs:
             timeout: 45
           - lane: k3d-fixture-plugins
             title: k3d Plugin Status
+            profile: k3d
+            timeout: 45
+          - lane: k3d-observability
+            title: Production Observability
             profile: k3d
             timeout: 45
           - lane: logging-collector
@@ -106,12 +120,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  runtime-image-fixture:
+    name: Runtime Image Fixture
+    # GitHub-hosted jobs receive a fresh VM and the job's existing Docker engine.
+    # Only this lane writes fixture tags; its process awaits each Docker command.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: runtime-image-fixture
+          profile: postgres
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: ci-results
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-22.04
     needs:
       - audit
       - pr-safe
+      - runtime-image-fixture
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -132,8 +164,8 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const needs = JSON.parse(process.env.NEEDS_JSON);
-          const lanes = ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "logging-collector", "repository-credentials-container", "repository-credentials-platform"];
-          const expanded = { audit: needs.audit };
+          const lanes = ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "logging-collector", "repository-credentials-container", "repository-credentials-platform"];
+          const expanded = { audit: needs.audit, "runtime-image-fixture": needs["runtime-image-fixture"] };
           for (const lane of lanes) {
             expanded[lane] = { result: needs["pr-safe"]?.result ?? "missing" };
           }

@@ -162,7 +162,7 @@ yq -i '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
   "$OCC_INPUT_DIRECTORY/installation.yaml"
 ```
 
-Edit the protected YAML copies before provisioning anything:
+Edit the protected YAML copies:
 
 - `$OCC_INPUT_DIRECTORY/values.yaml`: set `images.controller`,
   `auth.baseUrl`, `bootstrap.adminEmail`, `database.cidrs`, `cluster.cidrs`,
@@ -174,25 +174,27 @@ Edit the protected YAML copies before provisioning anything:
   Secret names and keys; otherwise update the Secret creation commands below.
 - `$OCC_INPUT_DIRECTORY/installation.yaml`: set `occ.cluster`, `logging.level`,
   `drivers.compute.configuration.images` digests, DNS selectors, matching
-  `gatewayRouting` settings, service-principal token settings, runtime selector, Secret
+  `gatewayRouting` settings, service-principal token settings, Secret
   prefixes, and `runtime.gatewayStorageClassName`. Keep
   `drivers.compute.configuration.images.requireImmutableDigest: true`.
+  Set `runtime.gatewayNodeSelector` (trusted) and `runtime.nodeSelector` (Harness)
+  to disjoint Ready pools; Helm does not place runtimes.
   Do not set `network.gatewayClients` with routing enabled; Compute derives the
   Envoy peer from `gatewayRouting`.
   If enabling Agent plugins, set one compatible bundled `drivers.plugin` selector
   and any required Codex catalog-reader configuration. See the
   [PluginDriver reference](../../reference/drivers/plugin.md#selection-and-catalogs).
-  For dedicated Codex command execution on nodes whose default syscall policy
-  blocks user namespaces, install a reviewed compatibility profile on every
-  eligible node and set `runtime.codexSeccompProfile` to its relative kubelet
-  profile path. See the [Kubernetes runtime requirements](../../reference/drivers/kubernetes-compute.md#requirements).
+  If the default syscall policy blocks Codex user namespaces, follow
+  [Codex sandbox setup](codex-sandbox.md): install a reviewed profile on every
+  eligible node, set `runtime.codexSeccompProfile` to its relative kubelet path,
+  and verify sandbox enforcement.
   Set `presets.includeDefaults: false` to disable the example's
   [bundled Presets](../../reference/presets.md#installation-defaults).
 - `$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml`: set the bootstrap PVC name,
   namespace, size, and protected `storageClassName` for the cluster.
 
-Require all checks below, including Helm rendering, to pass before provisioning.
-API startup also validates shared-cookie domain compatibility:
+Run every check below, including Helm rendering, before provisioning.
+API startup checks shared-cookie domain compatibility:
 
 ```bash
 yq e -e '.images.controller | test("@sha256:[a-f0-9]{64}$")' \
@@ -208,6 +210,7 @@ yq e -e '.drivers.compute.configuration.images.requireImmutableDigest == true an
   (.drivers.compute.configuration.images.gateway | test("@sha256:[a-f0-9]{64}$")) and
   (.drivers.compute.configuration.images.agent | test("@sha256:[a-f0-9]{64}$")) and
   .drivers.compute.configuration.runtime.gatewayStorageClassName != "" and
+  (.drivers.compute.configuration.runtime.gatewayNodeSelector | length > 0) and
   (.drivers.compute.configuration.runtime.nodeSelector | length > 0)' \
   "$OCC_INPUT_DIRECTORY/installation.yaml" >/dev/null
 yq e -e '.metadata.namespace == "openclaw-system" and .spec.storageClassName != ""' \
@@ -305,7 +308,7 @@ read-only into migration, bootstrap, API, and worker containers at
 
 Enable repository credentials only after preparing the
 [repository service inputs](../repository-credentials/installation.md) and the matching
-[GitHub Provider selection](../../reference/providers.md#github-repository-credentials).
+[GitHub Backend selection](../../reference/backends.md#github-repository-credentials).
 The feature defaults disabled. It requires a separately built, immutable service
 image, an immutable registry ConfigMap, private service configuration, App key,
 TLS certificate/key for the exact internal Service hostname, and a separate
@@ -401,11 +404,8 @@ access, Agent deployment, or a model turn.
 ## Authenticate to the production API
 
 Retrieve `initial-admin-service-key.json` from the protected bootstrap PVC
-through approved storage access and retain it in protected storage. The example
-uses `/secure/occ/initial-admin-service-key.json` as the retained copy and
-creates a separate, private copy for this operator session. It preserves values
-already set in your shell. Otherwise, replace the sample hostname with your
-production HTTPS origin before running and set a different retained path if needed:
+through approved storage access and retain it privately. This example preserves
+existing shell values and creates a separate session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
@@ -441,18 +441,25 @@ prepare_occ_service_key
 ```
 
 Expect the displayed `ID` to match the key file's
-`meta.installationId`. A completed initialization Job is not an exec endpoint,
-and neither the API nor worker mounts the bootstrap PVC. Keep the protected
-source after ending the session; initialization does not reissue a lost key.
-The [operator cleanup](production-agents.md#end-the-operator-session) removes
-only the disposable copy created above.
+`meta.installationId`. Before the first image update, use that ID to
+[bind upgrades to this Kubernetes Installation](production-upgrade.md#bind-the-installation-once).
+API and worker cannot read the bootstrap PVC. Keep the protected source because
+initialization does not reissue a lost key. The
+[operator cleanup](production-agents.md#end-the-operator-session) removes the
+session copy.
 
-After the production API authenticates, continue with Namespace preparation,
-Agent deployment, and a [real model-response check](production-agents.md#verify-production-workloads)
-that matches the Agent's native gateway authentication mode.
+After authentication, follow [Namespace and Agent deployment](production-agents.md),
+including its [model-response check](production-agents.md#verify-production-workloads).
+
+For later releases, follow the
+[production image upgrade](production-upgrade.md).
 
 ## Related
 
-Continue with [production Agent deployment](production-agents.md). For failed
+Continue with [production Agent deployment](production-agents.md), or use the
+[production image upgrade](production-upgrade.md) for an existing release. For failed
 initialization, preserve state and follow [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
 and the [production startup flow](../../flows/production-startup.md).
+
+[Connect default metrics and logs](../observability.md) to your collectors. The
+[optional demo stack](../observability/demo.md) is not recommended for production.

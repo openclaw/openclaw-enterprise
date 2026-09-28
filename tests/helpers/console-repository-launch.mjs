@@ -7,7 +7,7 @@ import {
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "./console-app.mjs";
@@ -145,7 +145,7 @@ export async function createConsoleRepositoryLaunchFixture(t) {
   };
   const fixture = await createConsoleAppFixture(t, {
     state: storage,
-    providers: [provider],
+    backends: [provider],
     computeDriver: compute,
     secretDriver,
     recordOperations: true,
@@ -182,7 +182,7 @@ export async function createConsoleRepositoryLaunchFixture(t) {
     validateGitHubRepositoryRegistry(
       {
         version: 1,
-        providerId: provider.id,
+        backendId: provider.id,
         providerInstanceId: "console-repository-provider",
         appId: "123",
         githubInstallationId: "456",

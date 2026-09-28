@@ -1,125 +1,92 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { chromium } from "playwright";
-
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import { secretIdForBinding } from "../../apps/controller/src/console/agents/credentials.mjs";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { createConsoleAppFixture, providerFixtures } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import {
+  accessBindingPostRequests,
+  apiRequests,
+  detailUrl,
+  expectNoText,
+  login,
+  setSlackSelection,
+  slackSelectionValue,
+  nativeValues,
+  newPage,
+  nonAuthWriteRequests,
+  pathRequests,
+  revealNativeConfiguration,
+  secretOptionLabel,
+  secretPostRequests,
+  selectSecret,
+} from "./console-agents-browser-helpers.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 const STARTER_CONTROL_UI = {
   enabled: true,
   allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
 };
 
-async function artifactDirectory(t) {
-  const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
-  const directory =
-    configured === undefined || configured.length === 0
-      ? await mkdtemp(join(tmpdir(), "openclaw-console-agents-browser-"))
-      : configured;
-  t.diagnostic(`console Agent browser artifacts: ${directory}`);
-  return directory;
+async function openCreateSecretDialog(scope, label, options = {}) {
+  const field = scope.getByLabel(label, { exact: true });
+  await field.fill(options.query ?? "Create a new Secret");
+  await scope.getByRole("option", { name: "Create new Secret...", exact: true }).click();
 }
 
-async function launchBrowser(options = {}) {
-  const browserExecutable =
-    process.env.OCC_TEST_BROWSER_EXECUTABLE === undefined ||
-    process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
-      ? undefined
-      : process.env.OCC_TEST_BROWSER_EXECUTABLE;
-  const browser = await chromium.launch({
-    ...(browserExecutable === undefined ? {} : { executablePath: browserExecutable }),
-    headless: true,
-    ...(options.args === undefined ? {} : { args: options.args }),
-  });
-  return browser;
-}
-
-async function newPage(t, fixture, options = {}) {
-  const artifacts = await artifactDirectory(t);
-  const browser = await launchBrowser(options);
-  let context;
-  fixture.registerCleanupBeforeAppClose(async () => {
-    let cleanupError;
-    try {
-      await context?.close();
-    } catch (error) {
-      cleanupError ??= error;
-    } finally {
-      try {
-        await browser.close();
-      } catch (error) {
-        cleanupError ??= error;
-      }
+async function createModelCredentialSecret(page, secretValue) {
+  const picker = page.locator("#provider-credential-secret");
+  if ((await picker.count()) === 0 || !(await picker.isVisible())) {
+    const legacyCredential = page.getByLabel("API key", { exact: true });
+    await legacyCredential.fill(secretValue);
+    await legacyCredential.press("Tab");
+    return null;
+  }
+  const created = page.waitForResponse((response) => {
+    if (response.request().method() !== "POST" || !response.url().includes("/secrets")) {
+      return false;
     }
-    if (cleanupError) {
-      throw cleanupError;
-    }
+    return response.request().postDataJSON()?.value === secretValue;
   });
-  context = await browser.newContext();
-  const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
-  return { page, artifacts };
-}
-
-async function login(page, fixture, path = "/console/agents", credentials = fixture.credentials) {
-  await page.goto(`${fixture.origin}${path}`);
-  await page.getByLabel("Username").fill(credentials.email);
-  await page.getByLabel("Password").fill(credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
-  await page.waitForURL(/\/console\/(agents|providers|namespaces|settings)/);
-}
-
-function apiRequests(page, origin) {
-  const requests = [];
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.origin === origin) {
-      let body;
-      try {
-        body = request.postDataJSON();
-      } catch {}
-      requests.push({ method: request.method(), path: `${url.pathname}${url.search}`, body });
-    }
-  });
-  return requests;
-}
-
-function nonAuthWriteRequests(requests) {
-  return requests.filter(
-    (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
-  );
+  await picker.fill("Create a new Secret");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+  await dialog.getByLabel("Value", { exact: true }).fill(secretValue);
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  return (await (await created).json()).data;
 }
 
 async function enterManualModel(page, apiKey, modelId = "gpt-4.1") {
-  await page.getByLabel("API key", { exact: true }).fill(apiKey);
-  await page.getByLabel("API key", { exact: true }).press("Tab");
+  const secret = await createModelCredentialSecret(page, apiKey);
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
     await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   }
   await model.fill(modelId);
   await model.press("Tab");
+  return secret;
 }
 
 async function openAdvancedSettings(page) {
@@ -129,37 +96,14 @@ async function openAdvancedSettings(page) {
   }
 }
 
-async function expectNoText(page, pattern) {
-  await assert.rejects(
-    page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
-    /Timeout/,
-  );
-}
-
 async function expectNativeAdminHidden(page) {
   assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
   assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
 }
 
-async function revealNativeConfiguration(page, label) {
-  await page.getByText(label).click();
-}
-
 function assertRevisionUrl(page, revisionId) {
   const url = new URL(page.url());
   assert.equal(url.searchParams.get("revision"), revisionId);
-}
-
-function detailUrl(fixture, namespaceId, agentId, revision, tab) {
-  const url = new URL(`/console/agents/${agentId}`, fixture.origin);
-  url.searchParams.set("namespace", namespaceId);
-  url.searchParams.set("revision", revision);
-  url.searchParams.set("tab", tab);
-  return url;
-}
-
-function pathRequests(requests, method, path) {
-  return requests.filter((request) => request.method === method && request.path === path);
 }
 
 function configurationPostRequests(requests, namespaceId) {
@@ -168,10 +112,6 @@ function configurationPostRequests(requests, namespaceId) {
 
 function agentProvisionPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents/provision`);
-}
-
-function secretPostRequests(requests, namespaceId) {
-  return pathRequests(requests, "POST", `/namespaces/${namespaceId}/secrets`);
 }
 
 async function routeInstallationProvisioning(page, fixture, executionModes = ["dedicated"]) {
@@ -237,32 +177,6 @@ function configurationPatchRequests(requests, namespaceId, configurationId) {
   );
 }
 
-function accessBindingPostRequests(requests, namespaceId) {
-  return pathRequests(requests, "POST", `/namespaces/${namespaceId}/iam/access-bindings`);
-}
-
-async function createRuntimeAuthFixture(t, namespaceName) {
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/tmp/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const state = new InMemoryPlatformState();
-  const fixture = await createConsoleAppFixture(t, { computeDriver, state });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(namespaceName);
-  await state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  return { fixture, namespace, state };
-}
-
 async function optionValues(locator) {
   return locator.evaluate((node) =>
     Array.from(node.options).map((option) => ({ value: option.value, text: option.textContent })),
@@ -295,28 +209,6 @@ function nativeAdminComputeDriver(endpoint) {
   });
 }
 
-function nativeValues(marker, options = {}) {
-  const harnessId = options.harnessId ?? "openclaw";
-  const providerModel = options.providerModel ?? (harnessId === "codex" ? "gpt-5.1" : "gpt-4.1");
-  const base = createHarnessConfiguration(harnessId, providerModel);
-  const basePlugins = base.plugins ?? {};
-  const basePluginEntries = basePlugins.entries ?? {};
-  return {
-    ...base,
-    channels: options.channels ?? {},
-    plugins: {
-      ...basePlugins,
-      entries: {
-        ...basePluginEntries,
-        knowledge: {
-          enabled: true,
-          config: { marker, thresholds: [1, 2, 3] },
-        },
-      },
-    },
-  };
-}
-
 const repositoryProviderFixture = Object.freeze({
   id: "console-repositories",
   type: "github",
@@ -330,7 +222,7 @@ async function createRepositoryLaunchFixture(
   { reloadablePolicy = false } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
-    providers: [...providerFixtures, repositoryProviderFixture],
+    backends: [...backendFixtures, repositoryProviderFixture],
     repositoryCredentials: true,
   });
   await fixture.bootstrap();
@@ -368,7 +260,7 @@ function repositoryPolicyDriver(repositories) {
   const registry = validateGitHubRepositoryRegistry(
     {
       version: 1,
-      providerId: provider.id,
+      backendId: provider.id,
       providerInstanceId: "console-repository-provider",
       appId: "123",
       githubInstallationId: "456",
@@ -444,7 +336,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  assert.equal(await page.getByRole("link", { name: "Providers", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Backends", exact: true }).count(), 0);
   assert.deepEqual(await optionValues(page.getByLabel("Provider", { exact: true })), [
     { value: "openai", text: "OpenAI" },
     { value: "anthropic", text: "Anthropic" },
@@ -461,20 +353,22 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     { value: "api_key", text: "OpenAI API key" },
     { value: "codex_pat", text: "Service Accounts" },
   ]);
-  const keyInput = page.getByLabel("API key", { exact: true });
-  assert.equal(await keyInput.getAttribute("type"), "password");
-  assert.equal(await keyInput.getAttribute("placeholder"), "sk-…");
-  assert.equal(
-    await page.getByRole("link", { name: "Create an API key", exact: true }).getAttribute("href"),
-    "https://platform.openai.com/api-keys",
-  );
-  await keyInput.fill("discarded-api-key");
+  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+  await apiKeySecret.waitFor();
+  assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "INPUT");
+  assert.equal(await apiKeySecret.evaluate((node) => node.required), true);
+  assert.equal(await page.locator("#plugin-discovery-token").isVisible(), false);
+  assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
+  await page.getByLabel("Service account token Secret", { exact: true }).waitFor();
   assert.equal(
-    await page.getByLabel("Service account token", { exact: true }).getAttribute("placeholder"),
-    "at-…",
+    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    "",
   );
+  await page.locator("#plugin-discovery-token > summary").click();
+  const discoveryToken = page.getByLabel("Token for plugin discovery", { exact: true });
+  assert.equal(await discoveryToken.inputValue(), "");
+  assert.equal(await discoveryToken.getAttribute("placeholder"), "at-…");
   assert.equal(
     await page.getByRole("link", { name: "OpenAI admin", exact: true }).getAttribute("href"),
     "https://admin.openai.com/",
@@ -490,9 +384,11 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), true);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isEnabled(), true);
-  assert.equal(await keyInput.getAttribute("placeholder"), "sk-…");
+  await apiKeySecret.waitFor();
+  assert.equal(await apiKeySecret.inputValue(), "");
   assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
-  await enterManualModel(page, key, "gpt-5.1");
+  await page.getByLabel("Agent name").fill("Console-created Agent");
+  const secret = await enterManualModel(page, key, "gpt-5.1");
   for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
     assert.equal(await page.getByLabel(filename, { exact: true }).inputValue(), content);
   }
@@ -505,19 +401,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-  // Invalid manual bindings must not be replaced by a channel editor's empty snapshot.
-  await page.getByLabel("Secret bindings JSON").fill("[]");
-  await page
-    .getByText("Enter a valid Secret bindings JSON object before configuring channels.")
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Configure Slack" }).count(), 0);
-  // Applying Slack must preserve independent bindings authored in Advanced settings.
-  const manualBinding = { source: replacementSlackAppSecret.ref, delivery: { type: "env" } };
-  await page
-    .getByLabel("Secret bindings JSON")
-    .fill(JSON.stringify({ CUSTOM_CONTEXT: manualBinding }));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const createChannelDialog = page.getByRole("dialog", { name: /^(Configure|Edit) Slack$/ });
+  await createChannelDialog.getByLabel("Direct-message policy").selectOption("disabled");
   await createChannelDialog
     .getByText("Choose existing Slack token Secrets or create them here before creating the Agent.")
     .waitFor();
@@ -527,17 +413,18 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     )
     .waitFor();
   assert.equal(await createChannelDialog.getByRole("link").count(), 0);
-  await createChannelDialog.getByLabel("Slack app token").selectOption(existingSlackAppSecret.id);
-  await createChannelDialog
-    .getByText("Secret binding staged. Apply the channel settings to save it.")
-    .waitFor();
+  await selectSecret(createChannelDialog, "Slack app token", existingSlackAppSecret);
+  await createChannelDialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   // Separate applications must retain grants for every final selected Secret.
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
-  await createChannelDialog
-    .getByLabel("Slack bot token")
-    .selectOption({ label: "Create new Secret..." });
+  const nestedChannelIds = createChannelDialog.getByRole("combobox", {
+    name: "Channels",
+    exact: true,
+  });
+  await setSlackSelection(nestedChannelIds, "CNESTED123");
+  await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   const createSecretDialog = page.getByRole("dialog", {
     name: "Create Slack bot token Secret",
   });
@@ -547,63 +434,82 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(await createSecretDialog.getByLabel("Binding key").inputValue(), "SLACK_BOT_TOKEN");
   assert.equal(await createSecretDialog.getByLabel("Binding key").getAttribute("readonly"), "");
   assert.equal(
-    await createSecretDialog.getByLabel("Secret value").getAttribute("type"),
+    await createSecretDialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Console-created Agent Slack bot token",
+  );
+  assert.equal(
+    await createSecretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
     "password",
   );
-  await createSecretDialog.getByRole("button", { name: "Cancel" }).click();
+  // Dismissing the topmost dialog discards its token, not the underlying Slack edits.
+  await createSecretDialog.getByLabel("Value", { exact: true }).fill("discarded-secret-value");
+  const secretWritesBeforeDismissal = secretPostRequests(requests, namespace.id).length;
+  const secretBounds = await createSecretDialog.boundingBox();
+  assert.ok(secretBounds);
+  await page.mouse.click(secretBounds.x / 2, secretBounds.y + 8);
+  await createSecretDialog.waitFor({ state: "hidden" });
+  assert.equal(await createChannelDialog.isVisible(), true);
+  assert.equal(await slackSelectionValue(nestedChannelIds), "CNESTED123");
+  assert.equal(await createChannelDialog.getByLabel("Slack bot token").inputValue(), "");
+  assert.equal(secretPostRequests(requests, namespace.id).length, secretWritesBeforeDismissal);
+  await setSlackSelection(nestedChannelIds, "");
+  await openCreateSecretDialog(createChannelDialog, "Slack bot token");
+  assert.equal(await createSecretDialog.getByLabel("Value", { exact: true }).inputValue(), "");
+  await createSecretDialog.getByLabel("Value", { exact: true }).fill(createdSlackBotSecretValue);
+  const secretReached = Promise.withResolvers();
+  const secretRelease = Promise.withResolvers();
+  t.after(() => secretRelease.resolve());
+  // The real Secret write must finish before its dialog can be dismissed.
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/secrets`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    secretReached.resolve();
+    await secretRelease.promise;
+    await route.fulfill({ response });
+  });
+  const botSecretResponse = page.waitForResponse((response) => {
+    if (
+      response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
+      response.request().method() !== "POST"
+    ) {
+      return false;
+    }
+    return response.request().postDataJSON()?.name === "Console-created Agent Slack bot token";
+  });
+  await createSecretDialog.getByRole("button", { name: "Create Secret" }).click();
+  await secretReached.promise;
+  await page.mouse.click(secretBounds.x / 2, secretBounds.y + 8);
+  assert.equal(await createSecretDialog.isVisible(), true);
   assert.equal(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()).SLACK_BOT_TOKEN,
-    undefined,
+    await createSecretDialog.getByRole("button", { name: "Create Secret" }).isDisabled(),
+    true,
   );
-  await createChannelDialog
-    .getByLabel("Slack bot token")
-    .selectOption({ label: "Create new Secret..." });
-  await page
-    .getByRole("dialog", { name: "Create Slack bot token Secret" })
-    .getByLabel("Secret value")
-    .fill(createdSlackBotSecretValue);
-  await page
-    .getByRole("dialog", { name: "Create Slack bot token Secret" })
-    .getByRole("button", { name: "Create Secret" })
-    .click();
-  await createChannelDialog
-    .getByText("Secret binding staged. Apply the channel settings to save it.")
-
-    .waitFor();
-  assert.equal(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()).SLACK_BOT_TOKEN,
-    undefined,
-  );
+  secretRelease.resolve();
+  const createdSlackBotSecret = (await (await botSecretResponse).json()).data;
+  await createChannelDialog.getByText("Secret binding staged. Save changes to apply it.").waitFor();
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await createChannelDialog.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Edit Slack" }).click();
   // Replacing an earlier selection must not grant the superseded Secret to the Agent.
-  await createChannelDialog
-    .getByLabel("Slack app token")
-    .selectOption(replacementSlackAppSecret.id);
+  await selectSecret(createChannelDialog, "Slack app token", replacementSlackAppSecret);
   await createChannelDialog.getByRole("button", { name: "Apply channel settings" }).click();
-  const stagedSecretBindings = JSON.parse(
-    await page.getByLabel("Secret bindings JSON").inputValue(),
-  );
-  assert.deepEqual(stagedSecretBindings.CUSTOM_CONTEXT, manualBinding);
-  assert.deepEqual(stagedSecretBindings.SLACK_APP_TOKEN, {
-    source: replacementSlackAppSecret.ref,
-    delivery: { type: "env" },
-  });
-  const stagedBotSecretId = secretIdForBinding(stagedSecretBindings.SLACK_BOT_TOKEN);
-  assert.match(
-    stagedBotSecretId,
-    /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
+  const stagedSecretBindings = {
+    SLACK_APP_TOKEN: {
+      source: replacementSlackAppSecret.ref,
+      delivery: { type: "env" },
+    },
+    SLACK_BOT_TOKEN: {
+      source: createdSlackBotSecret.ref,
+      delivery: { type: "env" },
+    },
+  };
   await openAdvancedSettings(page);
   const stagedValues = JSON.parse(await page.getByLabel("Configuration JSON").inputValue());
   await page.getByLabel("Agent name").fill("A".repeat(200));
 
-  const secretResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
-      response.request().method() === "POST",
-  );
   const configurationResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
@@ -615,7 +521,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  const secret = (await (await secretResponse).json()).data;
   const configuration = await (await configurationResponse).json();
   const created = await (await createResponse).json();
   assert.equal(secretDriver.valueFor(secret), key);
@@ -631,7 +536,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(created.data.configurationId, configuration.data.id);
   assert.equal(created.data.executionMode, "dedicated");
   assert.deepEqual(agentProvisionPostRequests(requests, namespace.id), []);
-  assert.equal(created.data.providerId, null);
+  assert.equal(created.data.backendId, null);
   assert.deepEqual(created.data.harnessAuth, { method: "api_key", source: secret.ref });
   assert.equal((await page.locator("body").textContent()).includes(key), false);
   assert.equal(
@@ -666,16 +571,30 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       url.searchParams.get("revision") === "draft"
     );
   });
-  await page.getByRole("heading", { name: "New revision" }).waitFor();
+  await page.getByRole("button", { name: "Create new version" }).waitFor();
+  await page.getByRole("heading", { name: "Create new version" }).waitFor();
+  await page.getByText("No version is currently selected for service.").waitFor();
+  await page
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
+    .waitFor();
+  assert.equal(await page.getByText(/Stop requested\./).count(), 0);
   await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "create"').waitFor();
-  // Neither the summary nor expanded native Configuration reveals the credential or its ID.
+  // The summary identifies its Secret, while credential values remain private.
+  const boundSecret = page.getByRole("link", {
+    name: secret.name,
+    exact: true,
+  });
+  await boundSecret.waitFor();
+  assert.equal(
+    await boundSecret.getAttribute("href"),
+    `/namespaces/${namespace.id}/secrets/${secret.id}`,
+  );
   const visibleConfiguration = await page.locator("body").textContent();
-  assert.equal(visibleConfiguration.includes(secret.id), false);
+  assert.equal(visibleConfiguration.includes(key), false);
   assert.equal(visibleConfiguration.includes("never-visible-existing-slack-app-token"), false);
   assert.equal(visibleConfiguration.includes(createdSlackBotSecretValue), false);
-  await page.getByText("API key · Secret configured", { exact: true }).waitFor();
 
   const savedConfiguration = await fixture.request(
     "GET",
@@ -718,14 +637,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     access.data
       .map(({ id, ...binding }) => binding)
       .sort((a, b) => a.resourceId.localeCompare(b.resourceId)),
-    [secret.id, replacementSlackAppSecret.id, stagedBotSecretId].sort().map((resourceId) => ({
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: created.data.servicePrincipalId,
-      roleId: roles.data[0].id,
-      resourceKind: "secret",
-      resourceId,
-    })),
+    [secret.id, replacementSlackAppSecret.id, createdSlackBotSecret.id]
+      .sort()
+      .map((resourceId) => ({
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: created.data.servicePrincipalId,
+        roleId: roles.data[0].id,
+        resourceKind: "secret",
+        resourceId,
+      })),
   );
   assert.ok(audit.events.some((event) => event.resource.id === created.data.id));
   assert.equal(JSON.stringify(audit.events).includes(key), false);
@@ -740,9 +661,13 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     effect: "deny",
   });
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  const savedSecretInput = page.getByLabel("API key Secret ID");
-  assert.equal(await savedSecretInput.getAttribute("type"), "password");
-  assert.equal(await savedSecretInput.inputValue(), secret.id);
+  const savedSecretInput = page.getByLabel("API key Secret");
+  assert.equal(await savedSecretInput.evaluate((node) => node.tagName), "INPUT");
+  await page.waitForFunction(
+    (name) => globalThis.document.querySelector("#harness-auth-secret")?.value === name,
+    secret.name,
+  );
+  assert.equal(await savedSecretInput.inputValue(), secret.name);
   const deniedBinding = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${created.data.id}` &&
@@ -802,10 +727,16 @@ test("Agent creation selects approved repositories with one common explicit prof
     },
   ]);
 
+  // A Preset form retains repository selections across navigation and rediscovery.
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: { name: "Repository starter", template: { agent: {} } },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
   const accessDetails = page.locator(".repository-access-details");
   const accessSummary = accessDetails.locator("summary");
@@ -860,6 +791,45 @@ test("Agent creation selects approved repositories with one common explicit prof
   await page.getByText(/Does not grant ordinary issue management/).waitFor();
   assert.equal(await page.locator("#repository-issue-access").isDisabled(), true);
   assert.equal(await page.locator("#repository-issue-access").isChecked(), false);
+  // Restored selections must survive rediscovery and still be submitted through the real create path.
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.locator("#repository-application").waitFor();
+  assert.equal(await page.locator("#repository-application").isChecked(), true);
+  assert.equal(await page.locator("#repository-documentation").isChecked(), true);
+  assert.equal(await page.locator("#repository-profile-git-write").isChecked(), true);
+  // Discovery failures must not erase the draft, even after another navigation.
+  const optionsUrl = `**/namespaces/${namespace.id}/agents/repository-options`;
+  for (const status of [503, 500]) {
+    await page.route(optionsUrl, (route) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: status === 503 ? "REPOSITORY_OPTIONS_UNAVAILABLE" : "INTERNAL_ERROR",
+            message: "Repository discovery is temporarily unavailable.",
+          },
+        }),
+      }),
+    );
+    for (let navigation = 0; navigation < 2; navigation += 1) {
+      await page.getByRole("link", { name: "← Agents" }).click();
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      // Wait for fresh discovery to fail; the retained preview has a disabled Retry button.
+      await page
+        .getByRole("button", { name: "Retry repository choices" })
+        .and(page.locator(":enabled"))
+        .waitFor();
+      assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+    }
+    await page.unroute(optionsUrl);
+    await page.getByRole("button", { name: "Retry repository choices" }).click();
+    await page.locator("#repository-application").waitFor();
+    assert.equal(await page.locator("#repository-application").isChecked(), true);
+    assert.equal(await page.locator("#repository-documentation").isChecked(), true);
+    assert.equal(await page.locator("#repository-profile-git-write").isChecked(), true);
+  }
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository Agent");
 
@@ -938,7 +908,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   );
 });
 
-test("Dedicated repository Agent keeps its bindings through Slack save and the deployment credential gate", async (t) => {
+test("Dedicated repository Agent keeps its bindings through Slack save and the channel credential gate", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {
       repositoryRef: "application",
@@ -979,8 +949,12 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the d
   assert.notEqual(agent.harnessAuth.source.id, modelSecret.id);
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
-  await page.getByLabel("Slack channel IDs").fill("CREPOSITORY123");
-  await page.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await page.getByLabel("Direct-message policy").selectOption("disabled");
+  await setSlackSelection(
+    page.getByRole("combobox", { name: "Channels", exact: true }),
+    "CREPOSITORY123",
+  );
+  await page.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
   const savedResponse = page.waitForResponse(
     (result) =>
       result.url().endsWith(`/configurations/${agent.configurationId}`) &&
@@ -1002,17 +976,21 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the d
   const sameAgent = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.deepEqual(sameAgent.data.repositoryBindings, agent.repositoryBindings);
 
-  // This fixture has no Kubernetes API client: real credential discovery must block deployment.
-  const credentialsResponse = page.waitForResponse((result) =>
-    result.url().endsWith(`/agents/${agent.id}/runtime-credentials`),
-  );
+  // Channel Secrets remain user-supplied; runtime credentials are generated by deployment.
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  assert.equal((await credentialsResponse).status(), 503);
   await page
-    .getByText("Credential metadata unavailable. Refresh status before deploying.")
+    .getByText("Complete these in Credentials before deploying: Slack Secret bindings.")
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
-  assert.equal(await page.getByLabel("Slack app token").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(await page.getByLabel("Slack app token").isEnabled(), true);
+  assert.equal(
+    pathRequests(
+      requests,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`,
+    ).length,
+    0,
+  );
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length,
     0,
@@ -1040,6 +1018,18 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   assert.equal(options.status(), 503);
   assert.equal((await options.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
   await unavailablePage.getByText(/Repository choices are unavailable/).waitFor();
+  assert.match(
+    await unavailablePage
+      .getByRole("status")
+      .filter({ hasText: "Repository choices are unavailable" })
+      .innerText(),
+    /You can continue without repository access/,
+  );
+  const setupGuide = unavailablePage.getByRole("link", { name: "Set up repository access" });
+  assert.equal(
+    await setupGuide.getAttribute("href"),
+    "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+  );
   assert.equal(
     await unavailablePage.getByRole("button", { name: "Create Agent" }).isEnabled(),
     true,
@@ -1522,7 +1512,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await page.locator("#repository-application").check();
   await page.locator("#repository-profile-git-read").check();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
+  const modelSecret = await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository policy removed");
   fixture.policy.restrictions.push({
     id: "reject-before-policy-refresh",
@@ -1561,7 +1551,13 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await page.getByRole("button", { name: "Start a new draft" }).click();
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText(/No approved repositories are available/).waitFor();
-  await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
+  await selectSecret(page, "API key Secret", modelSecret);
+  const model = page.getByLabel("Model ID", { exact: true });
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
+  await model.fill("gpt-5.1");
+  await model.press("Tab");
   await page.getByLabel("Agent name").fill("Explicit ordinary draft");
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -1631,7 +1627,7 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     namespaceId: namespace.id,
     agentId,
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 2,
@@ -1642,6 +1638,23 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     compute: { id: "kubernetes-test", implementation: "kubernetes" },
     servicePrincipalId: agent.servicePrincipalId,
   };
+  const workspacePreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Provision workspace preset",
+      template: {
+        agent: {
+          name: agent.name,
+          executionMode: "dedicated",
+          initialWorkspaceFiles: {
+            "AGENTS.md": "# Provision preset\n",
+            "USER.md": "Provision user",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(workspacePreset.status, 201, JSON.stringify(workspacePreset.body));
+
   const json = (data, status = 200) => ({
     status,
     contentType: "application/json",
@@ -1748,40 +1761,57 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill(agent.name);
+  await page.getByLabel("Preset template").selectOption(workspacePreset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.locator("#repository-application").check();
   await page.locator("#repository-profile-git-write").check();
-  await page.getByLabel("API key", { exact: true }).fill("model-secret-value");
+  await createModelCredentialSecret(page, "model-secret-value");
   await openAdvancedSettings(page);
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Provision preset\n",
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "Provision user");
+  await page.getByLabel("AGENTS.md", { exact: true }).fill("# Provision edited\n");
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
   await channelDialog
     .getByText("Choose existing Slack token Secrets or create them here before creating the Agent.")
     .waitFor();
-  await channelDialog.getByLabel("Slack app token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack app token");
   const appSecretDialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
-  await appSecretDialog.getByLabel("Secret value").fill("slack-app-secret");
+  await appSecretDialog.getByLabel("Value", { exact: true }).fill("slack-app-secret");
   await appSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await appSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Slack bot token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack bot token");
   const botSecretDialog = page.getByRole("dialog", { name: "Create Slack bot token Secret" });
-  await botSecretDialog.getByLabel("Secret value").fill("slack-bot-secret");
+  await botSecretDialog.getByLabel("Value", { exact: true }).fill("slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await channelDialog
     .getByText("Enter at least one Slack channel ID for these access settings.")
     .waitFor();
-  await channelDialog.getByLabel("Slack channel IDs").fill("C0123456789");
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").uncheck();
+  await setSlackSelection(
+    channelDialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "C0123456789",
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("selected");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await channelDialog
-    .getByText("Enter allowed channel user IDs or allow everyone in these channels.")
+    .getByText("Choose specific people or select Everyone in these channels.")
     .waitFor();
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
 
   const provisionResponse = page.waitForResponse(
@@ -1808,6 +1838,12 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     { repositoryRef: "application", profile: "git-write" },
   ]);
   assert.equal(provisionBody.executionMode, "dedicated");
+  assert.deepEqual(provisionBody.initialWorkspaceFiles, {
+    ...WORKSPACE_DEFAULTS,
+    "AGENTS.md": "# Provision edited\n",
+    "USER.md": "Provision user",
+  });
+  assert.equal(provisionBody.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   assert.deepEqual(provisionBody.harnessAuth, agent.harnessAuth);
   assert.deepEqual(provisionBody.configuration.values.channels.slack, {
     enabled: true,
@@ -1815,8 +1851,9 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
     appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
     botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
     channels: { C0123456789: { requireMention: true, users: ["*"] } },
-    dmPolicy: "allowlist",
+    dmPolicy: "disabled",
     groupPolicy: "allowlist",
+    replyToModeByChatType: { channel: "all" },
   });
   assert.deepEqual(provisionBody.configuration, {
     kind: "agent",
@@ -1836,9 +1873,9 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [
+      { name: "Provisioned Agent model credential", value: "model-secret-value" },
       { name: "Provisioned Agent Slack app token", value: "slack-app-secret" },
       { name: "Provisioned Agent Slack bot token", value: "slack-bot-secret" },
-      { name: "Provisioned Agent", value: "model-secret-value" },
     ],
   );
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
@@ -1846,6 +1883,45 @@ test("Dedicated Agent creation provisions inline Configuration and masked new Se
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   assert.ok(provisioningReads >= 1);
   assert.ok(deploymentReads >= 2);
+});
+
+test("Dedicated Agent creation keeps provisioning when optional repository discovery is unavailable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Model-only provision", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await routeInstallationProvisioning(page, fixture);
+  // The real discovery endpoint reports the fixture's missing optional Repo Driver.
+  // Admission can still reject creation; the browser must not silently save a draft.
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Agent creation permission changed." },
+      }),
+    }),
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText(/Repository choices are unavailable/).waitFor();
+  await page.getByLabel("Agent name", { exact: true }).fill("Model-only Agent");
+  await enterManualModel(page, "model-only-test-key", "gpt-5.1");
+  const admission = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents/provision`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await admission).status(), 403);
+  await page.getByText("Access denied. You do not have permission for this operation.").waitFor();
+  const submitted = agentProvisionPostRequests(requests, namespace.id);
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].body.executionMode, "dedicated");
+  assert.equal(Object.hasOwn(submitted[0].body, "repositoryBindings"), false);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Dedicated Agent creation uses regular create when provisioning is unsupported", async (t) => {
@@ -1870,13 +1946,19 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   );
 
   await page.getByLabel("Agent name").fill("Unsupported Dedicated Agent");
-  await page.getByLabel("API key", { exact: true }).fill("unsupported-model-key");
+  await createModelCredentialSecret(page, "unsupported-model-key");
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
-  await channelDialog.getByLabel("Slack channel IDs").fill("CUNSUPPORTED123");
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await setSlackSelection(
+    channelDialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "CUNSUPPORTED123",
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -1918,11 +2000,19 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.goto(detailUrl(fixture, namespace.id, createdAgent.id, "draft", "channels").href);
   await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
   let savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
-  const everyone = savedDialog.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await everyone.isChecked(), true);
-  assert.equal(await savedDialog.getByLabel("Allowed channel user IDs").isDisabled(), true);
-  await everyone.uncheck();
-  await savedDialog.getByLabel("Allowed channel user IDs").fill("USENDER123");
+  const everyone = savedDialog.getByLabel("Who can use the agent in these channels?");
+  assert.equal(await everyone.inputValue(), "everyone");
+  assert.equal(
+    await savedDialog
+      .getByRole("combobox", { name: "Allowed people in these channels", exact: true })
+      .isVisible(),
+    false,
+  );
+  await everyone.selectOption("selected");
+  await setSlackSelection(
+    savedDialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+    "USENDER123",
+  );
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
@@ -1933,12 +2023,15 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.reload();
   await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
   savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
-  assert.equal(await savedDialog.getByLabel("Allowed channel user IDs").inputValue(), "USENDER123");
   assert.equal(
-    await savedDialog
-      .getByLabel("Allow everyone in these channels to mention the agent")
-      .isDisabled(),
-    true,
+    await slackSelectionValue(
+      savedDialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+    ),
+    "USENDER123",
+  );
+  assert.equal(
+    await savedDialog.getByLabel("Who can use the agent in these channels?").inputValue(),
+    "selected",
   );
   const savedConfiguration = await fixture.request(
     "GET",
@@ -1947,9 +2040,77 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   assert.deepEqual(savedConfiguration.data.values.channels.slack.channels, {
     CUNSUPPORTED123: { requireMention: true, users: ["USENDER123"] },
   });
+  assert.equal(savedConfiguration.data.values.channels.slack.replyToMode, undefined);
+  assert.deepEqual(savedConfiguration.data.values.channels.slack.replyToModeByChatType, {
+    channel: "all",
+  });
   assert.equal(savedConfiguration.data.values.channels.slack.groupPolicy, "allowlist");
-  assert.equal(savedConfiguration.data.values.channels.slack.dmPolicy, "allowlist");
+  assert.equal(savedConfiguration.data.values.channels.slack.dmPolicy, "disabled");
   assert.equal(Object.hasOwn(savedConfiguration.data.values.channels.slack, "allowFrom"), false);
+
+  // Exercise DM policy changes through the normal Agent editor and real Configuration API.
+  // An empty or wildcard allowlist must not produce a write or broaden channel access.
+  await savedDialog.getByLabel("Direct-message policy").selectOption("allowlist");
+  for (const invalid of ["", "*"]) {
+    await setSlackSelection(
+      savedDialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+      invalid,
+    );
+    requests.length = 0;
+    await savedDialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+    await savedDialog
+      .getByText("Enter specific allowed DM user IDs, or choose a different direct-message policy.")
+      .waitFor();
+    assert.equal(nonAuthWriteRequests(requests).length, 0);
+  }
+  for (const [policy, senders] of [
+    ["allowlist", ["UDIRECT123"]],
+    ["open", ["*"]],
+    ["disabled", ["*"]],
+    ["pairing", ["UPREAPPROVED123"]],
+  ]) {
+    await savedDialog.getByLabel("Direct-message policy").selectOption(policy);
+    if (policy === "allowlist" || policy === "pairing") {
+      if (policy === "pairing") {
+        assert.equal(
+          await slackSelectionValue(
+            savedDialog.getByRole("combobox", {
+              name: "Allowed people in direct messages",
+              exact: true,
+            }),
+          ),
+          "",
+        );
+      }
+      await setSlackSelection(
+        savedDialog.getByRole("combobox", {
+          name: "Allowed people in direct messages",
+          exact: true,
+        }),
+        senders.join(", "),
+      );
+    }
+    const policySaved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        response.url().endsWith(`/configurations/${createdAgent.configurationId}`),
+    );
+    await savedDialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+    assert.equal((await policySaved).status(), 200);
+    await page.reload();
+    await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+    savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
+    assert.equal(await savedDialog.getByLabel("Direct-message policy").inputValue(), policy);
+    const persisted = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${createdAgent.configurationId}`,
+    );
+    assert.deepEqual(persisted.data.values.channels.slack, {
+      ...savedConfiguration.data.values.channels.slack,
+      dmPolicy: policy,
+      allowFrom: senders,
+    });
+  }
 });
 
 test("Dedicated Agent creation reuses separately saved Secret references after provisioning failure", async (t) => {
@@ -1996,7 +2157,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     namespaceId: namespace.id,
     agentId,
     revision: 1,
-    providerId: null,
+    backendId: null,
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -2109,23 +2270,29 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill(agent.name);
   await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await page.getByLabel("Service account token", { exact: true }).fill("model-secret-value");
+  await createModelCredentialSecret(page, "model-secret-value");
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: "Configure Slack" });
-  await channelDialog.getByLabel("Slack app token").selectOption("__openclaw_create_secret__");
+  await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await openCreateSecretDialog(channelDialog, "Slack app token");
   const appSecretDialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
-  await appSecretDialog.getByLabel("Secret value").fill("retry-slack-app-secret");
+  await appSecretDialog.getByLabel("Value", { exact: true }).fill("retry-slack-app-secret");
   await appSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await appSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Slack bot token").selectOption("__openclaw_create_secret__");
+  await openCreateSecretDialog(channelDialog, "Slack bot token");
   const botSecretDialog = page.getByRole("dialog", { name: "Create Slack bot token Secret" });
-  await botSecretDialog.getByLabel("Secret value").fill("retry-slack-bot-secret");
+  await botSecretDialog.getByLabel("Value", { exact: true }).fill("retry-slack-bot-secret");
   await botSecretDialog.getByRole("button", { name: "Create Secret" }).click();
   await botSecretDialog.waitFor({ state: "hidden" });
-  await channelDialog.getByLabel("Slack channel IDs").fill("CRETRY123");
-  await channelDialog.getByLabel("Allow everyone in these channels to mention the agent").check();
+  await setSlackSelection(
+    channelDialog.getByRole("combobox", { name: "Channels", exact: true }),
+    "CRETRY123",
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   const firstProvisionResponse = page.waitForResponse(
     (response) =>
@@ -2173,14 +2340,14 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [
+      { name: "Retried Agent model credential", value: "model-secret-value" },
       { name: "Retried Agent Slack app token", value: "retry-slack-app-secret" },
       { name: "Retried Agent Slack bot token", value: "retry-slack-bot-secret" },
-      { name: "Retried Agent", value: "model-secret-value" },
     ],
   );
 });
 
-test("Agent creation rejects non-object native Configuration JSON before any write request", async (t) => {
+test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Invalid JSON", { ready: true });
@@ -2204,7 +2371,9 @@ test("Agent creation rejects non-object native Configuration JSON before any wri
     .evaluate((node) => node.validationMessage);
   assert.equal(validation, "Enter a valid JSON object.");
   assert.equal(await page.getByLabel("Configuration JSON").isVisible(), true);
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Agent creation offers mainline Anthropic models before credentials and saves an explicit selection", async (t) => {
@@ -2214,7 +2383,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const fixture = await createConsoleAppFixture(t, {
     state,
     secretDriver,
-    providerSummaries: undefined,
+    backendSummaries: undefined,
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Anthropic authoring", { ready: true });
@@ -2223,9 +2392,9 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page
-    .getByLabel("Service account token", { exact: true })
-    .fill("at-discarded-before-anthropic");
+  const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
+  await serviceAccountSecret.waitFor();
+  assert.equal(await serviceAccountSecret.inputValue(), "");
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
   assert.deepEqual(
@@ -2235,10 +2404,9 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
       .evaluateAll((options) => options.map((option) => option.value)),
     ["openclaw"],
   );
-  assert.equal(
-    await page.getByLabel("API key", { exact: true }).getAttribute("placeholder"),
-    "sk-ant-…",
-  );
+  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+  await apiKeySecret.waitFor();
+  assert.equal(await apiKeySecret.inputValue(), "");
   assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
   assert.equal(
@@ -2246,7 +2414,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     "api_key",
   );
   assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
-  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await apiKeySecret.inputValue(), "");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication source").count(), 0);
   assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), true);
@@ -2281,12 +2449,14 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   await choice.selectOption("claude-fable-5-1");
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
-  await page.getByLabel("API key", { exact: true }).fill("test-anthropic-api-key");
-  await page.getByLabel("API key", { exact: true }).press("Tab");
+  const credentialSecret = await createModelCredentialSecret(page, "test-anthropic-api-key");
   assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
-  assert.equal(secretDriver.calls.length, 0);
+  assert.deepEqual(
+    secretPostRequests(requests, namespace.id).map((request) => request.body),
+    [{ name: "Anthropic Agent model credential", value: "test-anthropic-api-key" }],
+  );
+  assert.equal(secretDriver.calls.filter((call) => call.operation === "create").length, 1);
   assert.equal(JSON.stringify(audit.events).includes("test-anthropic-api-key"), false);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
@@ -2303,8 +2473,8 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const agent = (await response.json()).data;
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   assert.equal(agent.executionMode, "embedded");
-  assert.equal(agent.providerId, null);
-  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.equal(agent.backendId, null);
+  assert.deepEqual(agent.harnessAuth, { method: "api_key", source: credentialSecret.ref });
   const configuration = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -2319,7 +2489,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     configuration.data.values.agents.defaults.models["anthropic/claude-fable-5-1"].agentRuntime.id,
     "openclaw",
   );
-  assert.equal(pathRequests(requests, "GET", "/providers").length, 0);
+  assert.equal(pathRequests(requests, "GET", "/backends").length, 0);
   assert.equal(
     pathRequests(requests, "GET", `/namespaces/${namespace.id}/service-accounts`).length,
     0,
@@ -2335,7 +2505,7 @@ test("Static model selection survives credential edits and resets for provider o
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  const key = page.getByLabel("API key", { exact: true });
+  const key = page.getByLabel("API key Secret", { exact: true });
   const choice = page.getByLabel("Model", { exact: true });
   const configuration = page.getByLabel("Configuration JSON");
   assert.equal(await key.inputValue(), "");
@@ -2351,9 +2521,9 @@ test("Static model selection survives credential edits and resets for provider o
   await choice.selectOption("gpt-6-astra");
   const selectedConfiguration = await configuration.inputValue();
   assert.equal(JSON.parse(selectedConfiguration).agents.defaults.model, "codex/gpt-6-astra");
-  for (const credential of ["first-openai-key", "replacement-openai-key", ""]) {
-    await key.fill(credential);
-    await key.press("Tab");
+  for (const credential of ["first-openai-key", "replacement-openai-key"]) {
+    await page.getByLabel("Agent name").fill(`Static model ${credential}`);
+    await createModelCredentialSecret(page, credential);
     assert.equal(await choice.inputValue(), "gpt-6-astra");
     assert.equal(await configuration.inputValue(), selectedConfiguration);
   }
@@ -2373,13 +2543,14 @@ test("Static model selection survives credential edits and resets for provider o
   );
 
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
+  const patSecret = page.getByLabel("Service account token Secret", { exact: true });
+  assert.equal(await patSecret.inputValue(), "");
   assert.equal(await choice.isVisible(), true);
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
   await choice.selectOption("gpt-5.6-terra");
-  await page.getByLabel("Service account token", { exact: true }).fill("at-static-model-token");
-  await page.getByLabel("Service account token", { exact: true }).press("Tab");
+  await page.getByLabel("Agent name").fill("Static model service account token");
+  await createModelCredentialSecret(page, "at-static-model-token");
   assert.equal(await choice.inputValue(), "gpt-5.6-terra");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
@@ -2391,7 +2562,8 @@ test("Static model selection survives credential edits and resets for provider o
   assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
 
   await choice.selectOption("gpt-5.6-luna");
-  await key.fill("discarded-openai-key");
+  await page.getByLabel("Agent name").fill("Static model discarded OpenAI key");
+  await createModelCredentialSecret(page, "discarded-openai-key");
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await key.inputValue(), "");
   assert.equal(await choice.isVisible(), true);
@@ -2410,7 +2582,12 @@ test("Static model selection survives credential edits and resets for provider o
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
     "codex/gpt-5.6-luna",
   );
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.deepEqual(
+    secretPostRequests(requests, namespace.id).map(({ body }) => body.value),
+    ["first-openai-key", "replacement-openai-key", "at-static-model-token", "discarded-openai-key"],
+  );
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
@@ -2428,8 +2605,17 @@ test("Agent creation accepts a manual model outside the static list and saves th
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Manual model Agent");
-  await enterManualModel(page, "manual-model-key", "gpt-manual-account-model");
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const selectedSecret = await enterManualModel(
+    page,
+    "manual-model-key",
+    "gpt-manual-account-model",
+  );
+  assert.deepEqual(
+    secretPostRequests(requests, namespace.id).map((request) => request.body),
+    [{ name: "Manual model Agent model credential", value: "manual-model-key" }],
+  );
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   const saved = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
@@ -2439,6 +2625,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
   const response = await saved;
   assert.equal(response.status(), 201);
   const agent = (await response.json()).data;
+  assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   const configuration = await fixture.request(
     "GET",
@@ -2457,18 +2644,22 @@ test("Agent creation reports unavailable Secret storage before creating Configur
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Unavailable Agent");
-  await enterManualModel(page, "unused-no-driver-key", "gpt-4.1");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const failed = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Create Agent" }).click();
+  await openCreateSecretDialog(page, "API key Secret");
+  const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+  await dialog.getByLabel("Value", { exact: true }).fill("unused-no-driver-key");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await failed).status(), 503);
-  await page
+  await dialog
     .getByRole("alert")
-    .filter({ hasText: /unavailable|unknown|configured/i })
+    .filter({ hasText: /outcome could not be confirmed/i })
     .waitFor();
+  assert.equal(await dialog.isVisible(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
@@ -2476,8 +2667,16 @@ test("Agent creation reports unavailable Secret storage before creating Configur
 test("Agent creation reuses its saved Secret and Configuration after an Agent creation conflict", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
   await fixture.createAgent(namespace.id, "Retry Agent");
+  const discardedPatSecret = await fixture.createSecret(
+    namespace.id,
+    "Discarded service account token",
+    "at-discarded-pat",
+  );
   const values = nativeValues("partial-save", { harnessId: "codex", providerModel: "gpt-5.1" });
   const { page } = await newPage(t, fixture);
   // Exercise the supported draft path; dedicated provisioning has separate workflow coverage.
@@ -2488,8 +2687,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page.getByLabel("Service account token", { exact: true }).fill("at-discarded-pat");
-  await page.getByLabel("Service account token", { exact: true }).press("Tab");
+  await selectSecret(page, "Service account token Secret", discardedPatSecret);
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("discarded-pat-model");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
@@ -2500,7 +2698,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     await page.getByLabel("Authentication method", { exact: true }).inputValue(),
     "api_key",
   );
-  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
   assert.equal(await page.getByLabel("Model ID", { exact: true }).isVisible(), false);
   assert.equal(
     JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
@@ -2519,17 +2717,19 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
-  const credential = page.getByLabel("Service account token", { exact: true });
-  await credential.fill("at-browser-pat");
-  await credential.press("Tab");
+  requests.length = 0;
+  await page.getByLabel("Agent name").fill("Retry Agent");
+  const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  assert.equal(
+    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    secretOptionLabel(selectedSecret),
+  );
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
   assert.deepEqual(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`), []);
-  requests.length = 0;
   await page.getByText("Advanced settings", { exact: true }).click();
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Keep this draft\n");
-  await page.getByLabel("Agent name").fill("Retry Agent");
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
 
@@ -2566,8 +2766,14 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     false,
   );
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
-  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
-  assert.equal(await page.getByLabel("Service account token", { exact: true }).isDisabled(), true);
+  assert.equal(
+    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    secretOptionLabel(selectedSecret),
+  );
+  assert.equal(
+    await page.getByLabel("Service account token Secret", { exact: true }).isDisabled(),
+    true,
+  );
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
@@ -2587,9 +2793,13 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Corrected draft\n");
   await openAdvancedSettings(page);
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   await page.getByLabel("Plugin selections JSON").fill(
     JSON.stringify({
-      "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+      "codex-plugin:linear@openai-curated-remote": {
+        enabled: true,
+        toolDefaults: { approval: "none" },
+      },
     }),
   );
   await page.getByLabel("Agent name").fill("Retry Agent Corrected");
@@ -2606,21 +2816,27 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(retried.data.activeRevisionId, undefined);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.deepEqual(
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).map(
-      ({ body }) => body.value,
-    ),
-    ["at-browser-pat"],
+    secretPostRequests(requests, namespace.id).map(({ body }) => body),
+    [{ name: "Retry Agent model credential", value: "at-browser-pat" }],
   );
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
-  assert.deepEqual(
-    agentPostRequests(requests, namespace.id)[0].body.harnessAuth,
-    retried.data.harnessAuth,
-  );
   const attempts = agentPostRequests(requests, namespace.id);
+  assert.deepEqual(attempts[0].body.harnessAuth, {
+    method: "codex_pat",
+    source: selectedSecret.ref,
+  });
+  assert.deepEqual(attempts[1].body.harnessAuth, {
+    method: "codex_pat",
+    source: selectedSecret.ref,
+  });
+  assert.deepEqual(retried.data.harnessAuth, { method: "codex_pat", source: selectedSecret.ref });
   assert.equal(attempts[0].body.initialWorkspaceFiles["SOUL.md"], "# Keep this draft\n");
   assert.equal(attempts[1].body.initialWorkspaceFiles["SOUL.md"], "# Corrected draft\n");
   assert.deepEqual(retried.data.plugins, {
-    "occ-plugin:diffs": { enabled: true, approvalMode: "always" },
+    "codex-plugin:linear@openai-curated-remote": {
+      enabled: true,
+      toolDefaults: { approval: "none" },
+    },
   });
   for (const request of attempts) {
     assert.equal(request.body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
@@ -2725,7 +2941,28 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Agent name").fill(`Uncertain ${collection} Agent`);
-    await enterManualModel(page, "uncertain-artifact-key", "gpt-4.1");
+    if (collection === "secrets") {
+      await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+      await openCreateSecretDialog(page, "API key Secret");
+      const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+      await dialog.getByLabel("Value", { exact: true }).fill("uncertain-artifact-key");
+      await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+      await dialog
+        .getByRole("alert")
+        .filter({ hasText: /outcome could not be confirmed/i })
+        .waitFor();
+      assert.ok(committed?.id);
+      assert.equal((await fixture.request("GET", `${path}/${committed.id}`)).status, 200);
+      assert.equal(pathRequests(requests, "POST", path).length, 1);
+      assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+      assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+      return;
+    }
+    const selectedSecret = await enterManualModel(page, "uncertain-artifact-key", "gpt-4.1");
+    assert.equal(
+      await page.getByLabel("API key Secret", { exact: true }).inputValue(),
+      secretOptionLabel(selectedSecret),
+    );
     await page.getByRole("button", { name: "Create Agent" }).click();
     await page
       .getByRole("alert")
@@ -2761,7 +2998,11 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
-  await enterManualModel(page, "template-edit-key", "gpt-5.1");
+  await page.getByLabel("Agent name").fill("Template initial credential");
+  await createModelCredentialSecret(page, "template-edit-key");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
   const dedicatedTemplate = JSON.parse(await configuration.inputValue());
   assert.equal(dedicatedTemplate.agents.defaults.model, "codex/gpt-5.1");
   assert.deepEqual(dedicatedTemplate.models.providers.codex.models, [
@@ -2812,8 +3053,8 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     "openai/gpt-4.1-updated",
   );
 
-  await page.getByLabel("API key", { exact: true }).fill("same-provider-replacement-key");
-  await page.getByLabel("API key", { exact: true }).press("Tab");
+  await page.getByLabel("Agent name").fill("Template same provider credential");
+  await createModelCredentialSecret(page, "same-provider-replacement-key");
   await modelInput.waitFor();
   assert.equal(await modelInput.inputValue(), "gpt-4.1-updated");
   await assertCustomTransport();
@@ -2858,8 +3099,8 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.entries.codex, customCodex);
 
   // Replacing the credential preserves the selected model and custom execution policy.
-  await page.getByLabel("API key", { exact: true }).fill("replacement-template-key");
-  await page.getByLabel("API key", { exact: true }).press("Tab");
+  await page.getByLabel("Agent name").fill("Template codex replacement credential");
+  await createModelCredentialSecret(page, "replacement-template-key");
   const nextModel = page.getByLabel("Model ID", { exact: true });
   await nextModel.waitFor();
   assert.equal(await nextModel.inputValue(), "gpt-4.1-codex-updated");
@@ -2878,6 +3119,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
     },
   );
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  await page.getByLabel("Agent name").fill("Template Anthropic credential");
   await enterManualModel(page, "anthropic-template-key", "claude-template-model");
   const anthropicTemplate = JSON.parse(await configuration.inputValue());
   assert.deepEqual(anthropicTemplate.models.providers.anthropic, {
@@ -2889,8 +3131,9 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   assert.equal(await harness.inputValue(), "codex");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
-  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents.defaults.model, undefined);
+  await page.getByLabel("Agent name").fill("Template returned OpenAI credential");
   await enterManualModel(page, "returned-openai-key", "gpt-returned-model");
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
@@ -2902,7 +3145,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name").inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
-  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
 });
 
 test("Agent creation blocks an incompatible fallback after changing provider until the configuration is corrected", async (t) => {
@@ -2924,19 +3167,21 @@ test("Agent creation blocks an incompatible fallback after changing provider unt
   };
   await configuration.fill(JSON.stringify(values));
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
-  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
+  await page.getByLabel("Agent name").fill("Anthropic fallback credential");
   await enterManualModel(page, "test-fallback-anthropic-key", "claude-sonnet-4-6");
   assert.deepEqual(JSON.parse(await configuration.inputValue()).agents.defaults.model, {
     primary: "anthropic/claude-sonnet-4-6",
     fallbacks: ["openai/gpt-4.1"],
   });
   await page.getByLabel("Agent name").fill("Corrected fallback Agent");
+  const writesBeforeInvalidCreate = nonAuthWriteRequests(requests).length;
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
     .getByRole("alert")
     .filter({ hasText: /fallback.*provider|provider.*fallback/i })
     .waitFor();
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(nonAuthWriteRequests(requests).length, writesBeforeInvalidCreate);
 
   // A provider change preserves edited fallbacks; resetting is an explicit correction.
   page.once("dialog", (dialog) => dialog.accept());
@@ -2961,7 +3206,7 @@ test("Agent creation blocks an incompatible fallback after changing provider unt
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.equal(persisted.data.values.agents.defaults.model, "anthropic/claude-sonnet-4-6");
-  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 2);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 });
@@ -2984,8 +3229,11 @@ test("Agent creation saves explicitly selected models for both harnesses", async
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Harness", { exact: true }).selectOption(harness);
     await page.getByLabel("Model", { exact: true }).selectOption(selectedModel);
-    await page.getByLabel("API key", { exact: true }).fill(`test-${mode}-${selectedModel}-key`);
     await page.getByLabel("Agent name").fill(`${mode}-${selectedModel}`);
+    const selectedSecret = await createModelCredentialSecret(
+      page,
+      `test-${mode}-${selectedModel}-key`,
+    );
     const saved = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
@@ -2996,6 +3244,7 @@ test("Agent creation saves explicitly selected models for both harnesses", async
     assert.equal(response.status(), 201);
     const agent = (await response.json()).data;
     assert.equal(agent.executionMode, mode);
+    assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });
     const configuration = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -3019,6 +3268,166 @@ test("Agent creation saves explicitly selected models for both harnesses", async
       { id: selectedModel, name: selectedModel },
     ]);
   }
+});
+
+test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deployment activity", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Deployment Agent", nativeValues("v1"));
+  const current = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v2"));
+  // Admission creates v2 while v1 stays selected until activation.
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${pending.id}`;
+  const diagnosticsPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}/diagnostics`;
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // The in-memory API fixture has no worker records. Supply contract-shaped status
+  // reads to prove the UI keeps each version's outcome tied to its exact ID.
+  for (const [revisionId, status] of [
+    [current.revision.id, "succeeded"],
+    [pending.id, "queued"],
+  ]) {
+    await page.route(
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            data: {
+              deploymentId: revisionId,
+              namespaceId: namespace.id,
+              agentId: agent.id,
+              status,
+              error: null,
+              warnings: [],
+            },
+            meta: { requestId: "req_test_deployment_activity" },
+          }),
+        });
+      },
+    );
+  }
+  await page.route(`${fixture.origin}${diagnosticsPath}`, async (route) => {
+    assert.equal(route.request().method(), "POST");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          revisionId: current.revision.id,
+          observedAt: "2026-09-27T12:00:00.000Z",
+          checks: [
+            {
+              component: "slack",
+              check: "authentication",
+              state: "succeeded",
+              checkedAt: "2026-09-27T11:59:59.000Z",
+            },
+          ],
+        },
+        meta: { requestId: "req_test_exact_diagnostics" },
+      }),
+    });
+  });
+  const url = detailUrl(fixture, namespace.id, agent.id, current.revision.id, "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Versions" }).waitFor();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const overview = page.locator(".agent-current-summary > div");
+  await overview.nth(0).getByText("v1", { exact: true }).waitFor();
+  await overview.nth(1).getByText("v2 · Queued").waitFor();
+  await overview.nth(2).getByText("Not verified").waitFor();
+  await page
+    .getByText("v2 deployment is recorded as queued. v1 is selected. Live serving is unverified.")
+    .waitFor();
+  const activity = page.locator(".deployment-status");
+  await activity.getByRole("heading", { name: "Deployment activity" }).waitFor();
+  await activity.getByText("Most recent visible deployment · v2").waitFor();
+  await activity.getByText("Recorded status: queued").waitFor();
+  await activity.getByText("Waiting for a worker claim.").waitFor();
+  await activity.getByText("Successful completion is not recorded yet.").waitFor();
+  const versionRecord = page.locator(".version-deployment-record");
+  await versionRecord.getByRole("heading", { name: "This version’s deployment record" }).waitFor();
+  await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
+  const observations = page.locator(".version-diagnostics");
+  await observations
+    .getByText(/For Kubernetes Compute, Gateway checks currently cover Slack configuration/)
+    .waitFor();
+  await observations
+    .getByText("No current observation has been requested for this version.")
+    .waitFor();
+  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+  await observations.getByText(/Observed /).waitFor();
+  await observations.getByText("slack / authentication").waitFor();
+  assert.equal(pathRequests(requests, "POST", diagnosticsPath).length, 1);
+  await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
+  await activity.getByText("Recorded status: queued").waitFor();
+  assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
+  assert.ok(
+    pathRequests(
+      requests,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}`,
+    ).length >= 1,
+  );
+
+  await page.getByRole("button", { name: "View version v2" }).click();
+  await page.getByRole("heading", { name: "Version v2" }).waitFor();
+  await overview.nth(0).getByText("v1", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "View version v1" }).click();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await activity.getByText("Most recent visible deployment · v2").waitFor();
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
+  const newer = await fixture.deployAgent(namespace.id, agent.id);
+  let newerStatus = "queued";
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${newer.id}`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: newer.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: newerStatus,
+            error:
+              newerStatus === "failed"
+                ? {
+                    code: "REVISION_FINALIZATION_INCOMPLETE",
+                    message: "Deployment reconciliation failed.",
+                  }
+                : null,
+            warnings: [],
+          },
+          meta: { requestId: "req_test_new_deployment_activity" },
+        }),
+      });
+    },
+  );
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await activity.getByText("Most recent visible deployment · v3").waitFor();
+  await page.getByRole("button", { name: "View version v3" }).waitFor();
+  await overview.nth(0).getByText("v1", { exact: true }).waitFor();
+  await overview.nth(1).getByText("v3 · Queued").waitFor();
+  await fixture.activateRevision(namespace.id, agent.id, newer.id, current.revision.id);
+  newerStatus = "failed";
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await overview.nth(0).getByText("v3", { exact: true }).waitFor();
+  await overview.nth(1).getByText("v3 · Failed").waitFor();
+  await activity.getByText("Recorded status: failed").waitFor();
+  await activity
+    .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")
+    .waitFor();
+  await activity
+    .getByText("Deployment work failed; check the recorded error and current version.")
+    .waitFor();
+  await activity.getByText("Successful completion was not recorded for this deployment.").waitFor();
 });
 
 test("Agent detail preserves admitted revision history while draft edits change current configuration", async (t) => {
@@ -3065,25 +3474,25 @@ test("Agent detail preserves admitted revision history while draft edits change 
   requests.length = 0;
 
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/);
 
-  await page.getByRole("button", { name: "Newer revision" }).click();
+  await page.getByRole("button", { name: "View version v2" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
   await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/);
   assertRevisionUrl(page, second.revision.id);
 
-  await page.getByRole("button", { name: "Older revision" }).click();
+  await page.getByRole("button", { name: "View version v1" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   assertRevisionUrl(page, first.revision.id);
 
-  await page.getByRole("button", { name: "New revision" }).click();
+  await page.getByRole("button", { name: "Create new version" }).last().click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
@@ -3108,6 +3517,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
     nativeValues("stale-server"),
   );
   assert.equal(stale.generation, 4);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  assert.match(await editor.inputValue(), /stale-client/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByText("The saved Configuration changed while you were editing.").waitFor();
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
@@ -3120,29 +3533,21 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(editedValues, null, 2));
   await page.getByText("Save or cancel these Configuration edits before deploying.").waitFor();
   await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Channels" }).isDisabled(), true);
-  await page.evaluate(() => {
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set("tab", "channels");
-    globalThis.history.pushState(globalThis.history.state, "", next);
-    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
-  });
-  await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
-  assert.equal(await page.getByLabel("AgentRevision").isDisabled(), true);
-  assert.equal(
-    await page.getByRole("button", { name: "View current revision" }).isDisabled(),
-    true,
-  );
-  await page.evaluate((revisionId) => {
-    const next = new URL(globalThis.location.href);
-    next.searchParams.set("revision", revisionId);
-    globalThis.history.pushState(globalThis.history.state, "", next);
-    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
-  }, second.revision.id);
-  await page.getByText("Save or cancel Configuration edits before leaving this tab.").waitFor();
-  assertRevisionUrl(page, "draft");
+  // Tabs, admitted revision browsing, and global routes preserve this exact unsaved draft.
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
+  await page.getByLabel("Available versions").selectOption(second.revision.id);
+  await page.getByRole("button", { name: "Edit current Configuration" }).click();
+  assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
   const savedConfiguration = page.waitForResponse(
     (response) =>
       response.url() ===
@@ -3166,7 +3571,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.deepEqual(currentConfiguration.data.values, editedValues);
   assert.deepEqual(currentConfiguration.data.secretBindings, secretBindings);
 
-  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
@@ -3177,6 +3582,13 @@ test("Agent detail preserves admitted revision history while draft edits change 
 
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Authentication source").selectOption("");
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
   const saved = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
@@ -3189,11 +3601,783 @@ test("Agent detail preserves admitted revision history while draft edits change 
     .waitFor();
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.harnessAuth, null);
-  await page.getByLabel("AgentRevision").selectOption(first.revision.id);
-  await page.getByText("API key · Secret configured", { exact: true }).waitFor();
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page
+    .getByRole("link", {
+      name: "Auth Revisioned Agent",
+      exact: true,
+    })
+    .waitFor();
+  // Cancel discards the retained baseline too: reopening uses the freshly read saved document.
+  await page.getByRole("button", { name: "Edit current Configuration" }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await editor.fill(JSON.stringify(nativeValues("discard-this-edit")));
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("cancel-server"),
+  );
+  await page.goBack();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  assert.match(await editor.inputValue(), /"marker": "cancel-server"/);
+  await editor.fill(JSON.stringify(nativeValues("after-cancel")));
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await page.getByText(/generation 7/).waitFor();
+});
+
+test("Agent detail saves plugin changes for the next revision without changing admitted revisions", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const namespace = await fixture.createNamespace("Plugin revision editing", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Plugin Revision Agent",
+    nativeValues("plugin-revision", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const tokenSecret = await fixture.createSecret(
+    namespace.id,
+    "Plugin Revision Service Accounts token",
+    "at-browser-plugin-revision",
+  );
+  fixture.policy.bindings.push({
+    id: `grant-plugin-${tokenSecret.id}`,
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: `auth-${agent.id}`,
+    resourceKind: "secret",
+    resourceId: tokenSecret.id,
+  });
+  const pluginId = "codex-plugin:linear@openai-curated-remote";
+  const originalPlugins = {
+    [pluginId]: { enabled: true, toolDefaults: { approval: "all_actions" } },
+  };
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "codex_pat", source: tokenSecret.ref },
+    plugins: originalPlugins,
+  });
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  assert.deepEqual(first.revision.plugins?.plugins, originalPlugins);
+  const { page } = await newPage(t, fixture);
+  const originalFetch = globalThis.fetch;
+  const hostedCalendar = {
+    id: "remote-calendar",
+    name: "calendar",
+    scope: "GLOBAL",
+    status: "ENABLED",
+    installation_policy: "AVAILABLE",
+    release: {
+      display_name: "Calendar",
+      description: "Hosted calendar plugin",
+      interface: { short_description: "Calendar tools" },
+      requires_local_executor: false,
+      app_ids: ["app_calendar"],
+      skills: [],
+      mcp_servers: [],
+    },
+  };
+  // Only external catalog HTTP is simulated; Console, OCC, and the selected Driver are real.
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    const upstream = new URL(typeof input === "string" ? input : (input.url ?? input));
+    if (upstream.hostname === "auth.openai.com") {
+      return Response.json({
+        chatgpt_account_id: "account-plugin-revision-test",
+        chatgpt_account_is_fedramp: false,
+      });
+    }
+    if (upstream.hostname !== "chatgpt.com") {
+      return originalFetch(input, options);
+    }
+    if (upstream.pathname.endsWith("/plugins/list")) {
+      return Response.json({ plugins: [hostedCalendar], pagination: { next_page_token: null } });
+    }
+    if (upstream.pathname.endsWith("/plugins/remote-calendar")) {
+      return Response.json(hostedCalendar);
+    }
+    assert.equal(upstream.pathname, "/backend-api/ps/apps/batch");
+    return Response.json({
+      apps: [
+        {
+          id: "app_calendar",
+          status: "ENABLED",
+          tools: [
+            {
+              name: "events/list",
+              title: "List events",
+              description: "Read events",
+              is_enabled: true,
+              is_read_only: true,
+            },
+            {
+              name: "events/create",
+              title: "Create event",
+              description: "Create a calendar event",
+              is_enabled: true,
+              is_read_only: false,
+            },
+          ],
+        },
+      ],
+    });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  const capabilitiesRead = Promise.withResolvers();
+  t.after(() => capabilitiesRead.resolve());
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/plugins/capabilities`,
+    async (route) => {
+      await capabilitiesRead.promise;
+      await route.continue();
+    },
+  );
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Plugin Revision Agent" }).waitFor();
+  await page.getByRole("heading", { name: "Plugins", exact: true }).waitFor();
+  const json = page.getByLabel("Plugin selections JSON", { exact: true });
+  assert.deepEqual(JSON.parse(await json.inputValue()), originalPlugins);
+  requests.length = 0;
+
+  // The draft edits Agent-owned selections. The admitted revision remains immutable.
+  assert.equal(await page.getByLabel("Service account token for plugin discovery").count(), 0);
+  const pluginListPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  assert.equal(pathRequests(requests, "POST", pluginListPath).length, 0);
+  const prefetched = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${pluginListPath}` &&
+      response.request().method() === "POST",
+  );
+  capabilitiesRead.resolve();
+  assert.equal((await prefetched).status(), 200);
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  assert.equal(await dialog.isVisible(), false);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).click();
+  await dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]').waitFor();
   assert.equal(
-    (await page.locator("body").textContent()).includes(agent.harnessAuth.source.id),
+    await dialog
+      .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"] summary code')
+      .textContent(),
+    "app_calendar/events%2Flist",
+  );
+  // Opening the picker reuses the first page already fetched with the saved Agent credential.
+  assert.deepEqual(
+    pathRequests(requests, "POST", pluginListPath).map(({ body }) => body),
+    [{}],
+  );
+  assert.deepEqual(
+    pathRequests(requests, "POST", `${pluginListPath}/details`).map(({ body }) => body),
+    [{ pluginId: "remote-calendar" }],
+  );
+  const toolFilter = dialog.getByRole("searchbox", { name: "Filter tools" });
+  await toolFilter.click();
+  await page.keyboard.type("create");
+  assert.equal(await toolFilter.inputValue(), "create");
+  await dialog
+    .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Fcreate"]')
+    .waitFor();
+  assert.equal(
+    await dialog
+      .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]')
+      .isVisible(),
     false,
+  );
+  await toolFilter.fill("");
+  await dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]').waitFor();
+  await dialog.getByRole("button", { name: "Add Calendar", exact: true }).click();
+  await dialog
+    .locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"] summary')
+    .click();
+  await dialog.getByLabel("Enable List events", { exact: true }).selectOption("false");
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: pluginId, exact: true }).click();
+  await dialog.getByLabel(`Enable ${pluginId}`, { exact: true }).uncheck();
+  // Like Done, a backdrop dismissal preserves plugin choices in the surrounding draft.
+  const pluginBounds = await dialog.boundingBox();
+  assert.ok(pluginBounds);
+  await page.mouse.click(pluginBounds.x / 2, pluginBounds.y + 8);
+  await dialog.waitFor({ state: "hidden" });
+  await page.locator("button:focus").filter({ hasText: "Configure plugins" }).waitFor();
+  const editedPlugins = {
+    [pluginId]: { enabled: false, toolDefaults: { approval: "all_actions" } },
+    "codex-plugin:calendar@openai-curated-remote": {
+      enabled: true,
+      tools: { "app_calendar/events%2Flist": { enabled: false } },
+    },
+  };
+  assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.deepEqual(
+    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`),
+    [],
+  );
+
+  const rejectedStatuses = [501, 403];
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    async (route) => {
+      if (route.request().method() !== "PATCH" || rejectedStatuses.length === 0) {
+        await route.continue();
+        return;
+      }
+      const status = rejectedStatuses.shift();
+      await route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error:
+            status === 501
+              ? { code: "NOT_IMPLEMENTED", message: "No selected Plugin Driver" }
+              : { code: "ACCESS_DENIED", message: "Agent update denied" },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000434" },
+        }),
+      });
+    },
+  );
+  const unavailableResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await unavailableResponse).status(), 501);
+  await page
+    .getByText(
+      "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry.",
+    )
+    .waitFor();
+  assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  const deniedResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await deniedResponse).status(), 403);
+  await page
+    .getByText(
+      "Access denied. Check Agent update, Configuration read, and access to this Agent's bound Secrets or Service Account.",
+    )
+    .waitFor();
+  assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  const beforeRetry = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  assert.deepEqual(beforeRetry.data.plugins, originalPlugins);
+
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await saveResponse).status(), 200);
+  assert.deepEqual(
+    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).map(
+      ({ body }) => body.plugins,
+    ),
+    [editedPlugins, editedPlugins, editedPlugins],
+  );
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(saved.data.plugins, editedPlugins);
+
+  await page.reload();
+  await page.getByRole("heading", { name: "Plugins", exact: true }).waitFor();
+  assert.deepEqual(
+    JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
+    editedPlugins,
+  );
+  await page.getByRole("button", { name: "Deploy new version" }).click();
+  await page.waitForURL(
+    (current) => current.searchParams.get("revision")?.startsWith("rev_") === true,
+  );
+  const revisions = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
+  );
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.data.length, 2);
+  assert.deepEqual(
+    revisions.data.find(({ id }) => id === first.revision.id)?.plugins?.plugins,
+    originalPlugins,
+  );
+  assert.deepEqual(
+    revisions.data.find(({ id }) => id !== first.revision.id)?.plugins?.plugins,
+    editedPlugins,
+  );
+
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
+  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
+  await page.getByLabel("Available versions").selectOption(first.revision.id);
+  await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
+  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
+  assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
+});
+
+test("Agent draft plugin browsing explains a missing hosted credential", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Plugin discovery credential", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Hosted plugin Agent",
+    nativeValues("plugin-discovery-auth", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog
+    .getByText(
+      "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+    )
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/plugins`).length,
+    0,
+  );
+  await dialog.getByRole("button", { name: "Done" }).click();
+  assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
+});
+
+test("Agent draft browses the curated catalog without a saved Secret", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Curated revision plugins", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Curated plugin Agent",
+    nativeValues("curated-revision", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const linear = dialog.getByRole("button", { name: "Linear", exact: true });
+  await linear.waitFor();
+  assert.equal(pathRequests(requests, "GET", "/installation").length, 0);
+  const catalogPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  assert.deepEqual(
+    pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
+    [{}],
+  );
+  // The shared search UI must use the saved-Agent route without supplying a credential.
+  const searched = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${catalogPath}` &&
+      response.request().postDataJSON()?.q === "linear",
+  );
+  await dialog.getByLabel("Search plugins", { exact: true }).fill("linear");
+  assert.equal((await searched).status(), 200);
+  await dialog.locator('.plugin-list[aria-busy="false"]').waitFor();
+  assert.deepEqual(
+    await dialog
+      .locator(".plugin-list-item")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label"))),
+    ["Linear"],
+  );
+  assert.deepEqual(pathRequests(requests, "POST", catalogPath).at(-1).body, { q: "linear" });
+  await linear.click();
+  await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
+  assert.equal(pathRequests(requests, "GET", `${catalogPath}/capabilities`).length, 1);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
+    "codex-plugin:linear@openai-curated-remote": { enabled: true },
+  });
+});
+
+test("Agent credentials choose existing Secrets for harness authentication", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Harness Secret picker", { ready: true });
+  const originalSecret = await fixture.createSecret(
+    namespace.id,
+    "Original harness Secret",
+    "hidden-original-harness",
+  );
+  const replacementSecret = await fixture.createSecret(
+    namespace.id,
+    "Replacement harness Secret",
+    "hidden-replacement-harness",
+  );
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Harness Picker Agent",
+    nativeValues("harness-picker"),
+    { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Harness Picker Agent" }).waitFor();
+  requests.length = 0;
+  await selectSecret(page, "API key Secret", replacementSecret);
+  await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}`) &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  assert.equal((await saveResponse).status(), 200);
+  await page.getByLabel("API key Secret").waitFor({ state: "visible" });
+  assert.equal(
+    await page.getByLabel("API key Secret").evaluate((node) => node.value),
+    secretOptionLabel(replacementSecret),
+  );
+
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(current.data.harnessAuth, {
+    method: "api_key",
+    source: replacementSecret.ref,
+  });
+  assert.deepEqual(secretPostRequests(requests, namespace.id), []);
+
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  const serviceAccountSecret = page.getByLabel("Service account token Secret");
+  assert.equal(await serviceAccountSecret.evaluate((node) => node.value), "");
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  assert.equal(
+    await page.getByLabel("API key Secret").evaluate((node) => node.value),
+    secretOptionLabel(replacementSecret),
+  );
+
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
+    await route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+  });
+  await page.reload();
+  await page.getByText(/Secrets unavailable/).waitFor();
+  const unreadableSecret = page.getByLabel("API key Secret", { exact: true });
+  assert.equal(await unreadableSecret.inputValue(), "Bound Secret");
+  await unreadableSecret.click();
+  await page.getByRole("option", { name: "Bound Secret", exact: true }).waitFor();
+  assert.equal(
+    await page
+      .getByRole("link", { name: /View harness authentication Secret metadata/ })
+      .getAttribute("href"),
+    `/namespaces/${namespace.id}/secrets/${replacementSecret.id}`,
+  );
+});
+
+test("Agent credential Secret picker distinguishes action labels from Secret names", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret action names", { ready: true });
+  const original = await fixture.createSecret(namespace.id, "Hidden binding", "original-value");
+  const bound = await fixture.createSecret(namespace.id, "Bound Secret", "bound-value");
+  await fixture.createSecret(namespace.id, "No Secret bound", "none-value");
+  const create = await fixture.createSecret(namespace.id, "Create new Secret...", "create-value");
+  await fixture.createSecret(namespace.id, "Create new Secret... (action)", "action-value");
+  await fixture.createSecret(
+    namespace.id,
+    "Create new Secret... (action)  (action)",
+    "whitespace-value",
+  );
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Action Name Agent",
+    nativeValues("secret-action-names"),
+    { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data = body.data.filter((secret) => secret.id !== original.id);
+    await route.fulfill({ response, json: body });
+  });
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Action Name Agent" }).waitFor();
+  const apiKey = page.getByLabel("API key Secret", { exact: true });
+  await apiKey.click();
+  await page.getByRole("option", { name: "Bound Secret (current binding)", exact: true }).waitFor();
+  await page.getByRole("option", { name: "Bound Secret", exact: true }).click();
+  assert.equal(await apiKey.inputValue(), bound.name);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}`) &&
+      response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  assert.equal((await saved).status(), 200);
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(current.data.harnessAuth.source, bound.ref);
+
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  const token = page.getByLabel("Service account token Secret", { exact: true });
+  await token.click();
+  await page.getByRole("option", { name: "No Secret bound (no binding)", exact: true }).waitFor();
+  await page.getByRole("option", { name: "No Secret bound", exact: true }).waitFor();
+  await page
+    .getByRole("option", { name: "Create new Secret... (action) (action) (action)", exact: true })
+    .waitFor();
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  assert.equal(await token.inputValue(), create.name);
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  await token.press("ArrowDown");
+  await page
+    .getByRole("option", { name: "Create new Secret... (action) (action) (action)", exact: true })
+    .click();
+  await page.getByRole("dialog", { name: "Create harness authentication Secret" }).waitFor();
+});
+
+test("Agent credential Secret picker searches, validates, and preserves duplicate create input", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, { secretDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Credential Secret picker UX", { ready: true });
+  const originalSecret = await fixture.createSecret(
+    namespace.id,
+    "Original picker Secret",
+    "hidden-original-picker",
+  );
+  const keyboardSecret = await fixture.createSecret(
+    namespace.id,
+    "Keyboard replacement Secret",
+    "hidden-keyboard-picker",
+  );
+  const duplicateNameSecret = await fixture.createSecret(
+    namespace.id,
+    "Duplicate picker Secret",
+    "hidden-duplicate-picker",
+  );
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Combobox Agent",
+    nativeValues("credential-picker-ux"),
+    { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Combobox Agent" }).waitFor();
+  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+  await apiKeySecret.fill(keyboardSecret.id);
+  await page.getByRole("option", { name: keyboardSecret.name, exact: true }).waitFor();
+  await apiKeySecret.fill("keyboard");
+  const keyboardOption = page.getByRole("option", {
+    name: secretOptionLabel(keyboardSecret),
+    exact: true,
+  });
+  await apiKeySecret.press("ArrowDown");
+  assert.equal(await keyboardOption.getAttribute("aria-selected"), "false");
+  assert.equal(
+    await keyboardOption.evaluate((node) => node.classList.contains("secret-typeahead-active")),
+    true,
+  );
+  assert.equal(
+    await apiKeySecret.getAttribute("aria-activedescendant"),
+    await keyboardOption.getAttribute("id"),
+  );
+  await apiKeySecret.press("Enter");
+  await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(keyboardSecret));
+  await apiKeySecret.fill("");
+  assert.equal(await keyboardOption.getAttribute("aria-selected"), "true");
+  await apiKeySecret.press("ArrowDown");
+  assert.equal(await keyboardOption.getAttribute("aria-selected"), "true");
+  assert.equal(await page.getByRole("listbox").getByRole("option", { selected: true }).count(), 1);
+  await apiKeySecret.fill("does-not-exist");
+  await page.getByText("No matching Secrets.", { exact: true }).waitFor();
+  await apiKeySecret.press("Escape");
+  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(keyboardSecret));
+
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  assert.equal(await serviceAccountSecret.evaluate((input) => input.validity.customError), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  await serviceAccountSecret.fill("no matching create target");
+  await page.getByText("No matching Secrets.", { exact: true }).waitFor();
+  await serviceAccountSecret.press("ArrowDown");
+  await serviceAccountSecret.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  await dialog.waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Combobox Agent harness authentication",
+  );
+  assert.equal(await dialog.getByLabel("Value", { exact: true }).getAttribute("type"), "password");
+  await dialog.getByLabel("Name", { exact: true }).fill(duplicateNameSecret.name);
+  await dialog.getByLabel("Value", { exact: true }).fill("synthetic-duplicate-value");
+  const duplicate = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
+      response.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  assert.equal((await duplicate).status(), 409);
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: "may already exist in this Namespace" })
+    .waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    duplicateNameSecret.name,
+  );
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+  assert.equal(secretDriver.valueFor(duplicateNameSecret), "hidden-duplicate-picker");
+
+  // Simulate documented controller conflict responses; duplicate rejection above uses the real route.
+  let conflictCode = "NAMESPACE_NOT_READY";
+  const failSecretCreate = (route, request) => {
+    if (request.method() !== "POST") {
+      return route.fallback();
+    }
+    return route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: conflictCode, message: "masked Secret create conflict" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
+      }),
+    });
+  };
+  await page.route(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
+  await dialog.getByLabel("Name", { exact: true }).fill("Namespace not ready picker Secret");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.getByRole("alert").filter({ hasText: "not ready for Secret creation" }).waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Namespace not ready picker Secret",
+  );
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+
+  conflictCode = "RESOURCE_CONFLICT";
+  await dialog.getByLabel("Name", { exact: true }).fill("Backend conflict picker Secret");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.getByRole("alert").filter({ hasText: "Secret creation conflicted" }).waitFor();
+  assert.equal(
+    await dialog.getByLabel("Name", { exact: true }).inputValue(),
+    "Backend conflict picker Secret",
+  );
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+  assert.equal(await dialog.getByRole("alert").filter({ hasText: "may already exist" }).count(), 1);
+  await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
+
+  const distinctName = "Combobox Agent corrected service account token";
+  await dialog.getByLabel("Name", { exact: true }).fill(distinctName);
+  const created = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
+      response.request().method() === "POST" &&
+      response.request().postDataJSON()?.name === distinctName,
+  );
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const createdSecret = (await (await created).json()).data;
+  await dialog.waitFor({ state: "hidden" });
+  assert.notEqual(createdSecret.id, duplicateNameSecret.id);
+  assert.equal(createdSecret.name, distinctName);
+  assert.equal(secretDriver.valueFor(createdSecret), "synthetic-duplicate-value");
+  assert.equal(await serviceAccountSecret.inputValue(), secretOptionLabel(createdSecret));
+});
+
+test("Agent credentials report partial harness Secret grant failure", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Harness Secret grant failure", {
+    ready: true,
+  });
+  const originalSecret = await fixture.createSecret(
+    namespace.id,
+    "Original denied harness Secret",
+    "hidden-denied-original",
+  );
+  const replacementSecret = await fixture.createSecret(
+    namespace.id,
+    "Denied harness Secret",
+    "hidden-denied-replacement",
+  );
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Harness Grant Failure Agent",
+    nativeValues("harness-grant-failure"),
+    { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await page.route(`**/namespaces/${namespace.id}/iam/access-bindings`, async (route, request) => {
+    if (request.method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000633" },
+      }),
+    });
+  });
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Harness Grant Failure Agent" }).waitFor();
+  requests.length = 0;
+  await selectSecret(page, "API key Secret", replacementSecret);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .waitFor();
+  assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "Retry credential access" }).isDisabled(),
+    false,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(current.data.harnessAuth, {
+    method: "api_key",
+    source: replacementSecret.ref,
+  });
+  assert.deepEqual(
+    accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
+    [replacementSecret.id],
   );
 });
 
@@ -3239,12 +4423,12 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
 
   const nextValues = nativeValues("after-unknown");
   await page.getByText("Configured on the runtime host").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));
   await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new revision" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Save Configuration" }).click();
 
   await page.getByText("Outcome unknown. Configuration may have been saved.").waitFor();
@@ -3268,6 +4452,12 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   assert.equal(saved.data.generation, 2);
   assert.deepEqual(saved.data.values, nextValues);
 
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByLabel("Configuration JSON").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   await page.getByRole("button", { name: "Reload draft" }).click();
   await page.getByText(/generation 2/).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
@@ -3297,7 +4487,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Stop Agent" }).click();
   let dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
   await dialog
-    .getByText(/Configuration, AgentRevisions, Credentials, and workspace data are retained/i)
+    .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
@@ -3305,7 +4495,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Stop Agent" }).click();
   dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
   await dialog
-    .getByText(/Configuration, AgentRevisions, Credentials, and workspace data are retained/i)
+    .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
   const stopResponse = page.waitForResponse(
     (response) =>
@@ -3322,9 +4512,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("status").getByText("Stop requested.").waitFor();
   await page.getByText(/Runtime shutdown completion is not exposed in Console/).waitFor();
   await page
-    .getByText(
-      `Selected revision ${active.revision.id.slice(0, 12)}…${active.revision.id.slice(-6)}`,
-    )
+    .getByText(`Version ${active.revision.id.slice(0, 12)}…${active.revision.id.slice(-6)}`)
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
   assert.deepEqual(
@@ -3366,12 +4554,15 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page
     .getByRole("region", { name: "Stop Agent", exact: true })
-    .getByText("No selected revision", { exact: true })
+    .getByText("No current version", { exact: true })
+    .waitFor();
+  await page
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
     .waitFor();
 
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "New revision", exact: true }).click();
-  await page.getByRole("button", { name: "Deploy new revision" }).click();
+  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
   const running = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(running.data.desiredRuntimeState, "running");
@@ -3916,7 +5107,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
   // Viewing an older configuration snapshot must still open the current active gateway.
-  await page.getByLabel("AgentRevision").selectOption(historicalRevisionId);
+  await page.getByLabel("Available versions").selectOption(historicalRevisionId);
   await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
@@ -3977,632 +5168,6 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.doesNotMatch(nativeRequestCookie, /legacy-host-only/);
 
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-});
-
-test("Channel drawer saves channel edits without exposing Secret values or dropping unrelated draft state", async (t) => {
-  const secretValue = "super-secret-channel-value";
-  const slackAppSecretValue = "super-secret-slack-app-value";
-  const slackBotSecretValue = "super-secret-slack-bot-value";
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Channel state", { ready: true });
-  const secret = await fixture.createSecret(namespace.id, "OpenAI API key", secretValue);
-  const slackAppSecret = await fixture.createSecret(
-    namespace.id,
-    "Slack app token",
-    slackAppSecretValue,
-  );
-  const slackBotSecret = await fixture.createSecret(
-    namespace.id,
-    "Slack bot token",
-    slackBotSecretValue,
-  );
-  const secretBindings = {
-    EXTERNAL_API_TOKEN: {
-      source: secret.ref,
-      delivery: { type: "env" },
-    },
-    SLACK_APP_TOKEN: {
-      source: slackAppSecret.ref,
-      delivery: { type: "env" },
-    },
-    SLACK_BOT_TOKEN: {
-      source: slackBotSecret.ref,
-      delivery: { type: "env" },
-    },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Channel Agent",
-    nativeValues("channels", {
-      harnessId: "codex",
-      providerModel: "gpt-5.1",
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-          dmPolicy: "allowlist",
-          allowFrom: ["UOLD123"],
-          channels: {
-            COLD123: {
-              requireMention: true,
-              users: ["UOLD123"],
-            },
-          },
-        },
-        msteams: {
-          enabled: false,
-          appId: "00000000-0000-4000-8000-000000000000",
-          tenantId: "11111111-1111-4111-8111-111111111111",
-          appPassword: { source: "env", provider: "default", id: "MSTEAMS_APP_PASSWORD" },
-          requireMention: true,
-        },
-      },
-    }),
-    { executionMode: "dedicated", secretBindings },
-  );
-  const { page, artifacts } = await newPage(t, fixture);
-
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "channels").pathname +
-      detailUrl(fixture, namespace.id, agent.id, "draft", "channels").search,
-  );
-  await page.getByRole("heading", { name: "Channel Agent" }).waitFor();
-  await page.getByRole("button", { name: "Channels" }).click();
-  for (const value of [secretValue, slackAppSecretValue, slackBotSecretValue]) {
-    await expectNoText(page, value);
-  }
-
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  const appSecretPath = `/namespaces/${namespace.id}/secrets/${slackAppSecret.id}`;
-  const botSecretPath = `/namespaces/${namespace.id}/secrets/${slackBotSecret.id}`;
-  const appSecretLink = dialog.getByRole("link", {
-    name: "View app token Secret metadata (opens in new tab)",
-  });
-  const botSecretLink = dialog.getByRole("link", {
-    name: "View bot token Secret metadata (opens in new tab)",
-  });
-  assert.equal(await appSecretLink.getAttribute("href"), appSecretPath);
-  assert.equal(await appSecretLink.getAttribute("target"), "_blank");
-  assert.equal(await appSecretLink.getAttribute("rel"), "noopener");
-  assert.equal(await botSecretLink.getAttribute("href"), botSecretPath);
-  await dialog.getByText("Secret menu changes are saved with these channel settings.").waitFor();
-
-  const channelIds = page.getByLabel("Slack channel IDs");
-  const allowedUsers = page.getByLabel("Allowed channel user IDs");
-  const allowEveryone = page.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await allowedUsers.inputValue(), "UOLD123");
-  assert.equal(await allowedUsers.isDisabled(), false);
-  assert.equal(await allowEveryone.isDisabled(), true);
-  await channelIds.fill("COLD123, CNEW123");
-  await allowedUsers.fill("UNEW123");
-  assert.equal(await allowEveryone.isDisabled(), true);
-  await allowedUsers.fill("");
-  assert.equal(await allowEveryone.isEnabled(), true);
-  await allowEveryone.check();
-  assert.equal(await allowedUsers.isDisabled(), true);
-  await allowEveryone.uncheck();
-  assert.equal(await allowedUsers.isEnabled(), true);
-  await allowedUsers.fill("UNEW123");
-  assert.equal(await allowEveryone.isDisabled(), true);
-  await dialog
-    .getByRole("link", { name: "Open Agent Credentials (opens in new tab)" })
-    .scrollIntoViewIfNeeded();
-  await dialog.screenshot({
-    path: join(artifacts, "agent-channel-drawer-links.png"),
-  });
-
-  const appSecretPopupPromise = page.waitForEvent("popup");
-  await appSecretLink.click();
-  const appSecretPopup = await appSecretPopupPromise;
-  await appSecretPopup.waitForLoadState("domcontentloaded");
-  assert.equal(new URL(appSecretPopup.url()).pathname, appSecretPath);
-  await appSecretPopup.getByText("Slack app token").waitFor();
-  const secretMetadataText = await appSecretPopup.locator("body").textContent();
-  assert.match(secretMetadataText, new RegExp(slackAppSecret.id));
-  assert.doesNotMatch(secretMetadataText, new RegExp(slackAppSecretValue));
-  await appSecretPopup.close();
-
-  const credentialsPopupPromise = page.waitForEvent("popup");
-  await dialog.getByRole("link", { name: "Open Agent Credentials (opens in new tab)" }).click();
-  const credentialsPopup = await credentialsPopupPromise;
-  await credentialsPopup.waitForURL(/\/console\/agents\/agt_/);
-  const credentialsUrl = new URL(credentialsPopup.url());
-  assert.equal(credentialsUrl.pathname, `/console/agents/${agent.id}`);
-  assert.equal(credentialsUrl.searchParams.get("namespace"), namespace.id);
-  assert.equal(credentialsUrl.searchParams.get("revision"), "draft");
-  assert.equal(credentialsUrl.searchParams.get("tab"), "credentials");
-  await credentialsPopup.getByRole("heading", { name: "Runtime credentials" }).waitFor();
-  await credentialsPopup.close();
-  assert.equal(await channelIds.inputValue(), "COLD123, CNEW123");
-  assert.equal(await allowedUsers.inputValue(), "UNEW123");
-
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await page.getByText(/Configuration .*generation 2/).waitFor();
-  for (const value of [secretValue, slackAppSecretValue, slackBotSecretValue]) {
-    await expectNoText(page, value);
-  }
-  assert.equal(await page.getByRole("button", { name: /Microsoft Teams/ }).count(), 0);
-
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-  );
-  assert.equal(configuration.status, 200);
-  assert.deepEqual(configuration.data.secretBindings, secretBindings);
-  assert.deepEqual(configuration.data.values.channels.slack.appToken, {
-    source: "env",
-    provider: "default",
-    id: "SLACK_APP_TOKEN",
-  });
-  assert.deepEqual(configuration.data.values.channels.slack.botToken, {
-    source: "env",
-    provider: "default",
-    id: "SLACK_BOT_TOKEN",
-  });
-  assert.deepEqual(configuration.data.values.channels.slack.channels, {
-    COLD123: { requireMention: true, users: ["UNEW123"] },
-    CNEW123: { requireMention: true, users: ["UNEW123"] },
-  });
-  assert.equal(configuration.data.values.channels.slack.dmPolicy, "allowlist");
-  assert.deepEqual(configuration.data.values.channels.slack.allowFrom, ["UOLD123"]);
-  assert.equal(
-    configuration.data.values.channels.msteams.appId,
-    "00000000-0000-4000-8000-000000000000",
-  );
-  assert.equal(
-    configuration.data.values.channels.msteams.tenantId,
-    "11111111-1111-4111-8111-111111111111",
-  );
-  assert.deepEqual(configuration.data.values.channels.msteams.appPassword, {
-    source: "env",
-    provider: "default",
-    id: "MSTEAMS_APP_PASSWORD",
-  });
-  assert.equal(configuration.data.values.plugins.entries.knowledge.config.marker, "channels");
-  assert.deepEqual(
-    configuration.data.values.plugins.entries.knowledge.config.thresholds,
-    [1, 2, 3],
-  );
-  assert.equal(configuration.data.values.agents.defaults.model, "codex/gpt-5.1");
-
-  await page.screenshot({ path: join(artifacts, "agent-channels.png"), fullPage: true });
-});
-
-for (const [name, channels, reason] of [
-  [
-    "wildcard channel map",
-    { "*": { requireMention: true, users: ["*"] } },
-    "Slack wildcard channels must be edited in native Configuration JSON.",
-  ],
-  [
-    "mixed channel sender lists",
-    {
-      CMIXED123: { requireMention: true, users: ["UONE123"] },
-      CMIXED456: { requireMention: true, users: ["UTWO456"] },
-    },
-    "Existing Slack channels use different allowed channel users. Edit native Configuration JSON to preserve those restrictions.",
-  ],
-  [
-    "comma channel sender ID",
-    { CCOMMA123: { requireMention: true, users: ["UONE123,UTWO456"] } },
-    "Slack channel users or Require mention values use an unsupported native shape.",
-  ],
-  [
-    "newline channel sender ID",
-    { CNEWLINE123: { requireMention: true, users: ["UONE123\nUTWO456"] } },
-    "Slack channel users or Require mention values use an unsupported native shape.",
-  ],
-]) {
-  test(`Channel drawer keeps Slack ${name} in native JSON`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Unsupported Slack native", { ready: true });
-    const slack = {
-      enabled: true,
-      mode: "socket",
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      channels,
-    };
-    const agent = await fixture.createAgent(
-      namespace.id,
-      `Unsupported Slack ${name}`,
-      nativeValues(`unsupported-slack-${name}`, { harnessId: "codex", channels: { slack } }),
-      { executionMode: "dedicated" },
-    );
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-    await login(page, fixture, url.pathname + url.search);
-    await page.getByRole("heading", { name: `Unsupported Slack ${name}` }).waitFor();
-    await page.getByText(reason).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Edit Slack" }).isDisabled(), true);
-    await revealNativeConfiguration(page, "Slack native configuration");
-    const nativeJson = JSON.parse(await page.locator(".channel-native pre").textContent());
-    assert.deepEqual(nativeJson, slack);
-    assert.deepEqual(nonAuthWriteRequests(requests), []);
-  });
-}
-
-test("Channel drawer binds existing Slack Secrets without dropping unsaved channel edits", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unbound Slack credentials", { ready: true });
-  const slackAppSecretValue = "never-visible-menu-app-token";
-  const slackBotSecretValue = "never-visible-menu-bot-token";
-  const slackAppSecret = await fixture.createSecret(
-    namespace.id,
-    "Existing menu Slack app token",
-    slackAppSecretValue,
-  );
-  const slackBotSecret = await fixture.createSecret(
-    namespace.id,
-    "Existing menu Slack bot token",
-    slackBotSecretValue,
-  );
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    channels: { CUNBOUND123: { requireMention: true } },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Unbound Slack Agent",
-    nativeValues("unbound-slack", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated" },
-  );
-  const { page } = await newPage(t, fixture);
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-  await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Unbound Slack Agent" }).waitFor();
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
-  const channelIds = dialog.getByLabel("Slack channel IDs");
-  await channelIds.fill("CUNBOUND123, CBOUND456");
-  await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
-  await dialog.getByText("Secret binding staged. Apply the channel settings to save it.").waitFor();
-  await dialog.getByLabel("Slack bot token").selectOption(slackBotSecret.id);
-  await dialog
-    .getByText("Secret binding staged. Apply the channel settings to save it.")
-    .nth(1)
-    .waitFor();
-  assert.equal(await channelIds.inputValue(), "CUNBOUND123, CBOUND456");
-  assert.equal(
-    await dialog
-      .getByRole("link", { name: "Open Agent Credentials (opens in new tab)" })
-      .getAttribute("href"),
-    `/console/agents/${agent.id}?revision=draft&tab=credentials&namespace=${namespace.id}`,
-  );
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await page.getByText(/Configuration .*generation 2/).waitFor();
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-  );
-  assert.deepEqual(configuration.data.secretBindings, {
-    SLACK_APP_TOKEN: { source: slackAppSecret.ref, delivery: { type: "env" } },
-    SLACK_BOT_TOKEN: { source: slackBotSecret.ref, delivery: { type: "env" } },
-  });
-  assert.deepEqual(configuration.data.values.channels.slack.channels, {
-    CUNBOUND123: { requireMention: true, users: ["*"] },
-    CBOUND456: { requireMention: true, users: ["*"] },
-  });
-  const pageText = await page.locator("body").textContent();
-  assert.equal(pageText.includes(slackAppSecretValue), false);
-  assert.equal(pageText.includes(slackBotSecretValue), false);
-});
-
-test("Channel drawer grants only the final selected Slack Secret", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Final Slack grant", { ready: true });
-  const firstSecret = await fixture.createSecret(namespace.id, "First Slack app token", "hidden-a");
-  const finalSecret = await fixture.createSecret(namespace.id, "Final Slack app token", "hidden-b");
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    channels: { CFINAL123: { requireMention: true } },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Final Slack Grant Agent",
-    nativeValues("final-slack-grant", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated" },
-  );
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-  await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Final Slack Grant Agent" }).waitFor();
-  requests.length = 0;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack app token").selectOption(firstSecret.id);
-  await dialog.getByLabel("Slack app token").selectOption(finalSecret.id);
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await page.getByText(/Configuration .*generation 2/).waitFor();
-
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-  );
-  assert.deepEqual(configuration.data.secretBindings.SLACK_APP_TOKEN, {
-    source: finalSecret.ref,
-    delivery: { type: "env" },
-  });
-  assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
-    [finalSecret.id],
-  );
-});
-
-test("Channel drawer does not grant when Slack Secret selection returns to original", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Original Slack grant", { ready: true });
-  const originalSecret = await fixture.createSecret(
-    namespace.id,
-    "Original Slack app token",
-    "hidden-original",
-  );
-  const temporarySecret = await fixture.createSecret(
-    namespace.id,
-    "Temporary Slack app token",
-    "hidden-temporary",
-  );
-  const secretBindings = {
-    SLACK_APP_TOKEN: { source: originalSecret.ref, delivery: { type: "env" } },
-  };
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    channels: { CORIG123: { requireMention: true } },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Original Slack Grant Agent",
-    nativeValues("original-slack-grant", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated", secretBindings },
-  );
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-  await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Original Slack Grant Agent" }).waitFor();
-  requests.length = 0;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack app token").selectOption(temporarySecret.id);
-  await dialog.getByLabel("Slack app token").selectOption(originalSecret.id);
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await page.getByText(/Configuration .*generation 2/).waitFor();
-
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-  );
-  assert.deepEqual(configuration.data.secretBindings, secretBindings);
-  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
-});
-
-test("Channel drawer does not grant Slack Secret access when Configuration save is rejected", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Rejected Slack save", { ready: true });
-  const slackAppSecret = await fixture.createSecret(
-    namespace.id,
-    "Rejected save Slack app token",
-    "hidden-rejected-save",
-  );
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    channels: { CREJECT123: { requireMention: true } },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Rejected Slack Save Agent",
-    nativeValues("rejected-slack-save", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated" },
-  );
-  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await page.route(`**${configurationPath}`, async (route, request) => {
-    if (request.method() !== "PATCH") {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "ACCESS_DENIED", message: "masked Configuration denial" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000403" },
-      }),
-    });
-  });
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-  await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Rejected Slack Save Agent" }).waitFor();
-  requests.length = 0;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
-  const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await allowEveryone.isChecked(), true);
-  assert.equal(await allowedUsers.isDisabled(), true);
-  await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await dialog.getByText(/Access denied|permission/i).waitFor();
-  assert.equal(await allowEveryone.isChecked(), true);
-  assert.equal(await allowEveryone.isEnabled(), true);
-  assert.equal(await allowedUsers.isDisabled(), true);
-
-  const configuration = await fixture.request("GET", configurationPath);
-  assert.equal(configuration.status, 200);
-  assert.deepEqual(configuration.data.secretBindings ?? {}, {});
-  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
-});
-
-test("Channel drawer round trips existing Slack everyone channel access", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slack everyone access", { ready: true });
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    dmPolicy: "allowlist",
-    groupPolicy: "allowlist",
-    allowFrom: ["UDM123"],
-    channels: { CEVERY123: { requireMention: true, users: ["*"], allowBots: "mentions" } },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Slack Everyone Agent",
-    nativeValues("slack-everyone", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated" },
-  );
-  const { page } = await newPage(t, fixture);
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-  await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Slack Everyone Agent" }).waitFor();
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  let dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack channel IDs").fill("CEVERY123, CSECOND123");
-  const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
-  const allowEveryone = dialog.getByLabel("Allow everyone in these channels to mention the agent");
-  assert.equal(await allowEveryone.isChecked(), true);
-  assert.equal(await allowedUsers.isDisabled(), true);
-  await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
-  const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "PATCH" &&
-      response.url().endsWith(`/configurations/${agent.configurationId}`),
-  );
-  await page.getByRole("button", { name: "Save configuration", exact: true }).click();
-  assert.equal((await saved).status(), 200);
-
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-  );
-  assert.deepEqual(configuration.data.values.channels.slack, {
-    ...slack,
-    channels: {
-      CEVERY123: { requireMention: false, users: ["*"], allowBots: "mentions" },
-      CSECOND123: { requireMention: false, users: ["*"] },
-    },
-  });
-
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  assert.equal(
-    await dialog.getByLabel("Allow everyone in these channels to mention the agent").isChecked(),
-    true,
-  );
-  assert.equal(await dialog.getByLabel("Allowed channel user IDs").isDisabled(), true);
-  assert.equal(await dialog.getByLabel("Require a mention", { exact: true }).isChecked(), false);
-});
-
-test("Channel drawer reports partial save when post-PATCH Secret grant is rejected", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Partial Slack grant", { ready: true });
-  const slackAppSecret = await fixture.createSecret(
-    namespace.id,
-    "Partial save Slack app token",
-    "hidden-partial-save",
-  );
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    channels: { CPARTIAL123: { requireMention: true } },
-  };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Partial Slack Grant Agent",
-    nativeValues("partial-slack-grant", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated" },
-  );
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await page.route(`**/namespaces/${namespace.id}/iam/access-bindings`, async (route, request) => {
-    if (request.method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000433" },
-      }),
-    });
-  });
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-
-  await login(page, fixture, url.pathname + url.search);
-  await page.getByRole("heading", { name: "Partial Slack Grant Agent" }).waitFor();
-  requests.length = 0;
-  await page.getByRole("button", { name: "Edit Slack" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-  await dialog.getByLabel("Slack app token").selectOption(slackAppSecret.id);
-  await page.getByRole("button", { name: "Save configuration" }).click();
-  await page
-    .getByText(
-      "Configuration saved, but Secret access grants could not be confirmed. Open Agent Credentials to inspect saved bindings, then ask a Namespace administrator to grant this Agent access to the saved Secret.",
-    )
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Edit Slack" }).isDisabled(), true);
-
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-  );
-  assert.equal(configuration.status, 200);
-  assert.equal(configuration.data.generation, 2);
-  assert.deepEqual(configuration.data.secretBindings.SLACK_APP_TOKEN, {
-    source: slackAppSecret.ref,
-    delivery: { type: "env" },
-  });
-  assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
-    [slackAppSecret.id],
-  );
-
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  const appToken = page.getByLabel("Slack app token");
-  await appToken.waitFor();
-  assert.equal(await appToken.getAttribute("type"), "password");
-  assert.equal(await appToken.inputValue(), "••••••••");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 
 test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenAI", async (t) => {
@@ -4674,6 +5239,863 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
   );
+});
+
+test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const linear = dialog.getByRole("button", { name: "Linear", exact: true });
+  await linear.waitFor();
+  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  assert.deepEqual(
+    pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
+    [{}],
+  );
+  await linear.click();
+  await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
+    "codex-plugin:linear@openai-curated-remote": { enabled: true },
+  });
+  assert.deepEqual(
+    pathRequests(requests, "POST", `${catalogPath}/details`).map(({ body }) => body),
+    [{ pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
+  );
+});
+
+test("Create Agent discovers hosted plugins with a transient PAT through the selected Driver", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Hosted plugin discovery", { ready: true });
+  const firstSecret = await fixture.createSecret(
+    namespace.id,
+    "First PAT",
+    "at-browser-plugin-one",
+  );
+  const secondSecret = await fixture.createSecret(
+    namespace.id,
+    "Second PAT",
+    "at-browser-plugin-two",
+  );
+  const { page } = await newPage(t, fixture);
+  const originalFetch = globalThis.fetch;
+  const logoUrl = "https://plugin-images.example.test/calendar.png";
+  const brokenLogoUrl = "https://plugin-images.example.test/missing.png";
+  const imageRequests = [];
+  // The public image host is the only browser request substituted; the real CSP and image loader run.
+  await page.route("https://plugin-images.example.test/**", async (route) => {
+    imageRequests.push({ url: route.request().url(), headers: await route.request().allHeaders() });
+    await route.fulfill(
+      route.request().url() === logoUrl
+        ? {
+            contentType: "image/png",
+            body: Buffer.from(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9foAAAAASUVORK5CYII=",
+              "base64",
+            ),
+          }
+        : { status: 404, body: "Image unavailable" },
+    );
+  });
+  let failTools = true;
+  let releaseList;
+  let listStarted;
+  let holdList = false;
+  let holdPrefetch = true;
+  const prefetchRelease = Promise.withResolvers();
+  const listPending = new Promise((resolve) => {
+    listStarted = resolve;
+  });
+  const detailStarted = Promise.withResolvers();
+  const detailRelease = Promise.withResolvers();
+  const searchStarted = Promise.withResolvers();
+  const searchRelease = Promise.withResolvers();
+  const hosted = (name, overrides = {}) => ({
+    id: `remote-${name}`,
+    name,
+    scope: "GLOBAL",
+    status: "ENABLED",
+    installation_policy: "AVAILABLE",
+    release: {
+      display_name: name === "calendar" ? "Calendar" : name,
+      description: "Hosted plugin",
+      interface: {
+        short_description: "Hosted tools",
+        ...(name === "calendar"
+          ? {
+              logo_url: logoUrl,
+              website_url: "https://calendar.example/",
+              privacy_policy_url: "https://calendar.example/privacy",
+              terms_of_service_url: "https://calendar.example/terms",
+            }
+          : {}),
+        ...(name === "plugin-0" ? { composer_icon_url: brokenLogoUrl } : {}),
+      },
+      requires_local_executor: false,
+      app_ids: ["app_calendar", "app_shared"],
+      skills: [],
+      mcp_servers: [],
+    },
+    ...overrides,
+  });
+  const upstreamCalls = [];
+  // Only external HTTP is simulated. Browser, OCC auth/routes, and the selected Driver are real.
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    const url = new URL(typeof input === "string" ? input : (input.url ?? input));
+    if (!["auth.openai.com", "chatgpt.com"].includes(url.hostname)) {
+      return originalFetch(input, options);
+    }
+    upstreamCalls.push({ path: url.pathname, token: options.headers.Authorization });
+    if (url.hostname === "auth.openai.com") {
+      return Response.json({
+        chatgpt_account_id: "account-plugin-test",
+        chatgpt_account_is_fedramp: false,
+      });
+    }
+    assert.equal(options.headers["ChatGPT-Account-ID"], "account-plugin-test");
+    assert.equal(options.headers["OAI-Product-Sku"], "codex");
+    if (url.pathname.endsWith("/plugins/search")) {
+      assert.equal(url.searchParams.get("scope"), "GLOBAL");
+      assert.equal(url.searchParams.get("limit"), "20");
+      const q = url.searchParams.get("q");
+      if (q === "slow") {
+        searchStarted.resolve();
+        await searchRelease.promise;
+        return Response.json({
+          plugins: [hosted("Stale-result")],
+          pagination: { next_page_token: null },
+        });
+      }
+      assert.equal(q, "linear");
+      const cursor = url.searchParams.get("pageToken");
+      assert.ok(cursor === null || cursor === "linear-page-two");
+      return Response.json({
+        plugins: [hosted(cursor ? "Linear-tools" : "Linear")],
+        pagination: { next_page_token: cursor ? null : "linear-page-two" },
+      });
+    }
+    if (url.pathname.endsWith("/plugins/list")) {
+      assert.equal(url.searchParams.get("scope"), "GLOBAL");
+      if (holdPrefetch) {
+        holdPrefetch = false;
+        await prefetchRelease.promise;
+      }
+      if (holdList && options.headers.Authorization === "Bearer at-browser-plugin-one") {
+        listStarted();
+        await new Promise((resolve) => {
+          releaseList = resolve;
+        });
+      }
+      if (options.headers.Authorization === "Bearer at-browser-plugin-two") {
+        return Response.json({
+          plugins: [hosted("New-account-plugin")],
+          pagination: { next_page_token: null },
+        });
+      }
+      return Response.json({
+        plugins: url.searchParams.has("pageToken")
+          ? [hosted("Documents")]
+          : [
+              hosted("Admin-disabled", {
+                status: "DISABLED_BY_ADMIN",
+                disabled_reason: "disabled_by_admin",
+              }),
+              hosted("calendar"),
+              ...Array.from({ length: 18 }, (_, index) => hosted(`plugin-${index}`)),
+            ],
+        pagination: { next_page_token: url.searchParams.has("pageToken") ? null : "page-two" },
+      });
+    }
+    if (url.pathname.endsWith("/plugins/remote-Admin-disabled")) {
+      return Response.json(
+        hosted("Admin-disabled", {
+          status: "DISABLED_BY_ADMIN",
+          disabled_reason: "disabled_by_admin",
+        }),
+      );
+    }
+    if (url.pathname.endsWith("/plugins/remote-calendar")) {
+      if (failTools) {
+        detailStarted.resolve();
+        await detailRelease.promise;
+      }
+      return Response.json(hosted("calendar"));
+    }
+    assert.equal(url.pathname, "/backend-api/ps/apps/batch");
+    assert.deepEqual(JSON.parse(options.body), {
+      app_ids: ["app_calendar", "app_shared"],
+      include_tools: true,
+    });
+    if (failTools) {
+      return new Response("private upstream response and token must not reach browser", {
+        status: 403,
+      });
+    }
+    return Response.json({
+      apps: ["app_calendar", "app_shared"].map((id) => ({
+        id,
+        status: "ENABLED",
+        tools: [
+          {
+            name: "events/list",
+            title: "List events",
+            description: "Read events",
+            is_enabled: true,
+            is_read_only: true,
+          },
+        ],
+      })),
+    });
+  });
+  t.after(() => prefetchRelease.resolve());
+  t.after(() => releaseList?.());
+  t.after(() => detailRelease.resolve());
+  t.after(() => searchRelease.resolve());
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await page.locator("#plugin-discovery-token > summary").click();
+  const token = page.getByLabel("Token for plugin discovery", { exact: true });
+  const prefetched = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/agents/plugins") &&
+      request.postDataJSON()?.accessToken === "at-browser-plugin-one",
+  );
+  await token.fill("at-browser-plugin-one");
+  await prefetched;
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  assert.equal(await dialog.isVisible(), false);
+  const brokenImageRequest = page.waitForRequest(brokenLogoUrl);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("status").filter({ hasText: "Loading available plugins…" }).waitFor();
+  prefetchRelease.resolve();
+  async function closePluginDialog() {
+    // The close handler restores focus; wait for it before using another credential control.
+    const closed = dialog.evaluate(
+      (node) => new Promise((resolve) => node.addEventListener("close", resolve, { once: true })),
+    );
+    await dialog.getByRole("button", { name: "Done", exact: true }).click();
+    await closed;
+  }
+  const calendar = dialog.getByRole("button", { name: "Calendar", exact: true });
+  await calendar.waitFor();
+  // Opening during prefetch shares its request instead of starting another first-page read.
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/plugins`).map(
+      ({ body }) => body,
+    ),
+    [{ accessToken: "at-browser-plugin-one" }],
+  );
+  const setup = dialog.locator(".plugin-access-help");
+  await setup.getByText(/Service accounts/).waitFor();
+  assert.match(await setup.textContent(), /App connection status is not verified/);
+  for (const [name, href] of [
+    ["Manage workspace plugins", "https://chatgpt.com/admin/plugins?catalog=GLOBAL"],
+    ["Service account credentials", "https://admin.openai.com/"],
+    [
+      "OCE plugin setup",
+      "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
+    ],
+  ]) {
+    const link = setup.getByRole("link", { name, exact: true });
+    assert.equal(await link.getAttribute("href"), href);
+    assert.equal(await link.getAttribute("target"), "_blank");
+    assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  }
+  // Unavailable guidance stays out of the row layout and is reachable without opening details.
+  const unavailableRow = dialog.locator(".plugin-list-row").filter({
+    has: page.getByRole("button", { name: "Admin-disabled", exact: true }),
+  });
+  const rowReason = unavailableRow.locator(".plugin-unavailable");
+  assert.equal(await rowReason.isVisible(), false);
+  const rowPopover = unavailableRow.locator(".plugin-unavailable-popover");
+  const unavailableHelp = unavailableRow.getByRole("button", {
+    name: "Why Admin-disabled is unavailable",
+    exact: true,
+  });
+  const rowHeight = await unavailableRow.evaluate((node) => node.getBoundingClientRect().height);
+  await unavailableHelp.focus();
+  await unavailableHelp.press("Enter");
+  await rowPopover.waitFor({ state: "visible" });
+  assert.equal(
+    await unavailableRow.evaluate((node) => node.getBoundingClientRect().height),
+    rowHeight,
+  );
+  assert.match(await rowReason.textContent(), /Disabled by a ChatGPT workspace administrator/);
+  const rowHelp = unavailableRow.getByRole("link", {
+    name: "Manage workspace plugins",
+    exact: true,
+  });
+  assert.equal(
+    await rowHelp.getAttribute("href"),
+    "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+  );
+  assert.equal(await rowHelp.getAttribute("target"), "_blank");
+  assert.equal(await rowHelp.getAttribute("rel"), "noopener noreferrer");
+  assert.equal(await rowHelp.evaluate((node) => node.closest("button") === null), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await rowHelp.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await page.keyboard.press("Escape");
+  await rowPopover.waitFor({ state: "hidden" });
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(
+    await unavailableHelp.evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+  );
+  await unavailableHelp.click();
+  await rowPopover.waitFor({ state: "visible" });
+  await dialog.getByRole("heading", { name: "Configure plugins", exact: true }).click();
+  await rowPopover.waitFor({ state: "hidden" });
+  assert.equal(await dialog.isVisible(), true);
+  const listLogo = calendar.locator(".plugin-logo img");
+  await listLogo.evaluate((image) => image.decode());
+  assert.ok(await listLogo.evaluate((image) => image.naturalWidth > 0));
+  assert.equal(await listLogo.getAttribute("alt"), "");
+  assert.equal(await listLogo.getAttribute("referrerpolicy"), "no-referrer");
+  const missingLogo = dialog
+    .getByRole("button", { name: "plugin-1", exact: true })
+    .locator(".plugin-logo");
+  assert.equal(await missingLogo.locator("img").count(), 0);
+  assert.equal(await missingLogo.textContent(), "P");
+  const brokenLogo = dialog
+    .getByRole("button", { name: "plugin-0", exact: true })
+    .locator(".plugin-logo");
+  await brokenLogo.scrollIntoViewIfNeeded();
+  await brokenImageRequest;
+  await brokenLogo.locator("img").waitFor({ state: "detached" });
+  assert.equal(await brokenLogo.textContent(), "P");
+  assert.equal(
+    await calendar.evaluate(
+      (node, unavailable) =>
+        Boolean(
+          node.compareDocumentPosition(unavailable) &
+          node.ownerDocument.defaultView.Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      await dialog.getByRole("button", { name: "Admin-disabled", exact: true }).elementHandle(),
+    ),
+    true,
+  );
+
+  const unavailableDetails = page.waitForResponse((response) =>
+    response.url().endsWith("/agents/plugins/details"),
+  );
+  await unavailableRow.getByRole("button", { name: "Admin-disabled", exact: true }).click();
+  await unavailableDetails;
+  const disabledDetail = dialog.locator(".plugin-detail");
+  assert.match(
+    await disabledDetail.locator(".plugin-unavailable").textContent(),
+    /Disabled by a ChatGPT workspace administrator/,
+  );
+  assert.equal(
+    await disabledDetail
+      .getByRole("link", { name: "Manage workspace plugins", exact: true })
+      .getAttribute("href"),
+    "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+  );
+
+  // Each navigation fetches a server page and replaces the available list.
+  await dialog.getByRole("button", { name: "Next page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Documents", exact: true }).waitFor();
+  assert.equal(await calendar.count(), 0);
+  const search = dialog.getByLabel("Search plugins", { exact: true });
+  await page.clock.install({ time: new Date("2026-09-27T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-27T12:00:01Z"));
+  const catalogRequests = () =>
+    requests.filter((request) => request.path.endsWith("/agents/plugins"));
+  const beforeTyping = catalogRequests().length;
+  // Typing coalesces into one catalog search 300 ms after the last edit, without the old cursor.
+  await search.fill("lin");
+  await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
+  assert.equal(
+    await dialog
+      .getByText(/^(No plugins were returned\.|Load plugins to browse available choices\.)$/)
+      .count(),
+    0,
+  );
+  await page.clock.runFor(200);
+  await search.fill("linear");
+  await page.clock.runFor(299);
+  assert.equal(catalogRequests().length, beforeTyping);
+  await page.clock.runFor(1);
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  assert.deepEqual(
+    catalogRequests()
+      .slice(beforeTyping)
+      .map((request) => request.body),
+    [{ accessToken: "at-browser-plugin-one", q: "linear" }],
+  );
+  assert.equal(
+    await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
+    true,
+  );
+  await dialog.getByRole("button", { name: "Next page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Linear-tools", exact: true }).waitFor();
+  assert.equal(await search.inputValue(), "linear");
+  await dialog.getByRole("button", { name: "Previous page", exact: true }).click();
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  // An older request is canceled as soon as input changes, including during the debounce window.
+  const staleSearchCanceled = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.url().endsWith("/agents/plugins") && request.postDataJSON()?.q === "slow",
+  });
+  await search.fill("slow");
+  await page.clock.runFor(300);
+  await searchStarted.promise;
+  await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
+  assert.equal(
+    await dialog
+      .getByText(/^(No plugins were returned\.|Load plugins to browse available choices\.)$/)
+      .count(),
+    0,
+  );
+  await search.fill("linear");
+  await staleSearchCanceled;
+  searchRelease.resolve();
+  const beforeReplacement = catalogRequests().length;
+  await page.clock.runFor(299);
+  assert.equal(catalogRequests().length, beforeReplacement);
+  assert.equal(await dialog.getByRole("button", { name: "Stale-result", exact: true }).count(), 0);
+  await page.clock.runFor(1);
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  // Enter bypasses the delay; it also cancels the scheduled request instead of duplicating it.
+  await search.fill("");
+  await search.press("Enter");
+  await calendar.waitFor();
+  const afterEnter = catalogRequests().length;
+  await page.clock.runFor(300);
+  assert.equal(catalogRequests().length, afterEnter);
+  assert.equal(
+    await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
+    true,
+  );
+
+  // Selecting a plugin loads its tools; a rejected upstream body stays private and is retryable.
+  await calendar.click();
+  await detailStarted.promise;
+  await dialog.getByRole("status").filter({ hasText: "Loading tools…" }).waitFor();
+  assert.equal(await dialog.getByText(/^Tool list unavailable\./).count(), 0);
+  assert.equal(
+    await dialog.getByText("Load tools to check this plugin before selecting it.").count(),
+    0,
+  );
+  const heading = dialog.getByRole("heading", { name: "Calendar", exact: true });
+  // Loading and completion replace the detail pane without losing the keyboard entry point.
+  try {
+    assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  } finally {
+    detailRelease.resolve();
+  }
+  await dialog.getByText(/token was rejected or cannot access plugins/).waitFor();
+  assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  assert.equal((await dialog.textContent()).includes("private upstream response"), false);
+  failTools = false;
+  await dialog.getByRole("button", { name: "Retry tools for Calendar", exact: true }).click();
+  await dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]').waitFor();
+  assert.equal(
+    await dialog.locator('details.plugin-tool-row[data-tool="app_shared/events%2Flist"]').count(),
+    1,
+  );
+  assert.equal(await dialog.getByText(/token was rejected or cannot access plugins/).count(), 0);
+  const detailLogo = dialog.locator(".plugin-detail-header .plugin-logo img");
+  await detailLogo.evaluate((image) => image.decode());
+  assert.ok(await detailLogo.evaluate((image) => image.naturalWidth > 0));
+  assert.equal(await detailLogo.getAttribute("alt"), "");
+  assert.equal(await detailLogo.getAttribute("referrerpolicy"), "no-referrer");
+  for (const [name, href] of [
+    ["Website", "https://calendar.example/"],
+    ["Privacy policy", "https://calendar.example/privacy"],
+    ["Terms of service", "https://calendar.example/terms"],
+  ]) {
+    const link = dialog.getByRole("link", { name, exact: true });
+    assert.equal(await link.getAttribute("href"), href);
+    assert.equal(await link.getAttribute("target"), "_blank");
+    assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+  }
+  await dialog.getByRole("button", { name: "Add Calendar", exact: true }).click();
+  const selected = { "codex-plugin:calendar@openai-curated-remote": { enabled: true } };
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Calendar", exact: true }).waitFor();
+  const beforeLocalFilter = catalogRequests().length;
+  const configuredSearch = dialog.getByLabel("Filter configured plugins", { exact: true });
+  await configuredSearch.fill("missing");
+  assert.equal(await calendar.count(), 0);
+  await configuredSearch.fill("cal");
+  await calendar.waitFor();
+  await page.clock.runFor(300);
+  assert.equal(catalogRequests().length, beforeLocalFilter);
+  await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
+  // Closing the picker drops a scheduled search; reopening explicitly loads the retained query.
+  await search.fill("linear");
+  await closePluginDialog();
+  await page.clock.runFor(300);
+  assert.equal(catalogRequests().length, beforeLocalFilter);
+  const reminder = page.locator(".plugin-setup-reminder");
+  assert.equal(await reminder.isVisible(), true);
+  await reminder
+    .getByText("Check plugin access and credentials before deployment", { exact: true })
+    .click();
+  await reminder.getByText(/App connection status is not verified/).waitFor();
+  assert.equal(
+    await reminder
+      .getByRole("link", { name: "Service account credentials", exact: true })
+      .getAttribute("href"),
+    "https://admin.openai.com/",
+  );
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  await search.fill("");
+  await search.press("Enter");
+  await calendar.waitFor();
+
+  // A credential edit cancels background discovery; explicit plugin selections survive.
+  await closePluginDialog();
+  await token.fill("");
+  const clearedSetup = page.locator(".plugin-access-help");
+  assert.equal(await clearedSetup.locator("a").count(), 0);
+  assert.equal((await clearedSetup.textContent()).trim(), "");
+  assert.equal(await reminder.isVisible(), false);
+  assert.equal(await reminder.locator("a").count(), 0);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
+  holdList = true;
+  const stalePrefetchCanceled = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.url().endsWith("/agents/plugins") &&
+      request.postDataJSON()?.accessToken === "at-browser-plugin-one",
+  });
+  await token.fill("at-browser-plugin-one");
+  await page.clock.runFor(300);
+  await listPending;
+  assert.equal(await dialog.isVisible(), false);
+  await token.fill("at-browser-plugin-two");
+  await stalePrefetchCanceled;
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await page.clock.runFor(300);
+  await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
+  releaseList();
+  await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
+  assert.equal(await calendar.count(), 0);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
+  await closePluginDialog();
+  assert.equal(await dialog.isVisible(), false);
+  // Selecting a saved PAT sends only its reference to OCC for both list and detail reads.
+  holdList = false;
+  await token.fill("");
+  const selectedPrefetch = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/agents/plugins") &&
+      response.request().postDataJSON()?.secretRef?.id === firstSecret.ref.id,
+  );
+  await selectSecret(page, "Service account token Secret", firstSecret);
+  await page.clock.runFor(300);
+  assert.equal((await selectedPrefetch).status(), 200);
+  assert.equal(await dialog.isVisible(), false);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await calendar.waitFor();
+  await calendar.click();
+  await dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]').waitFor();
+  const selectedRequests = requests.filter(
+    (request) =>
+      request.path.endsWith("/agents/plugins") || request.path.endsWith("/agents/plugins/details"),
+  );
+  assert.deepEqual(selectedRequests.at(-2).body, { secretRef: firstSecret.ref });
+  assert.deepEqual(selectedRequests.at(-1).body, {
+    secretRef: firstSecret.ref,
+    pluginId: "remote-calendar",
+  });
+  assert.doesNotMatch(JSON.stringify(selectedRequests.at(-2).body), /at-browser-plugin/);
+  await closePluginDialog();
+
+  // Switching the saved Secret discards the previous account's catalog and reloads with the new one.
+  await selectSecret(page, "Service account token Secret", secondSecret);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await page.clock.runFor(300);
+  await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
+  assert.equal(await calendar.count(), 0);
+  assert.deepEqual(
+    requests.filter((request) => request.path.endsWith("/agents/plugins")).at(-1).body,
+    { secretRef: secondSecret.ref },
+  );
+  await closePluginDialog();
+  assert.equal(
+    upstreamCalls.some((call) => call.token === "Bearer at-browser-plugin-two"),
+    true,
+  );
+  assert.equal(
+    requests.some((request) => /at-browser-plugin/.test(request.path)),
+    false,
+  );
+  assert.ok(imageRequests.some((request) => request.url === logoUrl));
+  assert.ok(imageRequests.some((request) => request.url === brokenLogoUrl));
+  for (const { headers } of imageRequests) {
+    for (const name of ["authorization", "referer", "chatgpt-account-id", "oai-product-sku"]) {
+      assert.equal(headers[name], undefined);
+    }
+  }
+  assert.doesNotMatch(JSON.stringify(imageRequests), /at-browser-plugin|account-plugin-test/);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  assert.equal(
+    await page.evaluate(() =>
+      JSON.stringify({ ...localStorage, ...sessionStorage }).includes("at-browser-plugin"),
+    ),
+    false,
+  );
+});
+
+test("Agent creation edits Preset plugin policies through the modal and persists inherited fields independently", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const root = await mkdtemp(join(tmpdir(), "occ-plugin-policy-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Plugin policy authoring", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Model key", "preset-plugin-model-key");
+  const pluginId = "codex-plugin:knowledge@openai-curated-remote";
+  const removedPluginId = "codex-plugin:diffs@openai-curated-remote";
+  const plugins = {
+    [pluginId]: {
+      enabled: false,
+      toolDefaults: { enabled: true, approval: "provider_default", reviewer: "human" },
+      tools: {
+        "app_knowledge/search": { enabled: false, approval: "provider_default" },
+        "app_knowledge/summarize": { enabled: true, approval: "none" },
+        "app_knowledge/unknown-tool": { approval: "provider_default" },
+      },
+    },
+    [removedPluginId]: { enabled: true },
+  };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Plugin policies",
+      template: {
+        agent: {
+          name: "Plugin policy Agent",
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: secret.ref },
+          plugins,
+        },
+        configuration: { values: nativeValues("plugin-policies", { harnessId: "codex" }) },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  const json = page.getByLabel("Plugin selections JSON", { exact: true });
+  assert.deepEqual(JSON.parse(await json.inputValue()), plugins);
+
+  // Invalid manual input remains recoverable and cannot submit a different policy.
+  requests.length = 0;
+  await json.fill("{");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal(await json.inputValue(), "{");
+  assert.notEqual(await json.evaluate((node) => node.validationMessage), "");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await json.fill(JSON.stringify(plugins));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: pluginId, exact: true }).click();
+  const searchTool = dialog.locator('details.plugin-tool-row[data-tool="app_knowledge/search"]');
+  await searchTool.locator("summary").click();
+  const pluginEnabled = dialog.getByLabel(`Enable ${pluginId}`, { exact: true });
+  const toolEnabled = dialog.getByLabel("Enable app_knowledge/search", { exact: true });
+  const toolApproval = dialog.getByLabel("app_knowledge/search require approval for", {
+    exact: true,
+  });
+  const toolToggle = dialog.getByLabel("app_knowledge/search enabled override", { exact: true });
+  assert.equal(await toolToggle.isDisabled(), true);
+  assert.equal(await toolEnabled.isDisabled(), true);
+  assert.equal(await toolApproval.isDisabled(), true);
+  await pluginEnabled.check();
+  await dialog.getByLabel(`${pluginId} tools enabled by default`, { exact: true }).selectOption("");
+  assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].toolDefaults, {
+    approval: "provider_default",
+    reviewer: "human",
+  });
+  const reviewer = dialog.getByLabel(`${pluginId} default reviewer`, { exact: true });
+  assert.deepEqual(
+    (await optionValues(reviewer)).map(({ value }) => value),
+    ["", "human", "auto"],
+  );
+  await reviewer.selectOption("");
+  assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].toolDefaults, {
+    approval: "provider_default",
+  });
+  await reviewer.selectOption("auto");
+  const defaultApproval = dialog.getByLabel(`${pluginId} require approval for`, { exact: true });
+  assert.deepEqual(
+    (await optionValues(defaultApproval)).map(({ value }) => value),
+    ["", "provider_default", "all_actions", "write_actions", "none"],
+  );
+  await defaultApproval.selectOption("write_actions");
+
+  // Codex advertises plugin-wide reviewers only; tool approval still inherits independently.
+  const toolReviewer = dialog.getByLabel("app_knowledge/search reviewer", { exact: true });
+  assert.equal(await toolReviewer.count(), 0);
+  await searchTool.getByRole("button", { name: "Set reviewer for all tools" }).click();
+  assert.equal(await reviewer.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await toolApproval.selectOption("none");
+  await toolEnabled.selectOption("");
+  assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
+    approval: "none",
+  });
+  // The summary toggle edits only enablement; an omitted override remains visibly inherited.
+  await searchTool.locator("summary").click();
+  assert.equal(await toolToggle.evaluate((node) => node.indeterminate), true);
+  await toolToggle.click();
+  assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
+    approval: "none",
+    enabled: true,
+  });
+  assert.equal(await searchTool.evaluate((node) => node.open), false);
+  await toolToggle.click();
+  assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
+    approval: "none",
+    enabled: false,
+  });
+  await searchTool.locator("summary").click();
+  await toolEnabled.selectOption("");
+  assert.equal(await toolToggle.evaluate((node) => node.indeterminate), true);
+  await toolToggle.click();
+  await toolApproval.selectOption("");
+  await dialog
+    .locator('details.plugin-tool-row[data-tool="app_knowledge/summarize"] > summary')
+    .click();
+  await dialog.getByLabel("Enable app_knowledge/summarize", { exact: true }).selectOption("");
+  await dialog
+    .getByLabel("app_knowledge/summarize require approval for", { exact: true })
+    .selectOption("");
+  const expected = {
+    [pluginId]: {
+      enabled: true,
+      toolDefaults: { approval: "write_actions", reviewer: "auto" },
+      tools: {
+        "app_knowledge/search": { enabled: true },
+        "app_knowledge/unknown-tool": { approval: "provider_default" },
+      },
+    },
+  };
+  await pluginEnabled.uncheck();
+  assert.equal(await toolToggle.isDisabled(), true);
+  assert.equal(await toolEnabled.isDisabled(), true);
+  assert.equal(await toolApproval.isDisabled(), true);
+  assert.deepEqual(JSON.parse(await json.inputValue())[pluginId], {
+    ...expected[pluginId],
+    enabled: false,
+  });
+  await pluginEnabled.check();
+  await dialog.getByRole("button", { name: removedPluginId, exact: true }).click();
+  await dialog.getByRole("button", { name: `Remove ${removedPluginId}`, exact: true }).click();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.equal(await dialog.isVisible(), false);
+  assert.deepEqual(JSON.parse(await json.inputValue()), expected);
+
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const created = (await response.json()).data;
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${created.id}`);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.plugins, expected);
+});
+
+test("Plugin approval choices explain unsupported provider modes and preserve the draft until corrected", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Unsupported plugin approvals", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Native plugin Agent",
+    nativeValues("policy"),
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, `${url.pathname}${url.search}`);
+  const json = page.locator("#agent-plugins");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  // A copied policy from another provider remains visible so the operator can correct it.
+  const plugins = {
+    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "write_actions" } },
+  };
+  await json.fill(JSON.stringify(plugins));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: "occ-plugin:diffs", exact: true }).click();
+  const approval = dialog.getByLabel("occ-plugin:diffs require approval for", { exact: true });
+  assert.equal(await approval.inputValue(), "write_actions");
+  assert.deepEqual(
+    await approval
+      .locator("option")
+      .evaluateAll((options) => options.map(({ value, disabled }) => [value, disabled])),
+    [
+      ["", false],
+      ["provider_default", false],
+      ["all_actions", true],
+      ["write_actions", true],
+      ["none", false],
+    ],
+  );
+  await dialog
+    .getByText("This plugin provider does not support: Every action, Write actions.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(
+    await approval.locator("option:checked").textContent(),
+    "Write actions (unsupported)",
+  );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.deepEqual(JSON.parse(await json.inputValue()), plugins);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await approval.selectOption("provider_default");
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  const savedResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith(`/agents/${agent.id}`),
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await savedResponse).status(), 200);
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(saved.data.plugins, {
+    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+  });
 });
 
 test("API-key Presets keep their credential provider fixed while allowing model and runtime changes", async (t) => {
@@ -4755,6 +6177,9 @@ test("API-key Presets keep their credential provider fixed while allowing model 
 test("Presets render variables into independent Agent drafts and keep partial-save retries fixed", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
   const root = await mkdtemp(join(tmpdir(), "occ-preset-browser-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   // Use production Configuration admission, including native credential restrictions.
@@ -4774,7 +6199,12 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   });
   values.plugins.entries.knowledge.config.enabled = "{{ vars.enabled }}";
   values.plugins.entries.knowledge.config.count = "{{ vars.count }}";
-  const plugins = { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } };
+  const plugins = {
+    "codex-plugin:linear@openai-curated-remote": {
+      enabled: true,
+      toolDefaults: { approval: "none" },
+    },
+  };
   const secretBindings = { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } };
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
@@ -4790,9 +6220,14 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
         agent: {
           name: "{{ vars.name }}",
           executionMode: "{{ vars.execution }}",
-          providerId: providerFixtures[0].id,
+          backendId: backendFixtures[0].id,
           harnessAuth: { method: "codex_pat", source: secret.ref },
           plugins,
+          initialWorkspaceFiles: {
+            "AGENTS.md": "# {{ vars.name }} workspace\n",
+            "IDENTITY.md": "",
+            "USER.md": "marker {{ vars.marker }}",
+          },
         },
         configuration: { values, secretBindings },
       },
@@ -4840,6 +6275,12 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     false,
   );
   assert.equal(await save.isEnabled(), true);
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Existing Agent workspace\n",
+  );
+  assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "marker changed");
   const rendered = JSON.parse(
     await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
   );
@@ -4853,11 +6294,6 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.deepEqual(
     JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
     plugins,
-  );
-  assert.equal(await page.getByLabel("Secret bindings JSON").isVisible(), false);
-  assert.deepEqual(
-    JSON.parse(await page.getByLabel("Secret bindings JSON").inputValue()),
-    secretBindings,
   );
   // Deletion after selection must not invalidate this independent local copy.
   assert.equal(
@@ -4875,6 +6311,33 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   edited.plugins.entries.knowledge.config.thresholds = [5, 6];
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON", { exact: true }).fill(JSON.stringify(edited));
+  await page.getByLabel("AGENTS.md", { exact: true }).fill("# Edited workspace\n");
+  // Route reconstruction must retain the rendered copy even after its source Preset was deleted.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Edited name");
+  assert.deepEqual(
+    JSON.parse(await page.getByLabel("Configuration JSON", { exact: true }).inputValue()),
+    edited,
+  );
+  assert.equal(
+    await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
+    "# Edited workspace\n",
+  );
+  assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  assert.deepEqual(
+    JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
+    plugins,
+  );
+  await page.goForward();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Edited name");
+  assert.deepEqual(nonAuthWriteRequests(requests), [], "navigation must not save the local draft");
   // Canceling Start over keeps the ordinary draft and its ability to save.
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -4893,7 +6356,6 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal((await conflict).status(), 409);
   await page.getByText(/conflicts with the saved state/).waitFor();
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
-  assert.equal(await page.getByLabel("Secret bindings JSON").isDisabled(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Preset Agent");
   const createdResponse = page.waitForResponse(
@@ -4908,8 +6370,22 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     0,
   );
   assert.equal(created.data.name, "Preset Agent");
+  const expectedWorkspaceFiles = {
+    ...WORKSPACE_DEFAULTS,
+    "AGENTS.md": "# Edited workspace\n",
+    "IDENTITY.md": "",
+    "USER.md": "marker changed",
+  };
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id).map((request) => request.body.initialWorkspaceFiles),
+    [expectedWorkspaceFiles, expectedWorkspaceFiles],
+  );
+  assert.deepEqual(
+    agentPostRequests(requests, namespace.id).map((request) => request.body.workspaceDefaultsId),
+    [WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_ID],
+  );
   assert.deepEqual(created.data.plugins, plugins);
-  assert.equal(created.data.providerId, providerFixtures[0].id);
+  assert.equal(created.data.backendId, backendFixtures[0].id);
   assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
   const saved = await fixture.request(
     "GET",
@@ -4927,9 +6403,13 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  await page.getByLabel("Service account token Secret ID").waitFor();
+  await page.getByLabel("Service account token Secret").waitFor();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
-  assert.equal(await page.getByLabel("Service account token Secret ID").inputValue(), secret.id);
+  await page.waitForFunction(
+    (name) => globalThis.document.querySelector("#harness-auth-secret")?.value === name,
+    secret.name,
+  );
+  assert.equal(await page.getByLabel("Service account token Secret").inputValue(), secret.name);
   const patched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.data.id}`) &&
@@ -4941,7 +6421,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     source: secret.ref,
   });
 
-  // A Preset can supply an explicit model while requiring the operator to enter its key.
+  // A Preset can supply an explicit model while requiring the operator to select its model Secret.
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
   const keyEntryPreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
@@ -4953,15 +6433,20 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     },
   });
   assert.equal(keyEntryPreset.status, 201);
+  const presetKeySecrets = await Promise.all(
+    ["preset-openai-key", "preset-anthropic-key", "preset-dedicated-openai-key"].map((value) =>
+      fixture.createSecret(namespace.id, value, value),
+    ),
+  );
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template").selectOption(keyEntryPreset.data.id);
   await page.getByRole("button", { name: "Use Preset" }).click();
-  const presetKey = page.getByLabel("API key", { exact: true });
+  const presetKey = page.locator("#provider-credential-secret");
   assert.equal(await page.getByLabel("Model ID", { exact: true }).inputValue(), "gpt-4.1");
-  await presetKey.fill("preset-openai-key");
+  await selectSecret(page, "API key Secret", presetKeySecrets[0]);
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await presetKey.inputValue(), "");
-  await presetKey.fill("preset-anthropic-key");
+  await selectSecret(page, "API key Secret", presetKeySecrets[1]);
   await openAdvancedSettings(page);
   const native = page.getByLabel("Configuration JSON");
   const changedProvider = JSON.parse(await native.inputValue());
@@ -4971,7 +6456,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await presetKey.inputValue(), "");
   const mode = page.getByLabel("Execution mode");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  await presetKey.fill("preset-dedicated-openai-key");
+  await selectSecret(page, "API key Secret", presetKeySecrets[2]);
   const anthropicConfiguration = JSON.parse(await native.inputValue());
   anthropicConfiguration.agents.defaults.model = "anthropic/claude-account-model";
   await native.fill(JSON.stringify(anthropicConfiguration));
@@ -4985,13 +6470,14 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
 });
 
-for (const [dmPolicy, groupPolicy] of [
+for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
   ["pairing", "allowlist"],
   ["open", "open"],
   ["disabled", "disabled"],
   [undefined, undefined],
+  ["disabled", "allowlist", true],
 ]) {
-  test(`Slack channel editing preserves ${dmPolicy ?? "omitted"} DM and ${groupPolicy ?? "omitted"} group policies`, async (t) => {
+  test(`Slack channel editing preserves ${dmPolicy ?? "omitted"} DM and ${groupPolicy ?? "omitted"} group policies${enterpriseOrgInstall ? " on an organization-wide install" : ""}`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Slack policy editing", { ready: true });
@@ -5000,6 +6486,7 @@ for (const [dmPolicy, groupPolicy] of [
       mode: "socket",
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      ...(enterpriseOrgInstall ? { enterpriseOrgInstall } : {}),
       ...(dmPolicy === undefined ? {} : { dmPolicy }),
       ...(groupPolicy === undefined ? {} : { groupPolicy }),
       allowFrom: dmPolicy === "open" ? ["*"] : ["UKEEP123"],
@@ -5022,13 +6509,35 @@ for (const [dmPolicy, groupPolicy] of [
     assert.equal(await edit.isEnabled(), true);
     await edit.click();
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-    const allowedUsers = dialog.getByLabel("Allowed channel user IDs");
-    const allowEveryone = dialog.getByLabel(
-      "Allow everyone in these channels to mention the agent",
+    if (enterpriseOrgInstall) {
+      // Per-user DM authorization cannot be shared across organization workspaces.
+      for (const unsupported of ["pairing", "allowlist"]) {
+        await dialog.getByLabel("Direct-message policy").selectOption(unsupported);
+        await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+        await dialog
+          .getByText(
+            "Choose Disabled or Open for direct messages on an organization-wide Slack install.",
+          )
+          .waitFor();
+      }
+      const unchanged = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      );
+      assert.deepEqual(unchanged.data.values.channels.slack, slack);
+      await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+    }
+    const allowedUsers = dialog.getByRole("combobox", {
+      name: "Allowed people in these channels",
+      exact: true,
+    });
+    const allowEveryone = dialog.getByLabel("Who can use the agent in these channels?");
+    assert.equal(await slackSelectionValue(allowedUsers), "UKEEP123");
+    assert.equal(await allowEveryone.inputValue(), "selected");
+    await setSlackSelection(
+      dialog.getByRole("combobox", { name: "Channels", exact: true }),
+      "CKEEP123, CNEW123",
     );
-    assert.equal(await allowedUsers.inputValue(), "UKEEP123");
-    assert.equal(await allowEveryone.isDisabled(), true);
-    await dialog.getByLabel("Slack channel IDs").fill("CKEEP123, CNEW123");
     await dialog.getByLabel("Require a mention", { exact: true }).uncheck();
     const saved = page.waitForResponse(
       (response) =>
@@ -5055,6 +6564,234 @@ for (const [dmPolicy, groupPolicy] of [
     );
   });
 }
+
+test("Agent detail refocus checks access once without reloading an unfinished revision edit", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revision refocus", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Revision refocus Agent",
+    nativeValues("before-refocus"),
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const editedValues = nativeValues("after-refocus");
+  const editedText = JSON.stringify(editedValues, null, 2);
+  await editor.fill(editedText);
+  await editor.evaluate((node) => node.setSelectionRange(3, 3));
+  const editorNode = await editor.elementHandle();
+  const selectorNode = await page.locator(".revision-selector").elementHandle();
+  const newNamespace = await fixture.createNamespace("New on refocus", { ready: true });
+  assert.equal(
+    await page.locator(`#namespace-selector option[value="${newNamespace.id}"]`).count(),
+    0,
+  );
+  const requests = apiRequests(page, fixture.origin);
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  let releaseSession;
+  const sessionGate = new Promise((resolve) => {
+    releaseSession = resolve;
+  });
+  t.after(() => releaseSession());
+  let sessionReached;
+  const sessionHeld = new Promise((resolve) => {
+    sessionReached = resolve;
+  });
+  await page.route(`${fixture.origin}/api/auth/session`, async (route) => {
+    const response = await route.fetch();
+    sessionReached();
+    await sessionGate;
+    await route.fulfill({ response });
+  });
+
+  // One tab return can emit both events. The saved revision and unsaved editor stay mounted
+  // while a single access check waits for the real session response.
+  await page.evaluate(() => {
+    globalThis.dispatchEvent(new Event("focus"));
+    globalThis.document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await sessionHeld;
+  assert.equal(pathRequests(requests, "GET", "/api/auth/session").length, 1);
+  assert.equal(await selectorNode.evaluate((node) => node.isConnected), true);
+  assert.equal(await editorNode.evaluate((node) => node.isConnected), true);
+  assert.equal(await editor.inputValue(), editedText);
+  assert.equal(await page.locator('.content [aria-live="polite"][inert]').count(), 1);
+  assert.equal(await page.getByText("Loading configuration…", { exact: true }).count(), 0);
+
+  const checkedConfiguration = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${configurationPath}` &&
+      response.request().method() === "GET",
+  );
+  releaseSession();
+  await checkedConfiguration;
+  assert.equal(pathRequests(requests, "GET", "/namespaces").length, 1);
+  assert.equal(
+    pathRequests(requests, "GET", `/namespaces/${namespace.id}/agents/${agent.id}`).length,
+    1,
+  );
+  assert.equal(
+    pathRequests(requests, "GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`)
+      .length,
+    1,
+  );
+  assert.equal(pathRequests(requests, "GET", configurationPath).length, 1);
+  assert.equal(
+    await page.locator(`#namespace-selector option[value="${newNamespace.id}"]`).count(),
+    1,
+  );
+  assert.equal(await selectorNode.evaluate((node) => node.isConnected), true);
+  assert.equal(await editorNode.evaluate((node) => node.isConnected), true);
+  assert.equal(await editor.inputValue(), editedText);
+  assert.deepEqual(
+    await editor.evaluate((node) => [
+      node === node.ownerDocument.activeElement,
+      node.selectionStart,
+    ]),
+    [true, 3],
+  );
+  assert.equal(await page.getByText("Loading configuration…", { exact: true }).count(), 0);
+  await page.unroute(`${fixture.origin}/api/auth/session`);
+
+  // Refocus must not cancel a Configuration save that already reached the browser API.
+  let releaseSave;
+  const saveGate = new Promise((resolve) => {
+    releaseSave = resolve;
+  });
+  t.after(() => releaseSave());
+  let saveReached;
+  const saveHeld = new Promise((resolve) => {
+    saveReached = resolve;
+  });
+  await page.route(`${fixture.origin}${configurationPath}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    saveReached();
+    await saveGate;
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await saveHeld;
+  await page.evaluate(() => {
+    globalThis.dispatchEvent(new Event("focus"));
+    globalThis.document.dispatchEvent(new Event("visibilitychange"));
+  });
+  assert.equal(await editorNode.evaluate((node) => node.isConnected), true);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${configurationPath}` &&
+      response.request().method() === "PATCH",
+  );
+  releaseSave();
+  assert.equal((await saved).status(), 200);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
+  await revealNativeConfiguration(page, "View native Configuration");
+  await page.getByText('"marker": "after-refocus"').waitFor();
+  assert.equal(pathRequests(requests, "PATCH", configurationPath).length, 1);
+});
+
+for (const kind of ["agent", "configuration", "namespace"]) {
+  test(`Agent detail refocus removes a revision when ${kind} access is revoked`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Revision access revoked", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Revoked revision Agent");
+    const { page } = await newPage(t, fixture);
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+    await login(page, fixture, url.pathname + url.search);
+    await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+    fixture.policy.restrictions.push({
+      id: `deny-focused-${kind}-read`,
+      namespaceId: namespace.id,
+      resourceKind: kind,
+      ...(kind === "namespace"
+        ? {}
+        : { resourceId: kind === "agent" ? agent.id : agent.configurationId }),
+      action: "read",
+      effect: "deny",
+    });
+
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await page
+      .getByRole("heading", {
+        name: kind === "namespace" ? "Namespace unavailable" : "Access denied",
+        exact: true,
+      })
+      .waitFor();
+    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/);
+  });
+}
+
+test("Agent detail refocus clears a revision after session expiry", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revision session expired", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Expired revision Agent");
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await page.getByText("Your session has expired").waitFor();
+  await page.getByRole("button", { name: "Login", exact: true }).waitFor();
+  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
+});
+
+test("Agent detail history navigation rechecks session during refocus", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revision history refocus", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "History refocus Agent");
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+
+  let releaseSession;
+  const gate = new Promise((resolve) => {
+    releaseSession = resolve;
+  });
+  t.after(() => releaseSession());
+  let sessionReached;
+  const held = new Promise((resolve) => {
+    sessionReached = resolve;
+  });
+  let checks = 0;
+  await page.route(`${fixture.origin}/api/auth/session`, async (route) => {
+    if (++checks === 1) {
+      sessionReached();
+      await gate;
+    }
+    try {
+      await route.continue();
+    } catch {
+      // The route is closed when navigation aborts the first access check.
+    }
+  });
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await held;
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  await page.goBack();
+  await page.getByText("Your session has expired").waitFor();
+  await expectNoText(page, /Configuration draft|Create new version|History refocus Agent/);
+  releaseSession();
+});
 
 test("Agent tabs replace only their content and preserve surrounding panels and history", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -5087,7 +6824,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   }
   assert.ok(Math.abs((await page.evaluate(() => globalThis.scrollY)) - top) < 2);
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
-  const secret = page.getByLabel("API key Secret ID");
+  const secret = page.getByLabel("API key Secret");
   await secret.waitFor();
   const secretElement = await secret.elementHandle();
   await page.getByRole("button", { name: "Workspace files", exact: true }).click();
@@ -5096,10 +6833,14 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
       "Workspace files require a deployed Agent with an active revision and a reachable gateway.",
     )
     .waitFor();
-  assert.equal(await secretElement.evaluate((node) => node.value), "");
   assert.equal(await secretElement.evaluate((node) => node.isConnected), false);
   await page.goBack();
-  await page.getByLabel("API key Secret ID").waitFor();
+  await page.getByLabel("API key Secret").waitFor();
+  assert.equal(
+    await secretElement.evaluate((node) => node.isConnected),
+    true,
+    "Returning to Credentials preserves the loaded controls",
+  );
   assert.equal(new URL(page.url()).searchParams.get("tab"), "credentials");
   await page.goForward();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
@@ -5138,6 +6879,9 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "workspace");
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Versions", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Deployment activity", exact: true }).waitFor();
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   assert.equal(
     requests.some((request) => request.path === configurationPath),
@@ -5145,7 +6889,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   );
   assert.equal(
     requests.some((request) => request.path.endsWith("/revisions")),
-    false,
+    true,
   );
   const tabs = await page.locator(".agent-tabs").elementHandle();
   let release;
@@ -5171,8 +6915,8 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   const delivered = page.waitForResponse(`${fixture.origin}${configurationPath}`);
   release();
   await delivered;
-  // Configuration completion may prepare shared controls, but must not replace the active tab.
-  await page.getByRole("heading", { name: "New revision", exact: true }).waitFor();
+  // Configuration completion may prepare shared controls, but must not replace the live workspace view.
+  await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
   assert.equal(
     await page.getByRole("heading", { name: "Workspace files", exact: true }).isVisible(),
     true,
@@ -5269,4 +7013,1540 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
         binding.resourceId === created.data.harnessAuth.source.id,
     ),
   );
+});
+
+test("Preset with a prebound model Secret grants the created draft access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-bound-secret-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Bound Secret Preset", { ready: true });
+  const modelSecret = await fixture.createSecret(namespace.id, "Model token", "hidden-model-token");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  delete artifact.template.variables.modelSecret;
+  artifact.template.agent.harnessAuth = { method: "api_key", source: modelSecret.ref };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Bound Secret Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+  const secretOperateRole = roles.data.find(
+    (role) =>
+      role.permissions.length === 1 &&
+      role.permissions[0].resourceKind === "secret" &&
+      role.permissions[0].action === "operate",
+  );
+  assert.ok(secretOperateRole);
+  assert.ok(
+    bindings.data.some(
+      (binding) =>
+        binding.subjectKind === "identity" &&
+        binding.subjectId === created.servicePrincipalId &&
+        binding.roleId === secretOperateRole.id &&
+        binding.resourceKind === "secret" &&
+        binding.resourceId === modelSecret.id,
+    ),
+  );
+});
+
+test("password Preset can reuse an existing Secret and retry an uncertain grant without duplicate writes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-existing-secret-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Existing Secret Preset", { ready: true });
+  const modelSecret = await fixture.createSecret(
+    namespace.id,
+    "Existing model token",
+    "hidden-model-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Existing Secret Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Secret source for modelSecret", { exact: true }).selectOption("existing");
+  const existingSecret = page.getByLabel("Existing Secret for modelSecret", { exact: true });
+  await existingSecret.selectOption(modelSecret.id);
+  assert.equal(await existingSecret.locator("option:checked").textContent(), modelSecret.name);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByLabel("API key", { exact: true }).count(), 0);
+
+  await page.route(`**${bindingPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /credential access is not confirmed.*interrupted/ })
+    .waitFor();
+  await page.unroute(`**${bindingPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+  assert.deepEqual(agentPostRequests(requests, namespace.id)[0].body.harnessAuth, {
+    method: "api_key",
+    source: modelSecret.ref,
+  });
+  const bindings = await fixture.request("GET", bindingPath);
+  assert.equal(bindings.status, 200);
+  assert.equal(bindings.data.length, 1);
+  assert.equal(bindings.data[0].subjectId, created.servicePrincipalId);
+  assert.equal(bindings.data[0].resourceId, modelSecret.id);
+  const retained = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/presets/${preset.data.id}`,
+  );
+  assert.deepEqual(retained.data.template, artifact.template);
+});
+
+test("codex_pat password Preset creates one Secret and reuses it after an Agent conflict", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-codex-pat-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Codex PAT Preset", { ready: true });
+  await fixture.createAgent(namespace.id, "Existing Codex Agent");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  artifact.name = "standard-codex-pat";
+  artifact.template.agent.harnessAuth.method = "codex_pat";
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Existing Codex Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-6-astra");
+  await page.getByLabel("Secret source for modelSecret", { exact: true }).selectOption("new");
+  const password = page.getByLabel("Variable: modelSecret", { exact: true });
+  await password.fill("at-codex-pat-preset-token");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const token = page.getByLabel("Service account token", { exact: true });
+  assert.equal(await token.inputValue(), "at-codex-pat-preset-token");
+  const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByText(/conflicts with the saved state/).waitFor();
+  assert.equal(await token.inputValue(), "");
+  await page.getByLabel("Agent name", { exact: true }).fill("Codex PAT Agent");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  assert.equal(secretWrites.length, 1);
+  assert.equal(secretWrites[0].body.value, "at-codex-pat-preset-token");
+  assert.equal(agentPostRequests(requests, namespace.id).length, 2);
+  assert.equal(created.harnessAuth.method, "codex_pat");
+});
+
+test("method-only codex_pat Preset requires credential entry in the create form", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-method-only-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Method-only preset", { ready: true });
+  const modelSecret = await fixture.createSecret(
+    namespace.id,
+    "Existing service account token",
+    "hidden-existing-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  artifact.name = "method-only-codex-pat";
+  delete artifact.template.variables.modelSecret;
+  artifact.template.agent.harnessAuth = { method: "codex_pat" };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Method-only Codex Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-6-astra");
+  assert.equal(await page.getByLabel("Variable: modelSecret", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const credential = page.getByLabel("Service account token Secret", { exact: true });
+  await credential.waitFor();
+  assert.equal(await credential.inputValue(), "");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#agent-auth-method")?.disabled === false,
+  );
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Method-only Codex Agent",
+  );
+  assert.equal(
+    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
+    "codex_pat",
+  );
+  assert.equal(await page.getByLabel("Variable: modelSecret", { exact: true }).count(), 0);
+  assert.equal(
+    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    "",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal(await credential.evaluate((input) => input.validity.valueMissing), true);
+  assert.equal(nonAuthWriteRequests(requests).length, 0);
+
+  await selectSecret(page, "Service account token Secret", modelSecret);
+  assert.equal(await credential.inputValue(), secretOptionLabel(modelSecret));
+  assert.deepEqual(
+    await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
+    { local: {}, session: {} },
+  );
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await selectSecret(page, "Service account token Secret", modelSecret);
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-6-astra");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = secretPostRequests(requests, namespace.id);
+  assert.equal(secretWrites.length, 0);
+  const agentWrites = agentPostRequests(requests, namespace.id);
+  assert.equal(agentWrites.length, 1);
+  assert.deepEqual(agentWrites[0].body.harnessAuth, {
+    method: "codex_pat",
+    source: modelSecret.ref,
+  });
+  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: modelSecret.ref });
+});
+
+test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Agent conflict", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Create credential picker", { ready: true });
+  await fixture.createAgent(namespace.id, "Existing picker Agent");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Existing picker Agent");
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await page.clock.install({ time: new Date("2026-09-27T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-27T12:00:01Z"));
+  const secretValue = "picker-created-model-token";
+  const modelSecret = await createModelCredentialSecret(page, secretValue);
+  assert.ok(modelSecret);
+  assert.equal(
+    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    secretOptionLabel(modelSecret),
+  );
+  assert.equal(
+    JSON.stringify(
+      await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
+    ).includes(secretValue),
+    false,
+  );
+  const model = page.getByLabel("Model ID", { exact: true });
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
+  await model.fill("gpt-5.1");
+  await model.press("Tab");
+
+  const submitStarted = Promise.withResolvers();
+  const submitRelease = Promise.withResolvers();
+  t.after(() => submitRelease.resolve());
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
+    if (route.request().method() === "POST") {
+      submitStarted.resolve();
+      await submitRelease.promise;
+    }
+    await route.continue();
+  });
+  const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  await submitStarted.promise;
+  // A prefetch due during submission must resume after the real duplicate-name rejection.
+  await page.clock.runFor(300);
+  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  assert.equal(pathRequests(requests, "POST", catalogPath).length, 0);
+  submitRelease.resolve();
+  assert.equal((await conflict).status(), 409);
+  await page.getByText(/conflicts with the saved state/).waitFor();
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+  const prefetched = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${catalogPath}` &&
+      response.request().method() === "POST",
+  );
+  await page.clock.runFor(300);
+  assert.equal((await prefetched).status(), 200);
+  const plugins = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  assert.equal(await plugins.isVisible(), false);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await plugins.getByRole("button", { name: "Linear", exact: true }).waitFor();
+  await plugins.getByRole("button", { name: "Done", exact: true }).click();
+
+  await page.getByLabel("Agent name", { exact: true }).fill("Picker credential Agent");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+  assert.deepEqual(secretPostRequests(requests, namespace.id)[0].body, {
+    name: "Existing picker Agent model credential",
+    value: secretValue,
+  });
+  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: modelSecret.ref });
+  assert.equal(agentPostRequests(requests, namespace.id).length, 2);
+});
+
+test("Preset Secret picker preserves existing mode on catalog failure and can switch to new", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-catalog-failure-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Preset secret catalog failure", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Secret catalog unavailable." },
+          meta: { requestId: "req_secret_catalog_unavailable" },
+        }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  const source = page.getByLabel("Secret source for modelSecret", { exact: true });
+  await source.selectOption("existing");
+  await page.getByText(/Choose create-new mode to enter a new token/).waitFor();
+  assert.equal(await source.inputValue(), "existing");
+  await page.getByLabel("Variable: name", { exact: true }).fill("Catalog fallback Agent");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await source.selectOption("new");
+  await page
+    .getByLabel("Variable: modelSecret", { exact: true })
+    .fill("new-token-after-catalog-error");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("API key", { exact: true }).inputValue(),
+    "new-token-after-catalog-error",
+  );
+});
+
+test("Preset picker ignores stale Preset responses after switching selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset picker race", { ready: true });
+  const first = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "First delayed Preset",
+      template: {
+        variables: { firstName: { type: "string" } },
+        agent: { name: "{{ vars.firstName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  const second = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Second current Preset",
+      template: {
+        variables: { secondName: { type: "string" } },
+        agent: { name: "{{ vars.secondName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  await page.route(`**/namespaces/${namespace.id}/presets/${first.data.id}`, async (route) => {
+    await firstBlocked;
+    await route.fallback();
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(first.data.id);
+  await page.getByLabel("Preset template").selectOption(second.data.id);
+  await page.getByLabel("Variable: secondName", { exact: true }).waitFor();
+  releaseFirst();
+  await page.waitForTimeout(50);
+  assert.equal(await page.getByLabel("Variable: firstName", { exact: true }).count(), 0);
+  await page.getByLabel("Variable: secondName", { exact: true }).fill("Current Agent");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
+});
+
+for (const method of ["api_key", "codex_pat"]) {
+  test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Model credential replacement", {
+      ready: true,
+    });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await selectSecret(
+      page,
+      method === "api_key" ? "API key Secret" : "Service account token Secret",
+      replacement,
+    );
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const grants = bindings.data.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    assert.deepEqual(grants[0], {
+      id: grants[0].id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grants[0].roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(roles.data.find((role) => role.id === grants[0].roleId).permissions, [
+      { action: "operate", resourceKind: "secret" },
+    ]);
+    assert.equal(
+      bindings.data.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(saved.data.harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
+}
+
+test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const installation = await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Credential access recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Recovery Agent",
+    createHarnessConfiguration("codex", "gpt-4.1"),
+    { executionMode: "dedicated" },
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement credential",
+    "test-retry-token",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  // Native IAM denies the actor's grant authority while the Agent update remains authorized.
+  fixture.policy.restrictions.push({
+    id: "deny-update-credential-grant",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
+  await page.getByLabel("Authentication source").selectOption("codex_pat");
+  await selectSecret(page, "Service account token Secret", replacement);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .waitFor();
+  assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(pathRequests(requests, "POST", bindingsPath).length, 0);
+  assert.equal(
+    (await fixture.request("GET", agentPath)).data.harnessAuth.source.id,
+    replacement.id,
+  );
+  // A partial save survives navigation without repeating PATCH or enabling deployment.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.getByRole("button", { name: "Retry credential access" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
+    1,
+  );
+  // Commit the binding through the real API, then lose only its response. Read-before-create makes retry safe.
+  await page.route(`**${bindingsPath}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.getByText(/Secret access could not be confirmed.*Request interrupted/).waitFor();
+  await page.unroute(`**${bindingsPath}`);
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page.getByRole("button", { name: "Save authentication source" }).waitFor();
+  const grants = (await fixture.request("GET", bindingsPath)).data.filter(
+    (binding) => binding.resourceId === replacement.id,
+  );
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0].subjectId, agent.servicePrincipalId);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
+  assert.equal(pathRequests(requests, "POST", bindingsPath).length, 1);
+});
+
+test("Credentials blocks repeat saves after losing an authentication PATCH response", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unknown credential save", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unknown save Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement credential",
+    "test-unknown-token",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.route(`**${agentPath}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    assert.equal((await route.fetch()).status(), 200);
+    await route.abort("failed");
+  });
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  await selectSecret(page, "API key Secret", replacement);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .locator("form.agent-card")
+    .getByText(/Outcome unknown/)
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/access-bindings`).length,
+    0,
+  );
+  // Explicit reload recovers the committed source; saving it again confirms the missing grant.
+  await page.unroute(`**${agentPath}`);
+  await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  await page.getByLabel("API key Secret").waitFor();
+  assert.equal(
+    await page.getByLabel("API key Secret").evaluate((node) => node.value),
+    secretOptionLabel(replacement),
+  );
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+  );
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data.some(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    ),
+    true,
+  );
+});
+
+test("leaving a no-Preset creation form discards its in-progress state", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Creation exit", { ready: true });
+  const otherNamespace = await fixture.createNamespace("Other Namespace", { ready: true });
+  const savedAgent = await fixture.createAgent(namespace.id, "Saved Agent");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+
+  for (const exit of ["cancel", "breadcrumb", "sidebar", "history", "namespace"]) {
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+    await page.getByLabel("Agent name", { exact: true }).fill(`Abandoned ${exit}`);
+    await openAdvancedSettings(page);
+    await page.getByLabel("USER.md", { exact: true }).fill(`Abandoned workspace ${exit}`);
+
+    if (exit === "cancel") {
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    } else if (exit === "breadcrumb") {
+      await page.getByRole("link", { name: "← Agents" }).click();
+    } else if (exit === "sidebar") {
+      await page
+        .getByRole("navigation", { name: "Main navigation" })
+        .getByRole("link", { name: "Agents", exact: true })
+        .click();
+    } else if (exit === "history") {
+      // Leave with an un-applied channel drawer open; its draft must not reopen later.
+      await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+      await page
+        .getByRole("dialog", { name: "Configure Slack" })
+        .getByRole("combobox", { name: "Channels", exact: true })
+        .fill("C12345");
+      await page.goBack();
+    } else {
+      await page.getByLabel("Namespace", { exact: true }).selectOption(otherNamespace.id);
+      await page.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
+    }
+
+    // History re-entry and the normal Create button must both return to the choice page.
+    if (exit === "history") {
+      await page.goForward();
+    } else {
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    }
+    await page.getByRole("button", { name: "Start without Preset", exact: true }).waitFor();
+    await page.getByLabel("Preset template").waitFor();
+    assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0, exit);
+    await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+    assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "", exit);
+    assert.notEqual(
+      await page.getByLabel("USER.md", { exact: true }).inputValue(),
+      `Abandoned workspace ${exit}`,
+      exit,
+    );
+    if (exit === "history") {
+      assert.equal(await page.getByRole("dialog", { name: "Configure Slack" }).count(), 0);
+      await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Configure Slack" });
+      assert.equal(
+        await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true })),
+        "",
+      );
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    }
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  }
+
+  // Exiting an unsaved form must not mutate or delete an Agent already saved by the user.
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const result = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${savedAgent.id}`,
+  );
+  assert.equal(result.status, 200);
+  assert.equal(result.data.name, "Saved Agent");
+});
+
+test("unsaved Preset drafts retain unfinished edits across navigation until explicit discard", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-navigation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Draft navigation", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Variable: name", { exact: true }).fill("Navigation draft");
+  await page.getByLabel("Variable: model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Variable: modelSecret", { exact: true }).fill("synthetic-navigation-key");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Variable: name", { exact: true }).inputValue(),
+    "Navigation draft",
+  );
+  assert.equal(await page.getByLabel("Variable: model", { exact: true }).inputValue(), "gpt-5.1");
+  assert.equal(await page.getByLabel("Variable: modelSecret", { exact: true }).inputValue(), "");
+  await page.getByLabel("Variable: modelSecret", { exact: true }).fill("synthetic-navigation-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await openAdvancedSettings(page);
+  const unfinished = '{"agents":';
+  await page.getByLabel("Configuration JSON", { exact: true }).fill(unfinished);
+  await page.getByLabel("USER.md", { exact: true }).fill("");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Navigation draft",
+  );
+  assert.equal(
+    await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    unfinished,
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
+  // Navigation clears the transient password and returns to explicit Secret selection.
+  await page.getByLabel("API key Secret", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
+  assert.equal(await page.locator("#provider-api-key").inputValue(), "");
+  assert.deepEqual(
+    await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
+    { local: {}, session: {} },
+  );
+  assert.equal(new URL(page.url()).search, `?namespace=${namespace.id}`);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Start over" }).click();
+  assert.equal(
+    await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    unfinished,
+  );
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Start over" }).click();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Preset template").inputValue(), "");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+  // Reload ends the SPA session; a new form must not recover discarded or browser-stored inputs.
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Reload-only draft");
+  await page.reload();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+  // Signing back in without reloading must not recover the previous session's in-memory draft.
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Private session draft");
+  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByLabel("Preset template").waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+});
+
+test("live workspace drafts survive navigation, stay Agent-scoped, and clear on explicit reload or save", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "console-workspace-drafts-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // Exercise the real Console, Fastify, and IAM paths with disk-backed file transport.
+  // This checks UI navigation and file requests, not a live Agent gateway.
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ revision, filename }) {
+        return {
+          status: "ok",
+          file: {
+            name: filename,
+            content: await readFile(join(root, revision.agentId, filename), "utf8"),
+          },
+        };
+      },
+      async write({ revision, filename, content }) {
+        await writeFile(join(root, revision.agentId, filename), content);
+        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace navigation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Workspace draft owner",
+    nativeValues("workspace"),
+  );
+  const other = await fixture.createAgent(
+    namespace.id,
+    "Other workspace Agent",
+    nativeValues("other"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.seedActiveAgentRevision(namespace.id, other.id);
+  for (const owner of [agent, other]) {
+    await mkdir(join(root, owner.id));
+    for (const name of Object.keys(WORKSPACE_DEFAULTS)) {
+      await writeFile(join(root, owner.id, name), `# Saved ${name}\n`);
+    }
+  }
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace");
+  await login(page, fixture, url.pathname + url.search);
+  const file = page.getByLabel("AGENTS.md", { exact: true });
+  await file.fill("# Unsaved instructions\n");
+  await page.getByLabel("USER.md", { exact: true }).fill("");
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.waitForFunction(() => {
+    const editor = globalThis.document.getElementById("workspace-AGENTS.md");
+    return editor && !editor.disabled;
+  });
+  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  assert.equal(await file.inputValue(), "# Saved AGENTS.md\n");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByLabel("Search Agents").fill("Workspace draft owner");
+  await page.getByRole("link", { name: "Workspace draft owner", exact: true }).click();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.waitForFunction(() => {
+    const editor = globalThis.document.getElementById("workspace-AGENTS.md");
+    return editor && !editor.disabled;
+  });
+  assert.equal(await file.inputValue(), "# Unsaved instructions\n");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      response.url().endsWith("/workspace/files/AGENTS.md"),
+  );
+  await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  assert.equal(
+    await readFile(join(root, agent.id, "AGENTS.md"), "utf8"),
+    "# Unsaved instructions\n",
+  );
+  await page.getByRole("button", { name: "Reload USER.md", exact: true }).click();
+  await page.getByText("USER.md loaded.", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  assert.equal(await page.getByLabel("Search Agents").inputValue(), "Workspace draft owner");
+  await page.goBack();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+});
+
+test("authentication drafts retain Secret references and their original save baseline", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Authentication navigation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Authentication draft",
+    nativeValues("auth"),
+  );
+  const secret = await fixture.createSecret(namespace.id, "Replacement key", "synthetic-auth-key");
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  await selectSecret(page, "API key Secret", secret);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  // A saved auth change must not rebase the retained local choice when the page is recreated.
+  const changed = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+    body: { configurationId: agent.configurationId, harnessAuth: null },
+  });
+  assert.equal(changed.status, 200);
+  await page.goBack();
+  assert.equal(
+    await page.getByLabel("API key Secret", { exact: true }).evaluate((node) => node.value),
+    secretOptionLabel(secret),
+  );
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await page
+    .getByText("The Configuration changed. Reload authentication source before saving.")
+    .waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await page.getByRole("button", { name: "Reload authentication source" }).click();
+  await page.getByLabel("Authentication source").waitFor();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  assert.equal(
+    await page.getByLabel("API key Secret", { exact: true }).evaluate((node) => node.value),
+    "",
+  );
+});
+
+test("Secret summaries retain revision bindings and distinguish unreadable metadata from absent bindings", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Bound Secret summaries", { ready: true });
+  const app = await fixture.createSecret(namespace.id, "Revision Slack app", "hidden-app-value");
+  const bot = await fixture.createSecret(namespace.id, "Revision Slack bot", "hidden-bot-value");
+  const replacement = await fixture.createSecret(namespace.id, "Draft model", "hidden-model-value");
+  const secretBindings = {
+    SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+    SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+  };
+  const agent = await fixture.createAgent(namespace.id, "Bound Secrets", nativeValues("bound"), {
+    secretBindings,
+  });
+  // Real admission requires exact Agent access to each projected credential.
+  for (const secret of [app, bot, replacement]) {
+    fixture.policy.bindings.push({
+      id: `grant-${secret.id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: `service-agent-${agent.id}`,
+      roleId: `auth-${agent.id}`,
+      resourceKind: "secret",
+      resourceId: secret.id,
+    });
+  }
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // Mutate both current owners after admission; the read-only view must keep the old references.
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: replacement.ref },
+  });
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("changed"), {
+    secretBindings: {},
+  });
+  const limited = await fixture.createAccountWithPolicy("secret-summary-reader", (principal) => {
+    fixture.policy.roles.push(
+      {
+        id: "summary-reader",
+        namespaceId: namespace.id,
+        permissions: ["namespace", "agent", "configuration", "agent_revision"].map(
+          (resourceKind) => ({ action: "read", resourceKind }),
+        ),
+      },
+      {
+        id: "exact-secret-reader",
+        namespaceId: namespace.id,
+        permissions: [{ action: "read", resourceKind: "secret" }],
+      },
+    );
+    fixture.policy.bindings.push({
+      id: "summary-reader",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "summary-reader",
+    });
+    // Only these exact Secrets are readable. No Secret collection grant is present.
+    for (const id of [agent.harnessAuth.source.id, app.id, replacement.id]) {
+      fixture.policy.bindings.push({
+        id: `read-${id}`,
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: "exact-secret-reader",
+        resourceKind: "secret",
+        resourceId: id,
+      });
+    }
+  });
+  const { page, artifacts } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  await login(page, fixture, url.pathname + url.search, limited.credentials);
+  await page.getByRole("link", { name: "Auth Bound Secrets", exact: true }).waitFor();
+  assert.equal(await page.getByText("Draft model", { exact: true }).count(), 0);
+  await page.screenshot({ path: join(artifacts, "bound-harness-revision.png"), fullPage: true });
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
+  await page
+    .getByText(`Bound Secret · ${bot.id} · Metadata unavailable (access denied)`, { exact: true })
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: /Configure Slack|Edit Slack/ }).count(), 0);
+  await page.screenshot({ path: join(artifacts, "bound-channels-restricted.png"), fullPage: true });
+  assert.equal(
+    requests.some((request) => request.path === `/namespaces/${namespace.id}/secrets`),
+    false,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  for (const value of ["hidden-app-value", "hidden-bot-value", "hidden-model-value"]) {
+    assert.equal((await page.locator("body").textContent()).includes(value), false);
+  }
+  // Active snapshots protect their Secrets even after the draft drops the bindings.
+  const secretPath = `/namespaces/${namespace.id}/secrets/${app.id}`;
+  assert.equal((await fixture.request("DELETE", secretPath)).status, 409);
+  // Admit and select the replacement draft, leaving the viewed revision historical.
+  // With no live references, a real deletion makes its bound metadata unavailable.
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
+  const deleted = await fixture.rawRequest("DELETE", secretPath, {
+    headers: authenticatedHeaders(await fixture.signIn()),
+  });
+  assert.equal(deleted.response.status, 204);
+  assert.equal((await fixture.request("GET", secretPath)).status, 404);
+  await page.reload();
+  await page
+    .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByText("No Secret bound", { exact: true }).first().waitFor();
+  assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("link", { name: "Draft model", exact: true }).waitFor();
+});
+
+test("Slack directory selections show names and save exact channel IDs", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slack directory picker", { ready: true });
+  const appSecret = await fixture.createSecret(namespace.id, "Slack app token", "xapp-test-secret");
+  const botSecret = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-test-secret");
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "disabled",
+    channels: { CEXIST123: { requireMention: true, users: ["*"] } },
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Slack Directory Agent",
+    nativeValues("slack-directory", { harnessId: "codex", channels: { slack } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const directoryBodies = [];
+  const pendingDirectory = Promise.withResolvers();
+  const releaseDirectory = Promise.withResolvers();
+  // The browser test owns Console selection and saved API state; only provider directory data is simulated.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      directoryBodies.push(body);
+      if (body.query === "pending") {
+        pendingDirectory.resolve(route.request());
+        await releaseDirectory.promise;
+      }
+      let nextCursor;
+      let candidates;
+      if (body.kind === "users") {
+        candidates = [{ id: "UTEST123", name: "alex", displayName: "Alex" }];
+      } else if (body.query === "GENERALX") {
+        if (!body.cursor) {
+          candidates = Array.from({ length: 7 }, (_, index) => ({
+            id: `CUPPER11${index + 1}`,
+            name: `GENERALX-first-${index + 1}`,
+          }));
+          nextCursor = "upper-next";
+        } else if (body.cursor === "upper-next") {
+          candidates = [];
+          nextCursor = "upper-final";
+        } else {
+          candidates = [{ id: "CUPPER123", name: "GENERALX" }];
+        }
+      } else {
+        candidates = [
+          { id: "CEXIST123", name: "existing-room" },
+          { id: "CTEST456", name: "release-room" },
+          { id: "CGENERAL", name: "general" },
+          { id: "CUPPER123", name: "GENERALX" },
+        ];
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            workspaceId: "TTEST123",
+            workspaceName: "Test workspace",
+            candidates: body.ids
+              ? candidates.filter((candidate) => body.ids.includes(candidate.id))
+              : candidates,
+            complete: !nextCursor,
+            ...(nextCursor ? { nextCursor } : {}),
+          },
+          meta: { requestId: "req_test_slack_directory" },
+        }),
+      });
+    },
+  );
+
+  const channelsUrl = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+  await login(page, fixture, channelsUrl.pathname + channelsUrl.search);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const channelDialog = page.getByRole("dialog", { name: "Edit Slack" });
+  const channelSearch = channelDialog.getByRole("combobox", { name: "Channels", exact: true });
+  const channelPicker = channelSearch.locator("..").locator("..");
+  await channelPicker.getByText("#existing-room", { exact: true }).waitFor();
+  await channelSearch.focus();
+  await channelPicker.getByRole("option", { name: /existing-room.*CEXIST123/ }).waitFor();
+  // Advance browser time explicitly: intermediate keystrokes and dismissed searches must not query.
+  const clockTime = new Date("2026-09-27T12:00:00Z");
+  await page.clock.install({ time: new Date("2026-09-27T11:59:00Z") });
+  await page.clock.pauseAt(clockTime);
+  await channelSearch.fill("g");
+  await page.clock.runFor(200);
+  await channelSearch.fill("ge");
+  await page.clock.runFor(200);
+  await channelSearch.fill("general");
+  await page.clock.runFor(299);
+  assert.deepEqual(
+    directoryBodies.filter((body) => body.query),
+    [],
+  );
+  await page.clock.runFor(1);
+  await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+  assert.deepEqual(
+    directoryBodies.filter((body) => body.query).map((body) => body.query),
+    ["general"],
+  );
+  await channelSearch.fill("dismissed");
+  await channelSearch.press("Escape");
+  await page.clock.runFor(300);
+  assert.equal(
+    directoryBodies.some((body) => body.query === "dismissed"),
+    false,
+  );
+  // A new query aborts the old browser request, even while its provider response is held.
+  await channelSearch.fill("pending");
+  await channelSearch.press("Enter");
+  const pendingRequest = await pendingDirectory.promise;
+  const canceledRequest = page.waitForEvent(
+    "requestfailed",
+    (request) => request === pendingRequest,
+  );
+  await channelSearch.fill("general");
+  await canceledRequest;
+  releaseDirectory.resolve();
+  // Enter submits immediately and removes the queued debounce, so it cannot send the same query twice.
+  await channelSearch.press("Enter");
+  await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+  await page.clock.runFor(300);
+  assert.equal(directoryBodies.filter((body) => body.query === "general").length, 2);
+  await page.clock.resume();
+  assert.equal(await slackSelectionValue(channelSearch), "CEXIST123");
+  assert.equal(await page.getByRole("dialog").count(), 1);
+  assert.ok(directoryBodies.some((body) => body.query === "general" && !body.ids));
+  await channelSearch.press("ArrowUp");
+  assert.equal(
+    await channelSearch.getAttribute("aria-activedescendant"),
+    await channelPicker.getByRole("option").last().getAttribute("id"),
+  );
+  await channelSearch.press("Escape");
+  assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+  assert.equal(await channelDialog.isVisible(), true);
+  await channelSearch.fill("GENERALX");
+  await channelPicker.getByRole("option", { name: /GENERALX-first.*CUPPER111/ }).waitFor();
+  assert.equal(await channelPicker.getByRole("option").count(), 5);
+  // Seven provider matches span two display pages; neither overflow nor Previous rereads the provider.
+  const initialSearchRequests = directoryBodies.filter((body) => body.query === "GENERALX").length;
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  await channelPicker.getByRole("option", { name: /GENERALX-first-6.*CUPPER116/ }).waitFor();
+  assert.equal(await channelPicker.getByRole("option").count(), 2);
+  await channelPicker.getByRole("button", { name: "Previous page" }).click();
+  await channelPicker.getByRole("option", { name: /GENERALX-first-1.*CUPPER111/ }).waitFor();
+  assert.equal(await channelPicker.getByRole("option").count(), 5);
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  assert.equal(
+    directoryBodies.filter((body) => body.query === "GENERALX").length,
+    initialSearchRequests,
+  );
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  await channelPicker
+    .getByText("No results on this page. More results may be available.")
+    .waitFor();
+  // A provider scan without matches still permits continuing to a later matching channel.
+  await channelPicker.getByRole("button", { name: "Next page" }).click();
+  await channelPicker.getByRole("option", { name: /GENERALX.*CUPPER123/ }).click();
+  assert.equal(await slackSelectionValue(channelSearch), "CEXIST123, CUPPER123");
+  assert.ok(directoryBodies.some((body) => body.ids?.[0] === "GENERALX"));
+  assert.ok(directoryBodies.some((body) => body.query === "GENERALX" && !body.ids));
+  assert.ok(
+    directoryBodies.some((body) => body.query === "GENERALX" && body.cursor === "upper-next"),
+  );
+  await channelPicker.getByRole("button", { name: "Remove CUPPER123", exact: true }).click();
+  await channelSearch.fill("CTEST456");
+  await channelPicker.getByRole("option", { name: /release-room.*CTEST456/ }).waitFor();
+  await channelSearch.press("ArrowDown");
+  await channelSearch.press("Enter");
+  assert.equal(await channelSearch.inputValue(), "");
+  assert.equal(await slackSelectionValue(channelSearch), "CEXIST123, CTEST456");
+  // Clearing specific people must not turn channel access into Everyone.
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("selected");
+  const people = channelDialog.getByRole("combobox", {
+    name: "Allowed people in these channels",
+    exact: true,
+  });
+  await setSlackSelection(people, "UTEST123");
+  await people
+    .locator("..")
+    .locator("..")
+    .getByRole("button", { name: "Remove UTEST123", exact: true })
+    .click();
+  await channelDialog.getByRole("button", { name: "Save configuration" }).click();
+  await channelDialog
+    .getByText("Choose specific people or select Everyone in these channels.")
+    .waitFor();
+  assert.equal(
+    pathRequests(
+      requests,
+      "PATCH",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    ).length,
+    0,
+  );
+  await channelDialog
+    .getByLabel("Who can use the agent in these channels?")
+    .selectOption("everyone");
+  // Unselected search text is never part of the Configuration save.
+  await channelSearch.fill("unselected search text");
+  const savedChannels = page.waitForResponse(
+    (response) =>
+      response
+        .url()
+        .endsWith(`/namespaces/${namespace.id}/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
+  await channelDialog.getByRole("button", { name: "Save configuration" }).click();
+  assert.equal((await savedChannels).status(), 200);
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.deepEqual(Object.keys(configuration.data.values.channels.slack.channels), [
+    "CEXIST123",
+    "CTEST456",
+  ]);
+  assert.ok(
+    directoryBodies.some(
+      (body) =>
+        body.secretId === botSecret.id &&
+        body.kind === "channels" &&
+        body.configurationId === agent.configurationId &&
+        body.ids?.[0] === "CTEST456",
+    ),
+  );
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  await page
+    .getByRole("dialog", { name: "Edit Slack" })
+    .locator('.slack-directory-chip[data-value="CTEST456"]')
+    .getByText("#release-room")
+    .waitFor();
+});
+
+test("Slack editor preserves existing qualified channel and user targets", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Qualified Slack targets", { ready: true });
+  const appSecret = await fixture.createSecret(
+    namespace.id,
+    "Qualified Slack app token",
+    "xapp-qualified",
+  );
+  const botSecret = await fixture.createSecret(
+    namespace.id,
+    "Qualified Slack bot token",
+    "xoxb-qualified",
+  );
+  const channelUsers = [
+    "team:TTEST123:user:UTEST123",
+    "user:UTEST124",
+    "slack:UTEST125",
+    "@legacy-sender",
+  ];
+  const dmUsers = ["user:UTEST123", "slack:UTEST124", "team:TTEST123:user:UTEST125", "@legacy-dm"];
+  const channelIds = ["team:TTEST123:channel:CEXIST123", "channel:GEXIST456", "#legacy-room"];
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    allowFrom: dmUsers,
+    channels: Object.fromEntries(
+      channelIds.map((id) => [id, { requireMention: true, users: channelUsers }]),
+    ),
+  };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Qualified Slack Agent",
+    nativeValues("qualified-slack", { harnessId: "codex", channels: { slack } }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      const candidates =
+        body.kind === "channels"
+          ? [{ id: "CEXIST123", name: "existing-room" }]
+          : [{ id: "UTEST123", name: "alex", displayName: "Alex" }];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            workspaceId: "TTEST123",
+            candidates: body.ids
+              ? candidates.filter((candidate) => body.ids.includes(candidate.id))
+              : candidates,
+            complete: true,
+          },
+          meta: { requestId: "req_qualified_slack" },
+        }),
+      });
+    },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  assert.deepEqual(
+    (
+      await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true }))
+    ).split(", "),
+    channelIds,
+  );
+  assert.deepEqual(
+    new Set(
+      (
+        await slackSelectionValue(
+          dialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+        )
+      ).split(", "),
+    ),
+    new Set(channelUsers),
+  );
+  assert.deepEqual(
+    (
+      await slackSelectionValue(
+        dialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+      )
+    ).split(", "),
+    dmUsers,
+  );
+  for (const [label, candidate] of [
+    ["Channels", /existing-room.*CEXIST123/],
+    ["Allowed people in these channels", /Alex.*UTEST123/],
+    ["Allowed people in direct messages", /Alex.*UTEST123/],
+  ]) {
+    const search = dialog.getByRole("combobox", { name: label, exact: true });
+    await search.focus();
+    await search.locator("..").locator("..").getByRole("option", { name: candidate }).click();
+  }
+  assert.equal(await dialog.locator('.slack-directory-chip[data-value="CEXIST123"]').count(), 0);
+  assert.deepEqual(
+    (
+      await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true }))
+    ).split(", "),
+    channelIds,
+  );
+  assert.deepEqual(
+    new Set(
+      (
+        await slackSelectionValue(
+          dialog.getByRole("combobox", { name: "Allowed people in these channels", exact: true }),
+        )
+      ).split(", "),
+    ),
+    new Set(channelUsers),
+  );
+  assert.deepEqual(
+    (
+      await slackSelectionValue(
+        dialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+      )
+    ).split(", "),
+    dmUsers,
+  );
+  await dialog.getByLabel("Require a mention").uncheck();
+  const saved = page.waitForResponse(
+    (response) =>
+      response
+        .url()
+        .endsWith(`/namespaces/${namespace.id}/configurations/${agent.configurationId}`) &&
+      response.request().method() === "PATCH",
+  );
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  assert.equal((await saved).status(), 200);
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  const persisted = configuration.data.values.channels.slack;
+  assert.deepEqual(Object.keys(persisted.channels), channelIds);
+  for (const entry of Object.values(persisted.channels)) {
+    assert.deepEqual(new Set(entry.users), new Set(channelUsers));
+    assert.equal(entry.requireMention, false);
+  }
+  assert.deepEqual(persisted.allowFrom, dmUsers);
 });

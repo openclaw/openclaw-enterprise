@@ -11,6 +11,10 @@ on:
         description: Successful main push run of CI for exactly source_sha
         required: true
         type: string
+      image_tag:
+        description: Mutable image tag (defaults to latest; overrides it when set)
+        required: false
+        type: string
       publish:
         description: Publish prepared images after automated validation
         required: true
@@ -24,6 +28,7 @@ env:
   SOURCE_SHA: ${{ inputs.source_sha }}
   CI_RUN_ID: ${{ inputs.ci_run_id }}
   NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
 
 jobs:
   validate:
@@ -50,22 +55,23 @@ jobs:
         run: node scripts/ci/container-release.mjs validate
 
   prepare:
-    name: Prepare ${{ matrix.image }} OCI image
     needs: validate
-    runs-on: ${{ matrix.image == 'runtime' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
-    timeout-minutes: 90
+    uses: ./.github/workflows/container-check.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
+      node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+
+  assemble:
+    name: Assemble ${{ matrix.image }} OCI image
+    needs: [validate, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: controller
-            context: .
-            file: Dockerfile
-            target: runtime
-          - image: runtime
-            context: .
-            file: deploy/runtime/Dockerfile
-            target: ""
+        image: [controller, runtime]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -74,103 +80,23 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "24.16.0"
-      - name: Keep emulator registrations available to Docker
-        run: |
-          if ! mountpoint -q /proc/sys/fs/binfmt_misc; then
-            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
-          fi
-          test -f /proc/sys/fs/binfmt_misc/register
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          platforms: arm64
-      - name: Verify ARM64 containers run before building
-        run: |
-          docker run --rm --platform linux/arm64 --network none \
-            --entrypoint node "$NODE_BASE_IMAGE" \
-            -e 'require("node:assert/strict").equal(process.arch, "arm64")'
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-        id: buildx
+          name: platform-${{ matrix.image }}-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci/amd64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          buildkitd-config-inline: |
-            [worker.oci]
-              max-parallelism = 1
-      - name: Prepare OCI output directory
-        run: mkdir -p "$RUNNER_TEMP/oci"
-      - name: Check build disk capacity
-        run: df -h / "$RUNNER_TEMP"
-      - name: Build linux/amd64 without registry credentials or publication
-        id: build_amd64
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: "false"
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          build-args: |
-            NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
-            OCC_BUILD_REVISION=${{ inputs.source_sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
-            org.opencontainers.image.revision=${{ inputs.source_sha }}
-          outputs: type=oci,dest=${{ runner.temp }}/oci/amd64,tar=false
-          provenance: false
-          push: false
-      - name: Release linux/amd64 build cache
-        env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-        run: |
-          docker buildx prune --builder "$BUILDER_NAME" --all --force
-          df -h / "$RUNNER_TEMP"
-      - name: Build linux/arm64 without registry credentials or publication
-        id: build_arm64
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        env:
-          DOCKER_BUILD_RECORD_UPLOAD: "false"
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          target: ${{ matrix.target }}
-          platforms: linux/arm64
-          build-args: |
-            NODE_BASE_IMAGE=${{ env.NODE_BASE_IMAGE }}
-            OCC_BUILD_REVISION=${{ inputs.source_sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/openclaw/openclaw-enterprise
-            org.opencontainers.image.revision=${{ inputs.source_sha }}
-          outputs: type=oci,dest=${{ runner.temp }}/oci/arm64,tar=false
-          provenance: false
-          push: false
-      - name: Release linux/arm64 build cache
-        env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-        run: |
-          docker buildx prune --builder "$BUILDER_NAME" --all --force
-          df -h / "$RUNNER_TEMP"
-      - name: Assemble both platforms without rebuilding
-        id: build
-        env:
-          AMD64_DIGEST: ${{ steps.build_amd64.outputs.digest }}
-          ARM64_DIGEST: ${{ steps.build_arm64.outputs.digest }}
-        run: node scripts/ci/container-release.mjs assemble "$RUNNER_TEMP/oci"
-      - name: Install existing smoke test prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y skopeo
-          skopeo --version | grep -Fx 'skopeo version 1.13.3'
-          corepack pnpm install --frozen-lockfile --ignore-scripts
-      - name: Smoke the prepared OCI bytes without rebuilding
+          name: platform-${{ matrix.image }}-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci/arm64
+      - name: Assemble and seal tested platform bytes without rebuilding
         env:
           IMAGE: ${{ matrix.image }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: node scripts/ci/container-release.mjs smoke "$RUNNER_TEMP/oci"
-      - name: Seal exact OCI archive
-        env:
-          IMAGE: ${{ matrix.image }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
-        run: node scripts/ci/container-release.mjs seal "$RUNNER_TEMP/oci"
+        run: |
+          node scripts/ci/container-release.mjs assemble "$RUNNER_TEMP/oci"
+          IMAGE_DIGEST="$(sed -n 's/^digest=//p' "$GITHUB_OUTPUT")"
+          export IMAGE_DIGEST
+          node scripts/ci/container-release.mjs seal "$RUNNER_TEMP/oci"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: container-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -182,7 +108,7 @@ jobs:
   publish:
     name: Publish exact OCI digests to private GHCR
     if: ${{ inputs.publish }}
-    needs: [validate, prepare]
+    needs: [validate, assemble]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: container-publish

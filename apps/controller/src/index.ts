@@ -4,7 +4,6 @@ import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import Fastify, {
   LogController,
-  type FastifyError,
   type FastifyInstance,
   type FastifyBaseLogger,
   type FastifyReply,
@@ -23,15 +22,18 @@ import {
   WORKSPACE_DEFAULTS_ID,
   normalizeInitialWorkspaceFiles,
   type InitialWorkspaceFiles,
-  PresetValidationError,
   ErrorResponse,
+  AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   JsonValue,
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
   PluginDriverIdentitySchema,
   PluginToolPolicySchema,
+  PluginToolDefaultsSchema,
+  PluginApproversSchema,
   SecretResponse,
+  CredentialSourceResponse,
   occApiRoutes,
   type Agent,
   type ProvisionAgentBody,
@@ -40,6 +42,7 @@ import {
   type AuditEvent,
   type AuthorizationEvidence,
   type ConfigurationDriver,
+  type ChannelDriver,
   type ComputeDriver,
   type HarnessExecutionMode,
   type HarnessAuthBinding,
@@ -47,27 +50,23 @@ import {
   type Installation,
   type OccApiRoute,
   type PermissionAction,
-  type ProviderSummary,
+  type BackendSummary,
   type RepositoryBindingRequest,
   type ResourceKind,
   type ResourceRef,
   type SandboxDriver,
   type SecretDriver,
+  type SecretReference,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
 import {
-  AgentDeletingError,
   AuthorizationDeniedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   DependencyUnavailableError,
-  ModelDiscoveryError,
-  NamespaceNotEmptyError,
   NamespaceNotReadyError,
-  NotImplementedError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
-  ScopeViolationError,
   type DeploymentStatusResult,
   type AgentProvisioningProgress,
   type ProvisionAgentInput,
@@ -82,10 +81,6 @@ import {
   type ControllerAuth,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
-import {
-  ConfigurationOwnershipError,
-  ConfigurationValidationError,
-} from "./drivers/configuration/kubernetes/index.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -109,9 +104,21 @@ import {
   type NativeAdminWebSocketCloseCause,
   type NativeAdminWebSocketCloseReason,
 } from "./gateway/native-admin-proxy.ts";
+import {
+  canonicalFailure,
+  failure,
+  isAuthorizationDenied,
+  isDependencyUnavailable,
+  jsonPointer,
+  RequestFailure,
+  requestFailure,
+  responseHeaders,
+  type ErrorDetail,
+} from "./http/errors.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { presetHandlers } from "./http/presets.ts";
 import { secretHandlers } from "./http/secrets.ts";
+import { credentialSourceHandlers } from "./http/credential-sources.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
@@ -129,11 +136,12 @@ export interface ControllerAppOptions {
   readonly iamDriver: IAMDriver;
   readonly computeDriver?: ComputeDriver;
   readonly configurationDriver?: ConfigurationDriver;
+  readonly channelDriver?: ChannelDriver;
   readonly secretDriver?: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
-  readonly providerSummaries?: readonly ProviderSummary[];
+  readonly backendSummaries?: readonly BackendSummary[];
   readonly development: DevelopmentAdmission;
   readonly maxBodyBytes?: number;
   readonly auth: ControllerAuth;
@@ -183,18 +191,6 @@ interface NativeAdminProxyDenial {
 
 type NativeAdminProxyAdmission = NativeAdminProxyResolution | NativeAdminProxyDenial;
 
-interface ErrorDetail {
-  readonly path: string;
-  readonly code:
-    | "REQUIRED"
-    | "UNKNOWN_FIELD"
-    | "INVALID_TYPE"
-    | "INVALID_FORMAT"
-    | "INVALID_VALUE"
-    | "TOO_LONG"
-    | "TOO_DEEP";
-}
-
 interface RequiredPermission {
   readonly action: PermissionAction;
   readonly resourceKind: ResourceKind;
@@ -203,34 +199,23 @@ interface RequiredPermission {
     | "associated_service_account"
     | "existing_namespace"
     | "bound_secret"
+    | "directory_lookup"
+    | "selected_secret"
     | "iam_binding_target"
-    | "provisioning_work";
+    | "provisioning_work"
+    | "missing_runtime_credentials"
+    | "authenticated_plugin_discovery";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
   readonly "x-openclaw-permissions": readonly RequiredPermission[];
 }
 
-class RequestFailure extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly details?: readonly ErrorDetail[];
-
-  constructor(status: number, code: string, message: string, details?: readonly ErrorDetail[]) {
-    super(message);
-    this.name = "RequestFailure";
-    this.status = status;
-    this.code = code;
-    if (details !== undefined) {
-      this.details = details;
-    }
-  }
-}
-
 const resourceHandlers: ResourceHandlers = {
   ...configurationHandlers,
   ...presetHandlers,
   ...secretHandlers,
+  ...credentialSourceHandlers,
   ...iamHandlers,
   ...serviceAccountHandlers,
 };
@@ -250,21 +235,13 @@ const RESOURCE_ID = {
   configurationId: /^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   serviceAccountId: /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   secretId: /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  credentialSourceId: /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   agentId: /^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   revisionId: /^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
 } as const;
 
 function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
   return ajvFormats.default(ajv);
-}
-
-function failure(
-  status: number,
-  code: string,
-  message: string,
-  details?: readonly ErrorDetail[],
-): RequestFailure {
-  return new RequestFailure(status, code, message, details);
 }
 
 function ipv4(value: string): number | undefined {
@@ -346,10 +323,6 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
   ].every((entries) => Array.isArray(entries) && entries.every(isNonEmptyString));
 }
 
-function jsonPointer(segment: string): string {
-  return segment.replaceAll("~", "~0").replaceAll("/", "~1");
-}
-
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   if (depth > 24) {
     throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
@@ -387,6 +360,8 @@ function operationTarget(
     typeof params.serviceAccountId === "string" ? params.serviceAccountId : undefined;
   const presetId = typeof params.presetId === "string" ? params.presetId : undefined;
   const secretId = typeof params.secretId === "string" ? params.secretId : undefined;
+  const credentialSourceId =
+    typeof params.credentialSourceId === "string" ? params.credentialSourceId : undefined;
   const agentId = typeof params.agentId === "string" ? params.agentId : undefined;
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
   if (operation.operationId === "createNamespace") {
@@ -415,6 +390,16 @@ function operationTarget(
   }
   if (secretId && namespaceId) {
     return { kind: "secret", id: secretId, namespaceId };
+  }
+  if (
+    (operation.operationId === "createCredentialSource" ||
+      operation.operationId === "listCredentialSources") &&
+    namespaceId
+  ) {
+    return { kind: "credential_source", id: namespaceId, namespaceId };
+  }
+  if (credentialSourceId && namespaceId) {
+    return { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
     (operation.operationId === "createAgent" ||
@@ -480,8 +465,52 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  if (
+    operation.operationId === "discoverAgentPlugins" ||
+    operation.operationId === "discoverAgentPluginDetails"
+  ) {
+    return [
+      { ...permission, scope: "namespace" },
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: "request_body",
+        condition: "selected_secret",
+      },
+    ];
+  }
+
   if (operation.operationId === "createSecret" || operation.operationId === "listSecrets") {
     return [{ ...permission, scope: "namespace" }];
+  }
+
+  if (operation.operationId === "lookupChannelDirectory") {
+    return [
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: "request_body",
+        condition: "directory_lookup",
+      },
+      {
+        action: "create",
+        resourceKind: "agent",
+        scope: "namespace",
+        condition: "directory_lookup",
+      },
+      {
+        action: "update",
+        resourceKind: "agent",
+        scope: "request_body",
+        condition: "directory_lookup",
+      },
+      {
+        action: "update",
+        resourceKind: "configuration",
+        scope: "request_body",
+        condition: "directory_lookup",
+      },
+    ];
   }
 
   if (operation.operationId === "createIAMAccessBinding") {
@@ -565,6 +594,22 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               scope: "requested" as const,
             },
           ]),
+      ...(operation.operationId === "deployAgent"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+              condition: "missing_runtime_credentials" as const,
+            },
+            {
+              action: "operate" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+              condition: "missing_runtime_credentials" as const,
+            },
+          ]
+        : []),
       {
         action: "read",
         resourceKind: "service_account",
@@ -598,6 +643,35 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { ...permission, scope: "requested" },
       { action: "read", resourceKind: "agent", scope: "requested" },
+    ];
+  }
+
+  if (
+    operation.operationId === "getSavedAgentPluginPolicyCapabilities" ||
+    operation.operationId === "discoverSavedAgentPlugins" ||
+    operation.operationId === "discoverSavedAgentPluginDetails"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      ...(operation.operationId === "getSavedAgentPluginPolicyCapabilities"
+        ? []
+        : [
+            {
+              action: "operate" as const,
+              resourceKind: "secret" as const,
+              scope: "requested" as const,
+              condition: "authenticated_plugin_discovery" as const,
+            },
+          ]),
+    ];
+  }
+
+  if (operation.operationId === "diagnoseAgentDeployment") {
+    return [
+      { action: "operate", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent_revision", scope: "requested" },
     ];
   }
 
@@ -640,6 +714,7 @@ function permissionDescription(
     secret: "Secret",
     agent: "Agent",
     agent_revision: "AgentRevision",
+    credential_source: "CredentialSource",
   };
 
   const description = permissions
@@ -648,8 +723,20 @@ function permissionDescription(
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
+      if (condition === "directory_lookup") {
+        if (resourceKind === "secret") {
+          return "Requires operate permission on the exact Secret named by secretId.";
+        }
+        if (action === "create") {
+          return "Without an edit target, requires Agent create permission in the Namespace.";
+        }
+        return `With ${resourceKind === "agent" ? "agentId" : "configurationId"}, requires update permission on that exact ${name}.`;
+      }
       if (condition === "existing_namespace") {
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
+      }
+      if (condition === "selected_secret") {
+        return `Requires ${action} permission on the exact same-Namespace ${name} when a Secret reference is supplied.`;
       }
       if (condition === "bound_secret") {
         if (operation?.operationId === "provisionAgent") {
@@ -665,6 +752,12 @@ function permissionDescription(
       }
       if (condition === "provisioning_work") {
         return `Requires current ${action} authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.`;
+      }
+      if (condition === "missing_runtime_credentials") {
+        return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
+      }
+      if (condition === "authenticated_plugin_discovery") {
+        return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -693,19 +786,19 @@ function clientInstallation(
   computeDriver: Readonly<ComputeDriver> | undefined,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
+  const capabilities = {
+    ...installation.capabilities,
+    ...(agentProvisioning === undefined
+      ? {}
+      : {
+          agentProvisioning: { executionModes: [...agentProvisioning.executionModes] },
+        }),
+  };
   return {
     id: installation.id,
     name: installation.name,
     createdAt: installation.createdAt,
-    ...(agentProvisioning === undefined
-      ? {}
-      : {
-          capabilities: {
-            agentProvisioning: {
-              executionModes: [...agentProvisioning.executionModes],
-            },
-          },
-        }),
+    ...(Object.keys(capabilities).length === 0 ? {} : { capabilities }),
   };
 }
 
@@ -716,9 +809,10 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     name: agent.name,
     servicePrincipalId: agent.servicePrincipalId,
     configurationId: agent.configurationId,
-    providerId: agent.providerId,
+    backendId: agent.backendId,
     executionMode: agent.executionMode,
     ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
+    ...(agent.pluginApprovers === undefined ? {} : { pluginApprovers: agent.pluginApprovers }),
     ...(agent.repositoryBindings === undefined
       ? {}
       : { repositoryBindings: agent.repositoryBindings }),
@@ -763,13 +857,16 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     configurationId: revision.configurationId,
     configurationKind: revision.configurationKind,
     configurationGeneration: revision.configurationGeneration,
-    providerId: revision.providerId,
+    backendId: revision.backendId,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: revision.compute,
     ...(revision.secretDriverId === undefined ? {} : { secretDriverId: revision.secretDriverId }),
     ...(revision.secretBindings === undefined ? {} : { secretBindings: revision.secretBindings }),
     ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
+    ...(revision.pluginApprovers === undefined
+      ? {}
+      : { pluginApprovers: revision.pluginApprovers }),
     ...(revision.repositoryCredentials === undefined
       ? {}
       : {
@@ -796,212 +893,6 @@ function clientDeploymentStatus(status: Readonly<DeploymentStatusResult>): Recor
     error: status.error,
     warnings: status.warnings,
   };
-}
-
-function responseHeaders(reply: FastifyReply, requestId: string): void {
-  reply.header("cache-control", "no-store");
-  reply.header("content-type", "application/json; charset=utf-8");
-  reply.header("x-content-type-options", "nosniff");
-  reply.header("x-request-id", requestId);
-}
-
-function canonicalFailure(reply: FastifyReply, error: RequestFailure): void {
-  responseHeaders(reply, reply.request.id);
-  reply.status(error.status).send({
-    error: {
-      code: error.code,
-      message: error.message,
-      ...(error.details === undefined ? {} : { details: error.details }),
-    },
-    meta: { requestId: reply.request.id },
-  });
-}
-
-function validationCode(keyword: string): ErrorDetail["code"] {
-  switch (keyword) {
-    case "required":
-      return "REQUIRED";
-    case "additionalProperties":
-      return "UNKNOWN_FIELD";
-    case "type":
-      return "INVALID_TYPE";
-    case "format":
-    case "pattern":
-      return "INVALID_FORMAT";
-    case "maxLength":
-      return "TOO_LONG";
-    default:
-      return "INVALID_VALUE";
-  }
-}
-
-function validationDetails(error: FastifyError): readonly ErrorDetail[] {
-  if (!Array.isArray(error.validation)) {
-    return [];
-  }
-  return error.validation.slice(0, 32).map((detail): ErrorDetail => {
-    const parameters = detail.params as Record<string, unknown>;
-    let path = typeof detail.instancePath === "string" ? detail.instancePath : "";
-    if (detail.keyword === "required" && typeof parameters.missingProperty === "string") {
-      path += `/${jsonPointer(parameters.missingProperty)}`;
-    }
-    if (
-      detail.keyword === "additionalProperties" &&
-      typeof parameters.additionalProperty === "string"
-    ) {
-      path += `/${jsonPointer(parameters.additionalProperty)}`;
-    }
-    return { path, code: validationCode(detail.keyword) };
-  });
-}
-
-function errorName(error: unknown): string | undefined {
-  return error instanceof Error ? error.name : undefined;
-}
-
-function isAuthorizationDenied(error: unknown): error is AuthorizationDeniedError {
-  return (
-    error instanceof AuthorizationDeniedError || errorName(error) === "AuthorizationDeniedError"
-  );
-}
-
-function isDependencyUnavailable(error: unknown): boolean {
-  return (
-    error instanceof DependencyUnavailableError || errorName(error) === "DependencyUnavailableError"
-  );
-}
-
-function requestFailure(error: unknown): RequestFailure {
-  if (error instanceof RequestFailure) {
-    return error;
-  }
-  if (error instanceof ModelDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-          "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "MODEL_DISCOVERY_RATE_LIMITED",
-          "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_INVALID_RESPONSE",
-          "The provider returned an invalid model list. Retry or enter a model ID manually.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_UNAVAILABLE",
-          "The provider model service is unavailable. Retry or enter a model ID manually.",
-        );
-    }
-  }
-  if (error instanceof PresetValidationError) {
-    return failure(400, "INVALID_REQUEST", "The supplied Preset template is invalid.");
-  }
-  if (error instanceof ConfigurationValidationError) {
-    return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
-  }
-  if (error instanceof ConfigurationOwnershipError) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  }
-  if (error instanceof NamespaceNotReadyError) {
-    return failure(
-      409,
-      "NAMESPACE_NOT_READY",
-      "The requested Namespace is not ready for deployment.",
-    );
-  }
-  if (error instanceof NamespaceNotEmptyError) {
-    return failure(409, "NAMESPACE_NOT_EMPTY", "The requested Namespace is not empty.");
-  }
-  if (error instanceof AgentDeletingError) {
-    return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
-  }
-  if (error instanceof NotImplementedError) {
-    return failure(501, "NOT_IMPLEMENTED", error.message);
-  }
-  if (isDependencyUnavailable(error)) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  }
-  if (error instanceof ResourceConflictError) {
-    return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
-  }
-  if (error instanceof ScopeViolationError) {
-    return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
-  }
-  if (isAuthorizationDenied(error)) {
-    return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-  }
-  if (error instanceof Error) {
-    const candidate = error as FastifyError;
-    if (error.name === "APIError") {
-      const statusCode = (error as { readonly statusCode?: unknown }).statusCode;
-      const status = typeof statusCode === "number" ? statusCode : 500;
-      if (status === 409) {
-        return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
-      }
-      if (status === 400) {
-        return failure(
-          400,
-          "INVALID_REQUEST",
-          "The request does not match the operation contract.",
-        );
-      }
-      if (status === 401) {
-        return failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
-      }
-      if (status === 403) {
-        return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-      }
-      return failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
-    }
-    if (candidate.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
-      return failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");
-    }
-    if (candidate.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") {
-      return failure(415, "UNSUPPORTED_MEDIA_TYPE", "Requests must use application/json.");
-    }
-    if (
-      candidate.code === "FST_ERR_CTP_EMPTY_JSON_BODY" ||
-      candidate.code === "FST_ERR_CTP_INVALID_CONTENT_LENGTH" ||
-      candidate.code === "FST_ERR_CTP_INVALID_JSON_BODY" ||
-      candidate.statusCode === 400
-    ) {
-      const details = validationDetails(candidate);
-      return failure(
-        400,
-        "INVALID_REQUEST",
-        "The request does not match the operation contract.",
-        details.length > 0 ? details : undefined,
-      );
-    }
-    if (error.name === "AdmissionFailure") {
-      const status =
-        candidate.statusCode === 403 || (candidate as { status?: number }).status === 403
-          ? 403
-          : 401;
-      return failure(
-        status,
-        status === 403 ? "FORBIDDEN" : "UNAUTHENTICATED",
-        status === 403
-          ? "The request did not satisfy the configured admission boundary."
-          : "The caller did not provide valid admission evidence.",
-      );
-    }
-  }
-  return failure(500, "INTERNAL_ERROR", "The platform request could not be completed.");
 }
 
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
@@ -1091,7 +982,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.removeContentTypeParser("text/plain");
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
+  app.addSchema(PluginApproversSchema);
   app.addSchema(PluginToolPolicySchema);
+  app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
   void app.register(swagger, {
@@ -1901,7 +1794,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     let admitted: AdmittedCaller;
     try {
-      admitted = await options.auth.admissionVerifier.verify({
+      admitted = await options.auth.admissionVerifier.verifyControllerRequest({
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
@@ -2071,6 +1964,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.registerDriver(options.secretDriver);
           created.selectDriver("secret", options.secretDriver.id);
         }
+        if (options.channelDriver) {
+          created.registerDriver(options.channelDriver);
+          created.selectDriver("channel", options.channelDriver.id);
+        }
         if (options.sandboxDriver) {
           created.registerDriver(options.sandboxDriver);
           created.selectDriver("sandbox", options.sandboxDriver.id);
@@ -2109,14 +2006,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "listProviders") {
+    if (operation.operationId === "getInstallationDeploymentInventory") {
+      reply.send({
+        data: await controller.getInstallationDeploymentInventory(context.actorId),
+        meta: { requestId: request.id },
+      });
+      return;
+    }
+
+    if (operation.operationId === "listBackends") {
       await requireInstallationAdmin(request, operation, context);
-      const providers = options.providerSummaries;
-      if (providers === undefined) {
+      const backends = options.backendSummaries;
+      if (backends === undefined) {
         throw dependencyUnavailable();
       }
       reply.send({
-        data: providers.map((provider) => ({ id: provider.id, type: provider.type })),
+        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
         meta: { requestId: request.id },
       });
       return;
@@ -2195,6 +2100,86 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "discoverAgentPlugins") {
+      const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
+        ...(body?.secretRef === undefined
+          ? { accessToken: body?.accessToken as string }
+          : { secretRef: body.secretRef as SecretReference }),
+        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+        ...(body?.q === undefined ? {} : { q: body.q as string }),
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: catalog, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverAgentPluginDetails") {
+      const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
+        ...(body?.secretRef === undefined
+          ? { accessToken: body?.accessToken as string }
+          : { secretRef: body.secretRef as SecretReference }),
+        pluginId: body?.pluginId as string,
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getSavedAgentPluginPolicyCapabilities") {
+      const capabilities = await controller.getSavedAgentPluginPolicyCapabilities(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: capabilities, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverSavedAgentPlugins") {
+      const catalog = await controller.discoverSavedAgentPlugins(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+        {
+          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+          ...(body?.q === undefined ? {} : { q: body.q as string }),
+        },
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: catalog, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverSavedAgentPluginDetails") {
+      const plugin = await controller.discoverSavedAgentPluginDetails(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+        { pluginId: body?.pluginId as string },
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "lookupChannelDirectory") {
+      const directory = await controller.lookupChannelDirectory(context.actorId, namespaceId, {
+        secretId: body?.secretId as string,
+        kind: body?.kind as "users" | "channels",
+        ...(body?.query === undefined ? {} : { query: body.query as string }),
+        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+        ...(body?.ids === undefined ? {} : { ids: body.ids as string[] }),
+        ...(body?.agentId === undefined ? {} : { agentId: body.agentId as string }),
+        ...(body?.configurationId === undefined
+          ? {}
+          : { configurationId: body.configurationId as string }),
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: directory, meta: { requestId: request.id } });
+      return;
+    }
+
     const resourceHandler = resourceHandlers[operation.operationId];
     if (resourceHandler) {
       await resourceHandler({
@@ -2245,9 +2230,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(provisionBody.workspaceDefaultsId === undefined
             ? {}
             : { workspaceDefaultsId: provisionBody.workspaceDefaultsId }),
-          ...(provisionBody.providerId === undefined
-            ? {}
-            : { providerId: provisionBody.providerId }),
+          ...(provisionBody.backendId === undefined ? {} : { backendId: provisionBody.backendId }),
           ...(provisionBody.executionMode === undefined
             ? {}
             : { executionMode: provisionBody.executionMode as HarnessExecutionMode }),
@@ -2261,6 +2244,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(provisionBody.plugins === undefined
             ? {}
             : { plugins: provisionBody.plugins as never }),
+          ...(provisionBody.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: provisionBody.pluginApprovers as never }),
           ...(provisionBody.repositoryBindings === undefined
             ? {}
             : {
@@ -2344,9 +2330,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             : { workspaceDefaultsId: body.workspaceDefaultsId as string }),
           name: body?.name as string,
           configurationId: body?.configurationId as string,
-          ...(body?.providerId === undefined
-            ? {}
-            : { providerId: body.providerId as string | null }),
+          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
           ...(body?.executionMode === undefined
             ? {}
             : { executionMode: body.executionMode as HarnessExecutionMode }),
@@ -2354,6 +2338,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
+          ...(body?.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: body.pluginApprovers as never }),
           ...(body?.repositoryBindings === undefined
             ? {}
             : {
@@ -2449,9 +2436,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           agentId,
           configurationId: body?.configurationId as string,
-          ...(body?.providerId === undefined
-            ? {}
-            : { providerId: body.providerId as string | null }),
+          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
           ...(body?.executionMode === undefined
             ? {}
             : { executionMode: body.executionMode as HarnessExecutionMode }),
@@ -2459,6 +2444,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
+          ...(body?.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: body.pluginApprovers as never }),
           ...(body?.repositoryBindings === undefined
             ? {}
             : {
@@ -2495,6 +2483,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return clientAgent(deleting);
       });
       reply.status(202).send({ data: agent, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getAgentRuntimeImages") {
+      const images = await controller.getAgentRuntimeImages(context.actorId, namespaceId, agentId);
+      reply.send({ data: images, meta: { requestId: request.id } });
       return;
     }
 
@@ -2810,6 +2804,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.deploymentId as string,
       );
       reply.send({ data: clientDeploymentStatus(status), meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "diagnoseAgentDeployment") {
+      const diagnostics = await controller.diagnoseAgentDeployment(
+        context.actorId,
+        namespaceId,
+        agentId,
+        params.deploymentId as string,
+      );
+      reply.send({ data: diagnostics, meta: { requestId: request.id } });
       return;
     }
 
@@ -3245,7 +3250,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "getAuthSession",
           summary: "Inspect authentication without revealing session tokens",
           description:
-            "Returns only authenticated status and public account identity, or null without a valid session; session tokens and credentials are never returned.",
+            "Returns authenticated status, public account identity, and a noncredential sessionKey that stays stable across reads and changes for a new session, or null without a valid session; session tokens and credentials are never returned.",
           tags: ["Authentication"],
           security: [],
           response: {
@@ -3257,9 +3262,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   {
                     type: "object",
                     additionalProperties: false,
-                    required: ["authenticated", "user"],
+                    required: ["authenticated", "sessionKey", "user"],
                     properties: {
                       authenticated: { type: "boolean", const: true },
+                      sessionKey: { type: "string" },
                       user: {
                         type: "object",
                         additionalProperties: false,
@@ -3395,8 +3401,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   void app.register(async (routes) => {
     routes.addSchema(ErrorResponse);
+    routes.addSchema(AgentDeploymentDiagnosticsResponse);
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
+    routes.addSchema(CredentialSourceResponse);
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -3744,14 +3752,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
+  // Route patterns are fixed for this app; retain contract order for the Allow header.
+  const methodRoutes = occApiRoutes.map(({ method, path }) => ({
+    method,
+    pattern: new RegExp(`^${path.replace(/:[^/]+/g, "[^/]+")}$`),
+  }));
   app.setNotFoundHandler(async (request, reply) => {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const allowed = occApiRoutes
-      .filter((operation) => {
-        const pattern = operation.path.replace(/:[^/]+/g, "[^/]+");
-        return new RegExp(`^${pattern}$`).test(pathname);
-      })
-      .map((operation) => operation.method);
+    const allowed = methodRoutes
+      .filter(({ pattern }) => pattern.test(pathname))
+      .map(({ method }) => method);
     if (allowed.length > 0) {
       reply.header("allow", [...new Set(allowed)].join(", "));
       canonicalFailure(

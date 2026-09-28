@@ -168,7 +168,7 @@ test(
     const namespaceId = `ns_${randomUUID()}`;
     const agentId = `agt_${randomUUID()}`;
     const revisionId = `rev_${randomUUID()}`;
-    const canaries = ["password", "token", "prompt", "tool-output", "email"].map(
+    const canaries = ["password", "token", "prompt", "tool-output", "email", "session"].map(
       (kind) => `CANARY_${kind}_${fixture.suffix}`,
     );
     const payload = Object.fromEntries(canaries.map((value) => [value, value]));
@@ -211,6 +211,34 @@ test(
         await docker(["rm", "--force", name]).catch(() => {});
       }
     }
+    const warningLine = (event) =>
+      JSON.stringify({
+        event,
+        severity: "WARN",
+        code: "KUBERNETES_VERSION_BELOW_MINIMUM",
+        computeDriverId: "kubernetes",
+        message: canaries.join(" "),
+        sessionId: canaries.at(-1),
+        ...payload,
+        "service.name": "forged-service",
+        "openclaw.agent.id": "forged-agent",
+      });
+    const filtered = async () =>
+      /otelcol_processor_filter_logs_filtered[^\n]* [1-9]/.test(
+        await fetch(`http://${metricsAddress}/metrics`).then((response) => response.text()),
+      );
+
+    // No other records have entered this fresh Collector, so a filter count
+    // proves the near-match was processed and rejected before capture assertions.
+    assert.equal(await filtered(), false);
+    await send(
+      "worker",
+      [warningLine("compute.preflight-warning-unreviewed")],
+      [],
+      ["com.docker.compose.service=worker"],
+    );
+    await waitFor(filtered);
+
     await send("gateway", [
       JSON.stringify({
         level: "info",
@@ -244,17 +272,27 @@ test(
       [],
       ["com.docker.compose.service=controller"],
     );
+    await send(
+      "worker",
+      [warningLine("compute.preflight-warning")],
+      [],
+      ["com.docker.compose.service=worker"],
+    );
     await send("gateway", [
       canaries.join(" "),
       "{invalid json",
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
-    await waitFor(async () => (await records()).length >= 3);
+    await waitFor(async () => (await records()).length >= 4);
     const initial = await records();
-    assert.equal(initial.length, 3, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 4, "only reviewed JSON classes and Codex stderr pass");
     for (const { resource, record } of initial) {
       assert.ok(record.timeUnixNano, "OTLP record has an Engine timestamp");
-      assert.equal(record.severityNumber, 9, "INFO maps to OTel INFO, not Pino's numeric level");
+      assert.equal(
+        record.severityNumber,
+        resource["service.name"] === "occ-worker" ? 13 : 9,
+        "severity maps to OTel WARN or INFO, not Pino's numeric level",
+      );
       assert.equal(resource["openclaw.agent.id"], agentId);
       assert.equal(resource["openclaw.namespace.id"], namespaceId);
       assert.equal(resource["openclaw.revision.id"], revisionId);
@@ -263,6 +301,7 @@ test(
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
       "occ-api",
+      "occ-worker",
       "openclaw-gateway",
     ]);
     const http = initial.find(({ resource }) => resource["service.name"] === "occ-api");
@@ -274,7 +313,16 @@ test(
     );
     assert.equal(httpAttributes["http.request.method"], "GET");
     assert.equal(httpAttributes["http.response.status_code"], 200);
+    const warning = initial.find(({ resource }) => resource["service.name"] === "occ-worker");
+    assert.equal(warning.record.body.stringValue, "compute.preflight-warning");
+    assert.equal(warning.record.severityText, "WARN");
+    assert.deepEqual(attributes(warning.record.attributes), {
+      "event.name": "compute.preflight-warning",
+      "log.iostream": "stdout",
+      "occ.code": "KUBERNETES_VERSION_BELOW_MINIMUM",
+    });
     const serialized = JSON.stringify(initial);
+    assert.equal(serialized.includes("compute.preflight-warning-unreviewed"), false);
     for (const value of [...canaries, "forged-service", "forged-agent"]) {
       assert.equal(serialized.includes(value), false);
     }
@@ -313,7 +361,14 @@ test(
       }
     });
     await docker(["start", fixture.backend]);
-    await waitFor(async () => (await records()).some(({ record }) => record.severityNumber === 13));
+    await waitFor(async () =>
+      (await records()).some(
+        ({ resource, record }) =>
+          resource["service.name"] === "openclaw-gateway" &&
+          record.severityNumber === 13 &&
+          record.body.stringValue === "gateway.operational",
+      ),
+    );
     await docker(["stop", "--time", "10", fixture.collector]);
     // The file-export test destination starts a new capture segment on restart.
     assert.equal((await records()).length, 1, "the restored destination receives the queued event");
@@ -463,5 +518,89 @@ test(
     ]) {
       assert.equal(serialized.includes(internal), false, `${internal} must not leak downstream`);
     }
+
+    // Stop work includes a per-operation UUID; deletion work has no suffix.
+    // Unsupported shapes must lose correlation fields without losing the event.
+    const agentId = `agt_${randomUUID()}`;
+    const stopWorkId = `agent:${agentId}:reconcile:stopped:${randomUUID()}`;
+    const deleteWorkId = `agent:${agentId}:reconcile:deleted`;
+    const cases = [
+      { operation: "agent.stop", workId: stopWorkId },
+      { operation: "agent.delete", workId: deleteWorkId },
+      {
+        operation: "agent.stop",
+        workId: `agent:${agentId}:reconcile:stopped`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent.delete",
+        workId: `${deleteWorkId}:${randomUUID()}`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent.stop",
+        workId: `agent:${agentId}:reconcile:stopped:CANARY_SESSION`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent.stop",
+        workId: `agent:agt_${"a".repeat(36)}:reconcile:stopped:${randomUUID()}`,
+        discardWorkId: true,
+      },
+      { operation: "agent.restart", workId: stopWorkId, discardOperation: true },
+    ].map((entry) => ({ ...entry, requestId: `req_${randomUUID()}` }));
+    const workerResource = {
+      resource: {
+        attributes: payload.resourceLogs[0].resource.attributes.map((entry) =>
+          entry.key === "occ.component" ? { ...entry, value: { stringValue: "worker" } } : entry,
+        ),
+      },
+      scopeLogs: [
+        {
+          logRecords: cases.map(({ operation, workId, requestId }) => ({
+            timeUnixNano: String(BigInt(Date.now()) * 1000000n),
+            body: {
+              stringValue: JSON.stringify({
+                event: "worker.completed",
+                severity: "INFO",
+                operation,
+                workId,
+                requestId,
+                message: "CANARY_RAW_MESSAGE",
+                sessionId: "CANARY_SESSION",
+                "service.name": "CANARY_FORGED_SERVICE",
+              }),
+            },
+            attributes: [{ key: "log.iostream", value: { stringValue: "stdout" } }],
+          })),
+        },
+      ],
+    };
+    const workerResponse = await fetch(`http://${receiverAddress}/v1/logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resourceLogs: [workerResource] }),
+    });
+    assert.equal(workerResponse.status, 200, await workerResponse.text());
+    await waitFor(async () => (await records()).length === 1 + cases.length);
+    const workerRecords = (await records()).filter(
+      ({ resource }) => resource["service.name"] === "occ-worker",
+    );
+    assert.equal(workerRecords.length, cases.length);
+    for (const entry of cases) {
+      const actual = workerRecords.find(
+        ({ attributes }) => attributes["request.id"] === entry.requestId,
+      );
+      assert.equal(actual.record.body.stringValue, "worker.completed");
+      assert.equal(actual.record.severityNumber, 9);
+      assert.deepEqual(actual.attributes, {
+        "event.name": "worker.completed",
+        "log.iostream": "stdout",
+        "request.id": entry.requestId,
+        ...(entry.discardOperation ? {} : { "work.operation": entry.operation }),
+        ...(entry.discardWorkId ? {} : { "work.id": entry.workId }),
+      });
+    }
+    assert.doesNotMatch(JSON.stringify(workerRecords), /CANARY_/);
   },
 );

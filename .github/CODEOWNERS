@@ -1,9 +1,9 @@
 # Default review routing.
-* @openclaw/maintainer
+* @openclaw/maintainers-oce
 
 # Keep security-only rules last: GitHub uses the last matching line.
 # Multiple owners on one line mean either owner, not approval from both.
-# Required code-owner approval is a repository setting, not enabled by this file.
+# Repository rules configure whether code-owner approval is required.
 # TODO: Restore SecOps-only ownership before the first production release.
 # /.github/CODEOWNERS @openclaw/openclaw-secops
 # /.github/maintenance.md @openclaw/openclaw-secops

@@ -138,10 +138,11 @@ async function load(owner, configuration, mode = "production") {
 
 async function authenticatedApplication(t, drivers) {
   const installationId = `ins_${randomUUID()}`;
+  const authOrigin = "http://127.0.0.1";
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
-    baseURL: "http://127.0.0.1",
+    baseURL: authOrigin,
     email: `driver-plugin-admin-${randomUUID()}@example.test`,
     password: `driver-plugin-password-${randomUUID()}`,
     name: "Driver Plugin Administrator",
@@ -228,7 +229,7 @@ async function authenticatedApplication(t, drivers) {
 
   return {
     app,
-    config: { installationId, principalId: principal.id, cookie },
+    config: { installationId, principalId: principal.id, cookie, authOrigin },
     auditSink,
     iamDriver,
     restrictNamespaceDelete() {
@@ -249,6 +250,7 @@ async function request(fixture, method, url, payload) {
     url,
     headers: {
       cookie: fixture.config.cookie,
+      origin: fixture.config.authOrigin,
       host: "127.0.0.1",
     },
     ...(payload === undefined ? {} : { payload }),

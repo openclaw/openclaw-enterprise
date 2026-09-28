@@ -106,7 +106,7 @@ test(
     );
     await writeFile(
       join(directory, "dashboards", "occ.json"),
-      await readFile("deploy/metrics/development/dashboard.json"),
+      await readFile("deploy/helm/openclaw-observability-demo/files/dashboard.json"),
     );
 
     async function container(role, image, args, extra = []) {
@@ -177,7 +177,7 @@ test(
       ),
     );
     const dashboard = JSON.parse(
-      await readFile("deploy/metrics/development/dashboard.json", "utf8"),
+      await readFile("deploy/helm/openclaw-observability-demo/files/dashboard.json", "utf8"),
     );
     // Every shipped panel must be valid PromQL, even when a quiet/absent worker
     // has no samples. A real server, not a string matcher, checks the queries.

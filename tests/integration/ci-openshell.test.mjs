@@ -38,40 +38,35 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values preserve immutable digests in rendered tags", () => {
+test("OpenShell Helm chart image values use the v0.1.0 registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
-    openShellChartImageValues("image", `localhost/example/gateway:local${digest}`, "0.1.0-pre.5"),
+    openShellChartImageValues("gateway.image", `localhost/example/gateway:local${digest}`),
     [
-      "--set-string=image.repository=localhost/example/gateway",
-      `--set-string=image.tag=local${digest}`,
+      "--set-string=gateway.image.registry=localhost",
+      "--set-string=gateway.image.repository=example/gateway",
+      `--set-string=gateway.image.digest=${digest.slice(1)}`,
     ],
   );
   assert.deepEqual(
-    openShellChartImageValues(
-      "supervisor.image",
-      `localhost/example/supervisor${digest}`,
-      "0.1.0-pre.5",
-    ),
+    openShellChartImageValues("supervisor.image", `localhost/example/supervisor${digest}`),
     [
-      "--set-string=supervisor.image.repository=localhost/example/supervisor",
-      `--set-string=supervisor.image.tag=0.1.0-pre.5${digest}`,
+      "--set-string=supervisor.image.registry=localhost",
+      "--set-string=supervisor.image.repository=example/supervisor",
+      `--set-string=supervisor.image.digest=${digest.slice(1)}`,
     ],
   );
   assert.deepEqual(
-    openShellChartImageValues(
-      "sandboxRuntime.image",
-      `localhost/example/sandbox${digest}`,
-      "0.1.0-pre.5",
-    ),
+    openShellChartImageValues("sandboxRuntime.image", `localhost:5000/example/sandbox${digest}`),
     [
-      "--set-string=sandboxRuntime.image.repository=localhost/example/sandbox",
-      `--set-string=sandboxRuntime.image.tag=0.1.0-pre.5${digest}`,
+      "--set-string=sandboxRuntime.image.registry=localhost:5000",
+      "--set-string=sandboxRuntime.image.repository=example/sandbox",
+      `--set-string=sandboxRuntime.image.digest=${digest.slice(1)}`,
     ],
   );
   assert.throws(
-    () => openShellChartImageValues("image", "localhost/example/gateway:local", "0.1.0-pre.5"),
+    () => openShellChartImageValues("gateway.image", "localhost/example/gateway:local"),
     /immutable OpenShell image digest/,
   );
 });

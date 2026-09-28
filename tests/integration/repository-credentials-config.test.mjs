@@ -63,7 +63,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
   const registryFile = join(directory, "registry.json");
   const registry = {
     version: 1,
-    providerId: "github-provider",
+    backendId: "github-provider",
     providerInstanceId: "production",
     appId: "12345",
     githubInstallationId: "41",
@@ -82,7 +82,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
     ...input,
     backend: {
       kind: "github-app-registry",
-      providerId: "github-provider",
+      backendId: "github-provider",
       registryFile,
       privateKeyFile: key,
     },
@@ -90,7 +90,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
   await save(bound);
   assert.deepEqual(await checkConfiguration(file), summary);
   for (const invalid of [
-    { ...bound, backend: { ...bound.backend, providerId: "another-provider" } },
+    { ...bound, backend: { ...bound.backend, backendId: "another-provider" } },
     { ...bound, backend: { ...bound.backend, appId: "12345" } },
     { ...bound, sessionPolicy: { ...bound.sessionPolicy, maximumDurationSeconds: 172801 } },
     { ...bound, backend: { ...bound.backend, registryFile: key } },

@@ -25,7 +25,9 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "secret",
     "sandbox",
     "plugin",
+    "channel",
     "repo",
+    "credential_gateway",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -165,6 +167,7 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
     "secret",
     "agent",
     "agent_revision",
+    "credential_source",
   ]);
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 
@@ -192,14 +195,25 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
       method: "chatgpt_service_account",
       serviceAccountId: "service-account-a",
       credential: { kind: "access_token", secretRef: { name: "account-source", key: "token" } },
-      providerBinding: {
-        providerId: "chatgpt",
+      backendBinding: {
+        backendId: "chatgpt",
         driverId: "accounts",
         workspaceId: "workspace-a",
         credentialIssued: true,
       },
     },
     sandboxDriverId: "sandbox-test",
+    plugins: {
+      driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+      plugins: {
+        "codex-plugin:github@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "all_actions", reviewer: "human" },
+          tools: { "repos/list": { enabled: true }, "repos/write": { approval: "none" } },
+          driverPolicy: { destructiveEnabled: false },
+        },
+      },
+    },
     repositoryCredentials: {
       driver: { id: "repository-credentials", implementation: "repository-test" },
       deadlineWallMs: 1786755600000,
@@ -207,7 +221,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
         {
           repositoryRef: "application",
           profile: "write-profile",
-          providerId: "repository-provider",
+          backendId: "repository-provider",
           grant: {
             providerInstanceId: "provider-instance",
             repositoryId: "repository-identity",
@@ -228,7 +242,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   assert.equal(Object.isFrozen(admitted.compute), true);
   assert.equal(Object.isFrozen(admitted.harnessAuth), true);
   assert.equal(Object.isFrozen(admitted.harnessAuth.credential.secretRef), true);
-  assert.equal(Object.isFrozen(admitted.harnessAuth.providerBinding), true);
+  assert.equal(Object.isFrozen(admitted.harnessAuth.backendBinding), true);
   assert.equal(Object.isFrozen(admitted.repositoryCredentials), true);
   assert.equal(Object.isFrozen(admitted.repositoryCredentials.driver), true);
   assert.equal(Object.isFrozen(admitted.repositoryCredentials.bindings), true);
@@ -247,7 +261,19 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   mutableRevision.compute.implementation = "changed-after-admission";
   mutableRevision.sandboxDriverId = "changed-after-admission";
   mutableRevision.harnessAuth.credential.secretRef.name = "replacement-source";
-  mutableRevision.harnessAuth.providerBinding.workspaceId = "replacement-workspace";
+  mutableRevision.harnessAuth.backendBinding.workspaceId = "replacement-workspace";
+  const draftPlugin = mutableRevision.plugins.plugins["codex-plugin:github@openai-curated-remote"];
+  draftPlugin.toolDefaults.approval = "none";
+  draftPlugin.toolDefaults.reviewer = "auto";
+  draftPlugin.tools["repos/list"].enabled = false;
+  draftPlugin.driverPolicy.destructiveEnabled = true;
+  // Partial tool policies stay partial in the immutable deployment snapshot.
+  assert.deepEqual(admitted.plugins.plugins["codex-plugin:github@openai-curated-remote"], {
+    enabled: true,
+    toolDefaults: { approval: "all_actions", reviewer: "human" },
+    tools: { "repos/list": { enabled: true }, "repos/write": { approval: "none" } },
+    driverPolicy: { destructiveEnabled: false },
+  });
   // Draft mutation must not retarget or extend an already admitted repository grant.
   mutableRevision.repositoryCredentials.driver.id = "replacement-driver";
   mutableRevision.repositoryCredentials.deadlineWallMs += 60_000;
@@ -258,7 +284,7 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     repositoryRef: "additional-repository",
   });
   assert.equal(admitted.harnessAuth.credential.secretRef.name, "account-source");
-  assert.equal(admitted.harnessAuth.providerBinding.workspaceId, "workspace-a");
+  assert.equal(admitted.harnessAuth.backendBinding.workspaceId, "workspace-a");
   assert.equal(admitted.repositoryCredentials.driver.id, "repository-credentials");
   assert.equal(admitted.repositoryCredentials.deadlineWallMs, 1786755600000);
   assert.equal(admitted.repositoryCredentials.bindings.length, 1);
@@ -299,5 +325,10 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
   }, TypeError);
   assert.throws(() => {
     admitted.repositoryCredentials.bindings[0].grant.repositoryId = "unauthorized-repository";
+  }, TypeError);
+  assert.throws(() => {
+    admitted.plugins.plugins["codex-plugin:github@openai-curated-remote"].tools[
+      "repos/list"
+    ].enabled = false;
   }, TypeError);
 });

@@ -10,7 +10,9 @@ function openClawRuntime(selection = {}) {
   return {
     manifest: {
       kind: "openclaw",
-      selections: { "occ-plugin:diffs": { enabled: true, approvalMode: "always", ...selection } },
+      selections: {
+        "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" }, ...selection },
+      },
     },
   };
 }
@@ -77,6 +79,125 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "diffs"]);
 });
 
+test("OpenClaw runtime merges matching inherited native approvers", () => {
+  const agentApprover = "team:T123:user:U123";
+  const otherAgentApprover = "team:T123:user:U789";
+  const pluginApprover = "team:T123:user:U456";
+  const runtime = openClawRuntime({
+    approvers: [{ channel: "slack", id: pluginApprover }],
+    tools: { diffs: { approvers: [] } },
+  });
+  runtime.manifest.pluginApprovers = [agentApprover, otherAgentApprover].map((id) => ({
+    channel: "slack",
+    id,
+  }));
+  const configured = {
+    approvers: [otherAgentApprover.toUpperCase(), agentApprover],
+    plugins: {
+      diffs: {
+        tools: { other: { approvers: [pluginApprover] }, diffs: { approvers: [] } },
+        approvers: [pluginApprover],
+      },
+    },
+  };
+  const { files } = runOpenClawRuntimeHelper(runtime, installedPluginResponses(), {
+    baseConfig: { approvals: { plugin: { slack: configured } } },
+  });
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.approvals.plugin.slack, {
+    ...configured,
+    approvers: [agentApprover, otherAgentApprover],
+  });
+
+  const conflicting = runOpenClawRuntimeHelper(runtime, [], {
+    baseConfig: {
+      approvals: {
+        plugin: {
+          slack: {
+            ...configured,
+            plugins: { diffs: { ...configured.plugins.diffs, approvers: [] } },
+          },
+        },
+      },
+    },
+    captureError: true,
+  });
+  assert.match(conflicting.error?.message ?? "", /conflicts with managed Agent approvers/);
+  assert.deepEqual(conflicting.calls, []);
+
+  const conflictingTool = runOpenClawRuntimeHelper(runtime, [], {
+    baseConfig: {
+      approvals: {
+        plugin: {
+          slack: {
+            ...configured,
+            plugins: {
+              diffs: {
+                ...configured.plugins.diffs,
+                tools: { ...configured.plugins.diffs.tools, diffs: { approvers: [agentApprover] } },
+              },
+            },
+          },
+        },
+      },
+    },
+    captureError: true,
+  });
+  assert.match(conflictingTool.error?.message ?? "", /conflicts with managed Agent approvers/);
+  assert.deepEqual(conflictingTool.calls, []);
+});
+
+test("OpenClaw startup rejects native approvers that bypass an Agent ancestor", () => {
+  const agentApprover = "team:T123:user:U123";
+  const otherApprover = "team:T123:user:U456";
+  const defaultRuntime = openClawRuntime();
+  defaultRuntime.manifest.pluginApprovers = [];
+  for (const [runtime, configured] of [
+    [defaultRuntime, { plugins: { diffs: { approvers: [otherApprover] } } }],
+    [
+      openClawRuntime({ approvers: [{ channel: "slack", id: agentApprover }] }),
+      { plugins: { diffs: { tools: { other: { approvers: [otherApprover] } } } } },
+    ],
+  ]) {
+    const result = runOpenClawRuntimeHelper(runtime, installedPluginResponses(), {
+      baseConfig: { approvals: { plugin: { slack: configured } } },
+      captureError: true,
+    });
+    assert.match(result.error?.message ?? "", /conflicts with managed Agent approvers/);
+    assert.deepEqual(result.calls, []);
+  }
+});
+
+test("Codex bridge preserves an unrelated native tool approver for the same plugin", () => {
+  const appId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
+  const readTool = `${appId}/repos%2Fread`;
+  const writeTool = `${appId}/repos%2Fwrite`;
+  const approver = "team:T123:user:U123";
+  const runtime = {
+    manifest: {
+      kind: "codex",
+      selections: {
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          tools: { [readTool]: { approvers: [{ channel: "slack", id: approver }] } },
+        },
+      },
+    },
+  };
+  const { files } = runOpenClawRuntimeHelper(runtime, [], {
+    baseConfig: {
+      approvals: {
+        plugin: { slack: { plugins: { linear: { tools: { [writeTool]: { approvers: [] } } } } } },
+      },
+    },
+  });
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.approvals.plugin.slack.plugins.linear.tools, {
+    [writeTool]: { approvers: [] },
+    [readTool]: { approvers: [approver] },
+  });
+});
+
 for (const [name, tools] of [
   ["profile grants", { alsoAllow: ["existing-tool"] }],
   ["explicit allowlist", { allow: ["read"] }],
@@ -114,7 +235,10 @@ test("OpenClaw runtime helper fails before readiness when raw Codex bridge confi
     manifest: {
       kind: "codex",
       selections: {
-        "codex-plugin:linear@openai-curated-remote": { enabled: true, approvalMode: "auto" },
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "provider_default" },
+        },
       },
     },
   };
@@ -248,28 +372,29 @@ for (const [field, plugins] of [
   });
 }
 
-for (const selection of [{ enabled: false }, { approvalMode: "never" }]) {
-  test(`OpenClaw startup preserves restrictions for disabled selection: ${JSON.stringify(selection)}`, () => {
-    const plugins = { allow: ["memory-core"], deny: ["diffs"], enabled: false };
-    const { files, calls } = runOpenClawRuntimeHelper(
-      openClawRuntime(selection),
-      installedPluginResponses(),
-      {
-        baseConfig: { plugins },
-      },
-    );
-    const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-    assert.deepEqual(effective.plugins, { ...plugins, entries: { diffs: { enabled: false } } });
-    assert.ok(calls[0].args.includes("--no-enable"));
-  });
-}
+test("OpenClaw startup preserves restrictions for a disabled selection", () => {
+  const plugins = { allow: ["memory-core"], deny: ["diffs"], enabled: false };
+  const { files, calls } = runOpenClawRuntimeHelper(
+    openClawRuntime({ enabled: false }),
+    installedPluginResponses(),
+    {
+      baseConfig: { plugins },
+    },
+  );
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.plugins, { ...plugins, entries: { diffs: { enabled: false } } });
+  assert.ok(calls[0].args.includes("--no-enable"));
+});
 
 test("OpenClaw startup rejects a blocked Codex bridge before readiness", () => {
   const runtime = {
     manifest: {
       kind: "codex",
       selections: {
-        "codex-plugin:linear@openai-curated-remote": { enabled: true, approvalMode: "auto" },
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "provider_default" },
+        },
       },
     },
   };
@@ -362,43 +487,18 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   ]);
   assert.deepEqual(transfer.nodes["enrolled-node"].allowReadPaths, [
     "/home/node/workspace",
-    ...[...WORKSPACE_FILE_NAMES, "BOOTSTRAP.md", "MEMORY.md"].map(
-      (name) => "/home/node/workspace/" + name,
-    ),
-    ...["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"].map(
-      (name) => "/home/node/workspace/" + name,
-    ),
+    "/home/node/workspace/**",
     "/home/node/.openclaw",
     ...[
-      "/home/node/workspace/skills",
-      "/home/node/workspace/.agents/skills",
       "/home/node/.openclaw/skills",
       "/home/node/.openclaw/plugin-skills",
       "/home/node/.agents/skills",
       "/home/node/openclaw-runtime-assets/bundled-skills",
       "/home/node/openclaw-runtime-assets/plugin-skills",
     ].flatMap((root) => [root, root + "/**"]),
-    "/home/node/workspace/media/inbound/openclaw-staged-*",
-    "/home/node/workspace/media/inbound/openclaw-staged-*/**",
-    "/home/node/workspace/media/outbound/**",
   ]);
   assert.equal(transfer.nodes["enrolled-node"].followSymlinks, false);
-  // Native bootstrap treats brackets literally. Grant only the configured
-  // document, without admitting sibling files, writes, or out-of-workspace paths.
-  assert.deepEqual(transfer.literalGrants, [
-    {
-      nodeId: "enrolled-node",
-      command: "file.fetch",
-      requestedPath: "/home/node/workspace/team[1]/AGENTS.md",
-      canonicalPath: "/home/node/workspace/team[1]/AGENTS.md",
-    },
-    {
-      nodeId: "enrolled-node",
-      command: "file.stat",
-      requestedPath: "/home/node/workspace/team[1]/AGENTS.md",
-      canonicalPath: "/home/node/workspace/team[1]/AGENTS.md",
-    },
-  ]);
+  assert.equal(transfer.literalGrants, undefined);
   assert.equal(effective.gateway.nodes.commands.allow.includes("existing.command"), true);
   assert.equal(effective.gateway.nodes.commands.allow.includes("dir.list"), true);
   assert.equal(effective.gateway.nodes.commands.allow.includes("file.create"), true);
@@ -406,21 +506,6 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   assert.equal(effective.gateway.nodes.commands.allow.includes("workspace.skills"), true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].args[1], "gateway");
-  for (const hooks of [
-    { internal: { ...baseConfig.hooks.internal, enabled: false } },
-    {
-      internal: {
-        entries: { "bootstrap-extra-files": { paths: ["team[1]/AGENTS.md"], enabled: false } },
-      },
-    },
-  ]) {
-    const disabled = await runOpenClawRuntimeHelper(undefined, [], {
-      baseConfig: { ...baseConfig, hooks },
-      workspaceNodeId: "enrolled-node",
-    });
-    const config = JSON.parse(disabled.files.get("/home/node/.openclaw/openclaw.json"));
-    assert.equal(config.plugins.entries["file-transfer"].config.literalGrants, undefined);
-  }
   const explicit = { nodes: { "*": { ask: "off", allowReadPaths: ["/chosen/AGENTS.md"] } } };
   const configured = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: {

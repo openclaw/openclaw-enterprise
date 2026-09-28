@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-23
-last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-09-27 20:59
+last_updated_session: authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -87,9 +87,12 @@ owners with `beforeNamespaceDelete` in reverse.
 `apps/controller/src/drivers/compute/lifecycle-hooks.ts:ComputeLifecycleDispatcher.beforeWorkloadStart`
 
 Kubernetes `prepareRevision` invokes selected workload hooks for initial embedded gateway creation
-and for dedicated Codex workload preparation. Embedded replacement revisions are different: after
-staging the immutable configuration, Service, and private claim, `prepareRevision` can return ready
-without starting the replacement gateway. After the worker commits the new active revision,
+and for dedicated Codex workload preparation. Before a dedicated Codex workload starts, preparation
+stages the gateway-to-Agent runtime NetworkPolicies, the temporary authentication egress policy,
+and workspace-node enrollment material; the gateway cannot enroll its node or reach the Agent
+app-server until those policies exist. Embedded replacement revisions are different: after staging
+the immutable configuration, Service, and private claim, `prepareRevision` can return ready without
+starting the replacement gateway. After the worker commits the new active revision,
 `KubernetesComputeDriver.activateRevision` invokes `beforeWorkloadStart`, updates the `Recreate`
 gateway Deployment and Service, then checks gateway readiness.
 
@@ -98,10 +101,9 @@ gateway Deployment and Service, then checks gateway readiness.
 namespace. The Pod-level selector also schedules the Gateway's private-state initializer there.
 Compute owns both targets through the same revision lifecycle; teardown selects each resource's
 physical namespace and preserves newer revisions and durable Agent claims.
-Each dedicated candidate owns its own authentication egress NetworkPolicy until
-its Harness terminates. Pending revisions can reconcile concurrently without
-moving another candidate's model-login grant; stop and retirement remove only
-the terminating revision's grant.
+Dedicated replacement stops earlier Harnesses before preparing the successor.
+The Agent-owned authentication NetworkPolicy selects only the successor revision;
+superseded reconciliation cannot move that grant back to a predecessor.
 
 SSH stages embedded snapshots without starting the candidate gateway. After the
 worker commits the active revision, `SshComputeDriver.activateRevision` invokes
@@ -133,6 +135,8 @@ bounded cleanup signal so cancellation cannot suppress compensation.
   cancellation, and rollback.
 - Run `node --test --test-name-pattern='Kubernetes lifecycle owners cannot be replaced|Kubernetes lifecycle hooks never run' tests/conformance/kubernetes-compute.test.mjs`
   for concrete Kubernetes owner and lifecycle-boundary behavior.
+- Run `node --test tests/conformance/plugin-compute.test.mjs --test-name-pattern "embedded plugin preparation applies runtime egress before gateway readiness"`
+  for Kubernetes preparation ordering of embedded and dedicated runtime NetworkPolicies before Gateway readiness.
 - Errors include only the failing hook phase and owner. Investigate exact selected identities,
   operation cancellation, unsafe placeholder values, and pending revocation without printing
   credentials or sensitive endpoints.
@@ -154,7 +158,9 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 
 ## Changelog
 
-- 2026-09-23 23:34: Scope authentication egress to each candidate revision and remove it after workload termination.
+- 2026-09-27 20:59: Align two-cluster authentication policy with exclusive Harness replacement. (authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4 - bbb02cd9bad2c9ae0497d0340271730bdc647b55)
+
+- 2026-09-26 10:36: Document dedicated Codex runtime NetworkPolicy staging before workspace-node enrollment. (authoring-run/2f86d216-c9e9-4160-b47d-ae17e8c58fcd - caf123193961444ad99d6ebddbdbd49f040d1922)
 
 - 2026-09-23 11:31: Separate dedicated Gateway scheduling and lifecycle placement from the Harness target. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b141ba1157c2f28276717d35c8c63028f209a479)
 

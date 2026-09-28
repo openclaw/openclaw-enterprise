@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source": "5f9a9903239a84224a755610339f3bf0443c171f",
+  "source": "1985586676c42cd359b9ecc22e22ce8f0e30034d",
   "entries": [
     {
       "idx": 0,
@@ -118,9 +118,9 @@
       "idx": 14,
       "version": "7",
       "when": 1787000000014,
-      "tag": "0014_provider_driver_abstraction",
+      "tag": "0014_backend_driver_abstraction",
       "breakpoints": true,
-      "sha256": "1f5901acf85da9f716e364b24030ff974d5eb64e2114b6fd9f61b9603857a48d"
+      "sha256": "3a14278d6f13aba1676a95ab6e994f1545a11b3e947fb3622555de145613ae94"
     },
     {
       "idx": 15,
@@ -144,7 +144,7 @@
       "when": 1787000000017,
       "tag": "0017_harness_auth_binding",
       "breakpoints": true,
-      "sha256": "61bf5a458375cb7eeae33b4208af29a69c639362196feeb2f60c673b26e389a1"
+      "sha256": "0f9e080794e6237bafe24460cdd3ea014b990461f98ce594a31ec3ff2b20df94"
     },
     {
       "idx": 18,
@@ -152,7 +152,7 @@
       "when": 1787000000018,
       "tag": "0018_runtime_harness_auth",
       "breakpoints": true,
-      "sha256": "c5e48345949f797a19a5c5214c55aad00e1ee321ef9a738a020bba82143c7827"
+      "sha256": "a37f156d7a8ce47dba787b7944ed3072d2b48593c539203283ae01bd570cc55f"
     },
     {
       "idx": 19,
@@ -208,7 +208,7 @@
       "when": 1787000000025,
       "tag": "0025_repository_credentials",
       "breakpoints": true,
-      "sha256": "9d9920b20f3900090880426a84f4d5ca50f34a7b94455f09dc143d5f32165ac1"
+      "sha256": "c59a530157da62702d4bc97e8c1bf744e081399d41dc10c0403ed1fb9a21000a"
     },
     {
       "idx": 26,
@@ -248,7 +248,31 @@
       "when": 1787000000030,
       "tag": "0030_codex_pat_harness_auth",
       "breakpoints": true,
-      "sha256": "dd8bc173e141b7cc0320f3d5f4e9bd097ca37a6819bf61bbe1834cdb0c20598c"
+      "sha256": "cdaaaed3c2ba13a753b789c9cd0df40f5174a21d6a450f3eb417a6276eabfd0f"
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787000000031,
+      "tag": "0031_backend_terminology_compatibility",
+      "breakpoints": true,
+      "sha256": "e123912bb4116b1b1ecbccbce0a75d52c502e77971e8a7c93ec9dde59689a1b6"
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787000000032,
+      "tag": "0032_credential_sources",
+      "breakpoints": true,
+      "sha256": "fa2928a2f6814a75db716910606ecac561b7642bcfdf793b04b9d86bae28836e"
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787000000033,
+      "tag": "0033_agent_plugin_approvers",
+      "breakpoints": true,
+      "sha256": "e7895f2c3b9e4825a9aca1d9dc6c7019913e1d48285a154551d08e5cd1495629"
     }
   ],
   "initialSchemaStates": {
@@ -272,13 +296,17 @@
   },
   "catalogs": {
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-    "prePresetsMain": "c2400ee2ec0c8168bd62de1ce0203bf364d38b3b7bbb51a0da35ed23c56e875f",
-    "main": "fa7286bdba1ceac7097e75c05477664dbac21895280c972257ddfcd20bc76f9f",
-    "repositoryCredentials": "a72e0e9b38947bb6fddc8f5b6b8179e7eee1ce4bb288cf3cc62e47bb9fa20e64",
-    "workspaceSetup": "ba6666c978c47e0dd01c4b1251285f9c4c2b276c7c616fd5c8b861728c7d05e2",
-    "completed": "27601744e41dfd20e4f1612a133eee9b0a42732b0ebc2f0d093e8036e5f82dcf",
-    "repositoryRetention": "d283cb9e5f8866f4bde1ddba6fd76bd2b056bb8ee81ae0b42c2a80e78d9943fb",
-    "agentProvisioning": "622c7b63ee8ce0aaeffd37fc3c1d2d008d55558d47d42b4c561cdcc6d5b7593b"
+    "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
+    "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
+    "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
+    "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
+    "completed": "f4f4515306a31d07605c0e56da9e26dfec920a872f66cbe245ee0e5b14f5a845",
+    "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
+    "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
+    "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
+    "providerCompleted": "27601744e41dfd20e4f1612a133eee9b0a42732b0ebc2f0d093e8036e5f82dcf",
+    "backendTerminology": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
+    "prePluginApprovers": "55b5fd63daa059d20e4e8cff1dd6cdd3c9082b8d0b2824be06479ad4427c8c61"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -288,5 +316,259 @@
     "postgres": "18.6",
     "drizzleOrm": "0.45.2",
     "method": "Stock Drizzle execution with occ_migrator and effective occ_app privileges"
+  },
+  "compatibleLineages": {
+    "providerCompleted": {
+      "entries": [
+        {
+          "idx": 0,
+          "version": "7",
+          "when": 1787000000000,
+          "tag": "0000_occ_initial",
+          "breakpoints": true,
+          "sha256": "539a8f15156d349ec8ccf06975f71fc4cea0ade980726f138ee92ed9601e26c2"
+        },
+        {
+          "idx": 1,
+          "version": "7",
+          "when": 1787000000001,
+          "tag": "0001_occ_immutability_and_grants",
+          "breakpoints": true,
+          "sha256": "af42170fe6d63c004a55d9d663a92242ce64cc2772fd08fc4a89b2c33b2f1265"
+        },
+        {
+          "idx": 2,
+          "version": "7",
+          "when": 1787000000002,
+          "tag": "0002_namespace_lifecycle_and_iam",
+          "breakpoints": true,
+          "sha256": "d277af82303b4dbbead3a9c5ab769662be8135a7fc096bab30e5e0cc31f545dc"
+        },
+        {
+          "idx": 3,
+          "version": "7",
+          "when": 1787000000003,
+          "tag": "0003_agent_drafts",
+          "breakpoints": true,
+          "sha256": "744cf8da678341d22fe54003ae64b72f58ffc2d43045e34fdc3af7ec33be92b3"
+        },
+        {
+          "idx": 4,
+          "version": "7",
+          "when": 1787000000004,
+          "tag": "0004_configuration_driver",
+          "breakpoints": true,
+          "sha256": "da371f809dddaf24dc0b17ec9fdd44090775cd700d87930284a37c16913a38ad"
+        },
+        {
+          "idx": 5,
+          "version": "7",
+          "when": 1787000000005,
+          "tag": "0005_openclaw_native_configuration",
+          "breakpoints": true,
+          "sha256": "184a5405109bfa0f54991477cc32e9f50e65ceb0a74ae613039aa4d62110264e"
+        },
+        {
+          "idx": 6,
+          "version": "7",
+          "when": 1787000000006,
+          "tag": "0006_configuration_kind",
+          "breakpoints": true,
+          "sha256": "f9c72a48cba3d310d60ec23f8cbbf15b3a93105e253e95f341d0f73e81f0a3fd"
+        },
+        {
+          "idx": 7,
+          "version": "7",
+          "when": 1787000000007,
+          "tag": "0007_native_service_accounts",
+          "breakpoints": true,
+          "sha256": "817d8cc63bac73466920a43f32a134774c2cd8bfca1255e377148fa5c2345061"
+        },
+        {
+          "idx": 8,
+          "version": "7",
+          "when": 1787000000008,
+          "tag": "0008_better_auth_sessions",
+          "breakpoints": true,
+          "sha256": "33e942da16000ac073bf052b0a0273b9f8facc6fcfdfb64547add705a51d3b82"
+        },
+        {
+          "idx": 9,
+          "version": "7",
+          "when": 1787000000009,
+          "tag": "0009_service_account_driver",
+          "breakpoints": true,
+          "sha256": "cc58daba28a90391deb099c6ceace52ff677cb8bfc3163c0ce535aaa59931379"
+        },
+        {
+          "idx": 10,
+          "version": "7",
+          "when": 1787000000010,
+          "tag": "0010_namespace_existing_kubernetes_namespace",
+          "breakpoints": true,
+          "sha256": "a94add9703b98901ffe6acf2b84e1b12f7ab75c6d8850b97684887e22052b1ae"
+        },
+        {
+          "idx": 11,
+          "version": "7",
+          "when": 1787000000011,
+          "tag": "0011_sandbox_driver",
+          "breakpoints": true,
+          "sha256": "16a962b1dd47ff9b3573ba7da3b080726a29f60dbcdbdfcf0f5f379b4567b3b1"
+        },
+        {
+          "idx": 12,
+          "version": "7",
+          "when": 1787000000012,
+          "tag": "0012_service_api_keys",
+          "breakpoints": true,
+          "sha256": "9554e626ee7fd0ba1da4ad1598ed76c80ba4f2c27b797b08c842b8d705f6b227"
+        },
+        {
+          "idx": 13,
+          "version": "7",
+          "when": 1787000000013,
+          "tag": "0013_secret_state",
+          "breakpoints": true,
+          "sha256": "2e1950480771bc666e383a2d009592e329ba7308138f20e767a7f2295a6cc149"
+        },
+        {
+          "idx": 14,
+          "version": "7",
+          "when": 1787000000014,
+          "tag": "0014_provider_driver_abstraction",
+          "breakpoints": true,
+          "sha256": "1f5901acf85da9f716e364b24030ff974d5eb64e2114b6fd9f61b9603857a48d"
+        },
+        {
+          "idx": 15,
+          "version": "7",
+          "when": 1787000000015,
+          "tag": "0015_agent_plugins",
+          "breakpoints": true,
+          "sha256": "9b7c53baeef50de4ab87bf983d4e1495930e7fbfb227d1f8513ea141e77c9bb6"
+        },
+        {
+          "idx": 16,
+          "version": "7",
+          "when": 1787000000016,
+          "tag": "0016_agent_stop",
+          "breakpoints": true,
+          "sha256": "ae63c8df359e2412862e7523ff1ed307b028e6dcf78a028fef96cf0da354d64f"
+        },
+        {
+          "idx": 17,
+          "version": "7",
+          "when": 1787000000017,
+          "tag": "0017_harness_auth_binding",
+          "breakpoints": true,
+          "sha256": "61bf5a458375cb7eeae33b4208af29a69c639362196feeb2f60c673b26e389a1"
+        },
+        {
+          "idx": 18,
+          "version": "7",
+          "when": 1787000000018,
+          "tag": "0018_runtime_harness_auth",
+          "breakpoints": true,
+          "sha256": "c5e48345949f797a19a5c5214c55aad00e1ee321ef9a738a020bba82143c7827"
+        },
+        {
+          "idx": 19,
+          "version": "7",
+          "when": 1787000000019,
+          "tag": "0019_controller_work_terminal_outcome",
+          "breakpoints": true,
+          "sha256": "591a807f921eb34c1bfa5e7fc66136af4526b17112a725999a028d3cf3773ff3"
+        },
+        {
+          "idx": 20,
+          "version": "7",
+          "when": 1787000000020,
+          "tag": "0020_agent_deletion",
+          "breakpoints": true,
+          "sha256": "0c66ec4ee54fe71d7f369422f4ba7811cdea293bc97dad78cff9ef223c1f3c25"
+        },
+        {
+          "idx": 21,
+          "version": "7",
+          "when": 1787000000021,
+          "tag": "0021_iam_policy_delete_grants",
+          "breakpoints": true,
+          "sha256": "c3b729d479f64992dcca9fc3662e829ed7d62f061cc7ac2bccc038c577291841"
+        },
+        {
+          "idx": 22,
+          "version": "7",
+          "when": 1787000000022,
+          "tag": "0022_controller_work_runtime_failure_data",
+          "breakpoints": true,
+          "sha256": "a3f1a2ea79015464bf4be87ea1245a4b5794ea5464ef9570435564a1754f1de3"
+        },
+        {
+          "idx": 23,
+          "version": "7",
+          "when": 1787000000023,
+          "tag": "0023_runtime_failure_timestamp_validation",
+          "breakpoints": true,
+          "sha256": "b08d9108d3b3d3590be540953b87854c3c3a8d943ecec6877cf390eabdbeebde"
+        },
+        {
+          "idx": 24,
+          "version": "7",
+          "when": 1787000000024,
+          "tag": "0024_agent_presets",
+          "breakpoints": true,
+          "sha256": "541ce55f76f202bf2f9e2f5c6e4149997e935567cb5ada634f25cc83673d25b7"
+        },
+        {
+          "idx": 25,
+          "version": "7",
+          "when": 1787000000025,
+          "tag": "0025_repository_credentials",
+          "breakpoints": true,
+          "sha256": "9d9920b20f3900090880426a84f4d5ca50f34a7b94455f09dc143d5f32165ac1"
+        },
+        {
+          "idx": 26,
+          "version": "7",
+          "when": 1787000000026,
+          "tag": "0026_privileged_function_search_paths",
+          "breakpoints": true,
+          "sha256": "c7f846629fadc9bfd12b36f336698ccdf4f9c4ffa7fe385bab31de78ccec628a"
+        },
+        {
+          "idx": 27,
+          "version": "7",
+          "when": 1787000000027,
+          "tag": "0027_repository_attempt_retention",
+          "breakpoints": true,
+          "sha256": "060f5791f1ab0eec5b38ec1c195fbb231ae31d29b5788c9436913d381f3ff670"
+        },
+        {
+          "idx": 28,
+          "version": "7",
+          "when": 1787000000028,
+          "tag": "0028_agent_workspace_setup",
+          "breakpoints": true,
+          "sha256": "bb093c191fc0a02c9aac9e91f67df66e8fe0c5e7addd105330dcbff9c8d1ae91"
+        },
+        {
+          "idx": 29,
+          "version": "7",
+          "when": 1787000000029,
+          "tag": "0029_agent_provisioning_work",
+          "breakpoints": true,
+          "sha256": "beaff307eb286d20da1726c80b6428755d9937a8d1331b063eb6877f8d8b6d6f"
+        },
+        {
+          "idx": 30,
+          "version": "7",
+          "when": 1787000000030,
+          "tag": "0030_codex_pat_harness_auth",
+          "breakpoints": true,
+          "sha256": "dd8bc173e141b7cc0320f3d5f4e9bd097ca37a6819bf61bbe1834cdb0c20598c"
+        }
+      ]
+    }
   }
 }

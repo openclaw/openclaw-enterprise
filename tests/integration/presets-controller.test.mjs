@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -135,14 +137,21 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
     variables: {
       name: { type: "string" },
       model: { type: "string", default: "openai/gpt-5.1" },
+      reviewer: { type: "string", default: "U456" },
       enabled: { type: "boolean", default: true },
       mode: { type: "string", default: "unfinished" },
     },
     agent: {
       name: "{{ vars.name }}",
       executionMode: "{{ vars.mode }}",
-      plugins: { github: { enabled: "unfinished", approvalMode: "prompt" } },
+      plugins: { github: { enabled: "unfinished", toolDefaults: { approval: "all_actions" } } },
+      pluginApprovers: [{ channel: "slack", id: "team:T123:user:{{ vars.reviewer }}" }],
       harnessAuth: null,
+      initialWorkspaceFiles: {
+        "AGENTS.md": "# {{ vars.name }}\n",
+        "IDENTITY.md": "",
+        "USER.md": "Model {{ vars.model }}",
+      },
     },
     configuration: {
       values: {
@@ -165,6 +174,9 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
     },
   };
   const preset = await createPreset(fixture, namespace.id, "Default model", template);
+  const pluginDriver = new OCCPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
   const read = await fixture.request("GET", `${collection(namespace.id)}/${preset.id}`);
   assert.equal(read.status, 200);
   assert.deepEqual(read.data.template, template);
@@ -188,6 +200,14 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
     configuration.data.values.models.providers.openai.apiKey,
     template.configuration.values.models.providers.openai.apiKey,
   );
+  assert.deepEqual(rendered.agent.initialWorkspaceFiles, {
+    "AGENTS.md": '# My "Agent"\n',
+    "IDENTITY.md": "",
+    "USER.md": "Model openai/gpt-5.1",
+  });
+  assert.deepEqual(rendered.agent.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
   // Presets may be unfinished. The ordinary API rejects invalid launch fields
   // after Configuration creation; correcting the draft reuses that Configuration.
   const rejected = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -207,7 +227,12 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(created.data.name, 'My "Agent"');
   assert.equal(created.data.configurationId, configuration.data.id);
+  assert.deepEqual(created.data.pluginApprovers, rendered.agent.pluginApprovers);
   assert.equal(Object.hasOwn(created.data, "presetId"), false);
+  const workspaceSetup = await fixture.state.read((state) =>
+    state.workspaceSetups.find(namespace.id, created.data.id),
+  );
+  assert.deepEqual(workspaceSetup?.files, rendered.agent.initialWorkspaceFiles);
 
   const replaced = await fixture.request("PATCH", `${collection(namespace.id)}/${preset.id}`, {
     body: { template: { agent: { name: "Changed later" } } },
@@ -323,6 +348,76 @@ test("Preset admission rejects malformed templates and credential leaks while pr
   assert.ok(presetMutations.every((event) => !JSON.stringify(event).includes(secret.ref.id)));
 });
 
+test("method-only Preset authentication is a default, not an Agent credential", async (t) => {
+  const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Method-only Preset", { ready: true });
+  const template = {
+    variables: {
+      name: { type: "string" },
+      model: { type: "string", default: "gpt-6-astra" },
+    },
+    agent: {
+      name: "{{ vars.name }}",
+      executionMode: "dedicated",
+      harnessAuth: { method: "codex_pat" },
+    },
+    configuration: {
+      values: {
+        agents: {
+          defaults: {
+            model: "codex/{{ vars.model }}",
+            models: {
+              "codex/{{ vars.model }}": { agentRuntime: { id: "codex" } },
+            },
+          },
+        },
+        gateway: { auth: { password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
+        models: {
+          providers: {
+            codex: {
+              apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+              models: [{ id: "{{ vars.model }}", name: "{{ vars.model }}" }],
+            },
+          },
+        },
+      },
+    },
+  };
+  const preset = await createPreset(fixture, namespace.id, "Method default", template);
+  const rendered = renderPresetTemplate(preset.template, {
+    name: "Method-only Agent",
+    model: "gpt-6-astra",
+  });
+  assert.deepEqual(rendered.agent.harnessAuth, { method: "codex_pat" });
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const rejected = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { ...rendered.agent, configurationId: configuration.data.id },
+  });
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  const secret = await fixture.createSecret(
+    namespace.id,
+    "Service account token",
+    "synthetic-token",
+  );
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      harnessAuth: { method: "codex_pat", source: secret.ref },
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
+});
+
 test("Presets block Namespace deletion and deleting one removes only its managed resource bindings", async (t) => {
   const fixture = await createFixture(t);
   const emptyNamespace = await fixture.createNamespace("Preset-only namespace", { ready: true });
@@ -398,7 +493,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   const catalog = await fixture.request("GET", collection(namespace.id));
   assert.equal(catalog.status, 200);
   const preset = catalog.data.find(({ id }) => id === installed.data.id);
-  assert.equal(preset.name, "standard-codex");
+  assert.equal(preset.name, "Standard Codex");
   // PATCH accepts the same portable request and binds it to the route Namespace.
   const updated = await fixture.request("PATCH", `${collection(namespace.id)}/${preset.id}`, {
     body: { template: artifact.template },
@@ -442,7 +537,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   assert.equal(appServer.url, "${APP_SERVER_URL}");
   assert.equal(appServer.authToken, "${APP_SERVER_TOKEN}");
   assert.equal(appServer.sandbox, "workspace-write");
-  assert.equal(appServer.approvalPolicy, "never");
+  assert.equal(appServer.approvalPolicy, "on-request");
   assert.deepEqual(appServer.networkProxy, {
     enabled: true,
     baseProfile: "workspace",
@@ -507,6 +602,250 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   assert.equal(JSON.stringify(installed.body).includes("synthetic-model-key"), false);
 });
 
+test("standard OpenClaw Preset installs and creates an embedded Agent with native configuration", async (t) => {
+  const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Standard OpenClaw", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-openclaw.json", import.meta.url), "utf8"),
+  );
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  const catalog = await fixture.request("GET", collection(namespace.id));
+  assert.equal(catalog.status, 200);
+  const preset = catalog.data.find(({ id }) => id === installed.data.id);
+  assert.equal(preset.name, "Standard OpenClaw");
+  const rendered = renderPresetTemplate(preset.template, {
+    name: "Native assistant",
+    model: "gpt-6-sol",
+    modelSecret: "synthetic-model-key",
+  });
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const agent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      harnessAuth: { method: rendered.agent.harnessAuth.method, source: secret.ref },
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  assert.equal(agent.data.executionMode, "embedded");
+  assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secret.ref });
+  assert.deepEqual(agent.data.plugins, {});
+
+  // These are persisted launch contracts, not proof of a running OpenClaw runtime.
+  const values = configuration.data.values;
+  assert.equal(values.agents.defaults.model, "openai/gpt-6-sol");
+  assert.equal(values.agents.defaults.models["openai/gpt-6-sol"].agentRuntime.id, "openclaw");
+  assert.equal(values.models.providers.openai.baseUrl, "https://api.openai.com/v1");
+  assert.equal(values.models.providers.openai.api, "openai-responses");
+  assert.deepEqual(values.models.providers.openai.models, [{ id: "gpt-6-sol", name: "gpt-6-sol" }]);
+  assert.equal(values.plugins, undefined);
+  assert.deepEqual(values.tools.web.search, { enabled: true });
+  assert.equal(values.tools.web.fetch.enabled, false);
+  assert.equal(values.browser.enabled, false);
+  assert.equal(values.tools.elevated.enabled, false);
+  assert.equal(configuration.data.secretBindings, undefined);
+  assert.equal(JSON.stringify(installed.body).includes("synthetic-model-key"), false);
+});
+
+test("SWE Agent Preset defaults to Astra and reuses an existing service-account Secret", async (t) => {
+  const { renderPresetTemplate, validatePresetTemplate } =
+    await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("SWE Agent service account", { ready: true });
+  const serviceAccount = await fixture.createSecret(
+    namespace.id,
+    "Existing service account token",
+    "synthetic-existing-service-account-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/devday.json", import.meta.url), "utf8"),
+  );
+  const originalTemplate = structuredClone(artifact.template);
+  validatePresetTemplate(originalTemplate);
+  assert.equal(artifact.name, "SWE Agent");
+  assert.equal(Object.hasOwn(originalTemplate.variables, "modelSecret"), false);
+  assert.equal(originalTemplate.variables.model.default, "gpt-6-astra");
+  assert.equal(originalTemplate.agent.executionMode, "dedicated");
+  assert.deepEqual(originalTemplate.agent.harnessAuth, {
+    method: "codex_pat",
+  });
+
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  assert.deepEqual(installed.data.template, originalTemplate);
+  const defaultRendered = renderPresetTemplate(originalTemplate, { name: "SWE lifecycle" });
+  assert.deepEqual(defaultRendered.agent.harnessAuth, { method: "codex_pat" });
+  const selectedTemplate = structuredClone(originalTemplate);
+  selectedTemplate.agent.harnessAuth = { method: "codex_pat", source: serviceAccount.ref };
+
+  const rendered = renderPresetTemplate(selectedTemplate, { name: "SWE lifecycle" });
+  assert.deepEqual(rendered.agent.harnessAuth, {
+    method: "codex_pat",
+    source: serviceAccount.ref,
+  });
+  assert.deepEqual(rendered.configuration.values.channels.slack.replyToModeByChatType, {
+    channel: "all",
+  });
+  assert.equal(rendered.configuration.values.agents.defaults.model, "codex/gpt-6-astra");
+  assert.equal(
+    rendered.configuration.values.agents.defaults.models["codex/gpt-6-astra"].agentRuntime.id,
+    "codex",
+  );
+
+  const override = renderPresetTemplate(selectedTemplate, {
+    name: "SWE override",
+    model: "gpt-6-sol",
+  });
+  assert.equal(override.configuration.values.agents.defaults.model, "codex/gpt-6-sol");
+  assert.deepEqual(Object.keys(override.configuration.values.agents.defaults.models), [
+    "codex/gpt-6-sol",
+  ]);
+  assert.equal(
+    override.configuration.values.agents.defaults.models["codex/gpt-6-sol"].agentRuntime.id,
+    "codex",
+  );
+
+  const retained = await fixture.request("GET", `${collection(namespace.id)}/${installed.data.id}`);
+  assert.equal(retained.status, 200, JSON.stringify(retained.body));
+  assert.deepEqual(retained.data.template, originalTemplate);
+
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  assert.deepEqual(configuration.data.values.channels.slack.replyToModeByChatType, {
+    channel: "all",
+  });
+  const before = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(
+    before.data.map((secret) => secret.id),
+    [serviceAccount.id],
+  );
+  const createAgent = (name) =>
+    fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        ...rendered.agent,
+        name,
+        configurationId: configuration.data.id,
+      },
+    });
+  const first = await createAgent("SWE existing service account");
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const second = await createAgent("SWE existing service account reuse");
+  assert.equal(second.status, 201, JSON.stringify(second.body));
+  for (const created of [first, second]) {
+    assert.equal(created.data.executionMode, "dedicated");
+    assert.deepEqual(created.data.harnessAuth, {
+      method: "codex_pat",
+      source: serviceAccount.ref,
+    });
+  }
+  const after = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(
+    after.data.map((secret) => secret.id),
+    [serviceAccount.id],
+  );
+  assert.equal(
+    JSON.stringify(installed.body).includes("synthetic-existing-service-account-token"),
+    false,
+  );
+  assert.equal(
+    JSON.stringify(first.body).includes("synthetic-existing-service-account-token"),
+    false,
+  );
+});
+
+test("Community Agent Preset installs and creates a dedicated Agent with community defaults", async (t) => {
+  const { renderPresetTemplate, validatePresetTemplate } =
+    await import("../../packages/contracts/src/index.ts");
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Community Agent", { ready: true });
+  const serviceAccount = await fixture.createSecret(
+    namespace.id,
+    "Existing community service account token",
+    "synthetic-community-service-account-token",
+  );
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/devday-partners.json", import.meta.url), "utf8"),
+  );
+  const originalTemplate = structuredClone(artifact.template);
+  validatePresetTemplate(originalTemplate);
+  assert.equal(artifact.name, "Community Agent");
+  assert.deepEqual(originalTemplate.agent.harnessAuth, { method: "codex_pat" });
+  assert.deepEqual(originalTemplate.agent.plugins, {});
+
+  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
+  assert.equal(installed.status, 201, JSON.stringify(installed.body));
+  const selected = await fixture.request("GET", `${collection(namespace.id)}/${installed.data.id}`);
+  assert.equal(selected.status, 200, JSON.stringify(selected.body));
+  assert.deepEqual(selected.data.template, originalTemplate);
+
+  const selectedTemplate = structuredClone(selected.data.template);
+  selectedTemplate.agent.harnessAuth = { method: "codex_pat", source: serviceAccount.ref };
+  const rendered = renderPresetTemplate(selectedTemplate, { name: "Community lifecycle" });
+  assert.equal(
+    rendered.agent.initialWorkspaceFiles["AGENTS.md"].startsWith("# Community lifecycle"),
+    true,
+  );
+  assert.equal(rendered.agent.initialWorkspaceFiles["AGENTS.md"].includes("# Ocalot"), false);
+  assert.match(rendered.agent.initialWorkspaceFiles["AGENTS.md"], /look in Linear/i);
+
+  const configuration = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+    {
+      body: { kind: "agent", ...rendered.configuration },
+    },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  assert.equal(configuration.data.values.channels.slack.dmPolicy, "disabled");
+  assert.deepEqual(configuration.data.values.channels.slack.channels, {
+    C0C43A2QA11: { requireMention: false, users: ["*"] },
+    C0C4A0JH2BG: { requireMention: false, users: ["*"] },
+    C0C5KF0JLSC: { requireMention: false, users: ["*"] },
+    C0C5KF0DWLQ: { requireMention: false, users: ["*"] },
+  });
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      ...rendered.agent,
+      configurationId: configuration.data.id,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.data.executionMode, "dedicated");
+  assert.deepEqual(created.data.plugins, {});
+  assert.deepEqual(created.data.harnessAuth, {
+    method: "codex_pat",
+    source: serviceAccount.ref,
+  });
+  const workspaceSetup = await fixture.state.read((state) =>
+    state.workspaceSetups.find(namespace.id, created.data.id),
+  );
+  assert.deepEqual(workspaceSetup?.files, rendered.agent.initialWorkspaceFiles);
+  assert.equal(
+    JSON.stringify(installed.body).includes("synthetic-community-service-account-token"),
+    false,
+  );
+  assert.equal(
+    JSON.stringify(created.body).includes("synthetic-community-service-account-token"),
+    false,
+  );
+});
+
 test("password Presets reject stored credentials and password substitution outside credential inputs", async (t) => {
   const fixture = await createFixture(t);
   const namespace = await fixture.createNamespace("Password admission", { ready: true });
@@ -551,7 +890,13 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "installation.yaml");
   const configuration = createInstallationDriverConfiguration();
-  configuration.presets = { includeDefaults: true };
+  const customPreset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/devday.json", import.meta.url), "utf8"),
+  );
+  configuration.presets = {
+    includeDefaults: true,
+    files: [fileURLToPath(new URL("../../deploy/presets/devday.json", import.meta.url))],
+  };
   await writeFile(path, JSON.stringify(configuration));
   const runtime = await loadInstallationConfiguration({
     mode: "production",
@@ -561,11 +906,28 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const namespace = await fixture.createNamespace("Default catalog", { ready: true });
   const list = await fixture.request("GET", collection(namespace.id));
   assert.equal(list.status, 200);
-  assert.deepEqual(
-    list.data.map((preset) => preset.name),
-    ["standard-codex"],
+  const defaultNames = [customPreset.name, "Standard Codex", "Standard OpenClaw"].sort();
+  assert.deepEqual(list.data.map((preset) => preset.name).sort(), defaultNames);
+  const standardCodex = list.data.find((preset) => preset.name === "Standard Codex");
+  assert.equal(standardCodex.template.variables.modelSecret.type, "password");
+  const customDefault = list.data.find((preset) => preset.name === customPreset.name);
+  assert.ok(customDefault, `missing ${customPreset.name}`);
+  assert.equal(Object.hasOwn(customDefault.template.variables, "modelSecret"), false);
+  assert.equal(customDefault.template.variables.model.default, "gpt-6-astra");
+  assert.equal(customDefault.template.agent.harnessAuth.method, "codex_pat");
+  assert.equal(
+    customDefault.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
+    false,
   );
-  assert.equal(list.data[0].template.variables.modelSecret.type, "password");
+  assert.equal(customDefault.template.configuration.values.plugins.entries.slack.enabled, true);
+  const openclaw = list.data.find((preset) => preset.name === "Standard OpenClaw");
+  assert.equal(openclaw.template.agent.executionMode, "embedded");
+  assert.equal(openclaw.template.agent.harnessAuth.method, "api_key");
+  assert.equal(
+    openclaw.template.configuration.values.agents.defaults.models["openai/{{ vars.model }}"]
+      .agentRuntime.id,
+    "openclaw",
+  );
   const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
   const renamedTemplate = { agent: { name: "Operator customization" } };
   const custom = await fixture.request("PATCH", `${collection(namespace.id)}/${list.data[0].id}`, {
@@ -589,8 +951,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const retained = await fixture.request("GET", `${collection(namespace.id)}/${list.data[0].id}`);
   assert.deepEqual(retained.data.template, renamedTemplate);
   const seeded = await fixture.request("GET", collection(existing.id));
-  assert.equal(seeded.data.length, 1);
-  assert.equal(seeded.data[0].name, "standard-codex");
+  assert.deepEqual(seeded.data.map((preset) => preset.name).sort(), defaultNames);
   const audit = fixture.audit.events.filter(
     (event) => event.details?.source === "installation-defaults",
   );
@@ -633,9 +994,11 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     body: { name: "Denied defaults" },
   });
   assert.equal(permitted.status, 201);
-  assert.equal(
-    (await fixture.request("GET", collection(permitted.data.id))).data[0].name,
-    "standard-codex",
+  assert.deepEqual(
+    (await fixture.request("GET", collection(permitted.data.id))).data
+      .map((preset) => preset.name)
+      .sort(),
+    defaultNames,
   );
   // Startup must skip a persisted non-administrator even when it is returned first.
   await initializeInstallationPresets(
@@ -645,7 +1008,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     runtime.defaultPresets,
   );
   // Disabling startup defaults never removes a saved Preset.
-  configuration.presets.includeDefaults = false;
+  configuration.presets = { includeDefaults: false };
   await writeFile(path, JSON.stringify(configuration));
   const disabledRuntime = await loadInstallationConfiguration({
     mode: "production",
@@ -656,5 +1019,10 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     defaultPresets: disabledRuntime.defaultPresets,
   });
   await disabled.initializeDefaultPresets(principal.id);
-  assert.equal((await fixture.request("GET", collection(existing.id))).data.length, 1);
+  assert.deepEqual(
+    (await fixture.request("GET", collection(existing.id))).data
+      .map((preset) => preset.name)
+      .sort(),
+    defaultNames,
+  );
 });

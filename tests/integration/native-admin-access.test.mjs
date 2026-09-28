@@ -10,6 +10,7 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -172,6 +173,8 @@ async function createNativeAdminFixture(t, options = {}) {
     authBaseURL: options.authBaseURL ?? authBaseURL,
     authCookieDomain: options.cookieDomain ?? cookieDomain,
     authSecureCookies: options.authSecureCookies ?? true,
+    development: options.development ?? { enabled: false },
+    auditSink: options.auditSink,
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: options.nativeDomain ?? nativeDomain,
@@ -654,4 +657,118 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
     5,
     "authorization-denied proxy requests must not reach native gateway",
   );
+});
+test("native Agent requests retain their own origin boundary", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  const status = await nativeStatus(context);
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const response = await injectJson(context.fixture, "POST", "/settings", {
+    headers: {
+      host: nativeAuthority(status.data),
+      origin: status.data.origin,
+      cookie: context.session.cookie,
+      "sec-fetch-site": "same-origin",
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(context.upstream.requests.length, 1);
+});
+
+test("session mutations reject sibling origins before changing Agent or audit state", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const context = await createNativeAdminFixture(t, { auditSink });
+  const native = (await nativeStatus(context)).data;
+  const agentPath = `/namespaces/${context.namespace.id}/agents/${context.agent.id}`;
+  const cookie = context.session.cookie;
+  const before = auditSink.events.length;
+
+  // A sibling can submit a bodyless request with the shared cookie without reading it.
+  const noCookie = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
+    headers: { origin: native.origin, "sec-fetch-site": "same-site" },
+  });
+  assert.equal(noCookie.statusCode, 401);
+  const badOrigins = [
+    { origin: native.origin, "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors" },
+    { origin: "https://other.oce.example.test", "sec-fetch-site": "same-site" },
+    {},
+    { origin: "null" },
+    { origin: `${publicOrigin}/path` },
+    { origin: publicOrigin, "sec-fetch-site": "cross-site" },
+    { origin: publicOrigin, "sec-fetch-site": "same-site" },
+    { origin: publicOrigin, "sec-fetch-site": "invalid" },
+  ];
+  for (const headers of badOrigins) {
+    const response = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
+      headers: { cookie, ...headers },
+    });
+    assert.equal(response.statusCode, 403, `${JSON.stringify(headers)}: ${response.body}`);
+  }
+  for (const path of [
+    `${agentPath}/deploy`,
+    "/api/auth/accounts",
+    "/api/auth/service-keys",
+    `/namespaces/${context.namespace.id}/iam/roles`,
+  ]) {
+    const response = await injectJson(context.fixture, "POST", path, {
+      headers: { cookie, origin: native.origin, "sec-fetch-site": "same-site" },
+    });
+    assert.equal(response.statusCode, 403, `${path}: ${response.body}`);
+  }
+  assert.equal(auditSink.events.length, before);
+  const unchanged = await context.fixture.request("GET", agentPath);
+  assert.equal(unchanged.data.desiredRuntimeState, "running");
+  const safeRead = await injectJson(context.fixture, "GET", agentPath, { headers: { cookie } });
+  assert.equal(safeRead.statusCode, 200);
+
+  const key = await issueServiceKeyForNativeAgent(context);
+  const role = context.fixture.policy.roles.find((item) =>
+    item.id.startsWith("native-admin-service-role-"),
+  );
+  role.permissions.push({ action: "operate", resourceKind: "agent" });
+  const badKey = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
+    headers: { cookie, "x-api-key": "invalid", origin: publicOrigin },
+  });
+  assert.equal(badKey.statusCode, 401);
+  const keyStop = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
+    headers: { "x-api-key": key },
+  });
+  assert.equal(keyStop.statusCode, 202, keyStop.body);
+  const deployed = await injectJson(context.fixture, "POST", `${agentPath}/deploy`, {
+    headers: { cookie, origin: publicOrigin, "sec-fetch-site": "same-origin" },
+  });
+  assert.equal(deployed.statusCode, 202, deployed.body);
+  const keyFromSibling = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
+    headers: { cookie, "x-api-key": key, origin: native.origin, "sec-fetch-site": "same-site" },
+  });
+  assert.equal(keyFromSibling.statusCode, 202, keyFromSibling.body);
+  const stopped = await injectJson(context.fixture, "POST", `${agentPath}/stop`, {
+    headers: { cookie, origin: publicOrigin },
+  });
+  assert.equal(stopped.statusCode, 202, stopped.body);
+});
+
+test("sign-out requires the console origin for session requests", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  for (const headers of [
+    {},
+    { origin: "https://other.oce.example.test" },
+    { origin: publicOrigin, "sec-fetch-site": "cross-site" },
+  ]) {
+    const denied = await injectJson(context.fixture, "POST", "/api/auth/sign-out", {
+      headers: { cookie: context.session.cookie, ...headers },
+    });
+    assert.equal(denied.statusCode, 403, denied.body);
+    const session = await injectJson(context.fixture, "GET", "/api/auth/session", {
+      headers: { cookie: context.session.cookie },
+    });
+    assert.equal(session.json().data.authenticated, true);
+  }
+  const allowed = await injectJson(context.fixture, "POST", "/api/auth/sign-out", {
+    headers: {
+      cookie: context.session.cookie,
+      origin: publicOrigin,
+      "sec-fetch-site": "same-origin",
+    },
+  });
+  assert.equal(allowed.statusCode, 200, allowed.body);
 });

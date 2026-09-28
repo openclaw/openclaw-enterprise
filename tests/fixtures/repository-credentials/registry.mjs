@@ -33,14 +33,14 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
     const clock = options.clock ?? createControlledClock();
     const tls = options.tls ?? (await createTlsMaterial(resources));
     const namespaceId = options.namespaceId ?? "namespace-fixture";
-    const providerId = options.providerId ?? "github-fixture";
+    const backendId = options.backendId ?? "github-fixture";
     const durationSeconds = options.durationSeconds ?? 86400;
     const maximumDurationSeconds = options.maximumDurationSeconds ?? 172800;
     const profile = options.profile ?? "git-full";
     const definitions = options.repositories ?? defaultRegistryRepositories;
     const { directory, privateKeyFile, registryFile, keyPair } = await createRegistryMaterial(
       resources,
-      { definitions, namespaceId, providerId, maximumDurationSeconds },
+      { definitions, namespaceId, backendId, maximumDurationSeconds },
     );
     const [
       { validateServiceConfig },
@@ -84,7 +84,7 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       loadGitHubRepositoryRegistry,
       createGitHubRegistryDriverFactory,
       registryFile,
-      providerId,
+      backendId,
       privateKeyFile,
       config,
       key,
@@ -99,7 +99,7 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       clock,
       tls,
       config,
-      providerId,
+      backendId,
       namespaceId,
       registryFile,
       privateKeyFile,

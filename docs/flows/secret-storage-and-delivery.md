@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-23
-last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-09-25
+last_updated_session: authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -50,7 +50,9 @@ graph TD
     P --> F["Authorize caller and Agent SP; verify backend"]
     F -->|allowed| G["Freeze references in AgentRevision"]
     F -->|denied or unavailable| X["No admitted deployment"]
-    D --> L["Local installer: grant Agent use of this exact Secret"]
+    D --> K{"Local v3 state uses<br/>Kubernetes and Sandbox none?"}
+    K -->|yes| L["Local installer: grant Agent use of this exact Secret"]
+    K -->|no or OpenShell| X
     L --> F
     L -->|ownership or IAM denied| X
   end
@@ -135,7 +137,11 @@ execution topology.
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
 The [tool](../../scripts/first-agent.mjs) targets the persistent installation
-started with `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev up`.
+started with `./bin/occ dev up`. Before invoking Kubernetes or the OCC API, it
+requires the current v3 development marker and state from the same checkout.
+The state must select Kubernetes Compute and
+`sandboxDriver: "none"`. OpenShell state fails with an explicit unsupported-profile
+error because that development profile does not support this model-turn path.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -269,6 +275,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-25 14:57: Align first-Agent admission and its real fixture with v3 development state, and reject the unsupported OpenShell profile before external calls. (authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72 - 189c62c993066d52703d2cd7eb896e2c2c01bdc4)
 
 - 2026-09-23 14:12: Clarify model-key replacement through OCE deployment and distinguish Harness Pod recreation from credential delivery. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 240c72f2ef96c034c4e05c4775a79a94ebbe64ab)
 

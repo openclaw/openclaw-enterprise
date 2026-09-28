@@ -1,0 +1,44 @@
+{
+  "referenceRevision": "6e8d06876fd166064abbec4928fb3bb109ebe999",
+  "baselineRevision": "6b5c9093b75044f181db74bc14dffaa3410e617a",
+  "environment": "Chromium 153.0.8010.12 on Linux; production console assets with simulated Storybook API responses",
+  "appearance": "light",
+  "systemPreferences": ["light", "dark"],
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 390,
+      "height": 844
+    }
+  ],
+  "scenarios": [
+    "agents",
+    "agentsEmpty",
+    "agentsLoading",
+    "agentsError",
+    "agentsDenied",
+    "login",
+    "loginError",
+    "draft",
+    "configurationEditor",
+    "credentialsMissing",
+    "slackDrawer",
+    "deletionConfirm",
+    "mobile"
+  ],
+  "renderedCombinations": 78,
+  "failures": [],
+  "pageErrors": [],
+  "storybook": {
+    "themeSelector": false,
+    "embeddedBackground": "rgb(250, 249, 247)"
+  },
+  "limits": "Does not prove backend persistence, gateway connectivity, credential propagation, deployment, or model execution."
+}

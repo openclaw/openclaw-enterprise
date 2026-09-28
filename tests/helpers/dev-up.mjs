@@ -387,6 +387,7 @@ process.exit(86);
     ...process.env,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
+    OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
     OCC_DOCKER_RUNTIME_IMAGE: "",
     OCC_DOCKER_GATEWAY_IMAGE: "",
     OCC_DOCKER_AGENT_IMAGE: "",
@@ -437,12 +438,21 @@ async function prepareLifecycleCommands(fixture, scenario = "success") {
   fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "kubernetes state");
   fixture.env.OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS = "1";
   fixture.env.DOCKER_HOST = "unix:///fixture/owned-docker.sock";
+  const openShellChart = join(fixture.directory, "openshell-chart.tgz");
+  const openShellWorkspaceChart = join(fixture.directory, "openshell-workspace-chart.tgz");
+  const agentSandboxManifest = join(fixture.directory, "agent-sandbox.yaml");
+  await writeFile(openShellChart, "fixture OpenShell chart\n", { mode: 0o600 });
+  await writeFile(openShellWorkspaceChart, "fixture OpenShell workspace chart\n", { mode: 0o600 });
+  await writeFile(agentSandboxManifest, "fixture Agent Sandbox manifest\n", { mode: 0o600 });
+  fixture.env.OCC_DEVELOPMENT_OPENSHELL_HELM_CHART = openShellChart;
+  fixture.env.OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART = openShellWorkspaceChart;
+  fixture.env.OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST = agentSandboxManifest;
   delete fixture.env.DOCKER_CONTEXT;
   await writeFile(
     fixture.env.DEV_UP_RESOURCE_STATE,
     JSON.stringify({ clusters: ["occ-dev-unrelated"], compose: false }),
   );
-  for (const command of ["docker", "k3d", "kubectl"]) {
+  for (const command of ["docker", "k3d", "kubectl", "helm"]) {
     await writeExecutable(
       join(bin, command),
       `#!${nodeExecutable}
@@ -465,14 +475,29 @@ if (command === "docker") {
   if (args[0] === "context" && args[1] === "show") output("fixture-context");
   else if (args[0] === "context" && args[1] === "inspect") output(JSON.stringify([{ Endpoints: { docker: { Host: "unix:///fixture/owned-docker.sock" } } }]));
   else if (args[0] === "info") output("/var/lib/docker");
+  else if (args[0] === "network" && args[1] === "inspect") {
+    if (!state.compose) process.exit(1);
+    output(JSON.stringify([{ IPAM: { Config: [{ Subnet: "172.30.41.0/24" }] } }]));
+  }
+  else if (args[0] === "image" && args[1] === "inspect" && args.includes("--format")) output("linux/amd64");
+  else if (args[0] === "image" && args[1] === "save") fs.writeFileSync(args[args.indexOf("--output") + 1], "fixture image archive\\n");
+  else if (args[0] === "image" && args[1] === "inspect" && args[2] === "openclaw-enterprise-controller:kubernetes-quickstart" && process.env.DEV_UP_EXISTING_CONTROLLER_IMAGE === "1") {}
+  else if (args[0] === "image" && args[1] === "inspect" && args[2] === "openclaw-enterprise-runtime:kubernetes-quickstart" && process.env.DEV_UP_EXISTING_RUNTIME_IMAGE === "1") {}
   else if (["volume", "network", "image"].includes(args[0]) && args[1] === "inspect") process.exit(1);
-  else if (args[0] === "ps" || (["volume", "network"].includes(args[0]) && args[1] === "ls") || args[0] === "build") {}
+  else if (args[0] === "ps" || (["volume", "network"].includes(args[0]) && args[1] === "ls") || args[0] === "build" || args[0] === "pull" || args[0] === "tag" || (args[0] === "image" && args[1] === "rm")) {}
   else if (args[0] === "inspect") {
     if (args.includes("{{.State.Status}}")) output("exited");
     else if (args.includes("{{.State.ExitCode}}")) output("0");
     else fail("unexpected inspect: " + args.join(" "));
   } else if (args[0] === "exec" && args.includes("images")) {
-    if (args.includes("list")) output("docker.io/library/openclaw-enterprise-runtime:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "a".repeat(64));
+    if (args.includes("list")) output([
+      "docker.io/library/openclaw-enterprise-runtime:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "a".repeat(64),
+      "docker.io/library/openclaw-enterprise-controller:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "b".repeat(64),
+      "docker.io/openclaw-development/import-b9b4e5950649:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:" + "c".repeat(64),
+      "docker.io/openclaw-development/openshell-gateway:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39",
+      "docker.io/openclaw-development/openshell-sandbox:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65",
+      "docker.io/openclaw-development/openshell-supervisor:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f",
+    ].join("\\n"));
   } else if (args[0] === "cp") {
     fs.writeFileSync(args.at(-1), JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));
   } else if (args[0] === "compose") {
@@ -500,8 +525,39 @@ if (command === "docker") {
     users: [{ name: "admin", user: { token: "fixture-kubernetes-token" } }]
   }));
   else if (args[0] !== "image") fail("unexpected k3d: " + args.join(" "));
-} else if (command === "kubectl" && !args.includes("get")) {
-  fail("unexpected kubectl: " + args.join(" "));
+} else if (command === "kubectl") {
+  if (args.includes("get") && args.includes("--raw=/version")) {}
+  else if (args[0] === "apply" || args[0] === "rollout" || args[0] === "create" || args[0] === "patch") {}
+  else if (args[0] === "get" && args[1] === "namespace") output(JSON.stringify({ metadata: { name: args[2] } }));
+  else if (args[0] === "-n" && args.includes("wait")) {}
+  else if (args[0] === "-n" && args.includes("rollout")) {}
+  else if (args[0] === "-n" && args.includes("delete")) {}
+  else if (args[0] === "-n" && args.includes("exec")) output(JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));
+  else if (args[0] === "-n" && args.includes("pod") && args.includes("bootstrap-password-prepare")) output("Succeeded");
+  else if (args[0] === "-n" && args.includes("pod") && args.includes("postgres")) output("10.42.0.20");
+  else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes") && args.includes("jsonpath={.subsets[0].ports[0].port}")) output("6443");
+  else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes")) output("10.43.0.1");
+  else if (args[0] === "get" && args[1] === "service" && args[2] === "kubernetes") output(JSON.stringify({ spec: { clusterIP: "10.43.0.1" } }));
+  else if (args[0] === "get" && args[1] === "endpoints" && args[2] === "kubernetes") output(JSON.stringify({ subsets: [{ addresses: [{ ip: "172.30.41.4" }] }] }));
+  else if (args[0] === "get" && args[1] === "namespaces") output(JSON.stringify({ items: [{ metadata: { name: "oce-123456789012345", labels: { "openclaw.dev/namespace": "namespace_fixture" }, annotations: { "openclaw.dev/namespace-id": "namespace_fixture" } } }] }));
+  else if (args[0] === "get" && args[1] === "service" && args.includes("jsonpath={.spec.ports[0].nodePort}")) output("30051");
+  else fail("unexpected kubectl: " + args.join(" "));
+} else if (command === "helm") {
+  if ((args[0] === "show" && args[1] === "chart") || args[0] === "upgrade") {}
+  else if (args[0] === "template") output([
+    "apiVersion: v1",
+    "kind: ServiceAccount",
+    "metadata:",
+    "  name: openshell-sandbox",
+    "  namespace: openclaw-workspace-template",
+    "---",
+    "apiVersion: rbac.authorization.k8s.io/v1",
+    "kind: Role",
+    "metadata:",
+    "  name: openshell-workspace-sandbox",
+    "  namespace: openclaw-workspace-template",
+  ].join("\\n"));
+  else fail("unexpected helm: " + args.join(" "));
 }
 `,
     );

@@ -16,6 +16,14 @@ Slack tokens stay in the gateway. Repository profiles and model authentication
 are independent. [Kubernetes policies](drivers/kubernetes-compute/networking-and-isolation.md#networking)
 allow consumer access to the credential sidecar.
 
+For repository-bound Codex consumers, Compute configures stock Codex with the
+exact broker hostname allowed, `allow_local_binding = true`, and `mode = "full"`.
+This permits local binding, disables Codex's additional private-address guard,
+and allows every HTTP method at otherwise allowed destinations. Explicit denies,
+Kubernetes NetworkPolicy, TLS verification, and broker repository authorization
+still apply. Unbound Agents retain their existing policy. See the
+[networking contract](drivers/kubernetes-compute/networking-and-isolation.md#networking).
+
 Trusted startup loads protected configuration into the separate service process;
 backend construction and sender callbacks remain private. Session controls are
 `open`, `status`, `close`, and `shutdown`. Separate service and Git/gh artifacts
@@ -25,7 +33,7 @@ bounded cleanup and disposal.
 ## Repo Driver contract
 
 The optional `repo` capability uses `RepoDriver extends Driver`, with the bundled
-`GitHubRepoDriver`. Trusted Installation `drivers.repo` and GitHub Provider
+`GitHubRepoDriver`. Trusted Installation `drivers.repo` and GitHub Backend
 `drivers.repo` select the same configured Driver ID. The
 [shared contract](../../packages/contracts/src/repo.ts) exposes five operations:
 
@@ -47,7 +55,7 @@ decoding remain private. Status cannot regenerate the closed-schema Git/gh files
 withdrawal bound. Configured IDs, `AgentRevision.repositoryCredentials` and
 persisted `admitted_spec.repository_credentials` retain their meaning.
 
-State derives immutable Driver, Provider, profile and grant context from the
+State derives immutable Driver, Backend, profile and grant context from the
 admitted revision. It retains original Namespace, Agent, revision, admission and
 session identities and deadlines after Agent deletion, without bearers or tokens.
 
@@ -72,7 +80,7 @@ does not establish their outcomes.
 
 ### Canonical platform registry
 
-The GitHub Provider selects one registry through `configuration.registryPath`;
+The GitHub Backend selects one registry through `configuration.registryPath`;
 its `drivers.repo` names the selected Driver. API, worker and
 service load the same immutable, versioned ConfigMap. The registry contains
 nonsecret identity and Namespace policy for one App installation and multiple
@@ -81,7 +89,7 @@ repositories:
 ```json
 {
   "version": 1,
-  "providerId": "repository-provider",
+  "backendId": "repository-backend",
   "providerInstanceId": "github-production",
   "appId": "123456",
   "githubInstallationId": "789012",
@@ -117,7 +125,7 @@ branch authorization.
 
 The selected Driver configuration supplies `controlSocket`,
 `sessionDurationSeconds` and `publicCaPath`; it contains no App key. See
-[Provider configuration](providers.md) and the
+[Backend configuration](backends.md) and the
 [installation procedure](../guides/deploy/production-installation.md) for wiring.
 
 ### Agent-create repository options
@@ -186,7 +194,7 @@ for validation and key ownership. For standalone single-repository operation:
 
 The identifiers are examples. Production upstream origins are fixed to
 `github.com` and `api.github.com`. Registry mode instead uses backend fields
-`kind: "github-app-registry"`, `providerId`, `registryFile` and `privateKeyFile`;
+`kind: "github-app-registry"`, `backendId`, `registryFile` and `privateKeyFile`;
 all repository policy comes from that registry, and unbound admission is refused.
 
 Kubernetes composition copies selected projection generations into service-owned
@@ -284,9 +292,7 @@ other informational links remain data.
 
 Ordinary Git uses `/usr/bin/git` and native configuration. Git owns commands,
 identity, hooks, aliases, remotes, push URLs, worktrees, and user settings.
-The client does not parse Git arguments or create a temporary HOME. The operator's
-single-session launcher remains available and adds the same scoped defaults to
-stock Git.
+The client does not parse Git arguments or create a temporary HOME.
 
 For each generation, native preparation validates public manifest/session metadata,
 identities, paths and file custody, then writes private aggregate `gitconfig`.
@@ -322,9 +328,8 @@ pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 Native user configuration can override these defaults, and caller-added helpers
 or credential stores can retain credentials. The feature installs no cache/store
 helper; its `store` and `erase` operations are inert. There is no whole-command
-preflight or guarantee that every request in a multi-request command fails before
-any allowed request executes. An uncertain mutation is never retried by the
-client to obtain a successful result.
+preflight across multi-request commands. An uncertain mutation is never retried
+by the client to obtain a successful result.
 
 The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the

@@ -8,128 +8,72 @@ export interface ConsoleAsset {
 
 const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
-const CONSOLE_ASSETS = new Map(
-  Object.entries({
-    "/console/api-client.mjs": {
-      path: new URL("api-client.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/view-lifetime.mjs": {
-      path: new URL("view-lifetime.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/navigation.mjs": {
-      path: new URL("navigation.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/shell.mjs": {
-      path: new URL("shell.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/list.mjs": {
-      path: new URL("agents/list.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/workspace-defaults.mjs": {
+const CONSOLE_ASSETS = new Map([
+  ...Object.entries({
+    "image/png": ["oce-mascot.png", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"],
+    "image/vnd.microsoft.icon": ["favicon.ico"],
+    "text/javascript; charset=utf-8": [
+      "api-client.mjs",
+      "view-lifetime.mjs",
+      "navigation.mjs",
+      "shell.mjs",
+      "runtime-images.mjs",
+      "agents/list.mjs",
+      "agents/presets.mjs",
+      "agents/create.mjs",
+      "agents/plugin-discovery.mjs",
+      "agents/slack-directory.mjs",
+      "agents/slack-approvers.mjs",
+      "agents/plugin-fields.mjs",
+      "agents/plugins.mjs",
+      "agents/repositories.mjs",
+      "agents/repository-profiles.mjs",
+      "agents/starter-model.mjs",
+      "agents/workspace.mjs",
+      "agents/detail.mjs",
+      "agents/deletion.mjs",
+      "agents/stop.mjs",
+      "agents/native-admin.mjs",
+      "agents/harness-auth.mjs",
+      "agents/secret-access.mjs",
+      "agents/secret-picker.mjs",
+      "agents/credentials.mjs",
+      "channels/slack.mjs",
+      "channels/shared-ui.mjs",
+      "channels.mjs",
+      "agents.mjs",
+      "drafts.mjs",
+      "dom.mjs",
+      "console.mjs",
+    ],
+    "font/woff2": ["fonts/instrument-sans-latin.woff2"],
+    "text/css; charset=utf-8": ["console.css", "channels.css"],
+  }).flatMap(([contentType, paths]) =>
+    paths.map(
+      (path) => [`/console/${path}`, { path: new URL(path, CONSOLE_ROOT), contentType }] as const,
+    ),
+  ),
+  [
+    "/console/workspace-defaults.mjs",
+    {
       path: new URL("../../../packages/contracts/src/workspace-defaults.mjs", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
-    "/console/preset-variables.mjs": {
+  ],
+  [
+    "/console/preset-variables.mjs",
+    {
       path: new URL("../../../packages/contracts/src/preset-variables.mjs", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
-    "/console/agents/presets.mjs": {
-      path: new URL("agents/presets.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/create.mjs": {
-      path: new URL("agents/create.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/repositories.mjs": {
-      path: new URL("agents/repositories.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/repository-profiles.mjs": {
-      path: new URL("agents/repository-profiles.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/starter-model.mjs": {
-      path: new URL("agents/starter-model.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/workspace.mjs": {
-      path: new URL("agents/workspace.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/detail.mjs": {
-      path: new URL("agents/detail.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/deletion.mjs": {
-      path: new URL("agents/deletion.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/stop.mjs": {
-      path: new URL("agents/stop.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/native-admin.mjs": {
-      path: new URL("agents/native-admin.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/harness-auth.mjs": {
-      path: new URL("agents/harness-auth.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/secret-access.mjs": {
-      path: new URL("agents/secret-access.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents/credentials.mjs": {
-      path: new URL("agents/credentials.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/channels/slack.mjs": {
-      path: new URL("channels/slack.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/channels/shared-ui.mjs": {
-      path: new URL("channels/shared-ui.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/console.css": {
-      path: new URL("console.css", CONSOLE_ROOT),
-      contentType: "text/css; charset=utf-8",
-    },
-    "/console/channels.css": {
-      path: new URL("channels.css", CONSOLE_ROOT),
-      contentType: "text/css; charset=utf-8",
-    },
-    "/console/channels.mjs": {
-      path: new URL("channels.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/agents.mjs": {
-      path: new URL("agents.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/dom.mjs": {
-      path: new URL("dom.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-    "/console/console.mjs": {
-      path: new URL("console.mjs", CONSOLE_ROOT),
-      contentType: "text/javascript; charset=utf-8",
-    },
-  }),
-);
+  ],
+]);
 const CONSOLE_SHELL_ROUTES = new Set([
   "/console",
   "/console/",
   "/console/login",
   "/console/agents",
-  "/console/providers",
+  "/console/backends",
   "/console/namespaces",
   "/console/settings",
 ]);
@@ -140,7 +84,8 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
   "connect-src 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
-  "img-src 'self'",
+  // Catalog Drivers can supply public HTTPS images from plugin publishers.
+  "img-src 'self' https:",
   "object-src 'none'",
   "script-src 'self'",
   "style-src 'self'",

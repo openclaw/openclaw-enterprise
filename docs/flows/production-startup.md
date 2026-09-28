@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-09-21"
-last_updated_session: "authoring-run/fba2d7fa-6603-465e-a7c8-df0375ad202d"
+updated: "2026-09-27"
+last_updated_session: "01a0df20-f340-7810-bb59-b1df6c0bbbd3"
 ---
 
 # Production Startup Flow
@@ -81,13 +81,13 @@ The operator copies and edits the production example values, Installation YAML,
 and bootstrap PVC manifest outside the checkout. Helm values select the
 controller image, API endpoint, Secret names, bootstrap claim, API-client
 selectors, control-plane node selector, and egress destinations. The
-Installation YAML selects IAM, Configuration, Compute, optional Provider,
+Installation YAML selects IAM, Configuration, Compute, optional Backend,
 gateway/Agent images, projected workload identity, and runtime
 networking/storage.
 
 The operator creates file-backed Kubernetes Secrets for Installation startup,
 database URLs, optional database CA bundles, Better Auth signing material, and
-optional ChatGPT Provider administrator credentials. These are prepared inputs,
+optional ChatGPT Backend administrator credentials. These are prepared inputs,
 not recurring synchronization targets. The chart does not infer gateway/Agent
 images from Helm values or rewrite Driver configuration.
 
@@ -152,7 +152,7 @@ Job; Helm failure does not imply the database hook was rolled back.
 
 After successful initialization, Kubernetes starts separate API and worker
 Deployments. The API validates production listener settings, Better Auth,
-database access, trusted Installation YAML, selected Drivers, Provider
+database access, trusted Installation YAML, selected Drivers, Backend
 membership, and Kubernetes Compute preflight before readiness. It serves private
 controller routes, `/healthz`, and database-backed `/readyz` behind the
 operator-managed endpoint.
@@ -161,7 +161,11 @@ When `controlPlane.nodeSelector` is non-empty, the chart places the API and
 worker Pods with that selector. The same selector applies to the initialization
 Job that runs the migration init container and bootstrap container, so production
 operators can keep migration, bootstrap, API, and worker Pods on a reviewed
-control-plane node pool. Empty chart defaults omit the field for clusters that do
+control-plane node pool.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
+that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
+so the credential-checking private proxy stays on the trusted pool.
+Empty chart defaults omit the field for clusters that do
 not label a dedicated control-plane pool. When `database.caSecretName` is set,
 API and worker also mount the CA Secret read-only at `database.caMountPath`.
 Tenant gateway and Agent placement remain in the selected Compute Driver
@@ -171,6 +175,19 @@ NetworkPolicies allow database egress to every `database.cidrs` host and
 Kubernetes API egress to every `cluster.cidrs` host. Each entry must be an
 explicit IPv4 `/32`; operators must refresh the values when a managed database
 or API endpoint resolves to a different address set.
+
+`deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
+an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains
+provider IPv4 `/32` hosts. Empty defaults grant no provider egress. Operators
+maintain those addresses for the optional
+[model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
+Console model selection and Harness egress do not depend on this policy.
+
+When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
+literal IPv4 address and port, the chart passes it to the API and grants only
+that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
+CONNECT to `slack.com:443`. The empty default renders no rule and leaves
+production Slack directory lookup unavailable with manual exact-ID entry.
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Kubernetes 1.35 or later is the supported
@@ -189,8 +206,8 @@ process mounts the bootstrap PVC.
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
 
 When selected, both processes load the same canonical registry and public CA,
-construct the GitHub Provider with a lazy Unix client, and register
-`GitHubRepoDriver` under the optional `repo` capability. The configured Provider
+construct the GitHub Backend with a lazy Unix client, and register
+`GitHubRepoDriver` under the optional `repo` capability. The configured Backend
 member and `drivers.repo` must select the same Driver ID. API startup performs no control operation and loads no App key or
 session engine. The worker owns subsequent session lifecycle calls through the
 selected Driver; API readiness remains database-backed.
@@ -199,7 +216,7 @@ selected Driver; API readiness remains database-backed.
 
 The optional service runs beside the single worker. Its own process pins a
 projection generation, copies the known config/key/TLS/registry files into owned
-private regular files, validates the selected Provider and exact Service origin,
+private regular files, validates the selected Backend and exact Service origin,
 then uses the protected loader and starts both listeners. App/TLS private
 material stays in that container. Only the worker receives an explicitly
 projected Kubernetes API token. The service's private health probe checks the
@@ -224,9 +241,11 @@ operator.
 From an approved client environment, `occ installation get` uses the protected
 key file through the OCC client and displays the Installation. The production
 startup proof succeeds only when its `ID` matches the key response's
-`meta.installationId`. Agent runtime,
-gateway WebSocket authentication, and model calls remain unproven until the
-tenant deployment and TUI procedures run.
+`meta.installationId`. The operator records that ID in the
+`openclaw.dev/installation-id` annotation on the Installation startup Secret;
+coordinated upgrades use the marker to bind their OCC endpoint to the selected
+Kubernetes Installation. Agent runtime, gateway WebSocket authentication, and
+model calls remain unproven until the tenant deployment and TUI procedures run.
 
 ## Debugging and Verification
 
@@ -260,7 +279,7 @@ tenant deployment and TUI procedures run.
 - [Deployment guide: production](../guides/deploy.md#production)
 - [Settings reference](../reference/settings.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
-- [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Repository credential setup](../guides/repository-credentials.md)
 - [Controller worker execution flow](controller-worker.md)
 - [Production TUI flow](production-tui.md)
@@ -272,6 +291,14 @@ tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 08:51: Document API-only Slack directory proxy egress and disabled default. (01a0df20-f340-7810-bb59-b1df6c0bbbd3 - 1a2764952c421bfee00ed6892714366292c2741a)
+
+- 2026-09-24: Record the post-bootstrap Kubernetes Installation identity marker used by coordinated upgrades.
+
+- 2026-09-25 12:02: Document optional API model-discovery egress in the accompanying chart change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b2521074873ca46e1a5024248852a32b97cfc8a9)
+
+- 2026-09-24 18:02: Trace private Envoy placement on the control-plane pool in the accompanying chart change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 92fb7cdfdf672fe476993e2cfd96a73a75c43ac2)
 
 - 2026-09-21 05:32: Reconcile accompanying platform credential documentation with current source history and native Git boundaries. (authoring-run/fba2d7fa-6603-465e-a7c8-df0375ad202d - a051a2406eec7cafde2e0dd5e2ec63dba6ce1581)
 

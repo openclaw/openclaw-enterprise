@@ -32,8 +32,8 @@ const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
 const authSecret = "native-admin-postgres-auth-secret-minimum-32-bytes";
-const authBaseURL = "https://console.example.test";
 const publicOrigin = "https://console.example.test:9443";
+const authBaseURL = publicOrigin;
 const cookieDomain = "example.test";
 const nativeDomain = `native-pg.${cookieDomain}`;
 const nativeGatewayApiKey = `native-postgres-gateway-key-${randomUUID()}`;
@@ -243,7 +243,7 @@ async function createApi(t, label, upstreamPort, options = {}) {
     resolveHarness: resolveApprovedHarness,
     auditSink: state.auditSink,
     auth,
-    development: { enabled: true, installationId: installation.id },
+    development: { enabled: false },
     publicOrigin,
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
@@ -282,6 +282,7 @@ async function signIn(app, credentials = { email: adminEmail, password: adminPas
   assert.equal(response.statusCode, 200, response.body);
   const setCookie = response.headers["set-cookie"];
   const session = {
+    origin: authBaseURL,
     cookie: cookieHeaderFromSetCookie(
       Array.isArray(setCookie) ? setCookie : setCookie === undefined ? [] : [String(setCookie)],
     ),

@@ -6,7 +6,7 @@ import {
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
 
-export function createRepositoryFields(context, onChange) {
+export function createRepositoryFields(context, onChange, initialBindings = []) {
   const status = element(
     "p",
     { className: "hint", role: "status", "aria-live": "polite" },
@@ -113,10 +113,9 @@ export function createRepositoryFields(context, onChange) {
   );
   const state = {
     options: [],
-    selected: new Set(),
-    profile: "",
+    selected: new Set(initialBindings.map((binding) => binding.repositoryRef)),
+    profile: initialBindings[0]?.profile ?? "",
     settled: false,
-    draftOnly: false,
     blockingFailure: undefined,
     disabled: false,
   };
@@ -320,6 +319,13 @@ export function createRepositoryFields(context, onChange) {
     }));
   }
 
+  function draftBindings() {
+    return [...state.selected].map((repositoryRef) => ({
+      repositoryRef,
+      profile: state.profile,
+    }));
+  }
+
   function setDisabled(disabled) {
     state.disabled = disabled;
     retry.disabled = disabled || !state.settled;
@@ -330,7 +336,6 @@ export function createRepositoryFields(context, onChange) {
 
   async function load(clearSelections = false) {
     state.settled = false;
-    state.draftOnly = false;
     state.blockingFailure = undefined;
     retry.hidden = true;
     choices.setAttribute("aria-busy", "true");
@@ -397,19 +402,17 @@ export function createRepositoryFields(context, onChange) {
       if (!context.isCurrent()) {
         return { kind: "obsolete" };
       }
+      // A failed read cannot establish which retained choices are still approved.
       state.options = [];
-      state.selected.clear();
-      state.profile = "";
       choices.setAttribute("aria-busy", "false");
       state.settled = true;
       const optionalOutage =
         error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE";
-      state.draftOnly = optionalOutage && !clearSelections;
       if (error.status === 403) {
         state.blockingFailure = "denied";
       } else if (error.status === 409) {
         state.blockingFailure = "conflict";
-      } else if (clearSelections || !optionalOutage) {
+      } else if (clearSelections || !optionalOutage || state.selected.size > 0) {
         state.blockingFailure = "unavailable";
       }
       if (state.blockingFailure === "denied") {
@@ -422,16 +425,33 @@ export function createRepositoryFields(context, onChange) {
       } else if (clearSelections) {
         status.className = "error";
         status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
+      } else if (state.selected.size > 0) {
+        status.className = "error";
+        status.textContent = `Repository choices could not be loaded. ${message(error)} Your selections are retained. Retry repository choices before creating an Agent.`;
       } else if (optionalOutage) {
         status.className = "hint";
-        status.textContent = `Repository choices are unavailable. ${message(error)} You can save a draft without repository access; provisioning is unavailable until discovery succeeds.`;
+        status.replaceChildren(
+          "Repository choices are unavailable. ",
+          element(
+            "a",
+            {
+              href: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+              target: "_blank",
+              rel: "noopener noreferrer",
+            },
+            "Set up repository access",
+          ),
+          ". You can continue without repository access.",
+        );
       } else {
         status.className = "error";
         status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before creating an Agent.`;
       }
       retry.hidden = clearSelections;
       renderChoices();
-      renderProfiles();
+      profileGroup.hidden = true;
+      profileChoices.replaceChildren();
+      validation.hidden = true;
       onChange(false);
       return { kind: state.blockingFailure ?? "unavailable" };
     }
@@ -442,12 +462,12 @@ export function createRepositoryFields(context, onChange) {
   return {
     section,
     bindings,
+    draftBindings,
     validate,
     hasValidSelection,
     setDisabled,
     reload: () => load(true),
     isSettled: () => state.settled,
     blocksCreate: () => state.blockingFailure !== undefined,
-    draftOnly: () => state.draftOnly,
   };
 }

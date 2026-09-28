@@ -34,19 +34,19 @@ export function admitLoggingConfiguration(
   level: LoggingLevel,
 ): OpenClawConfigurationDocument {
   const logging = record(configuration.logging);
-  const admittedLogging: Record<string, OpenClawConfigurationValue> = { ...logging };
+  const admittedLogging: Record<string, OpenClawConfigurationValue> = {
+    ...logging,
+    level,
+    consoleLevel: level,
+    consoleStyle: "json",
+  };
   // Native OpenClaw owns redaction; admitted read-only runtime config must omit this retired setting.
   delete admittedLogging.redactSensitive;
   const diagnostics = record(configuration.diagnostics);
   const otel = record(diagnostics.otel);
   return Object.freeze({
     ...configuration,
-    logging: Object.freeze({
-      ...admittedLogging,
-      level,
-      consoleLevel: level,
-      consoleStyle: "json",
-    }),
+    logging: Object.freeze(admittedLogging),
     diagnostics: Object.freeze({
       ...diagnostics,
       otel: Object.freeze({

@@ -105,6 +105,18 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.doesNotMatch(JSON.stringify(occLogs), new RegExp(serviceKey));
 });
 
+test("dev-up starts Docker without Compose options on Bash 3.2", async (t) => {
+  // The documented no-options invocation must not trip nounset on an empty Bash array.
+  const fixture = await createFixture(t);
+  const keyOutput = join(fixture.directory, "docker-no-options-service-key.json");
+
+  const result = runDevUp(["--key-output", keyOutput], fixture.env);
+
+  assert.equal(result.status, 0, result.stderr ?? result.error?.message ?? "dev-up did not exit");
+  assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+  assert.match(result.stdout, /Container engine: Docker/);
+});
+
 test("dev-up preserves a selected custom runtime image and skips the quickstart build", async (t) => {
   const fixture = await createFixture(t);
   const keyOutput = join(fixture.directory, "custom-service-key.json");
@@ -591,6 +603,97 @@ test("dev-up routes Kubernetes Compute through the unified entry point", async (
   assert.match(result.stdout, /occ dev up/);
 });
 
+test("development entry points default to the Compose profile", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env };
+  delete env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+
+  // Both entry points must start the same Compose profile when no selector is set.
+  const options = composeOptions(fixture);
+  const script = runDevUp(
+    ["--key-output", join(fixture.directory, "script-key.json"), "--", ...options],
+    env,
+  );
+  const cli = spawnSync(
+    fixture.cli,
+    ["dev", "up", "--key-output", join(fixture.directory, "cli-key.json"), "--", ...options],
+    { cwd: fixture.fixtureRepository, encoding: "utf8", env },
+  );
+  for (const result of [script, cli]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+    assert.match(result.stdout, /Container engine: Docker/);
+  }
+  const starts = (await readJsonLines(fixture.dockerLog)).filter(
+    (entry) => entry.args[0] === "compose" && entry.args.includes("up"),
+  );
+  assert.equal(starts.length, 2);
+});
+
+test("explicit Kubernetes-only profile rejects Compose options before mutation", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env };
+  env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
+  env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "kubernetes-state");
+
+  // Compose options cannot redirect the explicitly selected Kubernetes-only profile.
+  for (const result of [
+    runDevUp(["--", "--env-file", fixture.emptyEnv], env),
+    spawnSync(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
+      cwd: fixture.fixtureRepository,
+      encoding: "utf8",
+      env,
+    }),
+  ]) {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Kubernetes-only profile does not accept Compose options/);
+  }
+  await assert.rejects(stat(env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
+test("development cleanup defaults to the Compose profile", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+
+  // Cleanup without selectors must target Compose, not a Kubernetes state directory.
+  const result = runDevDown(fixture.env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Stopped Docker-compatible development stack/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d"),
+    false,
+  );
+});
+
+test("development cleanup rejects a Kubernetes control plane without Kubernetes Compute", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+
+  // A mismatched selector must not stop an unrelated default Compose stack.
+  const result = runDevDown(fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute/,
+  );
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.equal(
+    commands.some((entry) => entry.args.includes("down")),
+    false,
+  );
+});
+
 // Serve the existing Installation HTTP contract in a child process so the real
 // synchronous CLI can authenticate without blocking the test runner's event loop.
 async function installationServer(t, fixture, scenario = "success") {
@@ -610,6 +713,10 @@ const server = http.createServer((request, response) => {
   if (request.url === "/api/auth/session") {
     if (${JSON.stringify(scenario)} === "readiness-blocked") response.writeHead(503);
     response.end("{}"); return;
+  }
+  if (request.url === "/namespaces/namespace_fixture" && authorized) {
+    response.end(JSON.stringify({ data: { id: "namespace_fixture", name: "default", status: "ready" }, meta: { requestId: "req_fixture" } }));
+    return;
   }
   if (request.url !== "/installation" || !authorized || ${JSON.stringify(scenario)} === "api-unauthorized") {
     response.writeHead(401);
@@ -646,6 +753,7 @@ async function kubernetesFixture(t, scenario = "success") {
   const fixture = await createFixture(t);
   await prepareLifecycleCommands(fixture, scenario);
   fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
   fixture.requestLog = await installationServer(t, fixture, scenario);
   fixture.start = (args = []) =>
     runDevUp([...args, "--", "--env-file", fixture.emptyEnv], fixture.env);
@@ -732,8 +840,359 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   assert.match(repeated.stderr, /no such file or directory/);
 });
 
-for (const driver of ["docker", ""]) {
-  test(`dev-down preserves Kubernetes state when Compute selector is ${driver || "default"}`, async (t) => {
+test("Kubernetes Compute defaults to the Compose control plane", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+
+  // Kubernetes Compute remains available while the control plane defaults to Compose.
+  const result = fixture.start();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Control plane: Compose/);
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+});
+
+test("Kubernetes dev-up forwards an explicit K3s image to k3d", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
+  const result = fixture.start();
+  assert.equal(result.status, 0, result.stderr);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const clusterCreate = commands.find(
+    (entry) => entry.command === "k3d" && entry.args[0] === "cluster" && entry.args[1] === "create",
+  );
+  assert.ok(clusterCreate);
+  assert.equal(
+    clusterCreate.args[clusterCreate.args.indexOf("--image") + 1],
+    "rancher/k3s:v1.35.8-k3s1",
+  );
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+});
+
+test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before reporting readiness", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
+  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
+  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
+  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
+
+  // Exercise the supported Kubernetes-only lifecycle. Compose options are not
+  // accepted because PostgreSQL and the OCE control plane live inside k3d.
+  const result = runDevUp([], fixture.env);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Sandbox Driver: openshell/);
+  assert.match(result.stdout, /Deployment: Kubernetes only/);
+  assert.match(result.stdout, /Platform Namespace: oce-system/);
+  assert.match(result.stdout, /Installing OpenShell Gateway and OCE in Namespace oce-system/);
+  assert.doesNotMatch(result.stdout, /Installing OpenShell workspace resources/);
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  assert.equal(state.sandboxDriver, "openshell");
+  assert.equal(state.deploymentMode, "k3d");
+  assert.equal(state.platformNamespace, "oce-system");
+  await assert.rejects(stat(join(directory, "compose.yaml")), { code: "ENOENT" });
+  const configuration = await readFile(join(directory, "installation.yaml"), "utf8");
+  assert.match(configuration, /id: sandbox-openshell-development/);
+  assert.match(
+    configuration,
+    /endpoint: http:\/\/openshell-gateway\.oce-system\.svc\.cluster\.local:8080/,
+  );
+  assert.match(configuration, /mode: inCluster/);
+  assert.doesNotMatch(configuration, /kubeconfigPath/);
+  assert.match(configuration, /workspaceMode: operator/);
+  assert.match(configuration, /operatorWorkspaceResources:/);
+  assert.match(configuration, /kind: ServiceAccount/);
+  assert.doesNotMatch(configuration, /namespace: openclaw-workspace-template/);
+  assert.match(configuration, /operatorNamespaceLabels:/);
+  assert.match(configuration, /openshell\.ai\/openclaw-workspace: "true"/);
+  assert.doesNotMatch(configuration, /workspace: default/);
+  const sandboxConfiguration = loadYaml(configuration).drivers.sandbox.configuration;
+  assert.deepEqual(
+    sandboxConfiguration.gateway.networkPolicyResources[0].spec.podSelector.matchLabels,
+    {
+      "openshell.ai/managed-by": "openshell",
+      "openshell.ai/boundary-role": "supervisor",
+    },
+    "only OpenShell supervisors may use the tenant callback egress rule",
+  );
+
+  const developmentPolicies = JSON.parse(
+    await readFile(join(directory, "openshell-network-policies.json"), "utf8"),
+  );
+  const gatewayIngress = developmentPolicies.items.find(
+    ({ metadata }) => metadata.name === "openclaw-development-openshell-ingress",
+  );
+  assert.deepEqual(gatewayIngress.spec.podSelector.matchLabels, {
+    "app.kubernetes.io/name": "openshell",
+    "app.kubernetes.io/instance": "openshell-gateway",
+  });
+  // The worker provisions Sandboxes and the API registers credential sources, so both reach
+  // the gateway; no other OCE component or tenant workload is admitted.
+  assert.deepEqual(gatewayIngress.spec.ingress[0].from, [
+    {
+      podSelector: {
+        matchLabels: {
+          "app.kubernetes.io/name": "openclaw-enterprise",
+          "app.kubernetes.io/instance": "openclaw-enterprise",
+        },
+        matchExpressions: [
+          { key: "app.kubernetes.io/component", operator: "In", values: ["api", "worker"] },
+        ],
+      },
+    },
+    {
+      namespaceSelector: {
+        matchLabels: { "openshell.ai/openclaw-workspace": "true" },
+        matchExpressions: [{ key: "openclaw.dev/namespace", operator: "Exists" }],
+      },
+      podSelector: {
+        matchLabels: {
+          "openshell.ai/managed-by": "openshell",
+          "openshell.ai/boundary-role": "supervisor",
+        },
+      },
+    },
+  ]);
+
+  // The selected profile must use only the pinned cluster and imported images;
+  // no Compose command may participate in startup or cleanup.
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  // The default tag may belong to an older checkout. Rebuild it before import
+  // so the in-cluster control plane always matches the source being launched.
+  assert.ok(
+    commands.some(
+      ({ command, args }) =>
+        command === "docker" &&
+        args[0] === "build" &&
+        args.includes("--target") &&
+        args.includes("runtime") &&
+        args.includes("--tag") &&
+        args.includes("openclaw-enterprise-controller:kubernetes-quickstart"),
+    ),
+  );
+  assert.ok(
+    commands.some(
+      ({ command, args }) =>
+        command === "docker" &&
+        args[0] === "build" &&
+        args.includes("-f") &&
+        args.includes("deploy/runtime/Dockerfile") &&
+        args.includes("openclaw-enterprise-runtime:kubernetes-quickstart"),
+    ),
+  );
+  assert.equal(
+    commands.some(({ args }) => args[0] === "compose"),
+    false,
+  );
+  const clusterCreate = commands.find(
+    ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
+  );
+  assert.match(
+    clusterCreate.args[clusterCreate.args.indexOf("--image") + 1],
+    /rancher\/k3s:v1\.36\.4-k3s1@sha256:/,
+  );
+  assert.ok(clusterCreate.args.includes("--volume"));
+  assert.ok(clusterCreate.args.includes("--port"));
+  assert.equal(clusterCreate.args.includes("--network"), false);
+  assert.ok(
+    commands.some(
+      ({ command, args }) =>
+        command === "kubectl" &&
+        args[0] === "rollout" &&
+        args.includes("deployment/agent-sandbox-controller"),
+    ),
+  );
+  assert.equal(
+    commands.filter(
+      ({ command, args }) => command === "k3d" && args[0] === "image" && args[1] === "import",
+    ).length,
+    6,
+    "OpenShell startup imports its three images plus the OCE runtime, controller, and PostgreSQL images",
+  );
+  assert.equal(
+    commands.filter(
+      ({ command, args }) =>
+        command === "docker" &&
+        args[0] === "exec" &&
+        args.includes("tag") &&
+        args.some((arg) => arg.startsWith("docker.io/openclaw-development/openshell-")),
+    ).length,
+    3,
+    "OpenShell startup registers each imported platform digest inside k3s",
+  );
+  const helmInstalls = commands.filter(
+    ({ command, args }) => command === "helm" && args[0] === "upgrade",
+  );
+  assert.equal(helmInstalls.length, 2);
+  const gatewayInstall = helmInstalls.find(({ args }) => args[2] === "openshell-gateway");
+  assert.ok(gatewayInstall.args.includes("--namespace"));
+  assert.ok(gatewayInstall.args.includes("oce-system"));
+  assert.ok(gatewayInstall.args.includes("--set=gateway.image.pullPolicy=Never"));
+  assert.ok(gatewayInstall.args.includes("--set=sandboxRuntime.image.pullPolicy=Never"));
+  assert.ok(gatewayInstall.args.includes("--set=supervisor.image.pullPolicy=Never"));
+  assert.ok(gatewayInstall.args.includes("--set-string=gateway.image.registry=docker.io"));
+  assert.ok(
+    gatewayInstall.args.includes(
+      "--set-string=gateway.image.repository=openclaw-development/openshell-gateway",
+    ),
+  );
+  assert.ok(
+    gatewayInstall.args.includes(
+      "--set-string=gateway.image.digest=sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39",
+    ),
+  );
+  assert.equal(
+    gatewayInstall.args.includes("--set=supervisor.sandboxRuntime.networkPolicyEnforced=true"),
+    false,
+  );
+  assert.ok(gatewayInstall.args.includes("--set=workspaceResources.enabled=false"));
+  assert.ok(gatewayInstall.args.includes("--set=server.drivers.kubernetes.allowDriverConfig=true"));
+  assert.ok(
+    gatewayInstall.args.includes("--set=server.drivers.kubernetes.resourceAdmission.enabled=false"),
+  );
+  assert.ok(
+    gatewayInstall.args.includes("--set-string=server.drivers.kubernetes.workspaceMode=operator"),
+  );
+  assert.ok(
+    gatewayInstall.args.includes(
+      "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+    ),
+  );
+  assert.ok(gatewayInstall.args.includes("--set=service.type=ClusterIP"));
+  assert.equal(gatewayInstall.args.includes("--set=service.type=NodePort"), false);
+  assert.ok(
+    helmInstalls.some(
+      ({ args }) => args[2] === "openclaw-enterprise" && args.includes("oce-system"),
+    ),
+  );
+  const workspaceTemplate = commands.find(
+    ({ command, args }) => command === "helm" && args[0] === "template",
+  );
+  assert.ok(workspaceTemplate);
+  assert.ok(workspaceTemplate.args.includes("openshell-workspace"));
+  assert.ok(
+    workspaceTemplate.args.includes("--set-string=gateway.serviceAccount.namespace=oce-system"),
+  );
+  assert.ok(workspaceTemplate.args.includes("--set=gateway.allowDriverConfig=true"));
+
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+});
+
+test("Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
+  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
+
+  // This profile keeps OCC and PostgreSQL in Compose while the regular worker
+  // reconciles Kubernetes Compute and operator-mode OpenShell Workspaces in k3d.
+  const result = fixture.start();
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Control plane: Compose/);
+  assert.match(result.stdout, /Sandbox Driver: openshell/);
+  assert.doesNotMatch(result.stdout, /Deployment: Kubernetes only/);
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  assert.equal(state.sandboxDriver, "openshell");
+  assert.equal(state.deploymentMode, undefined);
+  assert.equal((await stat(join(directory, "compose.yaml"))).isFile(), true);
+
+  const configuration = loadYaml(await readFile(join(directory, "installation.yaml"), "utf8"));
+  assert.equal(configuration.drivers.compute.configuration.authentication.mode, "kubeconfig");
+  // The openshell Backend owns the gateway connection that both member Drivers share.
+  assert.deepEqual(configuration.backend, [
+    {
+      id: "openshell",
+      type: "openshell",
+      configuration: {
+        endpoint: "http://k3d-occ-dev-owned-server-0:30051",
+        insecureTransport: "network-policy",
+      },
+      drivers: {
+        sandbox: "sandbox-openshell-development",
+        credential_gateway: "credential-gateway-openshell-development",
+      },
+    },
+  ]);
+  assert.equal(configuration.drivers.sandbox.configuration.gateway.endpoint, undefined);
+  assert.equal(configuration.drivers.sandbox.configuration.gateway.workspaceMode, "operator");
+  assert.equal(
+    configuration.drivers.credential_gateway.id,
+    "credential-gateway-openshell-development",
+  );
+
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const clusterCreate = commands.find(
+    ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
+  );
+  assert.match(
+    clusterCreate.args[clusterCreate.args.indexOf("--image") + 1],
+    /rancher\/k3s:v1\.36\.4-k3s1@sha256:/,
+  );
+  assert.ok(
+    commands.some(
+      ({ command, args }) =>
+        command === "docker" &&
+        args[0] === "compose" &&
+        args.includes("controller") &&
+        args.includes("worker-kubernetes"),
+    ),
+  );
+  const gatewayInstall = commands.find(
+    ({ command, args }) =>
+      command === "helm" && args[0] === "upgrade" && args[2] === "openshell-gateway",
+  );
+  assert.ok(gatewayInstall.args.includes("openshell-system"));
+  assert.ok(gatewayInstall.args.includes("--set=service.type=NodePort"));
+  assert.ok(gatewayInstall.args.includes("--set=service.nodePort=30051"));
+
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
+    clusters: ["occ-dev-unrelated"],
+    compose: false,
+  });
+});
+
+test("Kubernetes dev-up rejects an unsupported control-plane selection", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "external";
+
+  const result = fixture.start();
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes/);
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
+    clusters: ["occ-dev-unrelated"],
+    compose: false,
+  });
+});
+
+test("dev-up rejects OpenShell when Kubernetes Compute is not selected", async (t) => {
+  const fixture = await createFixture(t);
+  const result = runDevUp([], {
+    ...fixture.env,
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: "openshell",
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(
+    result.stderr,
+    /OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes/,
+  );
+  assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
+for (const driver of ["docker"]) {
+  test(`dev-down preserves Kubernetes state when Compute selector is ${driver}`, async (t) => {
     const fixture = await createFixture(t);
     await prepareLifecycleCommands(fixture);
     const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
@@ -877,6 +1336,7 @@ for (const driver of ["docker", "kubernetes"]) {
       const result = runDevUp(["--", ...options], {
         ...fixture.env,
         OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
+        OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
       });
       assert.notEqual(result.status, 0);
       assert.match(
@@ -926,6 +1386,7 @@ for (const driver of ["docker", "kubernetes"]) {
           {
             ...fixture.env,
             OCC_DEVELOPMENT_COMPUTE_DRIVER: driver,
+            OCC_DEVELOPMENT_CONTROL_PLANE: "compose",
             OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
             OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-new",
           },

@@ -10,8 +10,8 @@ import {
   ResourceConflictError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import type { Provider } from "@openclaw-enterprise/contracts";
-import type { ChatGPTClient } from "../../providers/chatgpt.ts";
+import type { Backend } from "@openclaw-enterprise/contracts";
+import type { ChatGPTClient } from "../../backends/chatgpt.ts";
 
 type SecretReference = ServiceAccountCredential["secretRef"];
 
@@ -30,7 +30,7 @@ interface CredentialStorage {
 }
 
 interface ServiceAccountBinding {
-  readonly providerId: string;
+  readonly backendId: string;
   readonly driverId: string;
   readonly externalAccountId: string;
   readonly externalCredentialId: string | null;
@@ -41,27 +41,27 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
   readonly capability = "service_account" as const;
   readonly implementation = "chatgpt";
   readonly id: string;
-  private readonly providerId: string;
+  private readonly backendId: string;
   private readonly client: ChatGPTClient;
   private readonly controller: OpenClawController;
   private readonly state: PostgresPlatformState;
   private readonly compute: CredentialStorage;
 
   constructor(
-    provider: Provider<ChatGPTClient>,
+    backend: Backend<ChatGPTClient>,
     controller: OpenClawController,
     state: PostgresPlatformState,
     compute: CredentialStorage,
   ) {
-    const id = provider.drivers.service_account;
+    const id = backend.drivers.service_account;
     if (typeof id !== "string" || id.trim().length === 0) {
-      throw new Error("The ChatGPT Provider must declare its ServiceAccount Driver.");
+      throw new Error("The ChatGPT Backend must declare its ServiceAccount Driver.");
     }
-    this.client = provider.client;
+    this.client = backend.client;
     this.controller = controller;
     this.state = state;
     this.compute = compute;
-    this.providerId = provider.id;
+    this.backendId = backend.id;
     this.id = id;
   }
 
@@ -73,12 +73,12 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     this.controller.registerRollback(() => this.client.deleteServiceAccount(external.id));
     await this.query(
       `INSERT INTO occ.service_account_driver_bindings
-         (service_account_id, namespace_id, provider_id, driver_id, external_account_id, workspace_id)
+         (service_account_id, namespace_id, backend_id, driver_id, external_account_id, workspace_id)
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         account.id,
         account.namespaceId,
-        this.providerId,
+        this.backendId,
         this.id,
         external.id,
         this.client.workspaceId,
@@ -89,7 +89,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
   async createCredential(account: ServiceAccount): Promise<ServiceAccountCredential> {
     const linked = await this.findBinding(account);
     if (linked === undefined) {
-      throw new ScopeViolationError("The service account has no exact provider binding.");
+      throw new ScopeViolationError("The service account has no exact backend binding.");
     }
     if (linked.externalCredentialId !== null || account.credential !== undefined) {
       throw new ResourceConflictError("The service account already has a credential.");
@@ -157,7 +157,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
   private async findBinding(account: ServiceAccount): Promise<ServiceAccountBinding | undefined> {
     const result = await this.query(
       `SELECT driver_id AS "driverId", external_account_id AS "externalAccountId",
-              provider_id AS "providerId", external_credential_id AS "externalCredentialId",
+              backend_id AS "backendId", external_credential_id AS "externalCredentialId",
               workspace_id AS "workspaceId"
        FROM occ.service_account_driver_bindings
        WHERE service_account_id = $1 AND namespace_id = $2`,
@@ -167,16 +167,14 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       return undefined;
     }
     const linked = result.rows[0] as ServiceAccountBinding;
-    if (linked.providerId !== this.providerId) {
-      throw new DependencyUnavailableError("The service-account Provider does not match.");
+    if (linked.backendId !== this.backendId) {
+      throw new DependencyUnavailableError("The service-account Backend does not match.");
     }
     if (linked.driverId !== this.id) {
-      throw new DependencyUnavailableError("The service-account provider Driver does not match.");
+      throw new DependencyUnavailableError("The service-account backend Driver does not match.");
     }
     if (linked.workspaceId !== this.client.workspaceId) {
-      throw new DependencyUnavailableError(
-        "The service-account provider workspace does not match.",
-      );
+      throw new DependencyUnavailableError("The service-account backend workspace does not match.");
     }
     return linked;
   }
@@ -192,11 +190,11 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
 }
 
 export function createChatGPTServiceAccountDriverFactory(
-  provider: Provider<ChatGPTClient>,
+  backend: Backend<ChatGPTClient>,
   compute: CredentialStorage,
 ) {
   return (controller: OpenClawController, state: PostgresPlatformState): void => {
-    const driver = new ChatGPTServiceAccountDriver(provider, controller, state, compute);
+    const driver = new ChatGPTServiceAccountDriver(backend, controller, state, compute);
     controller.registerDriver(driver);
     if (controller.selectDriver("service_account", driver.id) !== driver) {
       throw new Error("The configured ServiceAccount Driver was not selected correctly.");

@@ -270,10 +270,6 @@ test(
         async () => (await pods(plane, role)).length === 0,
       );
     }
-    await dp.waitFor(
-      "stopped revision authentication policy removal",
-      async () => (await authenticationPolicies()).length === 0,
-    );
     await deploy();
     assert.equal((await api("GET", workspace)).content, content);
     const modelDigest = async (pod) => {
@@ -291,7 +287,7 @@ test(
     assert.equal(await modelDigest(liveHarness), digest(process.env.OPENAI_API_KEY));
     // A deliberately invalid key proves source updates do not silently mutate
     // the active revision, while an attempted redeploy receives the new material
-    // and fails native model authentication before it can replace the live Agent.
+    // and fails native model authentication before deployment can succeed.
     const invalidKey = `test-only-invalid-${randomUUID()}`;
     await api("PATCH", `${base}/secrets/${secret.id}`, { value: invalidKey });
     assert.equal(await modelDigest(liveHarness), digest(process.env.OPENAI_API_KEY));
@@ -335,13 +331,20 @@ test(
     assert.equal((await api("GET", workspace)).content, content);
     await api("PATCH", `${base}/secrets/${secret.id}`, { value: process.env.OPENAI_API_KEY });
     const successor = await api("POST", `${agentPath}/deploy`);
-    // Both candidates can reconcile while the rejected one awaits its deadline.
-    // Their login/probe grants must coexist rather than move between revisions.
-    await dp.waitFor("independent pending candidate authentication policies", async () => {
+    // Exclusive RWO replacement must stop the rejected workload before the
+    // Agent-owned policy selects the corrected successor.
+    await dp.waitFor("exclusive successor authentication policy", async () => {
       const selected = (await authenticationPolicies()).map(
         (policy) => policy.spec.podSelector.matchLabels["openclaw.dev/revision"],
       );
-      return selected.includes(rejected.id) && selected.includes(successor.id);
+      const rejectedPods = (await pods("execution", "agent")).filter(
+        (pod) => pod.metadata.labels["openclaw.dev/revision"] === rejected.id,
+      );
+      return (
+        selected.includes(successor.id) &&
+        !selected.includes(rejected.id) &&
+        rejectedPods.length === 0
+      );
     });
     await waitForDeployment(successor);
     assert.notEqual(successor.id, first.id);
@@ -352,7 +355,7 @@ test(
       ),
     );
 
-    await dp.waitFor("retired revision authentication policy removal", async () => {
+    await dp.waitFor("authentication policy selects only the active revision", async () => {
       const remaining = await authenticationPolicies();
       return (
         remaining.length === 1 &&

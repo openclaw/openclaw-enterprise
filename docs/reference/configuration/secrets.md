@@ -67,8 +67,11 @@ OpenClaw owns SecretRef syntax, provider configuration, and validation. OCC,
 ConfigurationDriver, and Kubernetes Compute preserve native `env`, `file`, and
 `exec` SecretRefs as unresolved JSON. The selected SecretDriver only stores OCC
 Secret values and resolves approved env delivery metadata for the owning
-gateway. A Namespace-scoped Secret Broker, CredentialGateway/OpenShell
-substitution, value history, and automatic rotation remain unimplemented.
+gateway. With the OpenShell Credential Gateway, an Agent's model key can instead
+be a [credential source](../credential-sources.md) that the Sandbox proxy
+substitutes, for dedicated Codex only. That path does not apply to Configuration
+bindings. A general Secret Broker, value history, and automatic rotation remain
+unimplemented.
 
 ### Native channel configuration
 
@@ -98,6 +101,7 @@ Add a native default Slack account with environment SecretRefs:
     "slack": {
       "enabled": true,
       "mode": "socket",
+      "replyToModeByChatType": { "channel": "all" },
       "appToken": { "source": "env", "provider": "default", "id": "SLACK_APP_TOKEN" },
       "botToken": { "source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN" },
       "dmPolicy": "allowlist",
@@ -107,6 +111,26 @@ Add a native default Slack account with environment SecretRefs:
   }
 }
 ```
+
+The console's new Slack setup and bundled Slack Presets set
+`channels.slack.replyToModeByChatType.channel: "all"`, which threads channel
+replies without changing DM or group-DM reply behavior. Existing Slack blocks
+keep their saved settings, including omissions and overrides. To disable the
+channel default, set `replyToModeByChatType.channel: "off"` in native
+Configuration JSON; per-channel overrides still take precedence. The API stores
+the supplied native document unchanged, so API clients should include the
+chat-type setting shown above. Save and redeploy to apply a change.
+
+The console exposes **Direct-message policy** and **Allowed DM user IDs**
+separately from channel access. New setup selects `allowlist` and requires sender
+IDs before saving; choose `disabled` for channel-only access. `pairing` admits
+approved senders, with optional preapproved IDs. Selecting `open` writes
+`allowFrom: ["*"]`; switching to Allowlist or Pairing clears that wildcard in
+the editor. Disabled preserves the saved sender list for later use. Existing
+omitted policies remain omitted until explicitly selected. Organization-wide
+installs support Disabled or Open when DMs are enabled; Disabled is recommended.
+The editor preserves `enterpriseOrgInstall` and `dm.enabled`; a native
+`dm.enabled: false` continues to block DMs regardless of the selected policy.
 
 Microsoft Teams uses the native `msteams` provider identifier. Its application
 and tenant identifiers are ordinary nonsecret configuration strings; only the

@@ -15,8 +15,11 @@ This page owns the contribution and review policy.
 Read [AGENTS.md](AGENTS.md) for repository boundaries and verification rules.
 The [platform design](docs/design.md) owns architecture; the
 [documentation map](docs/README.md) identifies current references and procedures.
-Check open issues and pull requests before starting overlapping work. Discuss
-new capabilities and changes outside approved milestones with maintainers first.
+Check open issues and pull requests before starting overlapping work. For an
+architectural change that the team needs to understand, open an
+[RFC](docs/contributing/rfcs.md) early and request human feedback. Implementation
+can proceed while the RFC is reviewed and revised. Changes outside approved
+milestones still need a decision from the responsible maintainers.
 
 Use a focused branch or worktree. Preserve other contributors' changes, local
 configuration, dependency trees, and running services. Never use a shared or
@@ -104,12 +107,41 @@ proof selection, diff cleanup, and requested independent review.
   related issues; use a closing reference only when the change resolves one.
 - Update affected feature references, guides, and flows with behavior changes.
   Preserve historical implementation specifications and their Manual Notes.
-- Request the relevant maintainers' review. Resolve substantive review feedback
-  and required checks before asking for merge.
+- Request relevant maintainers' feedback. Resolve substantive findings and
+  required checks before merging.
 - Inspect the entire diff and attachments for credentials, tenant data, private
   hostnames, and personal paths. Use synthetic fixtures and redacted evidence.
 
 Open a draft while implementation or proof is incomplete, then mark it ready for
-review. Repository access and a green check do not authorize a release,
-publication, settings change, or merge. Keep the existing [MIT license](LICENSE)
-and third-party attribution intact.
+review. New contributors wait for maintainer feedback before merging. Core team
+members are expected to carry their own changes through merge. When the PR author
+and authenticated account match, an authorized maintainer may use their merge
+bypass if the review rule otherwise prevents self-merging. They must still check
+the final head, independent review, required CI, review conversations, and any
+specific holds; record the reason for the bypass. Do not bypass an unresolved
+finding or claim a missing review succeeded.
+
+An RFC is needed for architectural changes that the team needs to understand,
+not for ordinary bug fixes, small features, or polish. Request human review early,
+but do not wait to write or revise the implementation. Keep the RFC consistent
+with the final code and land them together when ready, either in one PR or as
+linked PRs merged in dependency order. Core team members do not wait for an RFC
+response unless a specific decision or hold requires it.
+
+Use `node scripts/pr-status.mjs PR_NUMBER` to inspect a PR before the final
+checks. The command is read-only; it does not establish merge readiness. After
+the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
+PR number and final head, then merge from this checkout:
+
+```sh
+gh pr merge "$PR_NUMBER" --merge --match-head-commit "$HEAD_SHA"
+```
+
+If the review rule prevents an authorized core team author from merging their
+own PR, use the same command with `--admin` after checking the conditions above.
+If the result is uncertain, inspect the PR before trying anything else; do not
+repeat an uncertain merge. Verify the merged commit and `main` after success.
+
+Repository access and a green check do not authorize a release, deployment, or
+settings change. Keep the existing [MIT license](LICENSE) and third-party
+attribution intact.

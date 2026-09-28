@@ -29,14 +29,22 @@ retain references, not historical values. Admission checks current authorization
 Kubernetes process restarts do not reauthorize delivered env values. Immediate
 loss of access requires stopping the workload or revoking the upstream credential.
 
-Source identity and delivery mode are separate. CredentialGateway/OpenShell
-substitution and `SecretBroker` resources are deferred. A future broker path
-may keep values outside workloads and authorize each access, but those guarantees
-do not describe environment delivery. The project-root `ref/design.md` remains
+Source identity and delivery mode are separate. The optional
+`credential_gateway` capability keeps a model credential outside the Harness: a
+Namespace-scoped `CredentialSource` registers an OCC Secret with the selected
+`CredentialGatewayDriver`, and its paired Sandbox applies the credential to
+outbound requests while the workload holds only a placeholder. OCC reads the
+Secret once, at registration, and never stores the value. The current
+implementation is OpenShell provider substitution for dedicated Codex with an
+OpenAI API key; while a Credential Gateway is selected, Secret-backed model
+delivery is rejected rather than used as a fallback. The guarantee relies on
+the gateway's own membership controls and on enforced Sandbox NetworkPolicy.
+Update, rotation, per-Agent withdrawal, and other source types are deferred.
+Environment-delivery guarantees do not describe this path. The project-root `ref/design.md` remains
 the external broker-target owner handoff outside this implementation worktree.
 
-Production execution retains scoped direct-credential delivery while
-provider-credential brokerage remains unavailable. The Agent's `harnessAuth`
+Production execution retains scoped direct-credential delivery, because the
+Credential Gateway path is limited to the unsupported OpenShell Sandbox. The Agent's `harnessAuth`
 API-key binding references an OCC Secret in its exact Namespace. The Secret
 Driver owns storage; Kubernetes projects the source only into dedicated Codex
 or the combined embedded OpenClaw gateway/Harness. Each consumer requires its
@@ -45,7 +53,7 @@ own admission and dispatch authorization; the dedicated gateway gets no key.
 For a provider-managed account, API-side Kubernetes Compute stores the issued
 access token and pinned provider workspace in one account-owned Secret in the
 exact backing namespace. The revision snapshots only the OCC account identity,
-exact credential reference, and verified private Provider/workspace ownership. Kubernetes projects
+exact credential reference, and verified private Backend/workspace ownership. Kubernetes projects
 that account Secret directly into each associated dedicated Codex workload;
 there is no Agent-specific credential copy. Codex logs in with its access token
 under the forced provider workspace. Its separate gateway never receives the
@@ -108,8 +116,8 @@ independently verified and restored.
 Rollback and cleanup cover both selected runtime targets and preserve exact
 ownership; a failed or unreachable target cannot be treated as successful
 recovery or deletion. OCC never substitutes another runtime target, Namespace,
-identity, `IAMDriver`, `SecretBroker`, `SecretDriver`, gateway, provider, or
-runtime implementation.
+identity, `IAMDriver`, `CredentialGatewayDriver`, `SecretDriver`, gateway,
+provider, or runtime implementation.
 
 ## Audit
 
@@ -155,11 +163,11 @@ The platform preserves:
   themselves permissions.
 - **Provider-neutral service accounts:** OCC owns each exact Namespace-scoped
   account and generic credential reference. Its selected service-account Driver
-  privately owns the exact Provider, Driver, upstream account, credential, and workspace binding;
+  privately owns the exact Backend, Driver, upstream account, credential, and workspace binding;
   upstream authority never replaces exact OCC authorization.
 - **Immutable deployment:** an `AgentRevision` captures the exact admitted
   Agent configuration, dependencies, sandbox policy, selected Harness identity
-  and version, explicit execution mode, nullable Provider reference, and runtime
+  and version, explicit execution mode, nullable Backend reference, and runtime
   integrations. Editing an
   Agent or changing runtime integrations affects only a later deployment.
 - **Stable workload identity:** each Agent has one OCC-owned runtime identity.

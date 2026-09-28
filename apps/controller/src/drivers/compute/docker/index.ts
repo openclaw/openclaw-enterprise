@@ -7,6 +7,7 @@ import type {
   ComputeRevisionContext,
   WorkspaceSetup,
   ComputeReadiness,
+  RuntimeImage,
   Driver,
   Namespace,
   NamespaceDeleteResult,
@@ -48,7 +49,9 @@ export interface DockerComputeDriverOptions {
 }
 
 interface DockerContainerInspect {
+  readonly Image?: string;
   readonly Config?: {
+    readonly Image?: string;
     readonly Labels?: Readonly<Record<string, string>>;
     readonly Env?: readonly string[];
   };
@@ -163,22 +166,7 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
     );
   }
 
-  if (auth.password === undefined) {
-    return {
-      configuration: {
-        ...configuration,
-        gateway: {
-          ...gateway,
-          auth: {
-            ...auth,
-            mode: "password",
-            password: GATEWAY_PASSWORD_REFERENCE,
-          },
-        },
-      },
-      requiresManagedPassword: true,
-    };
-  }
+  const useDefaultPassword = auth.password === undefined;
   return {
     configuration: {
       ...configuration,
@@ -187,10 +175,11 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
         auth: {
           ...auth,
           mode: "password",
+          ...(useDefaultPassword ? { password: GATEWAY_PASSWORD_REFERENCE } : {}),
         },
       },
     },
-    requiresManagedPassword: passwordReference === GATEWAY_PASSWORD_ENV,
+    requiresManagedPassword: useDefaultPassword || passwordReference === GATEWAY_PASSWORD_ENV,
   };
 }
 
@@ -566,6 +555,57 @@ export class DockerComputeDriver implements ComputeDriver {
       }
       throw error;
     }
+  }
+
+  async getRuntimeImages(revision: AgentRevision): Promise<readonly RuntimeImage[]> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new OwnershipFailure("The revision belongs to another Compute Driver.");
+    }
+    const images: RuntimeImage[] = [];
+    for (const [role, name] of [
+      ["gateway", this.gatewayContainerName(revision.namespaceId, revision.agentId)],
+      ["agent", this.agentContainerName(revision.namespaceId, revision.agentId, revision.id)],
+    ] as const) {
+      const container = await this.container(name);
+      if (!container) {
+        continue;
+      }
+      this.verifyOwnership(
+        container.Config?.Labels,
+        this.agentOwnership(revision),
+        `container ${name}`,
+      );
+      if (!container.Config?.Image || !container.Image) {
+        throw new Error("Docker returned incomplete image identity.");
+      }
+      // Inspect the immutable image actually attached to the container, not its mutable tag.
+      const image = asRecord(
+        await this.request(
+          "GET",
+          `/images/${encodeURIComponent(container.Image)}/json`,
+          undefined,
+          [200],
+        ),
+      );
+      const labels = asRecord(asRecord(image?.Config)?.Labels);
+      const commit = labels?.["org.opencontainers.image.revision"];
+      const openclawCommit = labels?.["org.openclaw.image.revision"];
+      images.push({
+        workload: name,
+        container: role,
+        image: container.Config.Image,
+        imageId: container.Image,
+        commit: typeof commit === "string" && /^[a-f0-9]{40}$/.test(commit) ? commit : null,
+        openclawCommit:
+          typeof openclawCommit === "string" && /^[a-f0-9]{40}$/.test(openclawCommit)
+            ? openclawCommit
+            : null,
+      });
+    }
+    return images;
   }
 
   async stopRevision(revision: AgentRevision): Promise<void> {
@@ -1142,7 +1182,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       (runtime.kind === "codex" &&
         role === "gateway" &&
         !embedded &&
-        Object.keys(runtime.selections).length > 0);
+        (Object.keys(runtime.selections).length > 0 || runtime.pluginApprovers !== undefined));
     if (!applies) {
       return {};
     }

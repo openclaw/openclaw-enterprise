@@ -11,13 +11,14 @@ import {
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
+import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
 } from "./installation-config.ts";
 import {
   initializeInstallationPresets,
-  providerSummariesFromDefinitions,
+  backendSummariesFromDefinitions,
 } from "./installation-config.ts";
 import { emitOccLogEvent, type OccLogger } from "../logging.ts";
 import { resolveApprovedProductionHarness } from "./production-harness.ts";
@@ -42,6 +43,7 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly channelDirectoryProxyUrl?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
 }
 
@@ -55,6 +57,7 @@ export async function composeProduction(config: ProductionConfig) {
     configurationDriver,
     secretDriver,
     sandboxDriver,
+    credentialGatewayDriver,
     pluginDriver,
     repoDriver,
     createIAMDriver,
@@ -143,46 +146,44 @@ export async function composeProduction(config: ProductionConfig) {
     const controller = new OpenClawController(persistedInstallation, {
       state,
       recordOperations: true,
-      providers: installation.provider,
+      backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
       loggingLevel: config.drivers.installation.logging.level,
     });
     controller.registerDriver(iamDriver);
-    if (controller.selectDriver("iam", driverId) !== iamDriver) {
-      throw new Error("The server-owned IAM Driver was not selected correctly.");
-    }
+    controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
-    if (controller.selectDriver("compute", computeDriver.id) !== computeDriver) {
-      throw new Error("The configured Compute Driver was not selected correctly.");
-    }
+    controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
-    if (controller.selectDriver("secret", secretDriver.id) !== secretDriver) {
-      throw new Error("The configured Secret Driver was not selected correctly.");
+    controller.selectDriver("secret", secretDriver.id);
+    if (config.channelDirectoryProxyUrl !== undefined) {
+      const channelDriver = new SlackChannelDriver(
+        globalThis.fetch,
+        config.channelDirectoryProxyUrl,
+      );
+      controller.registerDriver(channelDriver);
+      controller.selectDriver("channel", channelDriver.id);
     }
     if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
-      if (controller.selectDriver("sandbox", sandboxDriver.id) !== sandboxDriver) {
-        throw new Error("The configured Sandbox Driver was not selected correctly.");
-      }
+      controller.selectDriver("sandbox", sandboxDriver.id);
+    }
+    if (credentialGatewayDriver !== undefined) {
+      controller.registerDriver(credentialGatewayDriver);
+      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
     controller.registerDriver(configurationDriver);
-    if (controller.selectDriver("configuration", configurationDriver.id) !== configurationDriver) {
-      throw new Error("The configured Configuration Driver was not selected correctly.");
-    }
+    controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);
     if (pluginDriver !== undefined) {
       controller.registerDriver(pluginDriver);
-      if (controller.selectDriver("plugin", pluginDriver.id) !== pluginDriver) {
-        throw new Error("The configured Plugin Driver was not selected correctly.");
-      }
+      controller.selectDriver("plugin", pluginDriver.id);
     }
     if (repoDriver !== undefined) {
       controller.registerDriver(repoDriver);
-      if (controller.selectDriver("repo", repoDriver.id) !== repoDriver) {
-        throw new Error("The configured repository credential Driver was not selected correctly.");
-      }
+      controller.selectDriver("repo", repoDriver.id);
     }
-    await controller.validateProviderConfiguration();
+    await controller.validateBackendConfiguration();
     await initializeInstallationPresets(
       controller,
       iamDriver,
@@ -215,7 +216,7 @@ export async function composeProduction(config: ProductionConfig) {
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
-      providerSummaries: providerSummariesFromDefinitions(installation.provider),
+      backendSummaries: backendSummariesFromDefinitions(installation.backend),
       auth,
       ...(config.logger === undefined ? {} : { logger: config.logger }),
       provisionAuthAccount,

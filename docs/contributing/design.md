@@ -7,6 +7,8 @@ before treating a planned capability as available.
 
 ## Find the right source
 
+- The [RFC guide](rfcs.md) explains how to propose architectural decisions and develop
+  them alongside implementation.
 - [Design philosophy](design-philosophy.md) explains how to put complete caller
   tasks behind small interfaces with clear ownership and failure behavior.
 - [Readable code](readable-code.md) develops those principles through functions,

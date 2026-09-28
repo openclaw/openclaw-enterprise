@@ -51,6 +51,90 @@ test("preset variables produce typed launch values and native model keys without
   assert.equal(template.agent.name, "agent-{{ vars.name }}");
 });
 
+test("preset agent plugin approvers preserve inheritance, denial, and rendered identities", () => {
+  assert.equal(
+    Object.hasOwn(renderPresetTemplate({ agent: { name: "omitted" } }).agent, "pluginApprovers"),
+    false,
+  );
+  assert.deepEqual(renderPresetTemplate({ agent: { pluginApprovers: [] } }).agent, {
+    pluginApprovers: [],
+  });
+
+  const template = {
+    variables: {
+      team: { type: "string", default: "T123" },
+      user: { type: "string" },
+    },
+    agent: {
+      pluginApprovers: [{ channel: "slack", id: "team:{{ vars.team }}:user:{{ vars.user }}" }],
+    },
+  };
+  assert.deepEqual(renderPresetTemplate(template, { user: "U456" }).agent.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
+  assert.deepEqual(normalizePresetTemplate(template, namespaceId), template);
+});
+
+test("preset workspace files render editable seed text and enforce create-time limits", () => {
+  const template = {
+    variables: {
+      name: { type: "string" },
+      tone: { type: "string", default: "" },
+      required: { type: "string" },
+    },
+    agent: {
+      initialWorkspaceFiles: {
+        "AGENTS.md": "# {{ vars.name }}\n",
+        "SOUL.md": "Tone: {{ vars.tone }}",
+        "IDENTITY.md": "",
+        "USER.md": "{{ vars.required }}",
+      },
+    },
+  };
+  assert.deepEqual(presetTemplateDefaults(template).agent.initialWorkspaceFiles, {
+    "AGENTS.md": "# {{ vars.name }}\n",
+    "SOUL.md": "Tone: ",
+    "IDENTITY.md": "",
+    "USER.md": "{{ vars.required }}",
+  });
+  assert.deepEqual(
+    renderPresetTemplate(template, { name: "Workspace Agent", required: "Remember me" }).agent
+      .initialWorkspaceFiles,
+    {
+      "AGENTS.md": "# Workspace Agent\n",
+      "SOUL.md": "Tone: ",
+      "IDENTITY.md": "",
+      "USER.md": "Remember me",
+    },
+  );
+
+  for (const [invalid, inputs, message] of [
+    [{ agent: { initialWorkspaceFiles: { "README.md": "nope" } } }, {}, /unsupported filename/],
+    [{ agent: { initialWorkspaceFiles: { "AGENTS.md": "bad\0" } } }, {}, /without NUL/],
+    [
+      {
+        variables: { content: { type: "string" } },
+        agent: { initialWorkspaceFiles: { "AGENTS.md": "{{ vars.content }}" } },
+      },
+      { content: "x".repeat(16 * 1024 + 1) },
+      /16 KiB/,
+    ],
+    [
+      {
+        variables: { secret: { type: "password" } },
+        agent: { initialWorkspaceFiles: { "AGENTS.md": "{{ vars.secret }}" } },
+      },
+      { secret: "raw" },
+      /password variables/,
+    ],
+  ]) {
+    assert.throws(
+      () => renderPresetTemplate(invalid, inputs),
+      (error) => error instanceof PresetValidationError && message.test(error.message),
+    );
+  }
+});
+
 test("runtime placeholders, SecretRefs, escaped tokens, and unrelated template syntax remain literal", () => {
   const template = {
     variables: {
@@ -133,7 +217,9 @@ test("preset admission preserves credential structure and literal and default sc
     },
     agent: {
       executionMode: "{{ vars.mode }}",
-      plugins: { github: { enabled: "{{ vars.enabled }}", approvalMode: "prompt" } },
+      plugins: {
+        github: { enabled: "{{ vars.enabled }}", toolDefaults: { approval: "all_actions" } },
+      },
     },
     configuration: {
       secretBindings: {
@@ -141,7 +227,12 @@ test("preset admission preserves credential structure and literal and default sc
       },
     },
   };
-  assert.deepEqual(normalizePresetTemplate(template, namespaceId), template);
+  const normalized = normalizePresetTemplate(template, namespaceId);
+  assert.deepEqual(normalized, template);
+  assert.notEqual(normalized, template);
+  assert.notEqual(normalized.configuration.secretBindings, template.configuration.secretBindings);
+  assert.equal(Object.isFrozen(normalized.configuration.secretBindings.BOT_TOKEN.source), true);
+  assert.equal(Object.isFrozen(template.configuration.secretBindings.BOT_TOKEN.source), false);
   const scopedVariable = {
     variables: { scope: { type: "string" } },
     agent: {
@@ -157,11 +248,19 @@ test("preset admission preserves credential structure and literal and default sc
   assert.deepEqual(normalizePresetTemplate(patTemplate, namespaceId), patTemplate);
   patTemplate.agent.harnessAuth.source.namespaceId = otherNamespaceId;
   assert.throws(() => normalizePresetTemplate(patTemplate, namespaceId), PresetValidationError);
+  assert.deepEqual(
+    normalizePresetTemplate({ agent: { harnessAuth: { method: "api_key" } } }, namespaceId),
+    { agent: { harnessAuth: { method: "api_key" } } },
+  );
+  assert.deepEqual(
+    normalizePresetTemplate({ agent: { harnessAuth: { method: "codex_pat" } } }, namespaceId),
+    { agent: { harnessAuth: { method: "codex_pat" } } },
+  );
 
   // User-chosen map keys must receive the same admission as ordinary names.
   for (const key of ["__proto__", "constructor", "toString"]) {
     const valid = {
-      agent: { plugins: { [key]: { enabled: true, approvalMode: "prompt" } } },
+      agent: { plugins: { [key]: { enabled: true, toolDefaults: { approval: "all_actions" } } } },
       configuration: {
         secretBindings: { [key]: { source: { kind: "secret", namespaceId, id: secretId } } },
       },

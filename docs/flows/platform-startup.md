@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-22
-last_updated_session: authoring-run/a9a43fbc-2e26-46d5-a17c-ea6636555547
+updated: 2026-09-24
+last_updated_session: authoring-run/e027d71c-4d0b-4289-bf0d-f590c14c92cb
 ---
 
 # Platform Startup Flow
@@ -12,7 +12,7 @@ The OCC API and controller worker start as separate Node.js processes, resolve
 the same singleton Installation and trusted Driver selections, and coordinate
 through PostgreSQL. Each process constructs its own shared Driver instances;
 when a ServiceAccount Driver is selected, only the API additionally initializes
-its Provider client and Driver. PostgreSQL-backed development uses the
+its Backend client and Driver. PostgreSQL-backed development uses the
 Docker Compute Driver by default, while the development filesystem
 Configuration Driver is API-only. The singleton invariant is the selected Driver
 identity, not JavaScript object identity. This trace ends when the API accepts
@@ -83,8 +83,13 @@ graph TD
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
 [history preflight](../../scripts/migration-history.mjs) accepts only reviewed
-receipt and catalog prefixes, including current main with Agent presets; it
-refuses the older divergent credential history before migration DDL. The
+receipt and catalog prefixes, including the two published 31-receipt completed
+lineages: the current Backend terminology history and the historical Provider
+terminology history. The append-only compatibility migration converts the
+Provider schema and owned persisted JSON to Backend terminology without
+rewriting applied receipts or terminal provisioning fingerprints. It refuses
+mixed receipt histories, manually edited catalogs, and the older divergent
+credential history before migration DDL. The
 [migration history reference](../reference/settings/operations.md#migration-history)
 owns the exact supported shapes and recovery boundary. Neither API nor worker
 startup rewrites migration receipts or converts an unsupported database.
@@ -109,8 +114,8 @@ and does not receive API authentication configuration.
 
 When `OCC_CONFIG_PATH` is set, each process reads the same trusted file and
 constructs its own Installation, Compute, Configuration, and mandatory
-`createIAMDriver(state)` bundle. The shared loader parses provider-integration
-metadata but never reads an admin credential or initializes a provider client.
+`createIAMDriver(state)` bundle. The shared loader parses Backend integration
+metadata but never reads an admin credential or initializes a Backend client.
 Production requires the startup file. Development may omit it: the API then
 uses PostgreSQL plus the filesystem Configuration Driver rooted at
 `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, and the worker uses the Docker Compute
@@ -122,10 +127,10 @@ comes from server-owned singleton state, never startup YAML.
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
 authorization decision. Only `server.mjs` reads the mounted ChatGPT admin key,
-constructs `Provider<ChatGPTClient>`, and injects it into the optional
-ServiceAccount Driver factory. The worker consumes only nonsecret Provider
+constructs `Backend<ChatGPTClient>`, and injects it into the optional
+ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
-required member selections without scanning saved Provider references. Exact
+required member selections without scanning saved Backend references. Exact
 ownership is checked when credentials or deployments are used, allowing the API
 to start so stale references can be repaired. Lifecycle owners remain stable,
 and controller Drivers are never exposed to tenant workloads.
@@ -228,7 +233,7 @@ execution begins in the adjacent
 
 ## Related docs
 
-- [Provider-managed credential delivery](service-account-driver-credential-delivery.md)
+- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 
 - [Platform architecture](../ARCHITECTURE.md)
 - [Controller worker operation](../reference/controller.md)
@@ -246,6 +251,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 22:50: Document exact Provider and Backend migration lineage handling accompanying the compatibility migration. (authoring-run/e027d71c-4d0b-4289-bf0d-f590c14c92cb - 1985586676c42cd359b9ecc22e22ce8f0e30034d)
 
 - 2026-09-22 04:19: Record the migration prerequisite and refusal boundary accompanying the main synchronization. (authoring-run/a9a43fbc-2e26-46d5-a17c-ea6636555547 - a7fbcdc39a1cfb1d093c2b4d1e238e39e89dae2a)
 

@@ -57,7 +57,7 @@ jobs:
 
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || startsWith(matrix.lane, 'k3d-observability')) && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: preflight
     if: needs.preflight.outputs.run_all == 'true'
     timeout-minutes: ${{ matrix.timeout }}
@@ -79,7 +79,7 @@ jobs:
             timeout: 25
           - lane: images-packaging
             title: Images and Packaging
-            profile: images
+            profile: full
             timeout: 45
           - lane: k3d-fixture-configuration
             title: k3d Fixture and Configuration
@@ -91,6 +91,14 @@ jobs:
             timeout: 45
           - lane: k3d-fixture-plugins
             title: k3d Plugin Status
+            profile: k3d
+            timeout: 45
+          - lane: k3d-observability-demo
+            title: Demo Observability Smoke
+            profile: k3d
+            timeout: 20
+          - lane: k3d-observability
+            title: Production Observability
             profile: k3d
             timeout: 45
           - lane: logging-collector
@@ -124,6 +132,24 @@ jobs:
           path: ${{ runner.temp }}/state/repository-credentials-images.json
           if-no-files-found: error
           retention-days: 7
+
+  runtime-image-fixture:
+    name: Runtime Image Fixture
+    runs-on: ubuntu-22.04
+    needs: preflight
+    if: needs.preflight.outputs.run_all == 'true'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: runtime-image-fixture
+          profile: postgres
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
 
   docker-model:
     name: Docker Model Runtime
@@ -384,6 +410,7 @@ jobs:
     needs:
       - preflight
       - pr-safe-same-sha
+      - runtime-image-fixture
       - docker-model
       - k3d-model
       - gateway-routing
@@ -420,7 +447,8 @@ jobs:
           const lane = process.env.SELECTED_LANE || process.env.LANE;
           const out = { preflight: needs.preflight };
           if (lane === "all") {
-            for (const name of ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
+            out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
+            for (const name of ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

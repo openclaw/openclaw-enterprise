@@ -6,7 +6,7 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/providers/repository-credentials/control-client.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -20,7 +20,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const driverId = "repository-credentials";
-const providerId = "repository-provider";
+const backendId = "repository-provider";
 const selection = [{ repositoryRef: "project", profile: "git-write" }];
 
 function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = false) {
@@ -28,7 +28,7 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
-  return new Driver(
+  const compute = new Driver(
     {
       ...(provisioning
         ? {
@@ -65,6 +65,9 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
     },
     provisioning ? { nodeEnrollment: {} } : {},
   );
+  // Repository admission has no cluster; its transport credential prerequisite is satisfied.
+  compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
+  return compute;
 }
 
 function sshCompute() {
@@ -84,7 +87,7 @@ function sshCompute() {
 function registryFor(namespaceId) {
   return {
     version: 1,
-    providerId,
+    backendId,
     providerInstanceId: "github-admission",
     appId: "123",
     githubInstallationId: "456",
@@ -109,14 +112,14 @@ function registryFor(namespaceId) {
 function repositoryDriver(registry) {
   return new GitHubRepoDriver(
     {
-      id: providerId,
+      id: backendId,
       // Admission must complete without contacting the service or obtaining credentials.
       client: new UnixRepositoryCredentialControlClient({
         controlSocket: "/unused/repository-admission/control.sock",
       }),
       drivers: { repo: driverId },
     },
-    validateGitHubRepositoryRegistry(registry, providerId),
+    validateGitHubRepositoryRegistry(registry, backendId),
     { sessionDurationSeconds: 600 },
   );
 }
@@ -157,10 +160,10 @@ async function fixture(
     },
   });
   const secretDriver = createTestSecretDriver();
-  const providers = repositories
+  const backends = repositories
     ? [
         {
-          id: providerId,
+          id: backendId,
           type: "github",
           configuration: { registryPath: "/unused/repository-admission/registry.json" },
           drivers: { repo: driverId },
@@ -169,7 +172,7 @@ async function fixture(
     : [];
 
   async function compose(registry) {
-    const controller = new OpenClawController(installation, { state, providers });
+    const controller = new OpenClawController(installation, { state, backends });
     for (const driver of [iam, compute, configurationDriver, secretDriver]) {
       controller.registerDriver(driver);
       controller.selectDriver(driver.capability, driver.id);
@@ -180,7 +183,7 @@ async function fixture(
       controller.selectDriver(driver.capability, driver.id);
     }
     if (registry !== undefined || !repositories) {
-      await controller.validateProviderConfiguration();
+      await controller.validateBackendConfiguration();
     }
     const app = createFastifyApp({
       controller,
@@ -485,11 +488,11 @@ test("Repository bindings normalize through Agent create and preserve or clear t
   assert.equal(cleared.status, 200);
   assert.equal(Object.hasOwn(cleared.data, "repositoryBindings"), false);
   assert.equal(Object.hasOwn((await f.request("GET", path)).data, "repositoryBindings"), false);
-  // A configured GitHub Provider cannot supply an Agent ServiceAccount association.
+  // A configured GitHub Backend cannot supply an Agent ServiceAccount association.
   const incompatible = await f.request("POST", f.collection, {
-    name: "Wrong Provider kind",
+    name: "Wrong Backend kind",
     configurationId: f.configuration.id,
-    providerId,
+    backendId,
   });
   assert.equal(incompatible.status, 404, JSON.stringify(incompatible));
   assert.equal(incompatible.error.code, "NOT_FOUND");
@@ -544,7 +547,7 @@ test("Deploy freezes public repository selection without exposing provider grant
   const internal = await f.state.read((view) =>
     view.revisions.findRevision(f.namespace.id, agent.id, deployed.data.id),
   );
-  assert.equal(internal.repositoryCredentials.bindings[0].providerId, providerId);
+  assert.equal(internal.repositoryCredentials.bindings[0].backendId, backendId);
   assert.equal(internal.repositoryCredentials.bindings[0].grant.repositoryId, "789");
 
   const cleared = await f.request("PATCH", path, {
@@ -683,7 +686,7 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
   }
 });
 
-test("Repository capability remains optional when no repository Provider or Driver is configured", async (t) => {
+test("Repository capability remains optional when no repository Backend or Driver is configured", async (t) => {
   const f = await fixture(t, { compute: sshCompute(), repositories: false });
   const agent = await f.createAgent({ harnessAuth: { method: "runtime" } });
   await f.prepareDeployment(agent);

@@ -31,6 +31,7 @@ test(
         "appendFileSync(events, JSON.stringify({ kind, pid: process.pid, parent: process.ppid,",
         "hasSetup: process.env.OPENCLAW_NODE_SETUP_CODE !== undefined,",
         "hasModelKey: process.env.OPENAI_API_KEY !== undefined,",
+        'autoUpdateDisabled: process.env.OPENCLAW_NO_AUTO_UPDATE === "1",',
         'hasTransportToken: process.env.APP_SERVER_TOKEN !== undefined }) + "\\n");',
         'if (kind === "codex") spawn(process.execPath, [__filename, events, "grandchild"], { stdio: "inherit" });',
         "setInterval(() => {}, 1_000);",
@@ -48,7 +49,10 @@ test(
         JSON.stringify(eventsPath) +
         ", " +
         'args[0] === "/app/openclaw.mjs" ? "node" : "codex"], options);',
-      AGENT_WITH_NODE_ENTRYPOINT.replace("\ninitializeRuntimeAssets();\n", "\n"),
+      AGENT_WITH_NODE_ENTRYPOINT.replace(
+        "\ninitializeRuntimeAssets();\npublishAgentPluginSkillPath();\n",
+        "\n",
+      ),
     ].join("\n");
     const supervisor = spawn(process.execPath, ["-e", launch], {
       env: {
@@ -114,6 +118,7 @@ test(
     assert.equal(node.hasSetup, false);
     assert.equal(node.hasModelKey, false);
     assert.equal(node.hasTransportToken, false);
+    assert.equal(node.autoUpdateDisabled, true);
     assert.equal(codex.hasSetup, false);
     assert.equal(codex.hasModelKey, true);
     assert.equal(codex.hasTransportToken, true);

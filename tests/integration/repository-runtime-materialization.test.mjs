@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   symlink,
@@ -89,8 +90,8 @@ before(async (t) => {
   `)}`;
 });
 
-async function projectionFixture(t, { count = 1 } = {}) {
-  const root = await mkdtemp(join(tmpdir(), "repository-runtime-material-"));
+async function projectionFixture(t, { count = 1, publicCa } = {}) {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "repository-runtime-material-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceRoot = join(root, "projection");
   const targetRoot = join(root, "output", "private");
@@ -105,11 +106,14 @@ async function projectionFixture(t, { count = 1 } = {}) {
       repositoryRef: `repository-${index}`,
       sessionId,
       deadlineWallMs,
-      files: encodeRepositoryCredentialSessionFiles({
-        session: { sessionId, deadlineWallMs },
-        bearer: `controlled_gateway_bearer_${index}_0000000000000000000000`,
-        client,
-      }),
+      files: encodeRepositoryCredentialSessionFiles(
+        {
+          session: { sessionId, deadlineWallMs },
+          bearer: `controlled_gateway_bearer_${index}_0000000000000000000000`,
+          client,
+        },
+        publicCa,
+      ),
     };
   });
   const revision = {
@@ -122,7 +126,7 @@ async function projectionFixture(t, { count = 1 } = {}) {
       bindings: bindings.map(({ repositoryRef }) => ({
         repositoryRef,
         profile: "read",
-        providerId: "github",
+        backendId: "github",
         grant: { providerInstanceId: "github-main", repositoryId: "project", grantId: "read" },
       })),
     },
@@ -256,6 +260,27 @@ test("the actual repository init process turns projected Secrets into private ru
     }
     assert.equal(nativeConfig.includes(fixture.bindings[index].files.bearer), false);
   }
+});
+
+test("the actual repository init process combines broker CA with system roots", async (t) => {
+  const publicCa = Buffer.from(
+    "-----BEGIN CERTIFICATE-----\nfixture-broker-ca\n-----END CERTIFICATE-----\n",
+  );
+  const fixture = await projectionFixture(t, { publicCa });
+  const result = fixture.run();
+  assert.equal(result.status, 0, result.stderr);
+  const directory = basename(fixture.descriptor.manifest.bindings[0].directory);
+  const ca = await readFile(join(fixture.targetRoot, "sessions", directory, "ca.pem"));
+  const bundle = await readFile(join(fixture.targetRoot, "sessions", directory, "ca-bundle.pem"));
+  assert.equal(ca.toString("utf8"), publicCa.toString("utf8"));
+  assert.ok(
+    bundle.includes(ca),
+    "the Agent-wide CA file must include the broker CA for repository traffic",
+  );
+  assert.ok(
+    bundle.length > ca.length,
+    "the Agent-wide CA file must retain system roots instead of replacing them with broker trust",
+  );
 });
 
 test("the second repository init fails when native Git configuration cannot be prepared", async (t) => {

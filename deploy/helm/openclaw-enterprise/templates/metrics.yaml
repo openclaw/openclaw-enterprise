@@ -5,13 +5,14 @@
 {{- if not (regexMatch "^[0-9]+$" (toString .Values.metrics.port)) }}
 {{- fail "metrics.port must be an integer" }}
 {{- end }}
-{{- if or (empty .Values.metrics.scraperNamespaceLabels) (empty .Values.metrics.scraperPodLabels) }}
-{{- fail "metrics requires nonempty scraperNamespaceLabels and scraperPodLabels" }}
+{{- if ne (empty .Values.metrics.scraperNamespaceLabels) (empty .Values.metrics.scraperPodLabels) }}
+{{- fail "metrics requires both scraperNamespaceLabels and scraperPodLabels, or neither" }}
 {{- end }}
 {{- $port := int .Values.metrics.port }}
 {{- if or (lt $port 1) (gt $port 65535) (eq $port (int .Values.api.port)) }}
 {{- fail "metrics.port must be a valid TCP port distinct from api.port" }}
 {{- end }}
+{{- if not (empty .Values.metrics.scraperNamespaceLabels) }}
 {{- range $component := list "api" "worker" }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -36,5 +37,6 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $port }}
+{{- end }}
 {{- end }}
 {{- end }}

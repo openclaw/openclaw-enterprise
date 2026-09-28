@@ -943,7 +943,7 @@ test("mutations are attributable and authorization failures never leak credentia
 
   const secret = "sk-security-provider-credential-123456789";
   fixture.iamDriver.authorize = async () => {
-    throw new Error(`Provider credentials failed: ${secret}`);
+    throw new Error(`Backend credentials failed: ${secret}`);
   };
   const denied = await request(fixture.app, "/namespaces", {
     body: { name: "Must fail closed" },

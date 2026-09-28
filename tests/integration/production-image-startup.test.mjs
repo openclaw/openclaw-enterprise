@@ -31,7 +31,7 @@ function workloadPeer(namespace, labels) {
 function productionInstallation(adminKeyPath) {
   return {
     occ: { cluster: "production-image-smoke" },
-    provider: [
+    backend: [
       {
         id: "openai",
         type: "chatgpt",
@@ -43,6 +43,16 @@ function productionInstallation(adminKeyPath) {
         drivers: {
           service_account: "chatgpt-service-accounts",
         },
+      },
+      {
+        id: "openshell",
+        type: "openshell",
+        configuration: {
+          endpoint: "127.0.0.1:9",
+          auth: { mode: "unauthenticated" },
+          insecureTransport: "network-policy",
+        },
+        drivers: { sandbox: "sandbox-openshell", credential_gateway: "openshell-credentials" },
       },
     ],
     drivers: {
@@ -100,12 +110,15 @@ function productionInstallation(adminKeyPath) {
           },
         },
       },
+      credential_gateway: {
+        id: "openshell-credentials",
+        configuration: { binaries: ["/app/bin/model-client"] },
+      },
       sandbox: {
         id: "sandbox-openshell",
         configuration: {
           gateway: {
-            endpoint: "127.0.0.1:9",
-            auth: { mode: "unauthenticated" },
+            workspaceMode: "operator",
           },
           kubernetes: {
             runtimeClassName: "openshell",

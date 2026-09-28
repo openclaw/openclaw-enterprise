@@ -1,7 +1,8 @@
 # OCC metrics
 
-Enable metrics separately on each OpenClaw Control Plane (OCC) API and worker
-process. Each serves `GET /metrics` on a private listener. Use the
+The production Helm chart enables metrics on each OpenClaw Control Plane (OCC)
+API and worker by default; direct process and development defaults remain off.
+Each enabled process serves `GET /metrics` on a private listener. Use the
 [development walkthrough](../testing/metrics.md) for Prometheus and Grafana,
 or [production scraping](../guides/observability/metrics.md) for Kubernetes.
 

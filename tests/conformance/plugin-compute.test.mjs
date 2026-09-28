@@ -96,6 +96,26 @@ function readRuntimeStatusFromHandler(handler) {
   return readStatusFromHandler(handler, "/openclaw/runtime/status");
 }
 
+async function readStatusFromHandlerAsync(handler, path) {
+  let body = "";
+  await handler(
+    { method: "GET", url: path, on() {}, off() {} },
+    {
+      writeHead() {},
+      on() {},
+      off() {},
+      end(chunk) {
+        body += chunk;
+      },
+    },
+  );
+  return JSON.parse(body);
+}
+
+async function readRuntimeChannelChecksFromHandler(handler) {
+  return readStatusFromHandlerAsync(handler, "/openclaw/runtime/diagnostics");
+}
+
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000016",
   name: "Plugin compute tenant",
@@ -172,7 +192,7 @@ function occSelection(overrides = {}) {
   return {
     "occ-plugin:diffs": {
       enabled: true,
-      approvalMode: "always",
+      toolDefaults: { approval: "none" },
       ...overrides,
     },
   };
@@ -182,7 +202,7 @@ function codexSelection(overrides = {}) {
   return {
     "codex-plugin:linear@openai-curated-remote": {
       enabled: true,
-      approvalMode: "auto",
+      toolDefaults: { approval: "provider_default" },
       ...overrides,
     },
   };
@@ -300,7 +320,7 @@ function codexReadResponse(options = {}) {
         interface: null,
       },
       description: null,
-      skills: [],
+      skills: options.skills ?? [],
       apps: options.apps ?? [{ id: CODEX_LINEAR_APP_ID, name: "Linear", needsAuth: false }],
       appTemplates: options.appTemplates ?? [],
       hooks: [],
@@ -313,6 +333,8 @@ function codexReadResponse(options = {}) {
 function codexConfigReadResponse(appConfig = {}) {
   return {
     config: {
+      approval_policy: "on-request",
+      model: "test-model",
       features: { apps: true, plugins: true, remote_plugin: true },
       apps: {
         _default: { enabled: false },
@@ -388,7 +410,7 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
   const sandbox = {
     JSON,
     Buffer,
-    Date,
+    Date: options.Date ?? Date,
     WebSocket: FakeWebSocket,
     setTimeout,
     clearTimeout,
@@ -470,6 +492,84 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[apps\._default\]\nenabled = false/m);
 });
 
+test("plugin-free revisions apply explicit Slack approvers and keep unrelated approvals", () => {
+  const rawSlackApprovers = [
+    { channel: "slack", id: "U456" },
+    { channel: "slack", id: "W789" },
+  ];
+  for (const [candidate, expectedApprovers] of [
+    [revision({ pluginApprovers: [] }), []],
+    [revision({ pluginApprovers: rawSlackApprovers }), ["U456", "W789"]],
+    [
+      revision({
+        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        pluginApprovers: rawSlackApprovers,
+      }),
+      ["U456", "W789"],
+    ],
+  ]) {
+    const runtime = pluginRuntimeSpecForRevision(candidate);
+    assert.deepEqual(runtime.pluginApprovers, candidate.pluginApprovers);
+    assert.deepEqual(JSON.parse(pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_MANIFEST]), {
+      kind: runtime.kind,
+      selections: {},
+      pluginApprovers: candidate.pluginApprovers,
+    });
+    const { files } = runOpenClawRuntimeHelper({ manifest: runtime }, [], {
+      baseConfig: {
+        approvals: {
+          exec: { security: "full" },
+        },
+      },
+    });
+    const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+    assert.deepEqual(config.approvals, {
+      exec: { security: "full" },
+      plugin: { slack: { approvers: expectedApprovers } },
+    });
+  }
+});
+
+test("plugin-free Codex Gateway applies explicit Agent approvers at launch", async () => {
+  const runtime = pluginRuntimeSpecForRevision(revision({ pluginApprovers: [] }));
+  const { files } = await runOpenClawRuntimeHelper({ manifest: runtime }, [], {
+    env: {
+      APP_SERVER_URL: "ws://harness.example.test:18790",
+      OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: runtime }),
+    },
+    baseConfig: { approvals: { exec: { security: "full" } } },
+  });
+  const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(config.approvals, {
+    exec: { security: "full" },
+    plugin: { slack: { approvers: [] } },
+  });
+});
+
+test("plugin-free Codex runtime carries broker policy and Slack approvers together", () => {
+  const repositoryBrokerNetworkPolicy = {
+    host: "git.oce.svc",
+    domains: { "github.com": "allow" },
+  };
+  const runtime = pluginRuntimeSpecForRevision(
+    revision({ pluginApprovers: [] }),
+    repositoryBrokerNetworkPolicy,
+  );
+  assert.deepEqual(JSON.parse(pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_MANIFEST]), {
+    kind: "codex",
+    selections: {},
+    pluginApprovers: [],
+    repositoryBrokerNetworkPolicy,
+  });
+  const { files } = runOpenClawRuntimeHelper({ manifest: runtime }, []);
+  const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(config.approvals.plugin.slack.approvers, []);
+  assert.equal(
+    config.plugins.entries.codex.config.appServer.networkProxy.domains["git.oce.svc"],
+    "allow",
+  );
+});
+
 test("compute consumes Codex no-plugin selections from the revision", () => {
   const state = codexNoPluginState();
   const runtime = pluginRuntimeSpecForRevision(revision({ plugins: state }));
@@ -489,7 +589,9 @@ test("compute consumes Codex no-plugin selections from the revision", () => {
 });
 
 test("compute serializes selected Codex plugins for startup-time resolution", () => {
-  const state = codexLinearPluginState({ approvalsReviewer: "auto_review" });
+  const state = codexLinearPluginState({
+    toolDefaults: { approval: "provider_default", reviewer: "auto" },
+  });
   const runtime = pluginRuntimeSpecForRevision(revision({ plugins: state }));
 
   assert.equal(runtime.kind, "codex");
@@ -529,8 +631,10 @@ test("compute serializes selected OpenClaw plugins for startup-time resolution",
   });
 });
 
-test("Codex runtime helper installs selected remote plugins before readiness", async () => {
-  const state = codexLinearPluginState({ approvalsReviewer: "auto_review" });
+test("Codex runtime helper installs a plugin with skills and applies write action approval without tool inventory", async () => {
+  const state = codexLinearPluginState({
+    toolDefaults: { approval: "write_actions", reviewer: "auto" },
+  });
   const runtime = {
     manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
   };
@@ -552,6 +656,7 @@ test("Codex runtime helper installs selected remote plugins before readiness", a
       return codexReadResponse({
         installed: readCount > 1,
         enabled: readCount > 1,
+        skills: [{ name: "linear-workflow" }],
         // Template-only IDs must not enter the concrete app policy written below.
         appTemplates: [
           {
@@ -575,7 +680,7 @@ test("Codex runtime helper installs selected remote plugins before readiness", a
             mergeStrategy: "replace",
             value: {
               enabled: true,
-              default_tools_approval_mode: "auto",
+              default_tools_approval_mode: "writes",
               approvals_reviewer: "auto_review",
             },
           },
@@ -592,8 +697,15 @@ test("Codex runtime helper installs selected remote plugins before readiness", a
       return { authPolicy: "ON_USE", appsNeedingAuth: [] };
     }
     if (method === "config/read") {
+      assert.deepEqual(params, { cwd: "/home/node/workspace" });
+      return codexConfigReadResponse({
+        default_tools_approval_mode: "writes",
+        approvals_reviewer: "auto_review",
+      });
+    }
+    if (method === "configRequirements/read") {
       assert.deepEqual(params, {});
-      return codexConfigReadResponse({ approvals_reviewer: "auto_review" });
+      return { requirements: null };
     }
     throw new Error(`unexpected request ${method}`);
   });
@@ -613,6 +725,8 @@ test("Codex runtime helper installs selected remote plugins before readiness", a
       "plugin/read",
       "initialize",
       "config/read",
+      "initialize",
+      "configRequirements/read",
     ],
   );
   assert.equal(
@@ -623,8 +737,293 @@ test("Codex runtime helper installs selected remote plugins before readiness", a
   );
 });
 
+test("Codex runtime helper verifies explicit reviewers before readiness without constraining omission", async (t) => {
+  for (const scenario of [
+    {
+      name: "auto with never",
+      config: { approval_policy: "never" },
+      error: /requires session approval/,
+    },
+    {
+      name: "auto with untrusted",
+      config: { approval_policy: "untrusted" },
+      error: /requires session approval/,
+    },
+    {
+      name: "auto with granular",
+      config: {
+        approval_policy: {
+          granular: {
+            sandbox_approval: true,
+            rules: true,
+            skill_approval: true,
+            request_permissions: true,
+            mcp_elicitations: true,
+          },
+        },
+      },
+    },
+    {
+      name: "managed reviewer exclusion",
+      requirements: { allowedApprovalsReviewers: ["user"] },
+      error: /managed requirements forbid/,
+    },
+    {
+      name: "required model conflicts with human",
+      reviewer: "human",
+      app: { approvals_reviewer: "user" },
+      config: { model: "provider/test-model" },
+      requirements: { autoReview: { requiredOnModels: ["test-model"] } },
+      error: /managed model requirements/,
+    },
+    {
+      name: "unknown model cannot verify human",
+      reviewer: "human",
+      app: { approvals_reviewer: "user" },
+      config: { model: null },
+      requirements: { autoReview: { requiredOnModels: ["test-model"] } },
+      error: /managed model requirements/,
+    },
+    {
+      name: "unrelated requirements allow human",
+      reviewer: "human",
+      app: { approvals_reviewer: "user" },
+      requirements: {
+        allowedApprovalsReviewers: null,
+        autoReview: { requiredOnModels: ["other-model"] },
+      },
+    },
+    {
+      name: "account reviewer conflicts",
+      app: { links: { account: { approvals_reviewer: "user" } } },
+      error: /effective app or account reviewer conflicts/,
+    },
+    {
+      name: "app reviewer conflicts",
+      app: { approvals_reviewer: "user" },
+      error: /effective app or account reviewer conflicts/,
+    },
+    {
+      name: "malformed requirements response",
+      response: {},
+      error: /reviewer requirements are unavailable/,
+    },
+    {
+      name: "malformed reviewer allowlist",
+      requirements: { allowedApprovalsReviewers: ["human"] },
+      error: /reviewer requirements are invalid/,
+    },
+    {
+      name: "omitted reviewer preserves native configuration",
+      reviewer: null,
+      config: { approval_policy: "never" },
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const reviewer = scenario.reviewer === undefined ? "auto" : scenario.reviewer;
+      const state = codexLinearPluginState({
+        ...(reviewer === null ? {} : { toolDefaults: { reviewer } }),
+      });
+      const runtime = { manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })) };
+      const result = await runCodexRuntimeHelper(
+        runtime,
+        (method, params) => {
+          if (method === "initialize") {
+            return { serverInfo: { name: "codex", version: "0.156.0" } };
+          }
+          if (method === "plugin/list") {
+            return codexListResponse();
+          }
+          if (method === "plugin/read") {
+            return codexReadResponse();
+          }
+          if (method === "plugin/install") {
+            return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+          }
+          if (method === "config/batchWrite") {
+            return { status: "ok", version: "reviewer-config" };
+          }
+          if (method === "config/read") {
+            const response = codexConfigReadResponse({
+              approvals_reviewer: "auto_review",
+              ...scenario.app,
+            });
+            return { config: { ...response.config, ...scenario.config }, origins: {} };
+          }
+          if (method === "configRequirements/read") {
+            assert.deepEqual(params, {});
+            return scenario.response ?? { requirements: scenario.requirements ?? null };
+          }
+          throw new Error(`unexpected request ${method}`);
+        },
+        { captureError: true },
+      );
+      if (scenario.error) {
+        assert.match(result.error?.message ?? "", scenario.error);
+        assert.equal(result.value, undefined, "unverifiable reviewer must prevent readiness");
+      } else {
+        assert.equal(result.error, undefined);
+        assert.deepEqual(plain(result.value), {
+          successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+          failures: [],
+        });
+      }
+      if (reviewer === null) {
+        assert.equal(
+          result.requests.some(({ method }) => method === "configRequirements/read"),
+          false,
+        );
+      }
+    });
+  }
+});
+
+test("Codex runtime helper discovers tool policy after installation and before readiness", async () => {
+  const state = codexLinearPluginState({
+    toolDefaults: { enabled: false, approval: "all_actions", reviewer: "human" },
+    tools: { [CODEX_LINEAR_APP_ID + "/list_issues"]: { enabled: true, approval: "none" } },
+  });
+  const runtime = { manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })) };
+  const apps = {};
+  let installed = false;
+  const { requests } = await runCodexRuntimeHelper(runtime, (method, params) => {
+    if (method === "initialize") {
+      return { serverInfo: { name: "codex", version: "0.156.0" } };
+    }
+    if (method === "plugin/list") {
+      return codexListResponse();
+    }
+    if (method === "plugin/read") {
+      return codexReadResponse({ installed, enabled: installed });
+    }
+    if (method === "plugin/install") {
+      installed = true;
+      return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+    }
+    if (method === "mcpServerStatus/list") {
+      assert.equal(installed, true, "tool discovery follows native installation");
+      assert.equal(params.detail, "toolsAndAuthOnly");
+      if (params.cursor === undefined) {
+        return { data: [{ name: "unrelated", tools: {} }], nextCursor: "apps-page" };
+      }
+      assert.equal(params.cursor, "apps-page");
+      return {
+        data: [
+          {
+            name: "codex_apps",
+            toolsError: null,
+            tools: {
+              list_issues: {
+                name: "list_issues",
+                inputSchema: { type: "object" },
+                _meta: { connector_id: CODEX_LINEAR_APP_ID },
+                annotations: { readOnlyHint: true, destructiveHint: false },
+              },
+              create_issue: {
+                name: "create_issue",
+                inputSchema: { type: "object" },
+                _meta: { connector_id: CODEX_LINEAR_APP_ID },
+                annotations: { readOnlyHint: false, destructiveHint: false },
+              },
+            },
+          },
+        ],
+        nextCursor: null,
+      };
+    }
+    if (method === "config/batchWrite") {
+      for (const edit of params.edits) {
+        if (edit.keyPath === 'apps."_default"') {
+          apps._default = edit.value;
+        }
+        if (edit.keyPath === `apps.${CODEX_LINEAR_APP_ID}`) {
+          apps[CODEX_LINEAR_APP_ID] = edit.value;
+        }
+      }
+      assert.equal(apps._default.enabled, false, "discovery must not grant unselected apps");
+      assert.equal(
+        apps[CODEX_LINEAR_APP_ID]?.enabled,
+        true,
+        "the tool exception keeps the app enabled",
+      );
+      assert.equal(apps[CODEX_LINEAR_APP_ID].tools.list_issues.enabled, true);
+      assert.equal(apps[CODEX_LINEAR_APP_ID].tools.list_issues.approval_mode, "approve");
+      assert.equal(apps[CODEX_LINEAR_APP_ID].default_tools_enabled, false);
+      assert.equal(apps[CODEX_LINEAR_APP_ID].default_tools_approval_mode, "prompt");
+      assert.equal(apps[CODEX_LINEAR_APP_ID].tools.create_issue, undefined);
+      return { status: "ok", version: "tool-policy" };
+    }
+    if (method === "config/read") {
+      return { config: { ...codexConfigReadResponse().config, apps } };
+    }
+    if (method === "configRequirements/read") {
+      assert.deepEqual(params, {});
+      return { requirements: null };
+    }
+    throw new Error(`unexpected request ${method}`);
+  });
+  assert.deepEqual(
+    requests.filter(({ method }) => method === "mcpServerStatus/list").map(({ params }) => params),
+    [{ detail: "toolsAndAuthOnly" }, { detail: "toolsAndAuthOnly", cursor: "apps-page" }],
+  );
+});
+
+test("Codex runtime helper rejects incomplete or unbounded tool discovery before writing policy", async (t) => {
+  for (const [name, response, expected] of [
+    ["invalid data", () => ({ data: {}, nextCursor: null }), /invalid pagination data/],
+    ["invalid cursor", () => ({ data: [], nextCursor: 1 }), /invalid pagination data/],
+    ["repeated cursor", () => ({ data: [], nextCursor: "repeat" }), /repeated cursor/],
+    ["page limit", (page) => ({ data: [], nextCursor: String(page) }), /page limit/],
+    [
+      "native discovery error",
+      () => ({
+        data: [{ name: "codex_apps", tools: {}, toolsError: "tool listing failed" }],
+        nextCursor: null,
+      }),
+      /tool inventory is unavailable/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const state = codexLinearPluginState({
+        tools: { [CODEX_LINEAR_APP_ID + "/list_issues"]: { enabled: false } },
+      });
+      const runtime = { manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })) };
+      let page = 0;
+      const result = await runCodexRuntimeHelper(
+        runtime,
+        (method) => {
+          if (method === "initialize") {
+            return { serverInfo: { name: "codex", version: "0.156.0" } };
+          }
+          if (method === "plugin/list") {
+            return codexListResponse();
+          }
+          if (method === "plugin/read") {
+            return codexReadResponse();
+          }
+          if (method === "plugin/install") {
+            return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+          }
+          if (method === "mcpServerStatus/list") {
+            return response(page++);
+          }
+          throw new Error(`unexpected request ${method}`);
+        },
+        { captureError: true },
+      );
+      assert.match(result.error?.message ?? "", expected);
+      assert.equal(
+        result.requests.some(({ method }) => method === "config/batchWrite"),
+        false,
+      );
+    });
+  }
+});
+
 test("Codex runtime helper reports plugin install warnings without retrying", async () => {
-  const state = codexLinearPluginState({ approvalsReviewer: "auto_review" });
+  const state = codexLinearPluginState({
+    toolDefaults: { approval: "provider_default", reviewer: "auto" },
+  });
   const runtime = {
     manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
   };
@@ -649,7 +1048,13 @@ test("Codex runtime helper reports plugin install warnings without retrying", as
         throw new Error("native install rejected");
       }
       if (method === "config/read") {
-        return codexConfigReadResponse({ enabled: false });
+        // Native layers may retain overrides, but app disablement blocks every tool.
+        return codexConfigReadResponse({
+          enabled: false,
+          default_tools_enabled: true,
+          tools: { list_issues: { enabled: true, approval_mode: "approve" } },
+          links: { account: { default_tools_approval_mode: "approve" } },
+        });
       }
       throw new Error(`unexpected request ${method}`);
     },
@@ -685,7 +1090,7 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
       selections: {
         "linear@openai-curated-remote": {
           enabled: true,
-          approvalMode: "auto",
+          toolDefaults: { approval: "provider_default" },
         },
       },
     },
@@ -762,6 +1167,12 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
   ];
   for (const [name, response] of malformedResponses) {
     await t.test(name, async () => {
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
       const result = await runCodexRuntimeHelper(
         runtime,
         (method, _params, requestId) => {
@@ -778,12 +1189,14 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
             return { status: "ok", version: "test-config-1" };
           }
           if (method === "plugin/install") {
+            now = 1;
             return { __rawMessage: response(requestId) };
           }
           throw new Error(`unexpected request ${method}`);
         },
         {
           captureError: true,
+          Date: FixtureDate,
           env: {
             OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "1",
           },
@@ -791,8 +1204,30 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
       );
 
       assert.equal(result.error.diagnostic, undefined);
+      assert.ok(result.requests.some((request) => request.method === "plugin/install"));
     });
   }
+});
+
+test("Codex runtime cannot report installation success when its deadline expires before the first attempt", async () => {
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now++;
+    }
+  }
+  const result = await runCodexRuntimeHelper(
+    { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+    () => assert.fail("An expired installation must not contact the app-server"),
+    {
+      captureError: true,
+      Date: FixtureDate,
+      env: { OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "1" },
+    },
+  );
+  assert.match(result.error?.message ?? "", /did not reach readiness/);
+  assert.equal(result.value, undefined);
+  assert.deepEqual(result.requests, []);
 });
 
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {
@@ -827,10 +1262,7 @@ test("Codex runtime helper keeps pre-install native uncertainty generic", async 
 });
 
 test("Codex runtime keeps disabled selected plugins default-denied while preserving install identity", async () => {
-  for (const [name, selectionOverride] of [
-    ["disabled", { enabled: false }],
-    ["never-approved", { approvalMode: "never" }],
-  ]) {
+  for (const [name, selectionOverride] of [["disabled", { enabled: false }]]) {
     const state = codexLinearPluginState(selectionOverride);
     const runtime = {
       manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
@@ -923,8 +1355,14 @@ test("Codex runtime installs and reports only enabled selections in mixed plugin
   const state = {
     driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
     plugins: {
-      "codex-plugin:linear@openai-curated-remote": { enabled: true, approvalMode: "auto" },
-      "codex-plugin:asana@openai-curated-remote": { enabled: false, approvalMode: "auto" },
+      "codex-plugin:linear@openai-curated-remote": {
+        enabled: true,
+        toolDefaults: { approval: "provider_default" },
+      },
+      "codex-plugin:asana@openai-curated-remote": {
+        enabled: false,
+        toolDefaults: { approval: "provider_default" },
+      },
     },
   };
   const runtime = {
@@ -1189,6 +1627,181 @@ test("Codex runtime helper fails before readiness when effective native app conf
   );
 });
 
+test("Codex runtime helper checks effective app, tool, and account policy before readiness", async (t) => {
+  for (const scenario of [
+    {
+      name: "inherited app enablement bypasses requested destructive denial",
+      defaults: { approval: "all_actions" },
+      driverPolicy: { destructiveEnabled: false },
+      app: { default_tools_enabled: true },
+      rejects: true,
+    },
+    {
+      name: "workspace layer overrides tool enablement",
+      defaults: { approval: "all_actions" },
+      workspaceApp: { default_tools_enabled: true },
+      rejects: true,
+    },
+    {
+      name: "unrequested app category restriction conflicts",
+      app: { open_world_enabled: false },
+      rejects: true,
+    },
+    {
+      name: "explicit workspace categories match inherited native defaults",
+      defaults: { approval: "all_actions" },
+      workspaceApp: { destructive_enabled: true, open_world_enabled: true },
+      global: { destructive_enabled: true, open_world_enabled: true },
+    },
+    {
+      name: "explicit destructive denial rejects native enablement",
+      defaults: { approval: "all_actions" },
+      driverPolicy: { destructiveEnabled: false },
+      app: { destructive_enabled: true },
+      rejects: true,
+      error: /effective config does not match admitted configuration/,
+    },
+    {
+      name: "unrequested app tool exposure changes",
+      app: { omit_tools_from: ["search"] },
+      rejects: true,
+    },
+    {
+      name: "inherited global category default conflicts",
+      global: { destructive_enabled: false },
+      rejects: true,
+    },
+    {
+      name: "unselected app enabled despite global deny",
+      otherApps: { unselected: { enabled: true } },
+      rejects: true,
+    },
+    {
+      name: "serialized defaults and inherited reviewers remain valid",
+      app: {
+        destructive_enabled: null,
+        open_world_enabled: null,
+        omit_tools_from: [],
+        approvals_reviewer: "user",
+      },
+      global: {
+        destructive_enabled: true,
+        open_world_enabled: true,
+        approvals_reviewer: "auto_review",
+      },
+      otherApps: { disabled: { enabled: false } },
+      tools: {},
+      links: { account: { approvals_reviewer: "auto_review", default_tools_approval_mode: null } },
+    },
+    { name: "extra enabled tool", tools: { extra: { enabled: true } }, rejects: true },
+    { name: "extra approved tool", tools: { extra: { approval_mode: "approve" } }, rejects: true },
+    {
+      name: "conflict after matching tool",
+      tools: { matching: { enabled: false }, extra: { approval_mode: "approve" } },
+      rejects: true,
+    },
+    {
+      name: "matching defaults and serialized nulls",
+      tools: {
+        matching: { enabled: false, approval_mode: "prompt" },
+        empty: { enabled: null, approval_mode: null },
+      },
+    },
+    {
+      name: "account approval weakens default",
+      links: { account: { default_tools_approval_mode: "approve", approvals_reviewer: null } },
+      rejects: true,
+    },
+    {
+      name: "conflict after matching account",
+      links: {
+        matching: { default_tools_approval_mode: "prompt" },
+        extra: { default_tools_approval_mode: "approve" },
+      },
+      rejects: true,
+    },
+    {
+      name: "matching account default",
+      links: { account: { default_tools_approval_mode: "prompt" } },
+    },
+    { name: "null maps inherit", tools: null, links: null },
+    {
+      name: "unrequested enablement bypasses native category defaults",
+      defaults: { approval: "all_actions" },
+      tools: { extra: { enabled: true } },
+      rejects: true,
+    },
+    {
+      name: "stricter unexpected approval also conflicts",
+      defaults: { enabled: true, approval: "none" },
+      nativeApproval: "approve",
+      tools: { extra: { approval_mode: "prompt" } },
+      rejects: true,
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const defaults = scenario.defaults ?? { enabled: false, approval: "all_actions" };
+      const state = codexLinearPluginState({
+        toolDefaults: defaults,
+        ...(scenario.driverPolicy === undefined ? {} : { driverPolicy: scenario.driverPolicy }),
+      });
+      const runtime = { manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })) };
+      // A second native layer can contribute descendants absent from the user
+      // config OCE replaces. Return that merged readback through the real startup helper.
+      const result = await runCodexRuntimeHelper(
+        runtime,
+        (method, params) => {
+          if (method === "initialize") {
+            return { serverInfo: { name: "codex", version: "0.156.0" } };
+          }
+          if (method === "plugin/list") {
+            return codexListResponse();
+          }
+          if (method === "plugin/read") {
+            return codexReadResponse();
+          }
+          if (method === "plugin/install") {
+            return { authPolicy: "ON_USE", appsNeedingAuth: [] };
+          }
+          if (method === "config/batchWrite") {
+            return { status: "ok", version: "nested-policy" };
+          }
+          if (method === "config/read") {
+            const response = codexConfigReadResponse({
+              default_tools_enabled: defaults.enabled ?? null,
+              default_tools_approval_mode: scenario.nativeApproval ?? "prompt",
+              ...(scenario.driverPolicy === undefined ? {} : { destructive_enabled: false }),
+              tools: scenario.tools,
+              links: scenario.links,
+              ...scenario.app,
+              // Codex includes project layers only when config/read receives cwd.
+              ...(params.cwd === "/home/node/workspace" ? scenario.workspaceApp : {}),
+            });
+            Object.assign(response.config.apps._default, scenario.global);
+            Object.assign(response.config.apps, scenario.otherApps);
+            return response;
+          }
+          throw new Error(`unexpected request ${method}`);
+        },
+        { captureError: true },
+      );
+      if (scenario.rejects) {
+        assert.match(
+          result.error?.message ?? "",
+          scenario.error ?? /effective (app|tool|account) policy conflicts/,
+        );
+        assert.equal(result.value, undefined, "conflicting nested policy must prevent readiness");
+      } else {
+        assert.equal(result.error, undefined);
+        assert.deepEqual(plain(result.value), {
+          successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+          failures: [],
+        });
+      }
+    });
+  }
+});
+
 test("Codex runtime helper fails before readiness when selected plugin lacks app mapping", async () => {
   const state = codexLinearPluginState();
   const runtime = {
@@ -1329,10 +1942,15 @@ function enrolledNodeSecret(driver, candidate, namespace) {
 
 test("embedded plugin preparation applies runtime egress before gateway readiness", async () => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
+  const rawSlackApprovers = [
+    { channel: "slack", id: "U456" },
+    { channel: "slack", id: "W789" },
+  ];
   const embedded = revision({
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
     plugins: openClawPluginState(),
+    pluginApprovers: rawSlackApprovers,
   });
   const namespace = kubernetesNamespaceName(tenant.id);
   const tenantOwnership = { namespaceId: tenant.id };
@@ -1420,6 +2038,14 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     revisionId: embedded.id,
     ready: false,
   });
+  const pluginRuntimeConfigMap = reconciled.find(
+    ({ kind, metadata }) => kind === "ConfigMap" && metadata.name.startsWith("plugin-runtime-"),
+  );
+  assert.ok(pluginRuntimeConfigMap, "Kubernetes Compute must generate plugin runtime ConfigMap");
+  assert.deepEqual(
+    JSON.parse(pluginRuntimeConfigMap.data[PLUGIN_RUNTIME_MANIFEST]).pluginApprovers,
+    rawSlackApprovers,
+  );
 
   const runtimePolicyIndex = reconciled.findIndex(
     ({ kind, metadata }) =>
@@ -1443,7 +2069,9 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   const dedicatedDriver = dedicatedPluginDriver();
   const dedicated = revision({
     compute: { id: dedicatedDriver.id, implementation: dedicatedDriver.implementation },
-    plugins: codexLinearPluginState({ approvalsReviewer: "auto_review" }),
+    plugins: codexLinearPluginState({
+      toolDefaults: { approval: "provider_default", reviewer: "auto" },
+    }),
   });
   useRoutedGateway(dedicated);
   const dedicatedNamespace = kubernetesNamespaceName(dedicated.namespaceId);
@@ -1548,6 +2176,14 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     revisionId: dedicated.id,
     ready: true,
   });
+  const runtimeGatewayPolicyIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) =>
+      kind === "NetworkPolicy" && metadata.name.startsWith("allow-gateway-agent-"),
+  );
+  const runtimeAgentPolicyIndex = dedicatedReconciled.findIndex(
+    ({ kind, metadata }) =>
+      kind === "NetworkPolicy" && metadata.name.startsWith("allow-agent-runtime-"),
+  );
   const statusGatewayPolicyIndex = dedicatedReconciled.findIndex(
     ({ kind, metadata }) =>
       kind === "NetworkPolicy" && metadata.name.startsWith("allow-plugin-status-gateway-"),
@@ -1565,13 +2201,41 @@ test("embedded plugin preparation applies runtime egress before gateway readines
   const dedicatedGatewayDeploymentIndex = dedicatedReconciled.findIndex(
     ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
   );
+  assert.ok(runtimeGatewayPolicyIndex >= 0);
+  assert.ok(runtimeAgentPolicyIndex >= 0);
   assert.ok(statusGatewayPolicyIndex >= 0);
   assert.ok(statusAgentPolicyIndex >= 0);
   assert.ok(dedicatedAgentServiceIndex >= 0);
   assert.ok(dedicatedGatewayDeploymentIndex >= 0);
+  assert.ok(runtimeGatewayPolicyIndex < dedicatedGatewayDeploymentIndex);
+  assert.ok(runtimeAgentPolicyIndex < dedicatedGatewayDeploymentIndex);
   assert.ok(statusGatewayPolicyIndex < dedicatedGatewayDeploymentIndex);
   assert.ok(statusAgentPolicyIndex < dedicatedGatewayDeploymentIndex);
   assert.ok(dedicatedAgentServiceIndex < dedicatedGatewayDeploymentIndex);
+  assert.deepEqual(dedicatedReconciled[runtimeGatewayPolicyIndex].metadata.namespace, cp);
+  assert.deepEqual(dedicatedReconciled[runtimeGatewayPolicyIndex].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": dedicated.namespaceId,
+    "openclaw.dev/workload-role": "gateway",
+    "openclaw.dev/agent": dedicated.agentId,
+  });
+  assert.deepEqual(dedicatedReconciled[runtimeGatewayPolicyIndex].spec.egress[0].ports, [
+    { protocol: "TCP", port: 18790 },
+    { protocol: "TCP", port: 18791 },
+  ]);
+  assert.deepEqual(
+    dedicatedReconciled[runtimeAgentPolicyIndex].metadata.namespace,
+    dedicatedNamespace,
+  );
+  assert.deepEqual(dedicatedReconciled[runtimeAgentPolicyIndex].spec.podSelector.matchLabels, {
+    "openclaw.dev/namespace": dedicated.namespaceId,
+    "openclaw.dev/workload-role": "agent",
+    "openclaw.dev/agent": dedicated.agentId,
+    "openclaw.dev/revision": dedicated.id,
+  });
+  assert.deepEqual(dedicatedReconciled[runtimeAgentPolicyIndex].spec.ingress[0].ports, [
+    { protocol: "TCP", port: 18790 },
+    { protocol: "TCP", port: 18791 },
+  ]);
 });
 
 test("Kubernetes plugin runtime status requires the exact ready Pod report", async (t) => {
@@ -1711,6 +2375,298 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
   ]);
 });
 
+test("gateway runtime status maps native Slack channel status without provider data", async () => {
+  const revisionId = "revision-plugin-compute-1";
+  let statusHandler;
+  let channelStatus;
+  let channelStatusCalls = 0;
+  let holdChannelStatusResponse = false;
+  let pendingChannelStatusListeners;
+  let childTimeout;
+  const childKillSignals = [];
+  const sandbox = {
+    AbortController,
+    AbortSignal,
+    Buffer,
+    JSON,
+    URL,
+    console: { error() {} },
+    process: {
+      env: {
+        OPENCLAW_AGENT_REVISION_ID: revisionId,
+        OPENCLAW_GATEWAY_PORT: "8080",
+        OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+        OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "pod-gateway-status-1",
+      },
+      on() {},
+      exit(code) {
+        throw new Error(`unexpected process exit ${code}`);
+      },
+    },
+    setInterval() {
+      return { unref() {} };
+    },
+    setTimeout(callback, timeoutMs) {
+      if (timeoutMs === 6000) {
+        childTimeout = callback;
+      }
+      return { unref() {} };
+    },
+    clearTimeout() {},
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            statusHandler = handler;
+            return { listen() {} };
+          },
+        };
+      }
+      if (specifier === "node:fs") {
+        return {
+          cpSync() {},
+          existsSync() {
+            return false;
+          },
+          lstatSync() {
+            return { isDirectory: () => true };
+          },
+          mkdirSync() {},
+          readFileSync() {
+            throw new Error("unexpected file read");
+          },
+          readdirSync() {
+            return [];
+          },
+          rmSync() {},
+          writeFileSync() {},
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn(command, args) {
+            if (args?.[1] !== "channels") {
+              return { on() {}, kill() {} };
+            }
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), [
+              "/app/openclaw.mjs",
+              "channels",
+              "status",
+              "--channel",
+              "slack",
+              "--json",
+              "--probe",
+              "--timeout",
+              "5000",
+            ]);
+            channelStatusCalls += 1;
+            const listeners = {};
+            const child = {
+              stdout: {
+                on(event, listener) {
+                  listeners["stdout:" + event] = listener;
+                },
+              },
+              kill(signal) {
+                childKillSignals.push(signal);
+              },
+              on(event, listener) {
+                listeners[event] = listener;
+              },
+            };
+            if (holdChannelStatusResponse) {
+              pendingChannelStatusListeners = listeners;
+            } else {
+              queueMicrotask(() => {
+                listeners["stdout:data"]?.(Buffer.from(JSON.stringify(channelStatus)));
+                listeners.close?.(0, null);
+              });
+            }
+            return child;
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+
+  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  await Promise.resolve();
+
+  assert.ok(statusHandler);
+  const ready = await readRuntimeStatusFromHandler(statusHandler);
+  assert.equal(ready.revisionId, revisionId);
+  assert.equal(channelStatusCalls, 0);
+  const assertSlackDiagnostics = async (status, expected, description) => {
+    channelStatus = status;
+    const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
+    assert.deepEqual(
+      diagnostics.checks.map(({ component }) => component),
+      ["gateway", "gateway", "gateway"],
+      `${description} components`,
+    );
+    assert.deepEqual(
+      diagnostics.checks.map(({ check, state, code }) => ({ check, state, code })),
+      expected,
+      description,
+    );
+  };
+
+  await assertSlackDiagnostics(
+    {
+      channels: { slack: { configured: true, connected: true } },
+      channelAccounts: {
+        slack: [{ accountId: "default", configured: true, connected: true, probe: { ok: true } }],
+      },
+      channelDefaultAccountId: { slack: "default" },
+    },
+    [
+      { check: "configuration", state: "succeeded", code: undefined },
+      { check: "authentication", state: "succeeded", code: undefined },
+      { check: "connectivity", state: "succeeded", code: undefined },
+    ],
+    "connected",
+  );
+
+  await assertSlackDiagnostics(
+    { configOnly: true, configuredChannels: [] },
+    [
+      { check: "configuration", state: "failed", code: "NOT_CONFIGURED" },
+      { check: "authentication", state: "unknown", code: undefined },
+      { check: "connectivity", state: "unknown", code: undefined },
+    ],
+    "disabled",
+  );
+
+  await assertSlackDiagnostics(
+    { gatewayReachable: false, configOnly: true, configuredChannels: ["slack"] },
+    [
+      { check: "configuration", state: "succeeded", code: undefined },
+      { check: "authentication", state: "unknown", code: "UNAVAILABLE" },
+      { check: "connectivity", state: "unknown", code: "UNAVAILABLE" },
+    ],
+    "configured but gateway unavailable",
+  );
+
+  for (const error of [
+    "invalid_auth",
+    "An API error occurred: invalid_auth; code: slack_webapi_platform_error; slack error: invalid_auth",
+  ]) {
+    await assertSlackDiagnostics(
+      {
+        channels: { slack: { configured: true } },
+        channelAccounts: {
+          slack: [{ accountId: "default", configured: true, probe: { ok: false, error } }],
+        },
+        channelDefaultAccountId: { slack: "default" },
+      },
+      [
+        { check: "configuration", state: "succeeded", code: undefined },
+        { check: "authentication", state: "failed", code: "AUTHENTICATION_FAILED" },
+        { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      ],
+      `invalid auth ${error}`,
+    );
+  }
+
+  await assertSlackDiagnostics(
+    {
+      channels: { slack: { configured: true, connected: true } },
+      channelAccounts: {
+        slack: [
+          {
+            accountId: "default",
+            configured: true,
+            connected: true,
+            probe: { ok: false, error: "probe timed out after 5000ms" },
+          },
+        ],
+      },
+      channelDefaultAccountId: { slack: "default" },
+    },
+    [
+      { check: "configuration", state: "succeeded", code: undefined },
+      { check: "authentication", state: "unknown", code: "PROBE_FAILED" },
+      { check: "connectivity", state: "succeeded", code: undefined },
+    ],
+    "probe timeout with connected transport",
+  );
+
+  await assertSlackDiagnostics(
+    {
+      channels: { slack: { configured: true, connected: true } },
+      channelAccounts: {
+        slack: [{ accountId: "secondary", configured: true, connected: true, probe: { ok: true } }],
+      },
+      channelDefaultAccountId: { slack: "missing-default" },
+    },
+    [
+      { check: "configuration", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "authentication", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+    ],
+    "missing default account",
+  );
+
+  await assertSlackDiagnostics(
+    { configOnly: true },
+    [
+      { check: "configuration", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "authentication", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+      { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
+    ],
+    "malformed config fallback",
+  );
+
+  holdChannelStatusResponse = true;
+  const timedOutRequest = readRuntimeChannelChecksFromHandler(statusHandler);
+  await Promise.resolve();
+  assert.equal(typeof childTimeout, "function");
+  childTimeout();
+  assert.deepEqual(childKillSignals.slice(-1), ["SIGTERM"]);
+  pendingChannelStatusListeners.close?.(null, "SIGTERM");
+  const timedOutDiagnostics = await timedOutRequest;
+  assert.deepEqual(
+    timedOutDiagnostics.checks.map(({ state, code }) => ({ state, code })),
+    Array.from({ length: 3 }, () => ({ state: "unknown", code: "UNAVAILABLE" })),
+  );
+
+  const requestListeners = {};
+  const responseListeners = {};
+  const abortedRequest = statusHandler(
+    {
+      method: "GET",
+      url: "/openclaw/runtime/diagnostics",
+      on(event, listener) {
+        requestListeners[event] = listener;
+      },
+      off() {},
+    },
+    {
+      writeHead() {
+        throw new Error("aborted response must not write headers");
+      },
+      end() {
+        throw new Error("aborted response must not write a body");
+      },
+      on(event, listener) {
+        responseListeners[event] = listener;
+      },
+      off() {},
+    },
+  );
+  await Promise.resolve();
+  assert.ok(pendingChannelStatusListeners);
+  requestListeners.aborted();
+  assert.deepEqual(childKillSignals.slice(-1), ["SIGTERM"]);
+  pendingChannelStatusListeners.close?.(null, "SIGTERM");
+  await abortedRequest;
+  responseListeners.close?.();
+  assert.equal(channelStatusCalls, 10);
+});
+
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
@@ -1721,6 +2677,27 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   };
   const scenarios = [
     { name: "failed login", loginStatus: 1 },
+    {
+      name: "API-key login timeout is not retried",
+      loginTimeouts: 1,
+      loginAttempts: 1,
+      loginFailed: true,
+    },
+    {
+      name: "access-token spawn failure is not retried",
+      pat: true,
+      loginError: "ENOENT",
+      loginFailed: true,
+    },
+    { name: "access-token login refusal is not retried", pat: true, loginStatus: 1 },
+    {
+      name: "access-token login recovers one timeout before probing",
+      pat: true,
+      loginTimeouts: 1,
+      events: [started, assistant, completed],
+      ready: true,
+    },
+    { name: "access-token login stops after three timeouts", pat: true, loginTimeouts: 3 },
     {
       name: "service account token uses native access-token login before probe and clears credentials",
       pat: true,
@@ -1775,6 +2752,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
         let statusHandler;
         let appServerStarts = 0;
         let nativeCalls = 0;
+        let loginCalls = 0;
         const sandbox = {
           URL,
           console: {
@@ -1830,7 +2808,11 @@ test("Codex runtime gates startup and readiness on a successful native authentic
               return {
                 spawnSync(command, args, options) {
                   nativeCalls++;
-                  if (nativeCalls === 1 && scenario.pat) {
+                  const isLogin = args.includes("login");
+                  if (isLogin) {
+                    loginCalls++;
+                  }
+                  if (isLogin && scenario.pat) {
                     assert.equal(command, "codex");
                     assert.deepEqual(Array.from(args), [
                       "-c",
@@ -1840,19 +2822,26 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                     ]);
                     assert.equal(options.input, "at-fixture-token");
                   }
-                  if (nativeCalls === 2) {
+                  if (!isLogin) {
                     assert.equal(sandbox.process.env.CODEX_ACCESS_TOKEN, undefined);
                     assert.equal(sandbox.process.env.OPENAI_API_KEY, undefined);
                     assert.equal(sandbox.process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
                   }
                   // Substitute only native process output; execute the production
                   // login/probe parser and readiness control flow unmodified.
-                  return nativeCalls === 1
-                    ? { status: scenario.loginStatus ?? 0 }
-                    : {
-                        status: scenario.probeStatus ?? 0,
-                        stdout: scenario.events.map((event) => JSON.stringify(event)).join("\n"),
-                      };
+                  if (isLogin) {
+                    if (scenario.loginError) {
+                      return { status: null, error: { code: scenario.loginError } };
+                    }
+                    if (loginCalls <= (scenario.loginTimeouts ?? 0)) {
+                      return { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } };
+                    }
+                    return { status: scenario.loginStatus ?? 0 };
+                  }
+                  return {
+                    status: scenario.probeStatus ?? 0,
+                    stdout: scenario.events.map((event) => JSON.stringify(event)).join("\n"),
+                  };
                 },
                 spawn(_command, args) {
                   assert.ok(args.includes("app-server"));
@@ -1865,7 +2854,13 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           },
         };
         vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
-        assert.equal(nativeCalls, scenario.loginStatus === 1 ? 1 : 2);
+        const loginFailed =
+          scenario.loginFailed || scenario.loginStatus === 1 || scenario.loginTimeouts === 3;
+        assert.equal(
+          loginCalls,
+          scenario.loginAttempts ?? Math.min((scenario.loginTimeouts ?? 0) + 1, 3),
+        );
+        assert.equal(nativeCalls, loginCalls + (loginFailed ? 0 : 1));
         assert.ok(statusHandler);
         const runtimeStatus = readRuntimeStatusFromHandler(statusHandler);
         assert.equal(runtimeStatus.revisionId, revisionId);
@@ -1885,13 +2880,10 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           assert.ok(idleTimers[0].delay > 0);
           assert.equal(existsSync(marker), false);
           assert.equal(runtimeStatus.runtimeFailure.component, "agent");
-          assert.equal(
-            runtimeStatus.runtimeFailure.check,
-            scenario.loginStatus === 1 ? "login" : "model-probe",
-          );
+          assert.equal(runtimeStatus.runtimeFailure.check, loginFailed ? "login" : "model-probe");
           assert.equal(
             runtimeStatus.runtimeFailure.code,
-            scenario.loginStatus === 1 ? "LOGIN_FAILED" : "MODEL_PROBE_FAILED",
+            loginFailed ? "LOGIN_FAILED" : "MODEL_PROBE_FAILED",
           );
           assert.match(runtimeStatus.runtimeFailure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
         }
@@ -2047,7 +3039,11 @@ test("Codex gateway supervisor exits when the peer Agent plugin failure set chan
   const peerPort = peerServer.address().port;
 
   const runtime = pluginRuntimeSpecForRevision(
-    revision({ plugins: codexLinearPluginState({ approvalsReviewer: "auto_review" }) }),
+    revision({
+      plugins: codexLinearPluginState({
+        toolDefaults: { approval: "provider_default", reviewer: "auto" },
+      }),
+    }),
   );
   const files = new Map([
     [
@@ -2170,6 +3166,129 @@ test("Codex gateway supervisor exits when the peer Agent plugin failure set chan
   }
 });
 
+test("Codex gateway supervisor applies broker-only bridge runtime without selected plugins", async () => {
+  const revisionId = "revision-plugin-compute-1";
+  const runtime = pluginRuntimeSpecForRevision(revision({ plugins: codexNoPluginState() }), {
+    host: "git.oce.svc",
+    domains: { "github.com": "allow", "*.oce.svc": "deny" },
+  });
+  const files = new Map([
+    [
+      "/etc/openclaw/openclaw.json",
+      JSON.stringify({
+        gateway: { port: 8080 },
+        plugins: { entries: { codex: { enabled: true, config: { keep: true } } } },
+      }),
+    ],
+  ]);
+  const intervals = [];
+  let statusHandler;
+  let child;
+  const sandbox = {
+    AbortSignal,
+    Buffer,
+    JSON,
+    URL,
+    console: { error() {} },
+    fetch,
+    process: {
+      env: {
+        APP_SERVER_TOKEN: "base-app-server-token",
+        HOME: "/home/node",
+        OPENCLAW_AGENT_REVISION_ID: revisionId,
+        OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
+        OPENCLAW_GATEWAY_PORT: "8080",
+        OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: runtime }),
+        OPENCLAW_PLUGIN_STATUS_CONTAINER: "gateway",
+        OPENCLAW_PLUGIN_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "gateway-pod-1",
+      },
+      on() {},
+      exit() {},
+    },
+    setInterval(callback) {
+      intervals.push(callback);
+      return { unref() {} };
+    },
+    setTimeout() {
+      return { unref() {} };
+    },
+    clearTimeout() {},
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            statusHandler = handler;
+            return { listen() {} };
+          },
+        };
+      }
+      if (specifier === "node:fs") {
+        return {
+          existsSync(path) {
+            return files.has(path);
+          },
+          mkdirSync() {},
+          readFileSync(path) {
+            if (!files.has(path)) {
+              throw new Error(`Missing mocked file: ${path}`);
+            }
+            return files.get(path);
+          },
+          writeFileSync(path, data) {
+            files.set(path, String(data));
+          },
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn(command, args) {
+            assert.equal(command, "node");
+            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "gateway", "--port", "8080"]);
+            child = { kill() {}, on() {} };
+            return child;
+          },
+          spawnSync() {
+            throw new Error("broker-only bridge must not run native plugin installers");
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+
+  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  await waitForCondition("gateway supervisor start", () => child);
+  assert.equal(intervals.length, 0);
+
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.equal(effective.plugins.entries.codex.config.keep, true);
+  assert.equal(effective.plugins.entries.codex.config.codexPlugins, undefined);
+  assert.deepEqual(effective.plugins.entries.codex.config.appServer.networkProxy, {
+    enabled: true,
+    mode: "full",
+    allowLocalBinding: true,
+    readOnlyPaths: [
+      "/app/node_modules/openclaw",
+      "/home/node/.openclaw/plugin-skills",
+      "/home/node/openclaw-runtime-assets/plugin-skills",
+      "/opt/oce/repository-credentials",
+      "/run/oce/repository-credentials",
+    ],
+    domains: { "github.com": "allow", "*.oce.svc": "deny", "git.oce.svc": "allow" },
+  });
+  const status = readStatusFromHandler(statusHandler);
+  assert.deepEqual(status, {
+    revisionId,
+    container: "gateway",
+    startupId: status.startupId,
+    podUid: "gateway-pod-1",
+    phase: "ready",
+    successfulPluginIds: [],
+    failures: [],
+  });
+});
+
 test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin status auth", async () => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
   const candidate = revision({ plugins: codexNoPluginState() });
@@ -2241,6 +3360,134 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
       ["websocket", 18790],
       ["plugin-status", 18791],
     ],
+  );
+});
+
+test("Kubernetes dedicated Codex gateway mounts broker-only runtime without plugin selections", async () => {
+  const driver = createKubernetesComputeDriver(kubernetesOptions());
+  const runtime = pluginRuntimeSpecForRevision(revision({ plugins: codexNoPluginState() }), {
+    host: "git.oce.svc",
+    domains: {},
+  });
+  const deployment = driver.deployment(
+    "gateway-plugin-compute-rev",
+    {
+      namespaceId: tenant.id,
+      agentId: agent.id,
+      revisionId: "revision-plugin-compute-1",
+    },
+    { name: "oce-plugin-compute", plane: "execution" },
+    "openclaw-enterprise/gateway-fixture:local",
+    "gateway-plugin-compute",
+    "gateway",
+    {},
+    "info",
+    driver.gatewayConfiguration(revision(), undefined, {
+      name: "oce-plugin-compute",
+      plane: "execution",
+    }),
+    false,
+    undefined,
+    undefined,
+    [],
+    [],
+    { name: "plugin-runtime-gateway-plugin-compute", runtime },
+  );
+
+  const pod = deployment.spec.template.spec;
+  assert.equal(
+    pod.volumes.some(
+      (volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-compute",
+    ),
+    true,
+  );
+  const container = pod.containers[0];
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT),
+    true,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT),
+    false,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT),
+    false,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === "OPENCLAW_PLUGIN_STATUS_CONTAINER"),
+    false,
+  );
+});
+
+test("Kubernetes embedded OpenClaw gateway mounts broker-only Codex bridge runtime", async () => {
+  const driver = createKubernetesComputeDriver(kubernetesOptions());
+  const candidate = revision({
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    plugins: codexNoPluginState(),
+  });
+  const runtime = pluginRuntimeSpecForRevision(candidate, {
+    host: "git.oce.svc",
+    domains: {},
+  });
+  const deployment = driver.deployment(
+    "gateway-plugin-compute-rev",
+    {
+      namespaceId: tenant.id,
+      agentId: agent.id,
+      revisionId: "revision-plugin-compute-1",
+    },
+    { name: "oce-plugin-compute", plane: "execution" },
+    "openclaw-enterprise/gateway-fixture:local",
+    "gateway-plugin-compute",
+    "gateway",
+    {},
+    "info",
+    driver.gatewayConfiguration(candidate, undefined, {
+      name: "oce-plugin-compute",
+      plane: "execution",
+    }),
+    true,
+    candidate.servicePrincipalId,
+    driver.harnessAuthForRevision(
+      candidate,
+      {
+        harnessAuth: {
+          ...candidate.harnessAuth,
+          backendRef: {
+            namespaceName: "oce-plugin-compute",
+            name: "plugin-model-key",
+            key: "value",
+            uid: "plugin-model-key-uid",
+          },
+        },
+      },
+      { name: "oce-plugin-compute", plane: "execution" },
+    ),
+    [],
+    [],
+    { name: "plugin-runtime-gateway-plugin-compute", runtime },
+  );
+
+  const pod = deployment.spec.template.spec;
+  assert.equal(
+    pod.volumes.some(
+      (volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-compute",
+    ),
+    true,
+  );
+  const container = pod.containers[0];
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT),
+    true,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT),
+    false,
+  );
+  assert.equal(
+    container.env.some((variable) => variable.name === PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT),
+    false,
   );
 });
 
@@ -2434,7 +3681,11 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
 test("Kubernetes dedicated Codex gateway mounts bridge runtime and prior plugin warnings", async () => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
   const runtime = pluginRuntimeSpecForRevision(
-    revision({ plugins: codexLinearPluginState({ approvalsReviewer: "auto_review" }) }),
+    revision({
+      plugins: codexLinearPluginState({
+        toolDefaults: { approval: "provider_default", reviewer: "auto" },
+      }),
+    }),
   );
   const deployment = driver.deployment(
     "gateway-plugin-compute-rev",
@@ -2515,4 +3766,40 @@ test("Kubernetes dedicated Codex gateway mounts bridge runtime and prior plugin 
       ["plugin-status", 18791],
     ],
   );
+});
+
+test("Kubernetes plugin-free Codex gateway receives explicit Agent approvers", () => {
+  const driver = createKubernetesComputeDriver(kubernetesOptions());
+  for (const [pluginApprovers, expectedMount] of [
+    [undefined, false],
+    [[], true],
+  ]) {
+    const candidate = revision({ pluginApprovers });
+    const runtime = pluginRuntimeSpecForRevision(candidate);
+    const deployment = driver.deployment(
+      "gateway-plugin-free",
+      { namespaceId: tenant.id, agentId: agent.id, revisionId: candidate.id },
+      { name: "oce-plugin-compute", plane: "execution" },
+      "openclaw-enterprise/gateway-fixture:local",
+      "gateway-plugin-compute",
+      "gateway",
+      {},
+      "info",
+      driver.gatewayConfiguration(candidate, undefined, {
+        name: "oce-plugin-compute",
+        plane: "execution",
+      }),
+      false,
+      undefined,
+      undefined,
+      [],
+      [],
+      { name: "plugin-runtime-gateway-plugin-free", runtime },
+    );
+    const pod = deployment.spec.template.spec;
+    assert.equal(
+      pod.volumes.some((volume) => volume.configMap?.name === "plugin-runtime-gateway-plugin-free"),
+      expectedMount,
+    );
+  }
 });

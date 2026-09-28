@@ -31,7 +31,7 @@ Ordinary checks do not need package publication or repository write access.
 Proposed protection for `main`:
 
 - Require a pull request and at least one approving review.
-- Require code-owner review; keep `@openclaw/maintainer` and
+- Require code-owner review; keep `@openclaw/maintainers-oce` and
   `@openclaw/openclaw-secops` visible to repository members with explicit write
   access or greater.
 - Dismiss stale approvals on new commits, require approval of the latest
@@ -40,6 +40,11 @@ Proposed protection for `main`:
 - Block force pushes and branch deletion. Review administrator and application
   bypasses explicitly; avoid standing automation bypasses.
 - Require the current approved CI result on the exact merge candidate.
+
+Core team authors with an approved bypass can self-merge their own reviewed PRs
+as described in the [contribution policy](../CONTRIBUTING.md#prepare-a-pull-request).
+This exception does not change the repository settings or waive the checks in that
+policy.
 
 CODEOWNERS routes reviews; it does not enable enforcement. The final matching
 line wins, and multiple owners on one line mean approval from either owner,

@@ -3,7 +3,19 @@ import { story } from "./story.mjs";
 export default { title: "Components/Channels" };
 
 export const Slack = { ...story("slack"), name: "Slack configured" };
+export const SlackDmPolicy = { ...story("slackDmPolicy") };
+export const SlackEnterpriseDm = { ...story("slackEnterpriseDm") };
+export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
+export const SlackReplyOverride = { ...story("slackReplyOverride") };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor" };
+export const SlackDirectoryChannels = story("slackDirectoryChannels");
+export const SlackDirectorySavedNames = story("slackDirectorySavedNames");
+export const SlackDirectoryQualifiedNames = story("slackDirectoryQualifiedNames");
+export const SlackDirectoryUsers = story("slackDirectoryUsers");
+export const SlackDirectoryDenied = story("slackDirectoryDenied");
+export const SlackDirectoryLoading = story("slackDirectoryLoading");
+export const SlackDirectorySearchRace = story("slackDirectorySearchRace");
+export const SlackDirectoryMissingSecret = story("slackDirectoryMissingSecret");
 export const SlackEveryone = { ...story("slackEveryone"), name: "Slack everyone in channels" };
 export const SlackRestrictedUsers = {
   ...story("slackRestrictedUsers"),
@@ -14,10 +26,12 @@ export const SlackChannelAccessIncomplete = {
   name: "Slack sender access incomplete",
 };
 export const SlackSecretMenu = { ...story("slackSecretMenu"), name: "Slack Secret menu" };
+export const SlackSecretNameCollision = story("slackSecretNameCollision");
 export const SlackCreateSecretModal = {
   ...story("slackCreateSecretModal"),
   name: "Slack create Secret modal",
 };
+export const SlackDuplicateSecret = story("slackDuplicateSecret");
 export const SlackSecretStaged = {
   ...story("slackSecretStaged"),
   name: "Slack staged Secret binding",
@@ -40,3 +54,10 @@ export const SlackChannelAccessFlow = {
 export const ChannelsEmpty = { ...story("channelsEmpty"), name: "Not configured" };
 export const ChannelsReadOnly = { ...story("channelsReadOnly"), name: "Revision read only" };
 export const ChannelConflict = { ...story("channelConflict"), name: "Save conflict" };
+
+export const SlackNavigation = story("slackNavigation");
+
+export const RevisionSecretsDenied = story("revisionSecretsDenied");
+export const RevisionSecretsMissing = story("revisionSecretsMissing");
+export const RevisionSecretsLoading = story("revisionSecretsLoading");
+export const RevisionSecretsAbsent = story("revisionSecretsAbsent");

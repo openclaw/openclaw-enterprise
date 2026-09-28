@@ -4,6 +4,31 @@ export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const PluginsUnavailable = {
+  ...story("createPluginsUnavailable"),
+  name: "Plugin discovery needs a service account credential",
+};
+export const PluginsConfigured = {
+  ...story("createPluginsConfigured"),
+  name: "Edit existing plugin policies",
+};
+export const PluginsCurated = story("createPluginsCurated");
+export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsPrefetch = story("createPluginsPrefetch");
+export const PluginsSearchLoading = story("createPluginsSearchLoading");
+export const PluginsToolsLoading = story("createPluginsToolsLoading");
+export const PluginsSelectedSecret = story("createPluginsSelectedSecret");
+export const PluginsSelectedSecretDenied = story("createPluginsSelectedSecretDenied");
+export const PluginsTools = story("createPluginsTools");
+export const PluginsPolicies = story("createPluginsPolicies");
+export const PluginApproversMissingSecret = story("createPluginApproversMissingSecret");
+export const PluginsSetupReminder = story("createPluginsSetupReminder");
+export const PluginsSecondPage = story("createPluginsSecondPage");
+export const PluginsEmpty = story("createPluginsEmpty");
+export const PluginsLoading = story("createPluginsLoading");
+export const PluginsRejected = story("createPluginsRejected");
+export const PluginsError = story("createPluginsError");
+export const PluginsDetailsError = story("createPluginsDetailsError");
 export const CreateSlackSecretMenu = {
   ...story("createSlackSecretMenu"),
   name: "Slack Secret menu before Agent exists",
@@ -32,6 +57,10 @@ export const CreateUnsupportedProvisioning = {
   ...story("createUnsupportedProvisioning"),
   name: "Unsupported provisioning",
 };
+export const CreatePresetWorkspaceFiles = {
+  ...story("createPresetWorkspaceFiles"),
+  name: "Preset workspace files",
+};
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
 export const RepositorySelection = {
@@ -56,7 +85,7 @@ export const RepositoryLoading = {
 };
 export const RepositoryUnavailable = {
   ...story("createRepositoriesUnavailable"),
-  name: "Optional repository service unavailable",
+  name: "Repository choices unavailable",
 };
 export const RepositoryDenied = {
   ...story("createRepositoriesDenied"),
@@ -115,3 +144,31 @@ export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
 };
+
+export const CreateStandardOpenclawPreset = {
+  ...story("createStandardOpenclawPreset"),
+  name: "Standard OpenClaw preset",
+};
+
+export const CreatePresetExistingSecret = {
+  ...story("createPresetExistingSecret"),
+  name: "SWE existing service account Secret",
+};
+export const CreatePresetSecretsLoading = {
+  ...story("createPresetSecretsLoading"),
+  name: "Preset Secrets loading",
+};
+export const CreatePresetSecretsDenied = {
+  ...story("createPresetSecretsDenied"),
+  name: "Preset Secret metadata denied",
+};
+export const CreatePresetSecretsEmpty = {
+  ...story("createPresetSecretsEmpty"),
+  name: "No existing Preset Secrets",
+};
+
+export const CreatePresetNavigation = story("createPresetNavigation");
+
+export const PresetVariableNavigation = story("presetVariableNavigation");
+
+export const RepositoryNavigationOutage = story("createRepositoryNavigationOutage");

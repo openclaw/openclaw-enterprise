@@ -62,6 +62,29 @@ export class ModelDiscoveryError extends Error {
   }
 }
 
+/** Safe discovery outcomes carry no upstream response, credential, or error cause. */
+export class PluginDiscoveryError extends Error {
+  readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";
+
+  constructor(reason: PluginDiscoveryError["reason"]) {
+    super("Plugin discovery failed.");
+    this.name = "PluginDiscoveryError";
+    this.reason = reason;
+  }
+}
+
+/** Safe channel-directory outcomes contain no upstream response or token. */
+export class ChannelDirectoryError extends Error {
+  readonly reason:
+    "credentials_rejected" | "missing_scope" | "rate_limited" | "invalid_response" | "unavailable";
+
+  constructor(reason: ChannelDirectoryError["reason"]) {
+    super("Channel directory lookup failed.");
+    this.name = "ChannelDirectoryError";
+    this.reason = reason;
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
@@ -111,5 +134,20 @@ export class NotImplementedError extends Error {
     super(message);
     this.name = "NotImplementedError";
     this.operation = operation;
+  }
+}
+
+export class PluginPolicyValidationError extends Error {
+  constructor(field?: "toolDefaults.reviewer" | "tools[id].reviewer") {
+    let message = "The supplied plugin policies are invalid.";
+    if (field === "toolDefaults.reviewer") {
+      message =
+        "This Plugin Driver does not support toolDefaults.reviewer. Omit the reviewer to inherit the Harness setting.";
+    } else if (field === "tools[id].reviewer") {
+      message =
+        "This Plugin Driver does not support tools[id].reviewer. Use toolDefaults.reviewer when supported, or omit the reviewer.";
+    }
+    super(message);
+    this.name = "PluginPolicyValidationError";
   }
 }

@@ -14,7 +14,6 @@ import {
   type IAMPolicyManagementContext,
   type IAMPolicyReadContext,
   type IAMPolicyReadRepository,
-  type IAMPolicyRepository,
   type Identity,
   type IdentityLookup,
   type JSONSchema,
@@ -132,6 +131,10 @@ export function createAuthPrincipalSeed(
           })),
       ),
       { action: "operate", resourceKind: "secret" },
+      ...(["create", "read", "delete", "operate"] as const).map((action) => ({
+        action,
+        resourceKind: "credential_source" as const,
+      })),
       ...(["create", "read", "update", "delete", "deploy", "operate", "administer"] as const).map(
         (action) => ({
           action,
@@ -206,6 +209,7 @@ const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
   "agent",
   "agent_revision",
   "configuration",
+  "credential_source",
   "secret",
   "service_account",
 ];
@@ -368,6 +372,10 @@ function immutableBinding(binding: Readonly<AccessBinding>): Readonly<AccessBind
 }
 
 export function validateNativeIAMState(state: NativeIAMState): void {
+  validateAndIndexNativeIAMState(state);
+}
+
+function validateAndIndexNativeIAMState(state: NativeIAMState): ReadonlyMap<string, Role> {
   assertCondition(typeof state === "object" && state !== null, "state is missing");
   const expectedCollections = [
     "identities",
@@ -593,6 +601,8 @@ export function validateNativeIAMState(state: NativeIAMState): void {
       `Restriction ${restriction.id} targets another Namespace`,
     );
   }
+
+  return roles;
 }
 
 export function validatePersistedNativeIAMState(state: NativeIAMState): void {
@@ -653,6 +663,8 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "service_account" ||
       isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
+    (request.resource.kind !== "credential_source" ||
+      isNonEmptyString(request.resource.namespaceId)) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)
   );
@@ -685,6 +697,7 @@ function restrictionMatches(restriction: Restriction, request: AuthorizationRequ
 function evaluateValidatedAuthorization(
   request: AuthorizationRequest,
   state: Readonly<NativeIAMState>,
+  roles: ReadonlyMap<string, Role>,
   driverId: string,
 ): AuthorizationDecision {
   if (!validRequest(request)) {
@@ -742,7 +755,7 @@ function evaluateValidatedAuthorization(
       continue;
     }
 
-    const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+    const role = roles.get(binding.roleId);
     if (
       role === undefined ||
       (role.namespaceId !== undefined && role.namespaceId !== request.resource.namespaceId) ||
@@ -808,8 +821,8 @@ export function evaluateAuthorization(
   }
 
   try {
-    validateNativeIAMState(state);
-    return evaluateValidatedAuthorization(request, state, driverId);
+    const roles = validateAndIndexNativeIAMState(state);
+    return evaluateValidatedAuthorization(request, state, roles, driverId);
   } catch {
     return decision(driverId, false, "The native IAM policy is invalid.");
   }
@@ -899,12 +912,13 @@ export class NativeIAMDriver implements IAMDriver {
 
   async authorize(request: AuthorizationRequest): Promise<AuthorizationDecision> {
     const state = await this.state.loadNativeIAMState();
+    let roles: ReadonlyMap<string, Role>;
     try {
-      validateNativeIAMState(state);
+      roles = validateAndIndexNativeIAMState(state);
     } catch {
       return decision(this.id, false, "The native IAM policy is invalid.");
     }
-    return evaluateValidatedAuthorization(request, state, this.id);
+    return evaluateValidatedAuthorization(request, state, roles, this.id);
   }
 
   async listNamespaceRoles(
@@ -932,7 +946,7 @@ export class NativeIAMDriver implements IAMDriver {
     context: IAMPolicyManagementContext,
     input: IAMManagedRoleInput,
   ): Promise<Readonly<Role>> {
-    const repository = this.managementPolicyRepository(context, ["createRole"]);
+    const repository = this.policyRepository(context, ["createRole"]);
     return immutableRole(await repository.createRole(managedRole(input)));
   }
 
@@ -941,7 +955,7 @@ export class NativeIAMDriver implements IAMDriver {
     namespaceId: string,
     roleId: string,
   ): Promise<boolean> {
-    const repository = this.managementPolicyRepository(context, ["deleteRole"]);
+    const repository = this.policyRepository(context, ["deleteRole"]);
     this.assertNamespace(namespaceId);
     this.assertIdentifier(roleId, "Role");
     return repository.deleteRole(namespaceId, roleId);
@@ -972,7 +986,7 @@ export class NativeIAMDriver implements IAMDriver {
     context: IAMPolicyManagementContext,
     input: IAMManagedAccessBindingInput,
   ): Promise<Readonly<AccessBinding>> {
-    const repository = this.managementPolicyRepository(context, ["createAccessBinding"]);
+    const repository = this.policyRepository(context, ["createAccessBinding"]);
     return immutableBinding(await repository.createAccessBinding(managedAccessBinding(input)));
   }
 
@@ -981,31 +995,16 @@ export class NativeIAMDriver implements IAMDriver {
     namespaceId: string,
     bindingId: string,
   ): Promise<boolean> {
-    const repository = this.managementPolicyRepository(context, ["deleteAccessBinding"]);
+    const repository = this.policyRepository(context, ["deleteAccessBinding"]);
     this.assertNamespace(namespaceId);
     this.assertIdentifier(bindingId, "AccessBinding");
     return repository.deleteAccessBinding(namespaceId, bindingId);
   }
 
-  private policyRepository(
-    context: IAMPolicyReadContext,
-    methods: readonly (keyof IAMPolicyReadRepository)[],
-  ): IAMPolicyReadRepository {
-    const repository = context?.policy;
-    if (
-      typeof repository !== "object" ||
-      repository === null ||
-      !methods.every((method) => typeof repository[method] === "function")
-    ) {
-      throw new TypeError("Native IAM management requires a policy repository.");
-    }
-    return repository;
-  }
-
-  private managementPolicyRepository(
-    context: IAMPolicyManagementContext,
-    methods: readonly (keyof IAMPolicyRepository)[],
-  ): IAMPolicyRepository {
+  private policyRepository<Repository extends IAMPolicyReadRepository>(
+    context: { readonly policy: Repository },
+    methods: readonly (keyof Repository)[],
+  ): Repository {
     const repository = context?.policy;
     if (
       typeof repository !== "object" ||

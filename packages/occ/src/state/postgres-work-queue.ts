@@ -347,6 +347,21 @@ function sqlState(error: unknown): string | undefined {
   return typeof error.code === "string" ? error.code : undefined;
 }
 
+// Recovery has no worker finalization step; publish provisioning failure in
+// the same statement as terminal work and its attributable audit evidence.
+const FAIL_EXHAUSTED_NAMESPACES_SQL = `
+  failed_namespaces AS (
+    UPDATE occ.namespaces AS namespace
+    SET status = 'failed'
+    FROM transitioned
+    WHERE namespace.id = transitioned.namespace_id
+      AND namespace.status = 'provisioning'
+      AND namespace.deleted_at IS NULL
+      AND transitioned.namespace_target = 'ready'
+      AND transitioned.state = 'failed_permanent'
+    RETURNING namespace.id
+  )`;
+
 const INSERT_EVIDENCE_CTE_SQL = `
   evidence AS (
     INSERT INTO occ.audit_events (
@@ -787,18 +802,26 @@ export class PostgresWorkQueue {
     return "completed";
   }
 
-  async defer(claim: WorkClaim, pending: RetryableFailure): Promise<void> {
+  async defer(
+    claim: WorkClaim,
+    pending: RetryableFailure,
+    options: { readonly delayMs?: number } = {},
+  ): Promise<void> {
     validateClaim(claim);
+    if (options.delayMs !== undefined && !isPositiveSafeInteger(options.delayMs)) {
+      throw new ScopeViolationError("The deferred Work delay is invalid.");
+    }
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
          SET state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
-               LEAST($5::double precision,
-                 $6::double precision * POWER(2::double precision,
-                   LEAST(GREATEST(attempt_count - 1, 0), 30))) *
-                 $7::double precision * interval '1 millisecond',
+               COALESCE($8::double precision,
+                 LEAST($5::double precision,
+                   $6::double precision * POWER(2::double precision,
+                     LEAST(GREATEST(attempt_count - 1, 0), 30))) *
+                   $7::double precision) * interval '1 millisecond',
              claim_token = NULL,
              lease_expires_at = NULL,
              updated_at = clock_timestamp()
@@ -816,6 +839,7 @@ export class PostgresWorkQueue {
         MAX_BACKOFF_MS,
         INITIAL_BACKOFF_MS,
         this.nextRandom(),
+        options.delayMs ?? null,
       ],
     );
     if (deferred.rows.length === 0) {
@@ -1009,7 +1033,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [
         requestedLimit,
@@ -1043,7 +1068,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED"],
     );

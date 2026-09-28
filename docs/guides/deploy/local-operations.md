@@ -35,7 +35,7 @@ docker build --target runtime \
   --build-arg NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584 \
   -t "localhost/$CLUSTER/controller:local" .
 docker build -f deploy/runtime/Dockerfile \
-  -t "localhost/$CLUSTER/runtime:local" deploy/runtime
+  -t "localhost/$CLUSTER/runtime:local" .
 k3d image import "localhost/$CLUSTER/controller:local" \
   "localhost/$CLUSTER/runtime:local" -c "$CLUSTER"
 ```
@@ -76,6 +76,10 @@ Set the remaining database, HTTPS, network, and storage inputs for your trial
 (k3d's default StorageClass is `local-path`). The images alone do not configure
 those dependencies or prove an Agent model turn. When finished with the trial,
 run `KUBECONFIG="$KUBECONFIG_FILE" k3d cluster delete "$CLUSTER"`.
+
+For an already installed, persistent Helm release on k3d, follow
+[local k3d image upgrades](local-k3d-image-upgrade.md) to preserve its state.
+The disposable cluster cleanup above is not an upgrade procedure.
 
 ## Stop development safely
 

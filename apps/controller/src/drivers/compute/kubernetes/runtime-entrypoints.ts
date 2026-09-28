@@ -1,5 +1,9 @@
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 
+// Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
+// and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
+export const GATEWAY_STOP_TIMEOUT_MS = 330_000;
+
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 
 const PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER = String.raw`
@@ -40,20 +44,28 @@ const {
   timingSafeEqual: pluginTimingSafeEqual,
   randomUUID: pluginRandomUUID,
 } = require("node:crypto");
-const { spawnSync: pluginSpawnSync } = require("node:child_process");
+const { spawn: pluginSpawn, spawnSync: pluginSpawnSync } = require("node:child_process");
 const { createServer: pluginCreateServer } = require("node:http");
+const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
 const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
+const RUNTIME_IMAGE_PATH = "/openclaw/runtime/image";
 const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
-const RUNTIME_FAILURE_CODES = new Set([
+const RUNTIME_DIAGNOSTIC_CODES = new Set([
   "LOGIN_FAILED",
   "MODEL_PROBE_FAILED",
   "MODEL_PROBE_TIMEOUT",
   "UNAVAILABLE",
+  "NOT_CONFIGURED",
+  "AUTHENTICATION_FAILED",
+  "DISCONNECTED",
+  "INCOMPATIBLE_RESPONSE",
+  "PROBE_FAILED",
 ]);
 const pluginBaseAppServerToken = process.env.APP_SERVER_TOKEN;
 
@@ -98,7 +110,12 @@ function readGatewayPluginRuntime() {
   const runtime = readRuntimePayload();
   if (runtime === undefined) return undefined;
   if (runtime.manifest?.kind === "openclaw") return runtime;
-  if (runtime.manifest?.kind === "codex" && Object.keys(runtime.manifest.selections ?? {}).length > 0) {
+  if (
+    runtime.manifest?.kind === "codex" &&
+    (Object.keys(runtime.manifest.selections ?? {}).length > 0 ||
+      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined ||
+      runtime.manifest.pluginApprovers !== undefined)
+  ) {
     return runtime;
   }
   if (runtime.manifest?.kind === "codex") return undefined;
@@ -199,7 +216,7 @@ function publishPluginRuntimeStatus(report) {
 function publishRuntimeFailure(check, code) {
   if (runtimeStatusPort() === undefined) return;
   requireNonEmptyString(check, "Runtime failure check");
-  if (!RUNTIME_FAILURE_CODES.has(code)) {
+  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
   runtimeStartupFailure = {
@@ -213,6 +230,20 @@ function publishRuntimeFailure(check, code) {
 function publishRuntimeReady() {
   if (runtimeStatusPort() === undefined) return;
   runtimeStartupFailure = undefined;
+}
+
+function runtimeDiagnosticCheck(check, state, checkedAt, code) {
+  requireNonEmptyString(check, "Runtime diagnostic check");
+  if (code !== undefined && !RUNTIME_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Runtime diagnostic code is invalid.");
+  }
+  return {
+    component: runtimeStatusContainer(),
+    check,
+    state,
+    checkedAt,
+    ...(code === undefined ? {} : { code }),
+  };
 }
 
 function runtimeStatusReport() {
@@ -230,10 +261,232 @@ function remotePluginStatusAuthorization() {
     .update("openclaw-plugin-status/v1\\0" + pluginRuntimeRevisionId()).digest("hex");
 }
 
+function statusCheckFromBoolean(check, value, checkedAt, failureCode) {
+  if (value === true) return runtimeDiagnosticCheck(check, "succeeded", checkedAt);
+  if (value === false) return runtimeDiagnosticCheck(check, "failed", checkedAt, failureCode);
+  return runtimeDiagnosticCheck(check, "unknown", checkedAt, "INCOMPATIBLE_RESPONSE");
+}
+
+function clearTimer(timer) {
+  clearTimeout(timer);
+}
+
+function armTimer(callback, timeoutMs) {
+  const timer = setTimeout(callback, timeoutMs);
+  if (typeof timer === "object" && typeof timer.unref === "function") timer.unref();
+  return timer;
+}
+
+function runNativeRuntimeJson(args, timeoutMs, abortSignal) {
+  return new Promise((resolve) => {
+    const child = pluginSpawn("node", ["/app/openclaw.mjs", ...args], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    let oversized = false;
+    let failed = false;
+    let aborted = false;
+    let killTimer;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimer(timer);
+      if (killTimer !== undefined) clearTimer(killTimer);
+      abortSignal?.removeEventListener?.("abort", abortChild);
+      resolve(result);
+    };
+    const abortChild = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      child.kill("SIGTERM");
+      killTimer = armTimer(() => child.kill("SIGKILL"), 1000);
+    };
+    const timer = armTimer(abortChild, timeoutMs);
+    if (abortSignal?.aborted) abortChild();
+    else abortSignal?.addEventListener?.("abort", abortChild, { once: true });
+    child.stdout.on("data", (chunk) => {
+      if (oversized) return;
+      stdout += chunk.toString("utf8");
+      if (Buffer.byteLength(stdout, "utf8") > 65536) {
+        oversized = true;
+        child.kill("SIGKILL");
+      }
+    });
+    child.on("error", () => {
+      failed = true;
+    });
+    child.on("close", (code, signal) => {
+      if (oversized) {
+        finish({ ok: false, code: "INCOMPATIBLE_RESPONSE" });
+        return;
+      }
+      if (aborted || signal === "SIGTERM" || signal === "SIGKILL") {
+        finish({ ok: false, code: "UNAVAILABLE" });
+        return;
+      }
+      if (failed || code !== 0) {
+        finish({ ok: false, code: "PROBE_FAILED" });
+        return;
+      }
+      try {
+        finish({ ok: true, value: JSON.parse(stdout) });
+      } catch {
+        finish({ ok: false, code: "INCOMPATIBLE_RESPONSE" });
+      }
+    });
+  });
+}
+
+function unknownSlackChecks(checkedAt, code) {
+  return [
+    runtimeDiagnosticCheck("configuration", "unknown", checkedAt, code),
+    runtimeDiagnosticCheck("authentication", "unknown", checkedAt, code),
+    runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, code),
+  ];
+}
+
+const SAFE_AUTHENTICATION_REJECTION_CODES = new Set([
+  "auth_failed",
+  "authentication_failed",
+  "invalid_auth",
+  "account_inactive",
+  "not_authed",
+  "token_revoked",
+  "missing_token",
+  "missing_user_token",
+]);
+
+function normalizedAuthenticationRejectionCode(value) {
+  const normalizedCode = value?.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  return SAFE_AUTHENTICATION_REJECTION_CODES.has(normalizedCode) ? normalizedCode : undefined;
+}
+
+function probeErrorAuthenticationCode(error) {
+  const direct = normalizedAuthenticationRejectionCode(error);
+  if (direct !== undefined) return direct;
+  const wrapped = error.match(/^An API error occurred:\s*([a-z_][a-z0-9_]*)(?:$|;)/i)?.[1];
+  return normalizedAuthenticationRejectionCode(wrapped);
+}
+
+function credentialRejectionCode(probe) {
+  if (!isPlainObject(probe) || probe.ok !== false) return undefined;
+  const rawCode = typeof probe.error === "string" ? probe.error : undefined;
+  if (rawCode !== undefined && probeErrorAuthenticationCode(rawCode) !== undefined) {
+    return "AUTHENTICATION_FAILED";
+  }
+  return "PROBE_FAILED";
+}
+
+function authenticationCheckFromProbe(probe, checkedAt) {
+  if (!isPlainObject(probe) || typeof probe.ok !== "boolean") {
+    return runtimeDiagnosticCheck("authentication", "unknown", checkedAt, "INCOMPATIBLE_RESPONSE");
+  }
+  if (probe.ok === true) return runtimeDiagnosticCheck("authentication", "succeeded", checkedAt);
+  const code = credentialRejectionCode(probe);
+  return runtimeDiagnosticCheck(
+    "authentication",
+    code === "AUTHENTICATION_FAILED" ? "failed" : "unknown",
+    checkedAt,
+    code,
+  );
+}
+
+function connectivityCheckFromConnected(connected, checkedAt) {
+  if (connected === true) return runtimeDiagnosticCheck("connectivity", "succeeded", checkedAt);
+  if (connected === false) {
+    return runtimeDiagnosticCheck("connectivity", "failed", checkedAt, "DISCONNECTED");
+  }
+  return runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, "INCOMPATIBLE_RESPONSE");
+}
+
+function slackChecksFromStatusPayload(payload, checkedAt) {
+  if (payload?.configOnly === true) {
+    if (!Array.isArray(payload.configuredChannels)) {
+      return unknownSlackChecks(checkedAt, "INCOMPATIBLE_RESPONSE");
+    }
+    const configured = payload.configuredChannels.includes("slack");
+    if (configured !== true) {
+      return [
+        runtimeDiagnosticCheck("configuration", "failed", checkedAt, "NOT_CONFIGURED"),
+        runtimeDiagnosticCheck("authentication", "unknown", checkedAt),
+        runtimeDiagnosticCheck("connectivity", "unknown", checkedAt),
+      ];
+    }
+    return [
+      runtimeDiagnosticCheck("configuration", "succeeded", checkedAt),
+      runtimeDiagnosticCheck("authentication", "unknown", checkedAt, "UNAVAILABLE"),
+      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt, "UNAVAILABLE"),
+    ];
+  }
+  const channelSummary = isPlainObject(payload?.channels) ? payload.channels.slack : undefined;
+  const accountsByChannel = isPlainObject(payload?.channelAccounts) ? payload.channelAccounts : undefined;
+  const defaultAccounts = isPlainObject(payload?.channelDefaultAccountId)
+    ? payload.channelDefaultAccountId
+    : undefined;
+  const defaultAccountId =
+    typeof defaultAccounts?.slack === "string" && defaultAccounts.slack.length > 0
+      ? defaultAccounts.slack
+      : undefined;
+  if (!isPlainObject(channelSummary) || !Array.isArray(accountsByChannel?.slack) || defaultAccountId === undefined) {
+    return unknownSlackChecks(checkedAt, "INCOMPATIBLE_RESPONSE");
+  }
+  const accounts = accountsByChannel.slack.filter(isPlainObject);
+  const account = accounts.find((candidate) => candidate.accountId === defaultAccountId);
+  if (!isPlainObject(account)) return unknownSlackChecks(checkedAt, "INCOMPATIBLE_RESPONSE");
+  const configured =
+    typeof channelSummary.configured === "boolean"
+      ? channelSummary.configured
+      : typeof account.configured === "boolean"
+        ? account.configured
+        : undefined;
+  if (configured === false) {
+    return [
+      runtimeDiagnosticCheck("configuration", "failed", checkedAt, "NOT_CONFIGURED"),
+      runtimeDiagnosticCheck("authentication", "unknown", checkedAt),
+      runtimeDiagnosticCheck("connectivity", "unknown", checkedAt),
+    ];
+  }
+  const probe = isPlainObject(account.probe) ? account.probe : undefined;
+  const connected =
+    typeof channelSummary.connected === "boolean"
+      ? channelSummary.connected
+      : typeof account.connected === "boolean"
+        ? account.connected
+        : undefined;
+  return [
+    statusCheckFromBoolean("configuration", configured, checkedAt, "NOT_CONFIGURED"),
+    authenticationCheckFromProbe(probe, checkedAt),
+    connectivityCheckFromConnected(connected, checkedAt),
+  ];
+}
+
+async function slackChannelDiagnosticChecks(checkedAt, abortSignal) {
+  if (runtimeStatusContainer() !== "gateway") return [];
+  const result = await runNativeRuntimeJson(
+    ["channels", "status", "--channel", "slack", "--json", "--probe", "--timeout", "5000"],
+    6000,
+    abortSignal,
+  );
+  if (!result.ok) return unknownSlackChecks(checkedAt, result.code);
+  return slackChecksFromStatusPayload(result.value, checkedAt);
+}
+
+async function runtimeDiagnosticsReport(abortSignal) {
+  const observedAt = new Date().toISOString();
+  return {
+    revisionId: requireNonEmptyString(process.env.OPENCLAW_AGENT_REVISION_ID, "Runtime status revision ID"),
+    container: runtimeStatusContainer(),
+    podUid: requireNonEmptyString(process.env.OPENCLAW_POD_UID, "Runtime status Pod UID"),
+    observedAt,
+    checks: (await slackChannelDiagnosticChecks(observedAt, abortSignal)).slice(0, 32),
+  };
+}
+
 function startPluginRuntimeStatusServer() {
   const port = runtimeStatusPort() ?? pluginRuntimeStatusPort();
   if (port === undefined) return;
-  const server = pluginCreateServer((request, response) => {
+  const server = pluginCreateServer(async (request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
     const remote = pathname === REMOTE_PLUGIN_STATUS_PATH && process.env.OPENCLAW_REMOTE_PLUGIN_STATUS === "true";
     if (remote) {
@@ -245,9 +498,35 @@ function startPluginRuntimeStatusServer() {
         return;
       }
     }
-    if (request.method !== "GET" || (!remote && pathname !== RUNTIME_STATUS_PATH && pathname !== PLUGIN_STATUS_PATH)) {
+    if (
+      request.method !== "GET" ||
+      !remote && ![
+        RUNTIME_STATUS_PATH,
+        RUNTIME_DIAGNOSTICS_PATH,
+        PLUGIN_STATUS_PATH,
+        RUNTIME_IMAGE_PATH,
+      ].includes(pathname)
+    ) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+    if (pathname === RUNTIME_IMAGE_PATH) {
+      let commit = null;
+      try {
+        const metadata = JSON.parse(pluginReadFileSync("/opt/oce/runtime/build.json", "utf8"));
+        if (typeof metadata.commit === "string" && /^[a-f0-9]{40}$/.test(metadata.commit)) commit = metadata.commit;
+      } catch {}
+      response.writeHead(200, { "content-type": "application/json" });
+      let openclawCommit = null;
+      try {
+        const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+        if (provenance.source === "https://github.com/openclaw/openclaw" &&
+            typeof provenance.commit === "string" && /^[a-f0-9]{40}$/.test(provenance.commit)) {
+          openclawCommit = provenance.commit;
+        }
+      } catch {}
+      response.end(JSON.stringify({ commit, openclawCommit }));
       return;
     }
     if (pathname === RUNTIME_STATUS_PATH) {
@@ -258,6 +537,32 @@ function startPluginRuntimeStatusServer() {
       }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(runtimeStatusReport()));
+      return;
+    }
+    if (pathname === RUNTIME_DIAGNOSTICS_PATH) {
+      if (runtimeStatusPort() === undefined) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "not_found" }));
+        return;
+      }
+      const abortController = new AbortController();
+      const abort = () => abortController.abort();
+      request.on?.("aborted", abort);
+      response.on?.("close", abort);
+      try {
+        const report = await runtimeDiagnosticsReport(abortController.signal);
+        if (abortController.signal.aborted) return;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(report));
+      } catch {
+        if (!abortController.signal.aborted) {
+          response.writeHead(503, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "unavailable" }));
+        }
+      } finally {
+        request.off?.("aborted", abort);
+        response.off?.("close", abort);
+      }
       return;
     }
     if (pluginRuntimeStatusPort() === undefined) {
@@ -364,7 +669,45 @@ function isManagedOpenClawPluginEntry(value) {
   );
 }
 
+function conflictingApproverList(configured, managedList) {
+  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
+    managedList !== undefined &&
+    (!Array.isArray(configured.approvers) ||
+      !pluginDeepEqual(
+        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
+        managedList.map((id) => id.toLowerCase()).sort(),
+      ));
+}
+
 function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
+  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
+  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
+  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
+    // A native child list must not bypass an inherited Agent or plugin approver list.
+    const managedDefault = managedApprovers.approvers;
+    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
+      ? Object.entries(configuredApprovers.plugins)
+      : [];
+    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
+      const managedPlugin = isPlainObject(managedApprovers.plugins)
+        ? managedApprovers.plugins[pluginId]
+        : undefined;
+      const pluginList = managedPlugin?.approvers ?? managedDefault;
+      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
+      const configuredTools = isPlainObject(configuredPlugin?.tools)
+        ? Object.entries(configuredPlugin.tools)
+        : [];
+      return configuredTools.some(([toolId, configuredTool]) => {
+        const managedTool = isPlainObject(managedPlugin?.tools)
+          ? managedPlugin.tools[toolId]
+          : undefined;
+        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
+      });
+    });
+    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
+      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
+    }
+  }
   const baseEntries = objectAtPath(base, ["plugins", "entries"]);
   const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
   if (overlayEntries === undefined) return;
@@ -410,7 +753,7 @@ function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
 function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
   assertNoOpenClawPluginConfigConflict(base, overlay, options);
   const next = mergeConfig(base, overlay);
-  for (const key of ["allow", "alsoAllow"]) {
+  for (const key of ["allow", "alsoAllow", "deny"]) {
     const baseAllow = Array.isArray(base?.tools?.[key]) ? base.tools[key] : [];
     const overlayAllow = Array.isArray(overlay?.tools?.[key]) ? overlay.tools[key] : [];
     if (overlayAllow.length === 0) continue;
@@ -524,10 +867,15 @@ function samePluginFailures(left, right) {
 
 function openClawPluginConfiguration(runtime, failures = []) {
   if (runtime.manifest?.kind === "openclaw") {
-    return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures).configuration;
+    return pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers).configuration;
   }
   if (runtime.manifest?.kind === "codex") {
-    return pluginRuntimeTranslator.codexOpenClawConfiguration(runtime.manifest.selections ?? {}, failures);
+    return pluginRuntimeTranslator.codexOpenClawConfiguration(
+      runtime.manifest.selections ?? {},
+      failures,
+      runtime.manifest.repositoryBrokerNetworkPolicy,
+      runtime.manifest.pluginApprovers,
+    );
   }
   return undefined;
 }
@@ -554,7 +902,7 @@ function assertConfigContainsOverlay(base, overlay, path) {
     }
     return;
   }
-  if (["tools.allow", "tools.alsoAllow"].includes(path) && Array.isArray(base) && Array.isArray(overlay)) {
+  if (["tools.allow", "tools.alsoAllow", "tools.deny"].includes(path) && Array.isArray(base) && Array.isArray(overlay)) {
     for (const tool of overlay) {
       if (!base.includes(tool)) {
         throw new Error("OpenClaw plugin effective config does not match admitted configuration.");
@@ -662,7 +1010,7 @@ function verifyOpenClawPluginInstall(plugin) {
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures)
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];
@@ -901,8 +1249,107 @@ async function writeCodexAppConfiguration(configuration) {
 }
 
 async function readCodexAppConfiguration() {
-  const response = await codexAppServerRequest("config/read", {});
+  // Match the dedicated Harness workspace; a thread-agnostic read omits its
+  // trusted .codex layers and can validate a different policy than the Agent uses.
+  const response = await codexAppServerRequest("config/read", { cwd: "/home/node/workspace" });
   return response?.config;
+}
+
+function verifyCodexAppConfiguration(configuration, effective) {
+  assertConfigContainsOverlay(effective, configuration);
+  for (const [appId, actual] of Object.entries(effective.apps ?? {})) {
+    const app = configuration.apps?.[appId];
+    if (app === undefined) {
+      // An explicit app entry overrides _default.enabled. Unselected disabled
+      // entries are harmless; never admit an enabled app outside the selection.
+      if (actual.enabled !== false) {
+        throw new Error("Codex effective app policy conflicts with the selected apps; remove the unselected enabled app.");
+      }
+      continue;
+    }
+    // Failed-only bindings are disabled by the required-field check above.
+    // Their inherited defaults and tool exceptions cannot enable a disabled app.
+    if (appId !== "_default" && app.enabled === false) continue;
+    for (const [field, value] of Object.entries(actual)) {
+      if (field === "tools" || field === "links" || value == null) continue;
+      if (field === "approvals_reviewer" && app.approvals_reviewer === undefined) continue;
+      // Codex serializes global category defaults as true, optional fields as
+      // null, and an empty exposure list imposes no additional restriction.
+      if (field === "omit_tools_from" && Array.isArray(value) && value.length === 0 && app[field] === undefined) continue;
+      // Category values inherit; resolve OCE's intended defaults, not the native
+      // values being checked. Explicit tool enablement still requires an exact match.
+      const expected = ["destructive_enabled", "open_world_enabled"].includes(field)
+        ? app[field] ?? configuration.apps?._default?.[field] ?? true
+        : app[field];
+      if (JSON.stringify(value) !== JSON.stringify(expected)) {
+        throw new Error("Codex effective app policy conflicts at apps." + appId + "." + field + "; remove the native override or update the Agent policy.");
+      }
+    }
+    if (appId === "_default") continue;
+    // Native tables merge across layers; replacing the user app table does not
+    // remove inherited tool exceptions. Null fields mean inheritance, not overrides.
+    for (const [toolName, tool] of Object.entries(actual?.tools ?? {})) {
+      for (const [field, defaultField] of [
+        ["enabled", "default_tools_enabled"],
+        ["approval_mode", "default_tools_approval_mode"],
+      ]) {
+        const expected = app.tools?.[toolName]?.[field] ?? app[defaultField];
+        if (tool[field] != null && tool[field] !== expected) {
+          throw new Error("Codex effective tool policy conflicts with the admitted " + field + "; remove the native tool override or update the Agent policy.");
+        }
+      }
+    }
+    for (const link of Object.values(actual?.links ?? {})) {
+      if (link.default_tools_approval_mode != null &&
+          link.default_tools_approval_mode !== app.default_tools_approval_mode) {
+        throw new Error("Codex effective account policy conflicts with the admitted approval default; remove the native account override or update the Agent policy.");
+      }
+    }
+  }
+}
+
+async function verifyCodexReviewerConfiguration(configuration, effective) {
+  const requestedApps = Object.entries(configuration.apps ?? {})
+    .filter(([, app]) => app.approvals_reviewer !== undefined);
+  if (requestedApps.length === 0) return;
+  const response = await codexAppServerRequest("configRequirements/read", {});
+  if (!isPlainObject(response) ||
+      (response.requirements !== null && !isPlainObject(response.requirements))) {
+    throw new Error("Codex reviewer requirements are unavailable; use a runtime supporting configRequirements/read.");
+  }
+  const requirements = response.requirements ?? {};
+  const allowed = requirements.allowedApprovalsReviewers;
+  const requiredModels = requirements.autoReview?.requiredOnModels ?? [];
+  if ((allowed != null && (!Array.isArray(allowed) || allowed.some((value) => !["user", "auto_review"].includes(value)))) ||
+      !Array.isArray(requiredModels) || requiredModels.some((value) => typeof value !== "string")) {
+    throw new Error("Codex reviewer requirements are invalid; verify the runtime's managed requirements.");
+  }
+  for (const [appId, app] of requestedApps) {
+    const reviewer = app.approvals_reviewer;
+    const actual = effective?.apps?.[appId];
+    if (actual?.approvals_reviewer !== reviewer ||
+        Object.values(actual?.links ?? {}).some((link) => link?.approvals_reviewer != null && link.approvals_reviewer !== reviewer)) {
+      throw new Error("Codex effective app or account reviewer conflicts with toolDefaults.reviewer; remove the conflicting override.");
+    }
+    if (allowed != null && !allowed.includes(reviewer)) {
+      throw new Error("Codex managed requirements forbid the requested reviewer; choose an allowed reviewer or omit the override.");
+    }
+    if (reviewer === "auto_review") {
+      const approval = effective?.approval_policy;
+      if (approval !== "on-request" && !(isPlainObject(approval) && isPlainObject(approval.granular))) {
+        throw new Error("Codex automatic reviewer requires session approval on-request or granular; verify a compatible effective policy before enabling it.");
+      }
+    } else if (requiredModels.length > 0) {
+      const model = effective?.model;
+      // Native required-model matching strips one valid provider prefix.
+      const slug = typeof model === "string" ? model.replace(/^[A-Za-z0-9_-]+\/([^/]*)$/, "$1") : undefined;
+      if (slug === undefined || requiredModels.includes(slug)) {
+        throw new Error("Codex managed model requirements prevent verifying the human reviewer; choose auto or a permitted model.");
+      }
+    }
+  }
+  // TODO: establish compatible start/resume and turn routing before claiming
+  // enforcement; these checks verify startup configuration, not future turns.
 }
 
 function codexPluginSlug(plugin) {
@@ -938,6 +1385,34 @@ function enabledCodexSelectionIds(selections) {
   );
 }
 
+async function readCodexToolStatuses() {
+  const statuses = [];
+  const cursors = new Set();
+  let cursor;
+  // Bound startup discovery even if a server keeps returning fresh cursors.
+  for (let page = 0; page < 100; page += 1) {
+    const response = await codexAppServerRequest("mcpServerStatus/list", {
+      detail: "toolsAndAuthOnly",
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    if (
+      !isPlainObject(response) || !Array.isArray(response.data) ||
+      (response.nextCursor !== null &&
+        (typeof response.nextCursor !== "string" || response.nextCursor.trim().length === 0))
+    ) {
+      throw new Error("Codex tool discovery returned invalid pagination data.");
+    }
+    statuses.push(...response.data);
+    if (response.nextCursor === null) return statuses;
+    if (cursors.has(response.nextCursor)) {
+      throw new Error("Codex tool discovery returned a repeated cursor.");
+    }
+    cursors.add(response.nextCursor);
+    cursor = response.nextCursor;
+  }
+  throw new Error("Codex tool discovery exceeded its page limit.");
+}
+
 async function installCodexSelectionSet(selections, failures = []) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
@@ -951,9 +1426,9 @@ async function installCodexSelectionSet(selections, failures = []) {
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   const successfulPluginIds = [];
-  const resolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed);
+  const installs = pluginRuntimeTranslator.codexInstallPlan(selections, resolvedDetails);
   for (const readParams of readParamsList) {
-    const selectedPlugin = resolvedArtifact.installs.find(
+    const selectedPlugin = installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
     );
     if (selectedPlugin !== undefined && !enabledPluginIds.has(selectedPlugin.pluginId)) continue;
@@ -1010,11 +1485,17 @@ async function installCodexSelectionSet(selections, failures = []) {
     }
     if (selectedPlugin !== undefined) successfulPluginIds.push(selectedPlugin.pluginId);
   }
-  const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed);
+  const enabledSelections = Object.fromEntries(
+    Object.entries(selections).filter(([pluginId]) => enabledPluginIds.has(pluginId) && !failedIds.has(pluginId)),
+  );
+  const toolStatuses = pluginRuntimeTranslator.codexNeedsToolInventory(enabledSelections)
+    ? await readCodexToolStatuses()
+    : [];
+  const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed, toolStatuses);
   await writeCodexAppConfiguration(effectiveResolvedArtifact.configuration);
   const installedDetails = [];
   for (const readParams of readParamsList) {
-    const selectedPlugin = resolvedArtifact.installs.find(
+    const selectedPlugin = installs.find(
       (candidate) => candidate.remotePluginId === readParams.pluginName,
     );
     if (
@@ -1026,7 +1507,7 @@ async function installCodexSelectionSet(selections, failures = []) {
       installedDetails.push(await codexAppServerRequest("plugin/read", readParams));
     }
   }
-  const installedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, installedDetails, failed);
+  const installedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, installedDetails, failed, toolStatuses);
   if (JSON.stringify(installedArtifact.installs) !== JSON.stringify(effectiveResolvedArtifact.installs)) {
     throw new Error("Codex plugin installed release metadata does not match startup resolution.");
   }
@@ -1042,7 +1523,12 @@ async function installCodexSelectionSet(selections, failures = []) {
     const detail = installedDetails[readParamsList.indexOf(readParams)];
     verifyCodexPluginDetail(plugin, readParams, detail);
   }
-  assertConfigContainsOverlay(await readCodexAppConfiguration(), effectiveResolvedArtifact.configuration);
+  // TODO: use native effective app/tool policy introspection when available.
+  // Codex 0.156 config/read omits managed app requirements applied at execution;
+  // this readback verifies loaded configuration, not future thread policy.
+  const effectiveConfiguration = await readCodexAppConfiguration();
+  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
+  verifyCodexAppConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
   return { successfulPluginIds, failures: failed };
 }
 
@@ -1050,7 +1536,7 @@ async function installCodexPlugins(runtime, failures = []) {
   assertCodexPluginRuntime(runtime);
   const selections = runtime.manifest.selections ?? {};
   const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
-  let lastError;
+  let lastError = new Error("Codex plugin installation deadline expired before the first attempt.");
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {
@@ -1132,7 +1618,7 @@ function probeOpenClawAuthenticationFailureCode() {
 `;
 
 const WORKSPACE_ASSET_HELPERS = String.raw`
-const { cpSync, existsSync, lstatSync, readdirSync } = require("node:fs");
+const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
 const runtimeAssetsDirectory = "/home/node/openclaw-runtime-assets";
 
 function clearDirectoryContents(directory) {
@@ -1166,12 +1652,21 @@ function initializeRuntimeAssets() {
   publishImageTree("/app/plugin-skills", runtimeAssetsDirectory + "/plugin-skills", false);
 }
 
+function publishAgentPluginSkillPath() {
+  mkdirSync("/home/node/.openclaw", { recursive: true });
+  rmSync("/home/node/.openclaw/plugin-skills", { recursive: true, force: true });
+  symlinkSync(runtimeAssetsDirectory + "/plugin-skills", "/home/node/.openclaw/plugin-skills", "dir");
+}
+
 `;
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
 const { mkdirSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { spawn } = require("node:child_process");
+
+// OCE upgrades this runtime by rolling out a selected image.
+process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
@@ -1185,7 +1680,7 @@ function forwardTermination(child) {
     if (terminating) return;
     terminating = true;
     child.kill(signal);
-    setTimeout(() => child.kill("SIGKILL"), 8_000).unref();
+    setTimeout(() => child.kill("SIGKILL"), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
   };
   process.on("SIGTERM", () => forward("SIGTERM"));
   process.on("SIGINT", () => forward("SIGINT"));
@@ -1252,13 +1747,11 @@ if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
       const appServer = (entries.codex.config ??= {}).appServer ??= {};
       appServer.remoteWorkspaceRoot ??= remoteRoot;
     }
-    // OCC edits four owner documents; bootstrap additionally reads these two.
+    // OCC edits four owner documents; native previews read the Agent workspace.
     const editable = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
-    const readable = [...editable, "BOOTSTRAP.md", "MEMORY.md"];
     const memoryPaths = ["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"]
       .map((name) => remoteRoot + "/" + name);
     const skillRoots = [
-      remoteRoot + "/skills", remoteRoot + "/.agents/skills",
       "/home/node/.openclaw/skills", "/home/node/.openclaw/plugin-skills",
       "/home/node/.agents/skills", "/home/node/openclaw-runtime-assets/bundled-skills",
       "/home/node/openclaw-runtime-assets/plugin-skills",
@@ -1269,13 +1762,9 @@ if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
         ask: "off",
         allowReadPaths: [
           remoteRoot,
-          ...readable.map((name) => remoteRoot + "/" + name),
-          ...memoryPaths,
+          remoteRoot + "/**",
           "/home/node/.openclaw",
           ...skillRoots.flatMap((root) => [root, root + "/**"]),
-          remoteRoot + "/media/inbound/openclaw-staged-*",
-          remoteRoot + "/media/inbound/openclaw-staged-*/**",
-          remoteRoot + "/media/outbound/**",
         ],
         allowWritePaths: [
           ...editable.map((name) => remoteRoot + "/" + name),
@@ -1285,30 +1774,7 @@ if (workspaceNodeId !== undefined || process.env.APP_SERVER_URL !== undefined) {
         ],
         followSymlinks: false,
       };
-      const hook = config.hooks?.internal?.entries?.["bootstrap-extra-files"];
-      if (config.hooks?.internal?.enabled !== false && hook && hook.enabled !== false) {
-        const declared = [hook.paths, hook.patterns, hook.files]
-          .map((value) => Array.isArray(value)
-            ? value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean)
-            : [])
-          .find((value) => value.length > 0) ?? [];
-        const paths = new Set(declared.filter((value) => !/[?*{}]/u.test(value))
-          .map((value) => pluginResolve(remoteRoot, value))
-          .filter((value) => value.startsWith(remoteRoot + "/")
-            && readable.includes(value.slice(value.lastIndexOf("/") + 1))));
-        // Native bootstrap accepts literal bracketed paths. Reuse command-bound
-        // exact grants instead of interpreting those paths as policy globs.
-        for (const requestedPath of paths) {
-          for (const command of ["file.fetch", "file.stat"]) {
-            (fileConfig.literalGrants ??= []).push({
-              nodeId: workspaceNodeId, command, requestedPath, canonicalPath: requestedPath,
-            });
-          }
-        }
-      }
     }
-    // TODO(workspace-storage-split): support bootstrap glob traversal and contained
-    // symlinks through the node file policy.
     fileConfig.policyVersion ??= 2;
     (fileConfig.workspaces ??= {}).main = { nodeId: workspaceNodeId, remoteRoot };
   }
@@ -1329,7 +1795,7 @@ if (pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(plug
     stoppingForChangedPeerStatus = true;
     publishPluginRuntimeStatus({ phase: "starting", ...pluginResult });
     child.kill("SIGTERM");
-    setTimeout(() => process.exit(1), 8_000).unref();
+    setTimeout(() => process.exit(1), ${GATEWAY_STOP_TIMEOUT_MS}).unref();
   };
   setInterval(async () => {
     if (pollInFlight) return;
@@ -1408,12 +1874,18 @@ const loginArguments = loginMode === "api_key"
       "login",
       "--with-access-token",
     ];
-const login = spawnSync("codex", loginArguments, {
-  input: loginMode === "api_key" ? apiKey : accessToken,
-  encoding: "utf8",
-  stdio: ["pipe", "ignore", "pipe"],
-  timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
-});
+let login;
+for (let attempt = 0; attempt < 3; attempt++) {
+  login = spawnSync("codex", loginArguments, {
+    input: loginMode === "api_key" ? apiKey : accessToken,
+    encoding: "utf8",
+    stdio: ["pipe", "ignore", "pipe"],
+    timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
+  });
+  // Access-token login validates the same credential remotely before saving it.
+  // A cold-node network timeout may recover; refusals and model calls are not retried.
+  if (loginMode === "api_key" || login.error?.code !== "ETIMEDOUT") break;
+}
 if (login.status !== 0 || login.error) {
   holdFailedAuthentication("login", "LOGIN_FAILED");
 } else {
@@ -1452,7 +1924,18 @@ function probeCodexAuthenticationFailureCode() {
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
-      env: { PATH: process.env.PATH, HOME: directory, CODEX_HOME: process.env.CODEX_HOME, RUST_LOG: "error" },
+      // Keep the runtime's TLS trust anchors so a TLS-inspecting egress proxy can serve the probe.
+      env: {
+        PATH: process.env.PATH,
+        HOME: directory,
+        CODEX_HOME: process.env.CODEX_HOME,
+        RUST_LOG: "error",
+        ...Object.fromEntries(
+          ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+            .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
+            .map((name) => [name, process.env[name]]),
+        ),
+      },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
       timeout: 30000, killSignal: "SIGKILL", maxBuffer: 262144,
     });
@@ -1561,6 +2044,7 @@ const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
 if (!state || !setupCode) throw new Error("The workspace node is not provisioned.");
 mkdirSync(state, { recursive: true });
 initializeRuntimeAssets();
+publishAgentPluginSkillPath();
 const configPath = join(state, "openclaw.json");
 writeFileSync(configPath, JSON.stringify({
   agents: { defaults: JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP || "{}") },
@@ -1577,6 +2061,7 @@ const nodeEnv = {
   PATH: harnessPath,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: configPath,
+  OPENCLAW_NO_AUTO_UPDATE: "1",
 };
 if (process.env.OPENCLAW_NODE_CA_PEM) {
   const caPath = join(state, "gateway-ca.pem");

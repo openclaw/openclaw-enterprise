@@ -57,7 +57,7 @@ required `network.gatewayTrustedProxyCidrs`;
 explicit production `runtime` containing per-Agent operator-provisioned
 the transport Secret-name prefix and required
 `gatewayStorageClassName` selecting the StorageClass for each gateway's private
-disk, not its shared workspace. The operator must verify the backing disk's
+disk, not the separate Harness workspace. The operator must verify the backing disk's
 filesystem locking and durability guarantees.
 The Codex port and volume sizes are driver-owned constants; see the
 [storage contract](../drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).

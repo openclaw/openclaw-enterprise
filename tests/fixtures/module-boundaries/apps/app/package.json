@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/app",
+  "private": true,
+  "type": "module"
+}

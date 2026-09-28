@@ -18,7 +18,7 @@ const installation = Object.freeze({
   name: "ServiceAccount Driver OCC conformance",
   createdAt: "2026-08-24T00:00:00.000Z",
 });
-const provider = Object.freeze({
+const backend = Object.freeze({
   id: "openai",
   type: "chatgpt",
   configuration: Object.freeze({
@@ -70,7 +70,7 @@ async function fixture() {
     },
     { id: "service-account-driver-iam" },
   );
-  const controller = new OpenClawController(installation, { providers: [provider] });
+  const controller = new OpenClawController(installation, { backends: [backend] });
   const compute = createDevelopmentComputeDriver();
   const configuration = createTestConfigurationDriver();
   const externalAccounts = new Set();
@@ -79,7 +79,7 @@ async function fixture() {
     id: "service-account-driver-conformance",
     capability: "service_account",
     implementation: "occ-conformance-service-account",
-    providerId: provider.id,
+    backendId: backend.id,
     async create(account) {
       externalAccounts.add(account.id);
       controller.registerRollback(async () => {
@@ -129,7 +129,7 @@ test("a selected ServiceAccount Driver owns authorized account and credential li
   );
   const account = await controller.createServiceAccount(administrator, {
     namespaceId: namespace.id,
-    name: "provider-managed-account",
+    name: "backend-managed-account",
   });
   assert.equal(externalAccounts.has(account.id), true);
 

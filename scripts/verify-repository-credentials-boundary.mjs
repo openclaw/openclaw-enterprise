@@ -8,7 +8,7 @@ const credentialDirectories = [
   "composition/repository-credentials",
   "drivers/repo/credentials",
   "drivers/repo/github",
-  "providers/repository-credentials",
+  "backends/repository-credentials",
 ];
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
@@ -83,11 +83,12 @@ const reviewedImports = {
     "node:tls": ["createSecureContext"],
   },
   "composition/repository-credentials/projected-inputs.ts": {
+    "node:crypto": ["X509Certificate"],
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "mkdir", "open", "readdir", "readlink", "realpath", "unlink"],
   },
   "composition/repository-credentials/probe.ts": { "node:http": ["request"] },
-  "providers/repository-credentials/control-client.ts": { "node:http": ["request"] },
+  "backends/repository-credentials/control-client.ts": { "node:http": ["request"] },
   "composition/repository-credentials/registry.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
@@ -129,7 +130,7 @@ const senderConsumers = {
   "drivers/repo/credentials/transport/upstream.ts": {
     "drivers/repo/credentials/transport/agent.ts": ["createUpstreamSender"],
   },
-  "providers/repository-credentials/control-client.ts": {
+  "backends/repository-credentials/control-client.ts": {
     "composition/repository-credentials/platform.ts": ["UnixRepositoryCredentialControlClient"],
     "drivers/repo/github/driver.ts": ["RepositoryCredentialControlError"],
   },
@@ -217,18 +218,17 @@ function slash(path) {
   return path.split(sep).join("/");
 }
 
-async function sourceFiles(root) {
+async function collectSourceFiles(root, files) {
   if (!(await lstat(root)).isDirectory()) {
     throw new Error(`Credential source must be a directory: ${root}`);
   }
-  const files = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
     if (entry.isSymbolicLink()) {
       throw new Error(`Credential source must not be a symlink: ${path}`);
     }
     if (entry.isDirectory()) {
-      files.push(...(await sourceFiles(path)));
+      await collectSourceFiles(path, files);
     } else if (sourceExtensions.has(extname(entry.name))) {
       if (!entry.isFile()) {
         throw new Error(`Credential source must be a regular file: ${path}`);
@@ -236,7 +236,6 @@ async function sourceFiles(root) {
       files.push(path);
     }
   }
-  return files.sort();
 }
 
 function name(node) {
@@ -487,11 +486,12 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     if (!stat?.isDirectory() || stat.isSymbolicLink()) {
       throw new Error(`Missing or invalid credential source root: ${directory}`);
     }
-    const owned = await sourceFiles(path);
+    const owned = [];
+    await collectSourceFiles(path, owned);
     if (!owned.length) {
       throw new Error(`Empty credential source root: ${directory}`);
     }
-    files.push(...owned);
+    files.push(...owned.sort());
   }
   for (const entrypoint of processEntrypoints) {
     const path = join(root, entrypoint);

@@ -19,6 +19,7 @@ import type {
   AgentStatus,
   AgentRevision,
   AuditEvent,
+  CredentialSource,
   HarnessExecutionMode,
   HarnessAuthBinding,
   HarnessAuthSnapshot,
@@ -26,6 +27,7 @@ import type {
   Namespace,
   NamespaceStatus,
   PluginDesiredState,
+  PluginApprovers,
   Preset,
   RepositoryBindingSelection,
   Secret,
@@ -33,15 +35,19 @@ import type {
   ServiceAccount,
   ServiceAccountCredential,
   Role,
+  IAMPolicyReadRepository,
+  IAMPolicyRepository,
 } from "@openclaw-enterprise/contracts";
 import {
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
   normalizePluginDesiredState,
+  normalizePluginApprovers,
   normalizeHarnessAuthBinding,
   harnessAuthBindingFromSnapshot,
   normalizeSecretBindings,
   validPluginRevisionState,
+  validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
@@ -84,6 +90,7 @@ export interface NamespaceRepository extends NamespaceReadRepository {
   hasPresets(namespaceId: string): Promise<boolean>;
   hasServiceAccounts(namespaceId: string): Promise<boolean>;
   hasSecrets(namespaceId: string): Promise<boolean>;
+  hasCredentialSources(namespaceId: string): Promise<boolean>;
   transitionNamespaceStatus(
     namespaceId: string,
     expected: NamespaceStatus | readonly NamespaceStatus[],
@@ -123,9 +130,10 @@ export interface AgentRepository extends AgentReadRepository {
     configurationId: string,
     executionMode?: HarnessExecutionMode,
     harnessAuth?: HarnessAuthBinding | null,
-    providerId?: string | null,
+    backendId?: string | null,
     plugins?: PluginDesiredState,
     repositoryBindings?: readonly RepositoryBindingSelection[],
+    pluginApprovers?: PluginApprovers | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -234,18 +242,47 @@ export interface SecretRepository extends SecretReadRepository {
   hasReferences(namespaceId: string, secretId: string): Promise<boolean>;
 }
 
+export interface CredentialSourceReadRepository {
+  findCredentialSource(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
+}
+
+export interface CredentialSourceRepository extends CredentialSourceReadRepository {
+  lockCredentialSource(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
+  /** Moves a registering source to `ready` once the gateway confirms its copy. */
+  markCredentialSourceReady(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  /** Moves a registering or ready source to `deleting`; the record stays until the gateway copy is gone. */
+  markCredentialSourceDeleting(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  deleteCredentialSource(namespaceId: string, credentialSourceId: string): Promise<boolean>;
+  /** True while an Agent draft, active revision, or pending deployment references the source. */
+  hasReferences(namespaceId: string, credentialSourceId: string): Promise<boolean>;
+}
+
 export interface ServiceAccountReadRepository {
   findServiceAccount(
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount> | undefined>;
   listServiceAccounts(namespaceId: string): Promise<readonly Readonly<ServiceAccount>[]>;
-  findServiceAccountProviderBinding(
+  findServiceAccountBackendBinding(
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<
     | Readonly<{
-        readonly providerId: string;
+        readonly backendId: string;
         readonly driverId: string;
         readonly workspaceId: string;
         readonly credentialIssued: boolean;
@@ -273,7 +310,7 @@ const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
-const providerIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
+const backendIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
@@ -315,6 +352,10 @@ function normalizedPlugins(plugins?: PluginDesiredState): PluginDesiredState | u
   return normalizePluginDesiredState(plugins, invalidPluginState);
 }
 
+function normalizedPluginApprovers(approvers?: PluginApprovers): PluginApprovers | undefined {
+  return normalizePluginApprovers(approvers, invalidPluginState);
+}
+
 export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId: string): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -322,6 +363,15 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
   try {
     if (value.method === "runtime") {
       return normalizeHarnessAuthBinding(value) !== null;
+    }
+    if (value.method === "credential_source") {
+      return (
+        normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
+        Object.keys(value).length === 5 &&
+        isNonEmptyString(value.credentialGatewayId) &&
+        isNonEmptyString(value.sourceType) &&
+        value.loginMode === "api_key"
+      );
     }
     const binding =
       value.method === "api_key" || value.method === "codex_pat"
@@ -346,16 +396,16 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
     ) {
       return false;
     }
-    const provider = value.providerBinding;
+    const backend = value.backendBinding;
     return (
-      provider !== null &&
-      typeof provider === "object" &&
-      !Array.isArray(provider) &&
-      Object.keys(provider).length === 4 &&
-      isNonEmptyString(provider.providerId) &&
-      isNonEmptyString(provider.driverId) &&
-      isNonEmptyString(provider.workspaceId) &&
-      provider.credentialIssued === true
+      backend !== null &&
+      typeof backend === "object" &&
+      !Array.isArray(backend) &&
+      Object.keys(backend).length === 4 &&
+      isNonEmptyString(backend.backendId) &&
+      isNonEmptyString(backend.driverId) &&
+      isNonEmptyString(backend.workspaceId) &&
+      backend.credentialIssued === true
     );
   } catch {
     return false;
@@ -376,7 +426,9 @@ export function harnessAuthMatches(
     (snapshot.method === "api_key" || snapshot.method === "codex_pat")
     ? binding.source.namespaceId === snapshot.source.namespaceId &&
         binding.source.id === snapshot.source.id
-    : binding.method === "chatgpt_service_account" &&
+    : binding.method === "credential_source" && snapshot.method === "credential_source"
+      ? binding.sourceId === snapshot.sourceId
+      : binding.method === "chatgpt_service_account" &&
         snapshot.method === "chatgpt_service_account" &&
         binding.serviceAccountId === snapshot.serviceAccountId;
 }
@@ -393,6 +445,13 @@ function harnessSecretReference(
   );
 }
 
+function harnessCredentialSourceReference(
+  binding: HarnessAuthBinding | HarnessAuthSnapshot | undefined | null,
+  credentialSourceId: string,
+): boolean {
+  return binding?.method === "credential_source" && binding.sourceId === credentialSourceId;
+}
+
 function harnessAccountReference(
   binding: HarnessAuthBinding | undefined | null,
   serviceAccountId: string,
@@ -403,7 +462,7 @@ function harnessAccountReference(
 }
 
 export async function assertHarnessAuthAvailable(
-  state: Pick<PlatformReadView, "secrets" | "serviceAccounts">,
+  state: Pick<PlatformReadView, "secrets" | "serviceAccounts" | "credentialSources">,
   namespaceId: string,
   value: HarnessAuthBinding | null,
 ): Promise<void> {
@@ -425,6 +484,16 @@ export async function assertHarnessAuthAvailable(
         "The Agent harness authentication references an unavailable Secret.",
       );
     }
+  } else if (binding.method === "credential_source") {
+    const source = await state.credentialSources.findCredentialSource(
+      namespaceId,
+      binding.sourceId,
+    );
+    if (source === undefined || source.state !== "ready") {
+      throw new ScopeViolationError(
+        "The Agent harness authentication references an unavailable credential source.",
+      );
+    }
   } else if (
     (await state.serviceAccounts.findServiceAccount(namespaceId, binding.serviceAccountId)) ===
     undefined
@@ -437,8 +506,8 @@ export async function assertHarnessAuthAvailable(
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   if (
-    (revision.providerId !== null &&
-      (typeof revision.providerId !== "string" || !providerIdentifier.test(revision.providerId))) ||
+    (revision.backendId !== null &&
+      (typeof revision.backendId !== "string" || !backendIdentifier.test(revision.backendId))) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       revision.configurationId,
     ) ||
@@ -471,6 +540,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validPluginRevisionState(revision.plugins) ||
+    !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&
       !validRepositoryRevisionState(revision.repositoryCredentials))
   ) {
@@ -527,22 +597,7 @@ export interface PlatformOperationRepository extends PlatformOperationReadReposi
 
 export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
 
-export interface IAMPolicyReadRepository {
-  listRoles(namespaceId: string): Promise<readonly Readonly<Role>[]>;
-  getRole(namespaceId: string, roleId: string): Promise<Readonly<Role> | undefined>;
-  listAccessBindings(namespaceId: string): Promise<readonly Readonly<AccessBinding>[]>;
-  getAccessBinding(
-    namespaceId: string,
-    bindingId: string,
-  ): Promise<Readonly<AccessBinding> | undefined>;
-}
-
-export interface IAMPolicyRepository extends IAMPolicyReadRepository {
-  createRole(role: Role): Promise<Readonly<Role>>;
-  deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
-  createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
-  deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
-}
+export type { IAMPolicyReadRepository, IAMPolicyRepository } from "@openclaw-enterprise/contracts";
 
 export interface PlatformReadView {
   readonly installations: InstallationReadRepository;
@@ -550,6 +605,7 @@ export interface PlatformReadView {
   readonly configurations: ConfigurationReadRepository;
   readonly presets: PresetReadRepository;
   readonly secrets: SecretReadRepository;
+  readonly credentialSources: CredentialSourceReadRepository;
   readonly serviceAccounts: ServiceAccountReadRepository;
   readonly agents: AgentReadRepository;
   readonly workspaceSetups: WorkspaceSetupReadRepository;
@@ -566,6 +622,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly configurations: ConfigurationRepository;
   readonly presets: PresetRepository;
   readonly secrets: SecretRepository;
+  readonly credentialSources: CredentialSourceRepository;
   readonly serviceAccounts: ServiceAccountRepository;
   readonly agents: AgentRepository;
   readonly workspaceSetups: WorkspaceSetupRepository;
@@ -605,6 +662,7 @@ interface PlatformSnapshot {
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
+  readonly credentialSources: Map<string, Readonly<CredentialSource>>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
@@ -644,6 +702,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     ),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, immutableCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, immutableCopy(secret)])),
+    credentialSources: new Map(
+      Array.from(snapshot.credentialSources, ([key, source]) => [key, immutableCopy(source)]),
+    ),
     serviceAccounts: new Map(
       Array.from(snapshot.serviceAccounts, ([key, account]) => [key, immutableCopy(account)]),
     ),
@@ -651,12 +712,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     workspaceSetups: new Map(
       Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, immutableCopy(setup)]),
     ),
-    revisions: new Map(
-      Array.from(snapshot.revisions, ([key, revisions]) => [
-        key,
-        Object.freeze(revisions.map((revision) => immutableCopy(revision))),
-      ]),
-    ),
+    // Revisions are copied on ingress/egress; appends replace frozen history arrays.
+    // A separate Map isolates this snapshot's future appends without copying history.
+    revisions: new Map(snapshot.revisions),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, immutableCopy(role)])),
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),
@@ -798,6 +856,68 @@ function assertSecret(secret: Secret): void {
   }
 }
 
+const credentialSourceIdentifier =
+  /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const credentialSourceType = /^[a-z][a-z0-9-]{0,63}$/;
+const credentialSourceField = /^[a-z][a-z0-9_]{0,63}$/;
+
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
+function assertCredentialSource(source: CredentialSource): void {
+  const config: unknown = source.config;
+  const secretInputs: unknown = source.secrets;
+  if (
+    !credentialSourceIdentifier.test(source.id) ||
+    !namespaceIdentifier.test(source.namespaceId) ||
+    typeof source.name !== "string" ||
+    source.name.length < 1 ||
+    source.name.length > 200 ||
+    source.name !== source.name.trim() ||
+    Array.from(source.name).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f;
+    }) ||
+    typeof source.type !== "string" ||
+    !credentialSourceType.test(source.type) ||
+    !isPlainRecord(config) ||
+    Object.keys(config).length > 32 ||
+    Object.entries(config).some(
+      ([field, value]) =>
+        !credentialSourceField.test(field) ||
+        typeof value !== "string" ||
+        value.length < 1 ||
+        value.length > 2048,
+    ) ||
+    !isPlainRecord(secretInputs) ||
+    typeof source.driverId !== "string" ||
+    source.driverId.length < 1 ||
+    source.driverId.length > 200 ||
+    source.driverId !== source.driverId.trim() ||
+    (source.state !== "registering" && source.state !== "ready" && source.state !== "deleting")
+  ) {
+    throw new ScopeViolationError("The credential source is invalid.");
+  }
+  // Secret inputs persist only as same-Namespace Secret IDs keyed by field.
+  for (const [field, reference] of Object.entries(secretInputs)) {
+    if (
+      !credentialSourceField.test(field) ||
+      !isPlainRecord(reference) ||
+      Object.keys(reference).length !== 3 ||
+      reference.kind !== "secret" ||
+      reference.namespaceId !== source.namespaceId ||
+      typeof reference.id !== "string" ||
+      !secretIdentifier.test(reference.id)
+    ) {
+      throw new ScopeViolationError(
+        "Credential source Secret inputs must reference exact Secrets.",
+      );
+    }
+  }
+}
+
 function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
   const installations: InstallationRepository = {
     findInstallation: async (installationId) =>
@@ -891,6 +1011,10 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       ),
     hasSecrets: async (namespaceId) =>
       Array.from(snapshot.secrets.values()).some((secret) => secret.namespaceId === namespaceId),
+    hasCredentialSources: async (namespaceId) =>
+      Array.from(snapshot.credentialSources.values()).some(
+        (source) => source.namespaceId === namespaceId,
+      ),
     transitionNamespaceStatus: async (namespaceId, expected, next) => {
       const key = namespaceId;
       const namespace = snapshot.namespaces.get(key);
@@ -934,7 +1058,12 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         Array.from(snapshot.serviceAccounts.values()).some(
           (account) => account.namespaceId === namespaceId,
         ) ||
-        Array.from(snapshot.secrets.values()).some((secret) => secret.namespaceId === namespaceId)
+        Array.from(snapshot.secrets.values()).some(
+          (secret) => secret.namespaceId === namespaceId,
+        ) ||
+        Array.from(snapshot.credentialSources.values()).some(
+          (source) => source.namespaceId === namespaceId,
+        )
       ) {
         throw new ScopeViolationError("A nonempty Namespace cannot be tombstoned.");
       }
@@ -1181,6 +1310,11 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
             configuration.namespaceId === namespaceId &&
             secretBindingsReference(configuration.secretBindings, namespaceId, secretId),
         ) ||
+        Array.from(snapshot.credentialSources.values()).some(
+          (source) =>
+            source.namespaceId === namespaceId &&
+            Object.values(source.secrets).some((reference) => reference.id === secretId),
+        ) ||
         Array.from(snapshot.agents.values()).some((agent) => {
           const activeRevision = (
             snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
@@ -1221,6 +1355,136 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     },
   };
 
+  const findCredentialSource: CredentialSourceReadRepository["findCredentialSource"] = async (
+    namespaceId,
+    credentialSourceId,
+  ) => {
+    if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+      return undefined;
+    }
+    const source = snapshot.credentialSources.get(agentKey(namespaceId, credentialSourceId));
+    return source === undefined ? undefined : immutableCopy(source);
+  };
+
+  const credentialSources: CredentialSourceRepository = {
+    findCredentialSource,
+    listCredentialSources: async (namespaceId) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return Object.freeze([]);
+      }
+      return Object.freeze(
+        Array.from(snapshot.credentialSources.values())
+          .filter((source) => source.namespaceId === namespaceId)
+          .sort((left, right) =>
+            left.createdAt === right.createdAt
+              ? left.id.localeCompare(right.id)
+              : left.createdAt.localeCompare(right.createdAt),
+          )
+          .map((source) => immutableCopy(source)),
+      );
+    },
+    lockCredentialSource: findCredentialSource,
+    createCredentialSource: async (source) => {
+      assertInitialized(snapshot);
+      assertCredentialSource(source);
+      const namespace = await namespaces.lockNamespace(source.namespaceId);
+      if (
+        namespace === undefined ||
+        (namespace.status !== "provisioning" && namespace.status !== "ready")
+      ) {
+        throw new ScopeViolationError("The credential source belongs to an unavailable Namespace.");
+      }
+      for (const reference of Object.values(source.secrets)) {
+        if (!snapshot.secrets.has(agentKey(source.namespaceId, reference.id))) {
+          throw new ScopeViolationError("The credential source references an unavailable Secret.");
+        }
+      }
+      const key = agentKey(source.namespaceId, source.id);
+      if (
+        snapshot.credentialSources.has(key) ||
+        Array.from(snapshot.credentialSources.values()).some(
+          (existing) => existing.id === source.id,
+        )
+      ) {
+        throw new ResourceConflictError(
+          "The server generated an existing credential source identity.",
+        );
+      }
+      if (
+        Array.from(snapshot.credentialSources.values()).some(
+          (existing) =>
+            existing.namespaceId === source.namespaceId && existing.name === source.name,
+        )
+      ) {
+        throw new ResourceConflictError(
+          "A credential source with this name already exists in the Namespace.",
+        );
+      }
+      const saved = immutableCopy(source);
+      snapshot.credentialSources.set(key, saved);
+      return immutableCopy(saved);
+    },
+    markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.state !== "registering") {
+        return undefined;
+      }
+      const saved = immutableCopy({ ...current, state: "ready" as const });
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return immutableCopy(saved);
+    },
+    markCredentialSourceDeleting: async (namespaceId, credentialSourceId) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.state === "deleting") {
+        return undefined;
+      }
+      const saved = immutableCopy({ ...current, state: "deleting" as const });
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return immutableCopy(saved);
+    },
+    hasReferences: async (namespaceId, credentialSourceId) => {
+      if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
+        return false;
+      }
+      return (
+        Array.from(snapshot.agents.values()).some((agent) => {
+          const activeRevision = (
+            snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
+          ).find((revision) => revision.id === agent.activeRevisionId);
+          return (
+            agent.namespaceId === namespaceId &&
+            (harnessCredentialSourceReference(agent.harnessAuth, credentialSourceId) ||
+              harnessCredentialSourceReference(activeRevision?.harnessAuth, credentialSourceId))
+          );
+        }) ||
+        snapshot.operations.some((operation) => {
+          if (operation.kind !== "agent_revision" || operation.namespaceId !== namespaceId) {
+            return false;
+          }
+          const revision = Array.from(snapshot.revisions.values())
+            .flat()
+            .find(
+              (candidate) =>
+                candidate.namespaceId === namespaceId && candidate.id === operation.resourceId,
+            );
+          return harnessCredentialSourceReference(revision?.harnessAuth, credentialSourceId);
+        })
+      );
+    },
+    deleteCredentialSource: async (namespaceId, credentialSourceId) => {
+      if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
+        return false;
+      }
+      if (await credentialSources.hasReferences(namespaceId, credentialSourceId)) {
+        throw new ScopeViolationError(
+          "The credential source is referenced by active platform state.",
+        );
+      }
+      snapshot.credentialSources.delete(agentKey(namespaceId, credentialSourceId));
+      return true;
+    },
+  };
+
   const serviceAccounts: ServiceAccountRepository = {
     findServiceAccount: async (namespaceId, serviceAccountId) => {
       if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
@@ -1242,7 +1506,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
           .map((account) => immutableCopy(account)),
       );
     },
-    findServiceAccountProviderBinding: async () => undefined,
+    findServiceAccountBackendBinding: async () => undefined,
     createServiceAccount: async (account) => {
       assertInitialized(snapshot);
       if (
@@ -1417,12 +1681,13 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         throw new ScopeViolationError("The Agent execution mode is invalid.");
       }
       if (
-        agent.providerId !== null &&
-        (typeof agent.providerId !== "string" || !providerIdentifier.test(agent.providerId))
+        agent.backendId !== null &&
+        (typeof agent.backendId !== "string" || !backendIdentifier.test(agent.backendId))
       ) {
-        throw new ScopeViolationError("The Agent Provider identity is invalid.");
+        throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       const plugins = normalizedPlugins(agent.plugins);
+      const pluginApprovers = normalizedPluginApprovers(agent.pluginApprovers);
       const repositoryBindings = normalizedRepositoryBindings(agent.repositoryBindings);
       const namespace = await namespaces.lockNamespace(agent.namespaceId);
       if (
@@ -1438,7 +1703,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
         agent.configurationId,
       );
       await assertHarnessAuthAvailable(
-        { secrets, serviceAccounts },
+        { secrets, serviceAccounts, credentialSources },
         agent.namespaceId,
         agent.harnessAuth,
       );
@@ -1464,12 +1729,14 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       }
       const {
         plugins: _providedPlugins,
+        pluginApprovers: _providedPluginApprovers,
         repositoryBindings: _providedRepositoryBindings,
         ...withoutPlugins
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
         ...(plugins === undefined ? {} : { plugins }),
+        ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         desiredRuntimeState: "stopped" as const,
         status: "active" as const,
@@ -1522,16 +1789,17 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       configurationId,
       executionMode,
       harnessAuth,
-      providerId,
+      backendId,
       nextPlugins,
       nextRepositoryBindings,
+      nextPluginApprovers,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
         return undefined;
       }
-      if (providerId !== undefined && providerId !== null && !providerIdentifier.test(providerId)) {
-        throw new ScopeViolationError("The Agent Provider identity is invalid.");
+      if (backendId !== undefined && backendId !== null && !backendIdentifier.test(backendId)) {
+        throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       if (
         executionMode !== undefined &&
@@ -1545,25 +1813,37 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       }
       await assertConfigurationUsableByAgent(configurations, secrets, namespaceId, configurationId);
       const association = harnessAuth === undefined ? current.harnessAuth : harnessAuth;
-      await assertHarnessAuthAvailable({ secrets, serviceAccounts }, namespaceId, association);
-      const nextProviderId = providerId === undefined ? current.providerId : providerId;
+      await assertHarnessAuthAvailable(
+        { secrets, serviceAccounts, credentialSources },
+        namespaceId,
+        association,
+      );
+      const nextBackendId = backendId === undefined ? current.backendId : backendId;
       const plugins = nextPlugins === undefined ? current.plugins : normalizedPlugins(nextPlugins);
+      const pluginApprovers =
+        nextPluginApprovers === undefined
+          ? current.pluginApprovers
+          : nextPluginApprovers === null
+            ? undefined
+            : normalizedPluginApprovers(nextPluginApprovers);
       const repositoryBindings =
         nextRepositoryBindings === undefined
           ? current.repositoryBindings
           : normalizedRepositoryBindings(nextRepositoryBindings);
       const {
         plugins: _currentPlugins,
+        pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
         ...withoutPlugins
       } = current;
       const updated = immutableCopy({
         ...withoutPlugins,
         configurationId,
-        providerId: nextProviderId,
+        backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
         harnessAuth: association,
         ...(plugins === undefined ? {} : { plugins }),
+        ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
       });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
@@ -1628,13 +1908,13 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       if (
         owner === undefined ||
         owner.servicePrincipalId !== revision.servicePrincipalId ||
-        owner.providerId !== revision.providerId ||
+        owner.backendId !== revision.backendId ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth)
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
       await assertHarnessAuthAvailable(
-        { secrets, serviceAccounts },
+        { secrets, serviceAccounts, credentialSources },
         revision.namespaceId,
         harnessAuthBindingFromSnapshot(revision.harnessAuth),
       );
@@ -1685,6 +1965,9 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     }
     if (resourceKind === "secret") {
       return (await secrets.findSecret(namespaceId, resourceId)) !== undefined;
+    }
+    if (resourceKind === "credential_source") {
+      return (await findCredentialSource(namespaceId, resourceId)) !== undefined;
     }
     if (resourceKind === "service_account") {
       return (await serviceAccounts.findServiceAccount(namespaceId, resourceId)) !== undefined;
@@ -1838,6 +2121,7 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
     configurations,
     presets,
     secrets,
+    credentialSources,
     serviceAccounts,
     agents,
     workspaceSetups,
@@ -1988,6 +2272,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     configurations: new Map(),
     presets: new Map(),
     secrets: new Map(),
+    credentialSources: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
     workspaceSetups: new Map(),

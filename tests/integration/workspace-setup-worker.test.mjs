@@ -10,12 +10,12 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   authorizedPrincipal,
-  createProviderWorkerDrivers,
+  createBackendWorkerDrivers,
   databaseUrl,
   ensureInstallation,
   requiresPostgres,
   waitFor,
-} from "../helpers/postgres-provider-state.mjs";
+} from "../helpers/postgres-backend-state.mjs";
 
 // Real OCC admission, PostgreSQL persistence/queue, IAM, and production worker.
 // Compute is the established deterministic fixture; native file application is
@@ -49,7 +49,7 @@ async function setup(t) {
     }),
   );
   const compute = createDevelopmentComputeDriver();
-  const drivers = createProviderWorkerDrivers(compute, []);
+  const drivers = createBackendWorkerDrivers(compute, []);
   const controller = new OpenClawController(installation, { state });
   for (const driver of [
     compute,

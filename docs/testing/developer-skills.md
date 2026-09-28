@@ -2,16 +2,17 @@
 
 Use the repository-local skills for the relevant development task:
 
-| Task                             | Skill                                                                                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Assess a design or refactor      | [design-review](../../.agents/skills/design-review/SKILL.md) traces callers, interfaces, state ownership, and evidence to recommend scoped improvements.           |
-| Develop a repository change      | [local-dev](../../.agents/skills/local-dev/SKILL.md) requires proportional verification and flow docs for non-trivial runtime changes.                             |
-| Write or review technical docs   | [technical-writing](../../.agents/skills/technical-writing/SKILL.md) covers source-backed prose, runnable instructions, page selection, and specification clarity. |
-| Write or audit tests             | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.                  |
-| Choose validation or diagnose CI | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                       |
-| Explain a change with a diagram  | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries.     |
-| Clean the current diff           | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                    |
-| Run requested independent review | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                           |
+| Task                               | Skill                                                                                                                                                                                                                                               |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Assess a design or refactor        | [design-review](../../.agents/skills/design-review/SKILL.md) traces callers, interfaces, state ownership, and evidence to recommend scoped improvements.                                                                                            |
+| Develop a repository change        | [local-dev](../../.agents/skills/local-dev/SKILL.md) requires proportional verification and flow docs for non-trivial runtime changes.                                                                                                              |
+| Write or review technical docs     | [technical-writing](../../.agents/skills/technical-writing/SKILL.md) covers source-backed prose, runnable instructions, page selection, and specification clarity.                                                                                  |
+| Write or audit tests               | [test-audit](../../.agents/skills/test-audit/SKILL.md) checks observable behavior, credible regressions, distinct coverage, and production seams.                                                                                                   |
+| Choose validation or diagnose CI   | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md) routes to the existing testing procedures and exact run/job evidence.                                                                                                        |
+| Run optional end-to-end acceptance | [oceinteg](../../.agents/skills/oceinteg/SKILL.md) runs named real Helm scenarios only when the user explicitly invokes `oceinteg <scenario>` or `$oceinteg <scenario>`; never invoke it automatically for development or general testing requests. |
+| Explain a change with a diagram    | [mermaid-diagrams](../../.agents/skills/mermaid-diagrams/SKILL.md) provides a compact Mermaid template, semantic colors, and honest implementation boundaries.                                                                                      |
+| Clean the current diff             | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                                                                                                     |
+| Run requested independent review   | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                                                                                                            |
 
 These skills are checked into `.agents/skills`; no global installation is needed.
 Testing setup and real-runtime requirements remain owned by the

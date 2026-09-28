@@ -46,6 +46,8 @@ export function renderAgentList(context) {
     "aria-label": "Search Agents",
     placeholder: "Search Agents by name or ID",
   });
+  search.value = context.drafts.get("agent-search") ?? "";
+  context.drafts.track("agent-search", () => search.value || undefined);
   const rows = element("div");
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
@@ -81,7 +83,7 @@ export function renderAgentList(context) {
         element(
           "tr",
           {},
-          ...["Agent", "Execution mode", "Selected revision", "Created"].map((label) =>
+          ...["Agent", "Execution mode", "Current version", "Created"].map((label) =>
             element("th", { scope: "col" }, label),
           ),
         ),
@@ -110,7 +112,7 @@ export function renderAgentList(context) {
                   `agents/${item.id}?revision=${item.activeRevisionId}`,
                   context,
                 )
-              : "No selected revision",
+              : "No current version",
           ),
           element("td", {}, displayDate(item.createdAt)),
         ),

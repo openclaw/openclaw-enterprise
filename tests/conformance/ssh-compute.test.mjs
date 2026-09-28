@@ -62,7 +62,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     namespaceId: tenant.id,
     agentId,
     revision: number,
-    providerId: null,
+    backendId: null,
     harnessAuth: { method: "runtime" },
     configurationId: `configuration-${agentId}`,
     configurationKind: "agent",
@@ -119,7 +119,7 @@ function bind(driver, rev, namespace = tenant) {
       namespaceId: namespace.id,
       name: rev.agentId,
       configurationId: rev.configurationId,
-      providerId: null,
+      backendId: null,
       executionMode: "embedded",
       servicePrincipalId: rev.servicePrincipalId,
       createdAt: namespace.createdAt,
@@ -833,11 +833,19 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
       ...rev,
       plugins: {
         driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-        plugins: { "occ-plugin:diffs": { enabled: true, approvalMode: "always" } },
+        plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" } } },
       },
     }),
     /PluginDriver installation/,
   );
+  const beforeApproverPolicy = f.calls.length;
+  for (const pluginApprovers of [[], [{ channel: "slack", id: "team:T123:user:U123" }]]) {
+    await assert.rejects(
+      f.driver.prepareRevision({ ...rev, pluginApprovers }),
+      /plugin approver policy/,
+    );
+    assert.equal(f.calls.length, beforeApproverPolicy);
+  }
   for (const configuration of [
     { gateway: { auth: { mode: "oauth" } } },
     { gateway: { auth: { unsupportedField: true } } },

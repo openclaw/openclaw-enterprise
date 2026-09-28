@@ -76,6 +76,14 @@ func (r *runner) composeOutput(ctx context.Context, state *developmentState, arg
 	return r.output(ctx, r.engine, append(state.composeCommand(), args...)...)
 }
 func (r *runner) selectEngine(ctx context.Context, requested string) error {
+	return r.selectContainerEngine(ctx, requested, true)
+}
+
+func (r *runner) selectImageEngine(ctx context.Context, requested string) error {
+	return r.selectContainerEngine(ctx, requested, false)
+}
+
+func (r *runner) selectContainerEngine(ctx context.Context, requested string, requireCompose bool) error {
 	if requested != "auto" && requested != "docker" && requested != "podman" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman")
 	}
@@ -111,22 +119,29 @@ func (r *runner) selectEngine(ctx context.Context, requested string) error {
 			}
 		}
 		if engine == "podman" {
-			provider, err := exec.LookPath("podman-compose")
-			if err != nil {
-				continue
+			if requireCompose {
+				provider, err := exec.LookPath("podman-compose")
+				if err != nil {
+					continue
+				}
+				r.env["PODMAN_COMPOSE_PROVIDER"] = provider
 			}
-			r.env["PODMAN_COMPOSE_PROVIDER"] = provider
 		}
 		if _, err := r.output(ctx, engine, "info"); err != nil {
 			continue
 		}
-		if _, err := r.output(ctx, engine, "compose", "version"); err != nil {
-			continue
+		if requireCompose {
+			if _, err := r.output(ctx, engine, "compose", "version"); err != nil {
+				continue
+			}
 		}
 		r.engine = engine
 		return nil
 	}
-	return fmt.Errorf("a running %s container engine with its Compose provider is required", requested)
+	if requireCompose {
+		return fmt.Errorf("a running %s container engine with its Compose provider is required", requested)
+	}
+	return fmt.Errorf("a running %s container engine is required", requested)
 }
 func (r *runner) pinEndpoint(ctx context.Context) error {
 	endpoint := r.env["DOCKER_HOST"]

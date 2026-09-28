@@ -7,7 +7,7 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import { ScopeViolationError } from "../errors.ts";
 
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const providerIdentifier = /^(?!\s)(?!.*\s$).{1,200}$/;
+const backendIdentifier = /^(?!\s)(?!.*\s$).{1,200}$/;
 
 function hasControlCharacters(value: string): boolean {
   return [...value].some((character) => {
@@ -44,7 +44,7 @@ function selection(value: unknown, admitted: boolean): boolean {
   if (
     !exactObject(
       value,
-      admitted ? ["repositoryRef", "profile", "providerId", "grant"] : ["repositoryRef", "profile"],
+      admitted ? ["repositoryRef", "profile", "backendId", "grant"] : ["repositoryRef", "profile"],
     ) ||
     !boundedToken(value.repositoryRef) ||
     !boundedToken(value.profile)
@@ -53,10 +53,10 @@ function selection(value: unknown, admitted: boolean): boolean {
   }
   return (
     !admitted ||
-    (typeof value.providerId === "string" &&
-      providerIdentifier.test(value.providerId) &&
-      !hasControlCharacters(value.providerId) &&
-      Buffer.from(value.providerId, "utf8").toString("utf8") === value.providerId &&
+    (typeof value.backendId === "string" &&
+      backendIdentifier.test(value.backendId) &&
+      !hasControlCharacters(value.backendId) &&
+      Buffer.from(value.backendId, "utf8").toString("utf8") === value.backendId &&
       exactObject(value.grant, ["providerInstanceId", "repositoryId", "grantId"]) &&
       opaqueIdentity(value.grant.providerInstanceId) &&
       opaqueIdentity(value.grant.repositoryId) &&

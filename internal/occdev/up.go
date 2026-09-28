@@ -24,6 +24,17 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	r := newRunner(opts)
+	sandboxDriver := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
+	if sandboxDriver != "none" && sandboxDriver != "openshell" {
+		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
+	}
+	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
+	if controlPlane != "compose" && controlPlane != "kubernetes" {
+		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
+	}
+	if controlPlane == "kubernetes" {
+		return upK3d(ctx, opts, sandboxDriver)
+	}
 	timeout, err := positiveSetting(r, "OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS", 300, 86400)
 	if err != nil {
 		return err
@@ -40,7 +51,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	state := &developmentState{Repository: opts.Repository, Version: 2, ComputeDriver: "kubernetes", ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
+	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
 
 	if !clusterName.MatchString(state.Cluster) || !projectName.MatchString(state.ComposeProject) {
 		return fmt.Errorf("invalid Kubernetes cluster or Compose project name")
@@ -84,6 +95,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := yaml.Unmarshal(config, &rendered); err != nil {
 		return fmt.Errorf("invalid rendered Compose configuration: %w", err)
 	}
+	if err := setKubernetesBridgeGateway(rendered); err != nil {
+		return err
+	}
 	if err := r.validateResourceOwnership(ctx, rendered, state); err != nil {
 		return err
 	}
@@ -111,7 +125,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	started, clusterAttempted, clusterCreationFailed := false, false, false
+	started, clusterAttempted, clusterCreationFailed, keyWritten := false, false, false, false
 	defer func() {
 		defer lock.Close()
 		if result == nil {
@@ -128,6 +142,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 		if cleanupErr == nil {
 			cleanupErr = os.RemoveAll(directory)
+		}
+		if keyWritten && !state.KeyOwned {
+			if err := os.Remove(state.KeyPath); err != nil && !os.IsNotExist(err) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove copied service key: %w", err))
+			}
 		}
 		if cleanupErr != nil {
 			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
@@ -158,18 +177,43 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
 	clusterAttempted = true
-	if err := r.run(ctx, "k3d", "cluster", "create", state.Cluster, "--image", "+v1.35", "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false"); err != nil {
+	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", "+v1.35")
+	clusterArgs := []string{"cluster", "create", state.Cluster}
+	if sandboxDriver == "openshell" {
+		clusterImage = openShellK3sImage
+		admissionPath, err := prepareOpenShellAdmission(directory)
+		if err != nil {
+			return err
+		}
+		clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
+	}
+	clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
+	if err := r.run(ctx, "k3d", clusterArgs...); err != nil {
 		clusterCreationFailed = true
 		return err
 	}
 	if err := r.writeKubeconfigs(ctx, state); err != nil {
 		return err
 	}
+	var openShellAssets *openShellDevelopmentAssets
+	if sandboxDriver == "openshell" {
+		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+		openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+		if err != nil {
+			return err
+		}
+	}
 	reference, err := r.importRuntime(ctx, state)
 	if err != nil {
 		return err
 	}
-	if err := writeInstallation(state, reference); err != nil {
+	if sandboxDriver == "openshell" {
+		fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
+		if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+			return err
+		}
+	}
+	if err := writeInstallation(state, reference, openShellAssets, ""); err != nil {
 		return err
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
@@ -179,11 +223,25 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.waitReady(ctx, state, apiURL, time.Duration(timeout)*time.Second); err != nil {
 		return err
 	}
-	installation, err := r.copyAndVerifyKey(ctx, state, apiURL)
+	installation, client, err := r.copyAndVerifyKey(ctx, state, apiURL)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nCompute Driver: Kubernetes\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
+	keyWritten = true
+	if sandboxDriver == "openshell" {
+		_, namespaceID, err := r.waitForDevelopmentKubernetesNamespace(ctx, time.Duration(timeout)*time.Second)
+		if err != nil {
+			return err
+		}
+		if err := waitForDevelopmentNamespace(ctx, client, namespaceID, time.Duration(timeout)*time.Second); err != nil {
+			return err
+		}
+	}
+	cleanupSandbox := ""
+	if sandboxDriver == "openshell" {
+		cleanupSandbox = " OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell"
+	}
+	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nControl plane: Compose\nCompute Driver: Kubernetes\nSandbox Driver: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes%s OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, sandboxDriver, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, cleanupSandbox, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
 	return nil
 }
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
@@ -365,24 +423,24 @@ func (r *runner) waitReady(ctx context.Context, s *developmentState, url string,
 		return err == nil, nil
 	})
 }
-func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url string) (string, error) {
+func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url string) (string, *occclient.Client, error) {
 	id, err := r.composeOutput(ctx, s, "ps", "--all", "-q", "bootstrap")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if len(id) == 0 || strings.ContainsAny(string(id), "\r\n") {
-		return "", fmt.Errorf("could not identify bootstrap container")
+		return "", nil, fmt.Errorf("could not identify bootstrap container")
 	}
 	temporary := filepath.Join(s.directory, "bootstrap-key-copy.json")
 	if err := r.run(ctx, r.engine, "cp", string(id)+":/var/lib/openclaw/bootstrap/initial-admin-service-key.json", temporary); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := os.Chmod(temporary, 0600); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	data, err := os.ReadFile(temporary)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var key struct {
 		Meta struct {
@@ -393,25 +451,43 @@ func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url 
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &key); err != nil || key.Meta.InstallationID == "" || strings.TrimSpace(key.Data.Key) == "" {
-		return "", fmt.Errorf("bootstrap service key is missing its key or Installation ID")
+		return "", nil, fmt.Errorf("bootstrap service key is missing its key or Installation ID")
 	}
 	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	installation, err := client.GetInstallation()
 	if err != nil {
-		return "", fmt.Errorf("Installation authorization failed: %w", err)
+		return "", nil, fmt.Errorf("Installation authorization failed: %w", err)
 	}
 	record, ok := installation.(map[string]any)
 	if !ok || record["id"] != key.Meta.InstallationID {
-		return "", fmt.Errorf("Installation ID does not match the bootstrap service key")
+		return "", nil, fmt.Errorf("Installation ID does not match the bootstrap service key")
 	}
 	if err := exclusiveWrite(s.KeyPath, data, 0600); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := os.Remove(temporary); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return key.Meta.InstallationID, nil
+	return key.Meta.InstallationID, client, nil
+}
+
+func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, namespaceID string, timeout time.Duration) error {
+	return poll(ctx, timeout, func(context.Context) (bool, error) {
+		value, err := client.GetNamespace(namespaceID)
+		if err != nil {
+			return false, nil
+		}
+		namespace, ok := value.(map[string]any)
+		if !ok || namespace["id"] != namespaceID {
+			return false, fmt.Errorf("OCC returned an invalid bootstrap Namespace")
+		}
+		status, _ := namespace["status"].(string)
+		if status == "failed" || status == "deleting" {
+			return false, fmt.Errorf("bootstrap Namespace entered status %s", status)
+		}
+		return status == "ready", nil
+	})
 }

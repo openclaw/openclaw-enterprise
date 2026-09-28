@@ -6,7 +6,7 @@ ServicePrincipal, a Kubernetes ServiceAccount, nor a provider account. Native
 accounts accept existing API-key references; an optionally selected
 `ServiceAccountDriver` can instead create and manage an upstream account while
 keeping its provider-specific identity private. A managed account's private
-binding records its exact Provider, Driver, and workspace ownership.
+binding records its exact Backend, Driver, and workspace ownership.
 
 This page defines current account behavior and credential boundaries. For
 controller setup and authentication, see the [quickstart](../guides/quickstart.md)
@@ -36,22 +36,22 @@ credential readiness metadata, never backend locators, provider identities, or c
 Collection reads require `read` on the Namespace and return only accounts for
 which the caller also has exact-account `read`.
 
-## Provider selection and configuration
+## Backend selection and configuration
 
-The optional ChatGPT implementation requires an Installation-scoped Provider
-and its matching selected `service_account` Driver. The [Provider
-reference](providers.md#installation-configuration) owns the complete YAML,
+The optional ChatGPT implementation requires an Installation-scoped Backend
+and its matching selected `service_account` Driver. The [Backend
+reference](backends.md#installation-configuration) owns the complete YAML,
 client and membership contract, mounted key, and Helm values. The configuration
 requires durable PostgreSQL persistence.
 
-Both processes load nonsecret Provider definitions; only the API initializes
-`Provider<ChatGPTClient>` and injects it into `ChatGPTServiceAccountDriver`.
-The worker validates metadata without an admin credential or provider client.
+Both processes load nonsecret Backend definitions; only the API initializes
+`Backend<ChatGPTClient>` and injects it into `ChatGPTServiceAccountDriver`.
+The worker validates metadata without an admin credential or Backend client.
 
 ## Account and credential lifecycle
 
 Creation and credential issuance are separate authorized operations. With the
-provider Driver selected, `POST /namespaces/:namespaceId/service-accounts`
+ServiceAccount Driver selected, `POST /namespaces/:namespaceId/service-accounts`
 accepts a name, returns `201` with an OCC account envelope, and privately links
 the newly created upstream account. Without that Driver, creation produces a
 native OCC account. Neither operation issues a credential automatically.
@@ -65,11 +65,11 @@ A representative account-creation body is:
 `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`
 accepts `{}` and issues a credential through the selected Driver. The `201`
 account envelope exposes safe credential readiness metadata; backend Secret
-locators and Provider/workspace identities remain private.
+locators and Backend/workspace identities remain private.
 Compute creates one account-owned token/workspace Secret in the tenant control plane; the Driver privately
 persists the upstream credential ID for exact cleanup. A second issuance fails
 with `409`; rotation and reconciliation are not implemented. Calling issuance
-without a selected provider Driver fails with `503 DEPENDENCY_UNAVAILABLE`.
+without a selected ServiceAccount Driver fails with `503 DEPENDENCY_UNAVAILABLE`.
 
 An Agent binds the same-Namespace account through
 `harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`.
@@ -83,7 +83,7 @@ draft, active revision, or queued or claimed deployment references it. Detaching
 the draft alone does not release an active or pending deployment's account.
 Inactive historical revisions and permanently failed deployments do not block
 deletion unless the account is still referenced by other live state.
-Provider-managed deletion removes
+Backend-managed deletion removes
 the exact upstream credential, the account-owned Secret, and the upstream
 account before deleting OCC account state. Native deletion removes OCC account
 state; the operator owns the referenced source Secret.
@@ -91,15 +91,15 @@ state; the operator owns the referenced source Secret.
 ## Revision snapshots and credential delivery
 
 Deploying an Agent freezes the account ID, credential kind, Secret reference,
-and nullable `providerId` in its immutable AgentRevision. It does not copy
+and nullable `backendId` in its immutable AgentRevision. It does not copy
 credential bytes into the revision. Later account edits do not rewrite that snapshot. A Secret reference
 is not a snapshot of the Secret's value. Before dispatch, the worker reauthorizes
 exact-account `read` for the actor who requested the deployment.
 
-### Provider-managed access tokens
+### Backend-managed access tokens
 
 For an `access_token`, the Agent must select the binding's exact nonnull
-`providerId`, with its selected member Driver, workspace, and issued credential.
+`backendId`, with its selected member Driver, workspace, and issued credential.
 Admission and worker reconciliation validate that private metadata before
 workload effects; a public credential kind is not proof of ownership. Only
 dedicated Codex execution is supported. Kubernetes
@@ -148,7 +148,7 @@ provider, not IAM, Compute, OCC, or the Harness.
 - `404`: Account or Agent is outside its exact Namespace.
 - `409 RESOURCE_CONFLICT`: Duplicate account name, existing credential,
   referenced-account deletion, missing credential, or unsupported Harness or
-  OAuth deployment, or mismatched managed Provider binding.
+  OAuth deployment, or mismatched managed Backend binding.
 - Provider denial or Kubernetes failure: Creation fails closed; compensation deletes
   only the newly created exact provider account, provider credential, or
   account-owned Secret when durable state confirms it was not committed.
@@ -167,7 +167,7 @@ owns private upstream bindings and compensation; the
 - [ServiceAccountDriver contract](drivers/service-account.md)
 - [Kubernetes Compute reference](drivers/kubernetes-compute.md)
 - [Authorization](authorization.md)
-- [Provider-managed credential flow](../flows/service-account-driver-credential-delivery.md)
+- [Backend-managed credential flow](../flows/service-account-driver-credential-delivery.md)
 - [Harness authentication flow](../flows/native-service-account-credential-delivery.md)
 
 ## Manual Notes

@@ -1,9 +1,5 @@
 import { element, button } from "./dom.mjs";
 
-function supportsDesktopHover() {
-  return window.matchMedia("(min-width: 761px) and (hover: hover)").matches;
-}
-
 export function panel(target, title, description, actionLabel, action, requestId) {
   target.replaceChildren(
     element(
@@ -23,7 +19,7 @@ function menuItems(menu) {
   );
 }
 
-function enableMenuKeys(menu, close, openChild) {
+function enableMenuKeys(menu, close) {
   menu.addEventListener("keydown", (event) => {
     if (event.target.closest('[role="menu"]') !== menu) {
       return;
@@ -52,10 +48,6 @@ function enableMenuKeys(menu, close, openChild) {
       event.stopPropagation();
       close();
     }
-    if (event.key === "ArrowRight" && openChild) {
-      event.preventDefault();
-      openChild(event.target);
-    }
   });
   menu.addEventListener("focusin", (event) => {
     for (const item of menuItems(menu)) {
@@ -76,13 +68,19 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let namespaceId = null;
   let menuControls = null;
   let drawerControls = null;
+  let namespaceSelect = null;
 
   function publicPanel(title, description, actionLabel, action) {
     app.replaceChildren(
       element(
         "main",
         { className: "auth" },
-        element("p", { className: "brand" }, "OpenClaw Enterprise"),
+        element(
+          "p",
+          { className: "brand" },
+          element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
+          "OpenClaw Enterprise",
+        ),
         element("h1", {}, title),
         element("p", { role: "status", className: "muted" }, description),
         action ? button(actionLabel, action) : null,
@@ -99,37 +97,6 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       "aria-label": "Account",
       hidden: "",
     });
-    const submenu = element("div", {
-      className: "menu namespace-submenu",
-      id: "namespace-menu",
-      role: "menu",
-      "aria-label": "Namespaces",
-      hidden: "",
-    });
-    const selected = namespaces.find((item) => item.id === namespaceId);
-    const namespaceButton = button(
-      `Namespace: ${selected?.name ?? (namespaceId === null ? "None" : "Unavailable")}`,
-      () => openNamespace(true),
-      {
-        role: "menuitem",
-        tabindex: "-1",
-        "aria-haspopup": "menu",
-        "aria-expanded": "false",
-        "aria-controls": "namespace-menu",
-      },
-    );
-    for (const item of namespaces) {
-      submenu.append(
-        button(item.name, () => navigate(route().feature, item.id), {
-          role: "menuitemradio",
-          tabindex: "-1",
-          "aria-checked": item.id === namespaceId,
-        }),
-      );
-    }
-    if (!namespaces.length) {
-      submenu.append(element("p", { className: "muted" }, "No readable Namespaces"));
-    }
     const toggle = button(
       "OpenClaw Enterprise",
       () => (menu.hidden ? openAccount() : closeAccount()),
@@ -144,15 +111,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element("span", { className: "account-label" }, "OpenClaw Enterprise"),
       element("span", { className: "account-chevron", "aria-hidden": "true" }, "⌃"),
     );
-    function closeNamespace(focus = true) {
-      submenu.hidden = true;
-      namespaceButton.setAttribute("aria-expanded", "false");
-      if (focus) {
-        namespaceButton.focus();
-      }
-    }
     function closeAccount(focus = true) {
-      closeNamespace(false);
       menu.hidden = true;
       toggle.setAttribute("aria-expanded", "false");
       if (focus) {
@@ -166,35 +125,16 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuItems(menu)[0]?.focus();
       }
     }
-    function openNamespace(focus) {
-      submenu.hidden = false;
-      namespaceButton.setAttribute("aria-expanded", "true");
-      if (focus) {
-        menuItems(submenu)[0]?.focus();
-      }
-    }
     toggle.addEventListener("keydown", (event) => {
       if (["ArrowDown", "ArrowUp"].includes(event.key)) {
         event.preventDefault();
         openAccount();
       }
     });
-    namespaceButton.addEventListener("pointerenter", () => {
-      if (supportsDesktopHover()) {
-        openNamespace(false);
-      }
-    });
-    enableMenuKeys(menu, closeAccount, (target) => {
-      if (target === namespaceButton) {
-        openNamespace(true);
-      }
-    });
-    enableMenuKeys(submenu, closeNamespace);
+    enableMenuKeys(menu, closeAccount);
     menu.append(
-      namespaceButton,
       button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
       button("Logout", () => void logout(), { role: "menuitem", tabindex: "-1" }),
-      submenu,
     );
     account.append(menu, toggle);
     account.addEventListener("focusout", (event) => {
@@ -205,16 +145,66 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     menuControls = {
       account,
       close: () => closeAccount(false),
-      openNamespace: () => {
-        openAccount(false);
-        openNamespace(true);
-      },
     };
     return account;
   }
 
+  function namespaceSelector() {
+    namespaceSelect = element("select", {
+      id: "namespace-selector",
+      disabled: !session || namespaces.length === 0,
+    });
+    if (!namespaces.some((item) => item.id === namespaceId)) {
+      let placeholder = "Checking access…";
+      if (session) {
+        placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
+      }
+      namespaceSelect.append(
+        element("option", { value: "", disabled: true, selected: true }, placeholder),
+      );
+    }
+    for (const item of namespaces) {
+      namespaceSelect.append(
+        element("option", { value: item.id, selected: item.id === namespaceId }, item.name),
+      );
+    }
+    namespaceSelect.addEventListener("change", (event) => {
+      navigate(route().feature, event.target.value);
+    });
+    return element(
+      "div",
+      { className: "namespace-selector" },
+      element("label", { for: "namespace-selector" }, "Namespace"),
+      namespaceSelect,
+    );
+  }
+
+  function updateNamespaces(readable) {
+    if (!namespaceSelect?.isConnected) {
+      return;
+    }
+    if (
+      readable.length === namespaces.length &&
+      readable.every(
+        (item, index) => item.id === namespaces[index].id && item.name === namespaces[index].name,
+      )
+    ) {
+      return;
+    }
+    namespaces = readable;
+    namespaceSelect.replaceChildren(
+      ...readable.map((item) => element("option", { value: item.id }, item.name)),
+    );
+    namespaceSelect.value = namespaceId;
+    const scope = app.querySelector(".content .scope");
+    if (scope && route().feature === "agents") {
+      scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
+    }
+  }
+
   function renderShell(feature, state) {
     ({ session, namespaces, namespaceId } = state);
+    namespaceSelect = null;
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
     const icons = { agents: "◇", namespaces: "▤" };
     for (const name of ["agents", "namespaces"]) {
@@ -241,23 +231,41 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     }
     const revision = document.querySelector('meta[name="occ-build-revision"]')?.content;
     const knownRevision = /^[a-f0-9]{40}$/.test(revision ?? "");
+    const debug = route().url.searchParams.get("debug") === "true";
+    const diagnostics =
+      debug && session
+        ? element(
+            "section",
+            {
+              className: "runtime-debug",
+              "aria-label": "Build and runtime images",
+            },
+            element("h2", {}, "Debug"),
+            element("p", {}, "OCE commit"),
+            element("code", {}, knownRevision ? revision : "Unavailable (development build)"),
+          )
+        : null;
     const sidebar = element(
       "aside",
       { className: "sidebar", id: "navigation-drawer" },
       element(
         "p",
         { className: "brand" },
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
         "OCE",
-        element(
-          "span",
-          {
-            className: "occ-version",
-            title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
-          },
-          knownRevision ? revision.slice(0, 8) : "dev",
-        ),
+        debug
+          ? element(
+              "span",
+              {
+                className: "occ-version",
+                title: knownRevision ? `OCC commit ${revision}` : "OCC build revision unavailable",
+              },
+              knownRevision ? revision.slice(0, 8) : "dev",
+            )
+          : null,
       ),
       nav,
+      diagnostics,
       session ? accountMenu() : null,
     );
     const main = element("main", { className: "content", id: "main" });
@@ -267,7 +275,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
         : feature === "settings"
           ? "Your account"
-          : "Installation-wide";
+          : feature === "backends"
+            ? "Installation-wide · Experimental"
+            : "Installation-wide";
     const refresh = button("Refresh", () => void loadPage());
     refresh.disabled = true;
     const header = element(
@@ -279,7 +289,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         element("h1", {}, pages[feature]),
         element("p", { className: "scope" }, scope),
       ),
-      feature === "settings" ? null : refresh,
+      element(
+        "div",
+        { className: "page-actions" },
+        feature === "namespaces" ? null : namespaceSelector(),
+        feature === "settings" ? null : refresh,
+      ),
     );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
@@ -324,18 +339,18 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     drawerControls = { shell, sidebar, close: closeDrawer, open: openDrawer };
     app.replaceChildren(shell);
-    return { view, refresh };
+    return { view, refresh, diagnostics };
   }
 
   function renderRows(view, feature, items) {
     if (!items.length) {
       panel(
         view,
-        feature === "providers"
-          ? "No providers configured"
+        feature === "backends"
+          ? "No backends configured"
           : `No accessible ${pages[feature].toLowerCase()}`,
-        feature === "providers"
-          ? "No Providers are configured for this Installation."
+        feature === "backends"
+          ? "No experimental Backends are configured for this Installation."
           : "Ask an administrator to provision resources or grant access, then refresh.",
         "Refresh",
         () => void loadPage(),
@@ -352,14 +367,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             "div",
             {},
             element("p", { className: "resource-name" }, item.name ?? item.id),
-            feature === "providers" ? null : element("span", { className: "resource-id" }, item.id),
+            feature === "backends" ? null : element("span", { className: "resource-id" }, item.id),
           ),
           feature === "agents"
             ? null
             : element(
                 "span",
                 { className: "badge" },
-                feature === "providers" ? item.type : item.status,
+                feature === "backends" ? item.type : item.status,
               ),
         ),
       );
@@ -368,10 +383,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function switchNamespace() {
-    if (window.matchMedia("(max-width: 760px)").matches) {
-      drawerControls?.open();
-    }
-    menuControls?.openNamespace();
+    namespaceSelect?.focus();
   }
 
   document.addEventListener("pointerdown", (event) => {
@@ -406,10 +418,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderShell,
     renderRows,
     switchNamespace,
+    updateNamespaces,
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;
       drawerControls = null;
+      namespaceSelect = null;
       session = null;
       namespaces = [];
       namespaceId = null;

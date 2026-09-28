@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-09-23
-last_updated_session: codex/01a0d075-a358-7620-8c16-fd4290acddf1
+updated: 2026-09-27
+last_updated_session: authoring-run/9266dd42-e257-4e84-b7ac-d6c87ba3ed23
 ---
 
 # GitHub Actions testing flow
@@ -34,7 +34,9 @@ graph TD
     F -->|prepared| G["Prepare file prerequisites"]
     G --> H["Node tests and structured reporter"]
     H --> I["Case and skip validation"]
-    F -->|preparation fails| J["Owned-resource cleanup"]
+    F -->|fixture cluster startup fails| P["Save bounded setup diagnostics"]
+    P --> J["Owned-resource cleanup"]
+    F -->|other preparation fails| J
     I --> J
   end
   subgraph Results["Check results"]
@@ -63,17 +65,38 @@ The PR workflow uses the event checkout and supplies no external service credent
 
 PostgreSQL migration and application suites own separate servers. Each of the three Kubernetes fixture files owns a separate cluster and PostgreSQL server. For these Kubernetes fixture lanes, the shared action enables bridge netfilter on the ephemeral runner before creating k3d nodes, which share its kernel. Missing bridge filtering fails setup rather than running with unenforced Pod network policies. The repository credential platform lane uses Blacksmith for its full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' separate responsibility. Lane state and cleanup stay local to its runner; files within each lane remain sequential. The suite map retains one owner per file in both workflow groups.
 
+The native IAM barrier test receives its own migrated PostgreSQL database through the application lane's per-file preparer. Only that test receives the matching application and migrator connection details, and the CLI refuses to write those details to `GITHUB_ENV`. The test installs its unregistered supplier only in that disposable database. This fixture does not establish that production writers participate in the barrier.
+
 Both workflows call the shared [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) after checkout. It owns tool and dependency setup, baseline checks when selected, lane preparation, execution, unconditional cleanup, and sanitized result upload. Callers keep the source revision, timeout, protected environment and explicit credentials.
 
 Ordinary PR dependency caches may be restored and saved within GitHub's PR merge-ref scope. Main jobs use main-scoped caches. Test results and credential-bearing state are not dependency caches, and protected jobs do not promote PR build artifacts.
 
-The provider job selects the shared `blacksmith-8vcpu-ubuntu-2404` runner for disk headroom during runtime image build and k3d import. The standard Ubuntu runner reached `DiskPressure` and evicted the seccomp probe before it could start. The repository must retain access to this organization runner label. Image preparation uses k3d's direct archive transport; the default tools-container transport reported success without registering the image on Blacksmith. The imported manifest and CRI checks remain required before any test starts.
+The provider job selects the shared `blacksmith-8vcpu-ubuntu-2404` runner for disk headroom during runtime image build and k3d import. The standard Ubuntu runner reached `DiskPressure` and evicted the seccomp probe before it could start. The repository must retain access to this organization runner label. Image preparation copies the saved archive into each owned k3d node and runs node-local `ctr image import`; k3d `tools-node` can log per-node import failures while returning success. The imported manifest and CRI checks remain required before any test starts.
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:main`
+`scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
 
 [CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
+
+For the three Kubernetes fixture lanes, cluster startup records phase timings
+and host snapshots. On failure, bounded diagnostic reads save
+`<state-file>.diagnostics.json` outside the cluster directory before cleanup.
+Creation uses `--no-rollback` for these lanes so the workflow owns teardown after
+capture; local callers still invoke cleanup with their failed run's state file.
+Collection preserves the original error, including when an observation fails or
+times out. The [CI guide](../testing/ci.md) describes the retained evidence.
+
+Dedicated Codex preparation and the operator's offline profile generator share
+`scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
+requires an actual workspace write and denied write to a container-writable
+outside path before publishing the selected Localhost profile to the live suite.
+Native runtime-image tests trust a dynamic Codex Docker seccomp profile only when
+`OPENCLAW_ENTERPRISE_CI_STATE` records the exact prepared
+`cluster.codexDockerSeccompProfile` path and SHA. A self-hashed profile without
+that state is not CI proof; the standalone fallback remains the pinned reviewed
+manual profile. Production node provisioning remains outside CI ownership; see
+[Codex sandbox setup](../guides/deploy/codex-sandbox.md).
 
 ### 3. Execute and account for actual cases
 
@@ -92,6 +115,20 @@ per lane and workflow run. A job retry replaces that lane's earlier artifact;
 other lanes retain their results. This prevents aggregation from selecting a
 stale failed result after a successful retry. The earlier job logs remain the
 failure record; retain a result separately before retrying when needed.
+
+For `images-packaging`, `scripts/ci/export-image-reconciliation.mjs` attempts
+to retain attempt-specific cleanup records for the two controller and runtime
+tags prepared by the lane. A planned record does not prove an image was created.
+The run-and-attempt component of each tag name is metadata, not authentication
+or permission to delete an image. Missing state is reported as unavailable;
+neither that result nor an empty inventory proves cleanup. The separate tag
+created by the runtime-images test, other resource kinds, and private environment
+values are excluded. Export or upload failure and runner loss can prevent retention.
+
+Fixture bootstrap failures also upload `diagnostics-<artifact-prefix>-<lane>`
+separately from test results. Cleanup removes the cluster and its private state;
+the diagnostic file remains available for upload and does not satisfy the
+aggregate's required test results.
 
 Per-file cleanup releases its disposable database. Job cleanup removes only the state-owned resources. A whole owned `k3d-cluster` resource owns Kubernetes API object deletion for its Collector Namespace and RBAC. Logging cleanup cleans the local Docker backend container and JSONL/config directory independently, so a dead Kubernetes API does not block local log backend teardown. Cleanup failure fails the check and keeps the private state file usable only while that runner host and path remain available. User databases, contexts, unrelated containers and global images remain outside that ownership.
 
@@ -119,7 +156,14 @@ The aggregate runs after success or failure and checks expected job outcomes plu
 
 ## Changelog
 
+- 2026-09-27 03:44: Retain bounded CI image cleanup evidence. (authoring-run/9266dd42-e257-4e84-b7ac-d6c87ba3ed23 - 3a1acc0db234f8d018593ea3a8b2fd59ad94a4da)
+
+- 2026-09-26: Recorded the PR #445 Images and Packaging failure as a stale native-smoke seccomp hash, rejected the self-hash-only repair, and bound dynamic Docker seccomp profiles to the prepared CI state path/SHA. Local validation covered the helper case (1 pass, 11 image-dependent skips); earlier native image proof remains distinct from the changed harness.
+
+- 2026-09-24 13:09: Document the shared offline seccomp generator and meaningful outside-workspace denial probe in the accompanying changes. (01a0d502-6efc-7063-a88c-4f1739da163c - b4b6a0e0d8700930f21d58b3724c055f8249c486)
+
 - 2026-09-23 23:07: Document lane-owned suite definitions and the shared loader; retain workflow selection, preparation, and result accounting. (01a0d075-a358-7620-8c16-fd4290acddf1 - 4df9f9800836dc1c2b57afd5f8af4d91f55088d5)
+- 2026-09-24: Trace fixture-cluster startup metrics and bounded failure diagnostics saved before cleanup.
 
 - 2026-09-23 06:35: Start the audit and required lanes independently on the existing ephemeral Blacksmith pool; split PostgreSQL and Kubernetes fixtures across owned runners and retain the final coverage gate. (01a0ccf5-96e4-7541-9845-c9a6443fa7b2 - 3ac9d07a4d7ede8c4e1c010f598ef67673f97b74)
 

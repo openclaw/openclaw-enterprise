@@ -1,3 +1,5 @@
+/// <reference lib="es2024.string" />
+
 import {
   asRecord,
   isNonEmptyString,
@@ -5,7 +7,6 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
 import type { CoreV1Api, V1ObjectMeta, V1Secret } from "@kubernetes/client-node";
 import type {
   JSONSchema,
@@ -25,10 +26,11 @@ import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
 } from "../../compute/operation-context.ts";
-
-type KubernetesAuthentication =
-  | { readonly mode: "inCluster" }
-  | { readonly mode: "kubeconfig"; readonly kubeconfigPath: string; readonly context: string };
+import {
+  createKubernetesAuthenticationOptionsSchema,
+  validateKubernetesAuthentication,
+  type KubernetesAuthentication,
+} from "../../kubernetes/authentication.ts";
 
 type KubernetesRecord = Record<string, unknown>;
 
@@ -94,33 +96,12 @@ function validateValue(value: string): void {
   if (value.includes("\0")) {
     throw new SecretValidationError("Secret value cannot contain NUL.");
   }
-  if (containsUnpairedSurrogate(value)) {
+  if (!value.isWellFormed()) {
     throw new SecretValidationError("Secret value must be well-formed UTF-16 for UTF-8 storage.");
   }
   if (Buffer.byteLength(value, "utf8") > MAX_SECRET_VALUE_BYTES) {
     throw new SecretValidationError("Secret value exceeds the application Secret size limit.");
   }
-}
-
-function containsUnpairedSurrogate(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0xd800 || code > 0xdfff) {
-      continue;
-    }
-    if (
-      code >= 0xd800 &&
-      code <= 0xdbff &&
-      index + 1 < value.length &&
-      value.charCodeAt(index + 1) >= 0xdc00 &&
-      value.charCodeAt(index + 1) <= 0xdfff
-    ) {
-      index += 1;
-      continue;
-    }
-    return true;
-  }
-  return false;
 }
 
 function validateBackendRef(reference: SecretBackendRef): void {
@@ -160,33 +141,7 @@ function timeoutFailure(action: string): Error {
 }
 
 export class KubernetesSecretDriver implements SecretDriver {
-  static readonly configurationSchema: JSONSchema = Object.freeze({
-    type: "object",
-    additionalProperties: false,
-    required: ["authentication"],
-    properties: {
-      authentication: {
-        oneOf: [
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["mode"],
-            properties: { mode: { const: "inCluster" } },
-          },
-          {
-            type: "object",
-            additionalProperties: false,
-            required: ["mode", "kubeconfigPath", "context"],
-            properties: {
-              mode: { const: "kubeconfig" },
-              kubeconfigPath: { type: "string", minLength: 1 },
-              context: { type: "string", minLength: 1 },
-            },
-          },
-        ],
-      },
-    },
-  });
+  static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
   static validateConfiguration(configuration: unknown): void {
     const value = asRecord(configuration);
@@ -198,33 +153,10 @@ export class KubernetesSecretDriver implements SecretDriver {
         "Injected clients and unknown Kubernetes Secret options are not supported.",
       );
     }
-    const authentication = asRecord(value.authentication);
-    if (authentication === undefined) {
-      throw new SecretValidationError("Explicit Kubernetes authentication is required.");
-    }
-    if (authentication.mode === "inCluster") {
-      if (Object.keys(authentication).some((key) => key !== "mode")) {
-        throw new SecretValidationError(
-          "In-cluster authentication does not accept additional options.",
-        );
-      }
-      return;
-    }
-    if (authentication.mode !== "kubeconfig") {
-      throw new SecretValidationError("An explicit Kubernetes authentication mode is required.");
-    }
-    if (
-      Object.keys(authentication).some(
-        (key) => key !== "mode" && key !== "kubeconfigPath" && key !== "context",
-      )
-    ) {
-      throw new SecretValidationError("Unknown kubeconfig authentication options are forbidden.");
-    }
-    const path = required(authentication.kubeconfigPath, "Dedicated kubeconfig path");
-    if (!isAbsolute(path)) {
-      throw new SecretValidationError("Dedicated kubeconfig path must be absolute.");
-    }
-    required(authentication.context, "Explicit Kubernetes context");
+    validateKubernetesAuthentication(
+      value.authentication,
+      (message) => new SecretValidationError(message),
+    );
   }
 
   readonly id: string;
@@ -339,6 +271,40 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async resolve(secret: Secret): Promise<SecretBackendRef> {
+    const { reference } = await this.readOwnedSecret(secret);
+    return reference;
+  }
+
+  async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
+    if (secret.driverId !== this.id) {
+      throw new SecretOwnershipError("Secret Driver identity changed.");
+    }
+    const { observed } = await this.readOwnedSecret(secret);
+    const encoded = observed.data?.[SECRET_KEY];
+    let value: string;
+    try {
+      if (
+        typeof encoded !== "string" ||
+        encoded.length > 4 * Math.ceil(MAX_SECRET_VALUE_BYTES / 3) ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+      ) {
+        throw new Error("Invalid encoding.");
+      }
+      const bytes = Buffer.from(encoded, "base64");
+      if (bytes.toString("base64") !== encoded) {
+        throw new Error("Invalid encoding.");
+      }
+      value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      validateValue(value);
+    } catch {
+      throw new SecretBackendUnavailableError("The Kubernetes Secret value is invalid.");
+    }
+    return use(value);
+  }
+
+  private async readOwnedSecret(
+    secret: Secret,
+  ): Promise<{ observed: V1Secret; reference: SecretBackendRef }> {
     validateIdentity(secret);
     validateBackendRef(secret.backendRef);
     const client = await this.core();
@@ -350,7 +316,8 @@ export class KubernetesSecretDriver implements SecretDriver {
       () => client.readNamespacedSecret({ namespace, name: secret.backendRef.name }),
       "read",
     );
-    return this.checkedBackendRef(observed, secret, namespace, secret.backendRef);
+    const reference = this.checkedBackendRef(observed, secret, namespace, secret.backendRef);
+    return { observed, reference };
   }
 
   private manifest(

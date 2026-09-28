@@ -8,9 +8,16 @@ metadata:
     {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 4 }}
 spec:
   replicas: 1
-  {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+  {{- if eq $component "worker" }}
   strategy:
+    {{- if $.Values.repositoryCredentials.enabled }}
     type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: "25%"
+      maxUnavailable: "25%"
+    {{- end }}
   {{- end }}
   selector:
     matchLabels:
@@ -21,6 +28,10 @@ spec:
     metadata:
       labels:
         {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 8 }}
+      {{- with $.Values.controlPlane.installationChecksum }}
+      annotations:
+        openclaw.dev/installation-checksum: {{ . | quote }}
+      {{- end }}
     spec:
       serviceAccountName: openclaw-enterprise-{{ $component }}
       {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
@@ -139,13 +150,13 @@ spec:
         {{- end }}
         {{- end }}
         {{- if eq $component "api" }}
-        {{- if $.Values.provider.chatgpt.enabled }}
-        {{- $chatgpt := $.Values.provider.chatgpt }}
+        {{- if $.Values.backend.chatgpt.enabled }}
+        {{- $chatgpt := $.Values.backend.chatgpt }}
         {{- if or (not $chatgpt.secretName) (not $chatgpt.key) }}
-        {{- fail "provider.chatgpt requires a dedicated admin Secret name and key" }}
+        {{- fail "backend.chatgpt requires a dedicated admin Secret name and key" }}
         {{- end }}
         {{- if or (eq $chatgpt.secretName $.Values.installation.secretName) (eq $chatgpt.secretName $.Values.database.secretName) (eq $chatgpt.secretName $.Values.auth.secretName) }}
-        {{- fail "provider.chatgpt admin credentials must use a dedicated Secret" }}
+        {{- fail "backend.chatgpt admin credentials must use a dedicated Secret" }}
         {{- end }}
         - name: chatgpt-admin
           secret:
@@ -202,6 +213,10 @@ spec:
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_SECRET" "secretName" $.Values.auth.secretName "key" $.Values.auth.secretKey) | nindent 12 }}
             - name: OCC_AUTH_BASE_URL
               value: {{ $.Values.auth.baseUrl | quote }}
+            {{- if $.Values.api.channelDirectoryProxyUrl }}
+            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
+              value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
+            {{- end }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             {{- if $.Values.agentNativeAdmin.enabled }}
@@ -262,7 +277,7 @@ spec:
             {{- end }}
             {{- end }}
             {{- if eq $component "api" }}
-            {{- if $.Values.provider.chatgpt.enabled }}
+            {{- if $.Values.backend.chatgpt.enabled }}
             - name: chatgpt-admin
               mountPath: /etc/openclaw/chatgpt
               readOnly: true
@@ -305,9 +320,9 @@ spec:
           command: [node, /app/dist/composition/repository-credentials/projected-inputs.js]
           args:
             - --public-origin
-            - {{ printf "https://openclaw-enterprise-repository-credentials.%s.svc" $.Release.Namespace | quote }}
-            - --provider-id
-            - {{ $.Values.repositoryCredentials.providerId | quote }}
+            - {{ include "openclaw.repositoryCredentials.origin" $ | quote }}
+            - --backend-id
+            - {{ $.Values.repositoryCredentials.backendId | quote }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:

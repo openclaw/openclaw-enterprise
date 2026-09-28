@@ -1,11 +1,26 @@
 # Kubernetes tests
 
-Verify Kubernetes resources with an HTTP fixture, then select real-runtime
-tests for gateway, Codex, model, and Secret behavior. Prepare the
-[shared requirements](README.md#requirements-and-credentials) first.
+Prepare [shared prerequisites](README.md#requirements-and-credentials) for
+Kubernetes HTTP fixtures or real-runtime gateway, Codex, model, and Secret tests.
 
-For the experimental complete OCE installation across two independent APIs, see
-[local two-cluster validation](two-cluster-local.md).
+## Local Kubernetes installation
+
+Build the CLI and run the selected real test to create and clean up a separate
+k3d cluster:
+
+```sh
+pnpm cli:build
+OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
+```
+
+The test exercises the regular launcher, in-cluster PostgreSQL and OCE,
+authenticated Namespace readiness, standard Presets, and curated plugin
+discovery. It provisions a dedicated Codex Agent with a synthetic model Secret
+and checks workspace-write and outside-write behavior inside its real sandbox.
+It does not run a model or prove Codex WebSocket tool execution. If cleanup fails, it preserves the recorded state directory for
+recovery with `occ dev down`.
+
+See [two-cluster validation](two-cluster-local.md).
 
 ## Kubernetes HTTP fixture
 
@@ -33,8 +48,9 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
   node --test tests/integration/kubernetes-compute-real.test.mjs
 ```
 
-All three fixture cases must run: Driver lifecycle/isolation, externally managed
-namespace preservation, and PostgreSQL API-plus-worker reconciliation. No model
+All four fixture cases must run: Driver lifecycle/isolation, externally managed
+namespace preservation, provisioning handoff, and PostgreSQL API-plus-worker
+reconciliation. No model
 key is needed. Missing all cluster selectors skips the suite; partial selectors
 fail, and a missing database skips the API-plus-worker case.
 
@@ -44,9 +60,13 @@ Secret and private-state claim deletion. The case uses nonfunctional fixture
 credentials and performs no model turn.
 
 The tests require an explicit loopback `k3d-*` context and enforcing
-NetworkPolicies. They create scoped RBAC and resources, and configure the
-selected cluster's local-path provisioner for shared filesystem tests. Because
-that changes cluster-wide storage configuration, use a disposable cluster.
+NetworkPolicies. They create scoped RBAC and resources and use the stock
+local-path provisioner for RWO Harness workspaces. The API-plus-worker case
+verifies that replacement retains the PVC UID and a file written by the old
+Harness. The HTTP fixture can fail native readiness using a workspace marker;
+a later deployment must retain both earlier files and writes from the failed
+candidate. This proves serial replacement on local storage, not cloud CSI detach,
+node fencing, or data movement between nodes. Use a disposable cluster.
 
 ### Fixture images and security controls
 
@@ -57,13 +77,10 @@ Its local mutable tag and unpinned `docker.io/library/node:24-bookworm` base are
 disposable fixture; production images still require the documented pinning and
 review.
 
-The suite inspects restricted tenant labels, quotas and limits, NetworkPolicies,
-nonroot execution, `RuntimeDefault` seccomp, dropped capabilities, denied
-privilege escalation, a read-only root filesystem, and resource bounds. A
-skipped cluster case does not verify enforcement. The HTTP fixture exercises
-infrastructure. Its API-plus-worker case verifies Secret binding admission and
-gateway projection with synthetic values, but genuine Slack/channel runtime
-requires the runtime images and credentials below.
+The suite checks tenant isolation, resource bounds, nonroot execution, seccomp,
+dropped capabilities, and a read-only root filesystem. Skipped cases prove no
+enforcement. API-plus-worker coverage uses synthetic Secrets for binding admission
+and gateway projection; genuine channel runtime needs the images and credentials below.
 
 Live Configuration ConfigMap CRUD and least-privilege RBAC cases require the
 selected disposable cluster and tenant credentials. Without those inputs, they
@@ -82,11 +99,15 @@ the test environment.
 
 ## Kubernetes model turns and Secrets
 
+Follow [Codex sandbox setup](../guides/deploy/codex-sandbox.md) for seccomp
+prerequisites. CI checks workspace writes and outside-write denial; the native
+workspace case additionally requires tool-history evidence with `approvalPolicy: never`.
+Credentialed repository access requires separate proof.
+
 ### Develop with local containers and k3d
 
-The repository can prepare a disposable k3d cluster, an isolated PostgreSQL
-database, and the current gateway and Codex runtime images. Start Docker or a
-Podman API socket. On macOS, start Podman Machine. Then start the helper:
+The helper prepares disposable k3d, isolated PostgreSQL, and gateway/Codex images.
+Start Docker or Podman's API socket (Podman Machine on macOS), then run:
 
 ```sh
 export OCC_TEST_OPENAI_MODEL=gpt-6-astra
@@ -99,16 +120,17 @@ for it without echoing the value. `test` requires the variable explicitly;
 and its children; the helper does not write it to preparation or demo state
 files.
 
-The helper requires k3d, `kubectl`, Helm, and OpenSSL, plus either Docker with
-Docker Compose or Podman with `podman-compose`. It uses a running Podman API
-socket when both engines are available unless `DOCKER_HOST` already selects an
-engine. Set `OCC_K3D_CONTAINER_ENGINE=podman` or `docker` to override detection.
+The helper requires k3d, `kubectl`, Helm, OpenSSL, and Docker Compose or
+`podman-compose`. It prefers a running Podman API socket unless `DOCKER_HOST`
+selects an engine. Set `OCC_K3D_CONTAINER_ENGINE=podman` or `docker` to override detection.
 
 Preparation state is private to the selected engine under
 `${XDG_STATE_HOME:-$HOME/.local/state}/openclaw-enterprise/k3d-<engine>-codex`.
 Set `OCC_K3D_STATE_DIR` to an absolute path to override that location. Later
 runs reuse the prepared cluster, database, images, Envoy Gateway, cert-manager,
-and the disposable private-routing CA. The helper builds the current checkout
+and the disposable private-routing CA. This helper has no image upgrade command;
+its demo resources are disposable. For a separate persistent Helm installation,
+see [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md). The helper builds the current checkout
 and ignores Kubernetes image selectors inherited from an earlier test shell.
 State prepared by an older version without workspace routing must be removed
 with `./scripts/k3d down` before starting the updated demo.
@@ -124,29 +146,24 @@ Reset deletes only `oce-production-*`, `oce-ns-*`, and
 `openclaw-ci-seccomp-*` Namespaces from the helper-owned cluster. It drops and
 recreates only the database recorded in the helper's private state.
 
-The default command starts the OCC API inside Kubernetes, creates one dedicated
-Codex Agent, and performs a real model turn before serving the OpenClaw Control UI on
-`http://127.0.0.1:18888` and the OCC console on
-`http://127.0.0.1:18889`. It prints the temporary OCC username and a command to
-copy the OCC password from the mode-`0600` `demo.json` state file; it does not
-print either password.
-The demo uses the same development login as `scripts/dev-up`:
-`admin@openclaw.local` with
-`openclaw-development-password`. Set `OPENCLAW_DEV_EMAIL` or
-`OPENCLAW_DEV_PASSWORD` to override those defaults for both workflows. The
-prepared database retains that account between demo runs. If you change its
-password, run `./scripts/k3d reset` before starting the demo again.
-Print the Control UI URL with `./scripts/k3d get openclaw-control-ui`. Copy the
-password with `./scripts/k3d copy openclaw-password` and paste it into the Control UI's
-**Gateway secret** field. The separate password preserves direct loopback access
-while the gateway uses trusted-proxy authentication for OCC workspace files.
-Keep the command running while using either interface. Press Ctrl-C to stop the
-local controller and worker, close the port-forwards, remove the private state
-file, and remove the demo's Kubernetes Namespaces. The prepared cluster, images,
-routing controllers, and PostgreSQL service remain available. Run
-`./scripts/k3d` again to create fresh demo resources and restore the
-port-forwards; there are no surviving demo services for a separate forwarding
-command to reconnect.
+The default command starts the OCC API in Kubernetes, creates a dedicated Codex
+Agent, and completes a model turn. It serves the OpenClaw Control UI at
+`http://127.0.0.1:18888` and the OCC console at `http://127.0.0.1:18889`.
+The command prints the temporary OCC username and a command to copy its password
+from the mode-`0600` `demo.json` file, without printing passwords.
+
+The development login is `admin@openclaw.local` with
+`openclaw-development-password`. Override it with `OPENCLAW_DEV_EMAIL` or
+`OPENCLAW_DEV_PASSWORD`; the database retains the account, so reset before
+restarting the demo after changing its password. Use `./scripts/k3d get
+openclaw-control-ui` for the Control UI URL and `./scripts/k3d copy
+openclaw-password` for its **Gateway secret**. This separate password preserves
+direct loopback access while OCC workspace files use trusted-proxy authentication.
+
+Keep the command running while using either interface. Ctrl-C stops the local
+controller and worker, closes port-forwards, and removes the private state file
+and demo Namespaces. The prepared cluster, images, routing controllers, and
+PostgreSQL remain; rerun `./scripts/k3d` to recreate demo resources.
 
 Inspect the current demo and cluster details without parsing the private state
 files directly:
@@ -157,14 +174,10 @@ files directly:
 ./scripts/k3d copy occ-password
 ```
 
-`info` reports the selected engine, state directory, preparation status, demo
-status, non-secret connection values, password copy commands, and the live
-host/container processes outside Kubernetes. `get` prints only a selected
-non-sensitive value for shell composition; run
-`./scripts/k3d help` for its available fields. `copy` sends
-`openclaw-password` or `occ-password` directly to the clipboard with `pbcopy`,
-`wl-copy`, or `xclip` and prints only a confirmation; it never writes the
-selected value to standard output. The OCC console's Workspace files panel uses
+`info` reports the engine, state directory, status, connection values, password
+copy commands, and host/container processes. `get` prints a selected non-sensitive
+value; run `./scripts/k3d help` for fields. `copy` sends either password to the
+clipboard with `pbcopy`, `wl-copy`, or `xclip`, never to standard output. The OCC console's Workspace files panel uses
 the same private Envoy route exercised by the focused gateway-routing
 integration. Demo fields become available after the foreground command reports
 readiness. Cluster fields remain available while its prepared state exists.
@@ -175,10 +188,9 @@ To run the dedicated Codex gateway-routing integration instead:
 ./scripts/k3d test
 ```
 
-The test proves real model turns, OCC workspace access through Envoy, routing
+The test proves model turns, OCC workspace access through Envoy, routing
 credential enforcement and rotation, certificate renewal, Pod replacement, and
-retained workspace behavior. It does not prove the broader Kubernetes suite's
-credential-recovery or embedded OpenClaw cases.
+workspace retention. It does not cover credential recovery or embedded OpenClaw.
 
 Remove only resources recorded in the helper's owned state when finished:
 
@@ -289,13 +301,11 @@ before creating tenant resources.
 | `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` | Optional immutable runtime image for credential Secret and private-state teardown proof.           |
 | `OCC_TEST_DATABASE_URL`             | Required for API-and-worker coverage; must select a dedicated, migrated `openclaw_k8s_*` database. |
 
-Follow the canonical
-[Kubernetes HTTP fixture testing guide](#kubernetes-http-fixture)
-for disposable `k3d` setup, fixture image import, and PostgreSQL-backed
-coverage. Kubernetes API-and-worker coverage rejects the ordinary
-`openclaw_enterprise` development database. The real-cluster suite uses an HTTP
-fixture and does not establish a real gateway, authenticated Codex connection,
-or model turn. The [real-runtime suite](#kubernetes-model-turns-and-secrets) provides model-turn proof.
+The [HTTP fixture procedure](#kubernetes-http-fixture) covers setup and
+PostgreSQL-backed testing; the API-and-worker case rejects the ordinary
+`openclaw_enterprise` database. The fixture does not prove a real gateway,
+authenticated Codex connection, or model turn; use the
+[real-runtime suite](#kubernetes-model-turns-and-secrets) for model-turn proof.
 
 CI keeps the project-pinned k3d 5.8.3 binary and passes `--image +v1.35` when it
 creates ordinary disposable clusters. k3d resolves the K3s `v1.35` release
@@ -372,3 +382,7 @@ credential separation; it does not prove production node-pool isolation. Configu
 separate reviewed node pools for that proof. Current tests must still pass with
 the actual supported Gateway/Codex images and authenticated node reconnect;
 fixture readiness is not a substitute for model-backed acceptance.
+
+## Production observability
+
+See [smoke tests and model-log validation](metrics.md#kubernetes-observability-acceptance).

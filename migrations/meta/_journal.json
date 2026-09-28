@@ -104,7 +104,7 @@
       "idx": 14,
       "version": "7",
       "when": 1787000000014,
-      "tag": "0014_provider_driver_abstraction",
+      "tag": "0014_backend_driver_abstraction",
       "breakpoints": true
     },
     {
@@ -217,6 +217,27 @@
       "version": "7",
       "when": 1787000000030,
       "tag": "0030_codex_pat_harness_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787000000031,
+      "tag": "0031_backend_terminology_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787000000032,
+      "tag": "0032_credential_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787000000033,
+      "tag": "0033_agent_plugin_approvers",
       "breakpoints": true
     }
   ]

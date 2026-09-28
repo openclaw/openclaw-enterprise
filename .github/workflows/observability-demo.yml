@@ -1,0 +1,63 @@
+name: Observability Demo
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/observability-demo.yml"
+      - ".github/actions/run-ci-lane/**"
+      - "deploy/helm/openclaw-observability-demo/**"
+      - "tests/integration/observability-demo-k3d.test.mjs"
+      - "tests/helpers/observability-demo-k3d.mjs"
+      - "tests/helpers/kubernetes-real.mjs"
+      - "tests/fixtures/repository-credentials/process.mjs"
+      - "scripts/ci/**"
+      - "pnpm-lock.yaml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/observability-demo.yml"
+      - ".github/actions/run-ci-lane/**"
+      - "deploy/helm/openclaw-observability-demo/**"
+      - "tests/integration/observability-demo-k3d.test.mjs"
+      - "tests/helpers/observability-demo-k3d.mjs"
+      - "tests/helpers/kubernetes-real.mjs"
+      - "tests/fixtures/repository-credentials/process.mjs"
+      - "scripts/ci/**"
+      - "pnpm-lock.yaml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: observability-demo-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    name: Demo Observability Smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: k3d-observability-demo
+          profile: k3d
+          node-version: "24.16.0"
+          artifact-prefix: demo-results
+      - name: Upload rendered log dashboard
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: demo-log-dashboard
+          path: |
+            ${{ runner.temp }}/observability-demo/*.png
+            ${{ runner.temp }}/observability-demo/logs-failure.json
+          # Missing dashboard artifacts fail a successful lane, but do not add a
+          # secondary upload error when setup or the browser run already failed.
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
+          retention-days: 7

@@ -7,6 +7,8 @@ Embedded execution, cloud provisioning, and repository credential delivery are
 outside this profile. The repository credential service currently assumes
 cluster-local reachability; two-cluster admission rejects it explicitly. Keep the
 implementation draft until runtime and failure-path acceptance are complete.
+Earlier two-cluster results used the previous runtime and storage behavior; rerun
+this profile against the current controller and runtime before claiming acceptance.
 
 ## Prepare isolated infrastructure
 
@@ -67,20 +69,18 @@ containerd imports of real runtime images. An isolated 8-CPU, 16-GiB RAM,
 capacity before creating it; do not resize or clean unrelated environments.
 
 Install Envoy Gateway in both clusters and cert-manager in CP. The initial
-experiment used Envoy Gateway 1.6.7 and cert-manager 1.18.4. Provide a private
-CP RWO StorageClass and DP RWX workspace storage. The existing
-`configureExistingK3dLocalPathSharedFileSystem` test helper configures a disposable
-single-node k3d local-path provisioner for the latter. This is a local fixture,
-not shared storage between clusters or a production RWX recommendation.
+experiment used Envoy Gateway 1.6.7 and cert-manager 1.18.4. Provide RWO
+storage independently in each cluster: a SQLite-compatible private Gateway
+StorageClass in CP and an ordinary Harness workspace StorageClass in DP. Gateway
+and Harness never share a volume. Harness revision replacement stops the prior
+workload before the successor mounts its workspace. Replacement has a downtime
+window, including when invalid successor credentials prevent startup.
 
-Keep those local fixture settings across node restarts. On each **owned test
-node only**, create `local-storage.yaml.skip` and `coredns.yaml.skip` under
-`/var/lib/rancher/k3s/server/manifests/` after the packaged components have
-installed. K3s supports [skip files](https://docs.k3s.io/installation/packaged-components)
-to stop reapplying an AddOn without deleting its existing resources. Otherwise
-a node restart resets the test StorageClass's `defaultVolumeType` annotation
-and can remove the CoreDNS `NodeHosts` entry. This is disposable k3d fixture
-preparation, not a production storage or DNS configuration procedure.
+Keep local DNS settings across node restarts. On each **owned test node only**,
+create `coredns.yaml.skip` under `/var/lib/rancher/k3s/server/manifests/` after
+CoreDNS has installed. K3s supports [skip files](https://docs.k3s.io/installation/packaged-components)
+to stop reapplying an AddOn without deleting its existing resources. This is
+disposable k3d fixture preparation, not a production DNS configuration procedure.
 
 Import approved immutable controller/runtime images into their respective
 clusters. Install the configured Codex localhost seccomp profile on DP nodes
@@ -199,7 +199,7 @@ The outage case stops and restores the selected DP k3d node, so do not run other
 tests against that cluster concurrently. It validates the exact container and
 cluster identity before stopping it and registers a restoration cleanup.
 
-The final expanded API/worker test passed without skips in 238 seconds:
+Earlier API/worker testing passed without skips in 238 seconds:
 placement, workspace RPC, Pod reconnect, stop/resume, invalid-key rejection and
 correct-key recovery, concurrent candidate grants, revision replacement and
 grant cleanup, real model-driven shell execution, a short DP outage, and deletion
@@ -219,32 +219,36 @@ The runtime came from the repository Dockerfile's OpenClaw source
 `sha256:2a7a1409f0d84d49d7343ff939ee18389843c377c104df6a5dd4dee715b4d759`.
 This is a locally built image, not a published release qualification.
 
-Acceptance limits remain explicit:
+Historical findings and remaining acceptance:
 
 - A longer outage exhausted the existing five-attempt worker budget and left
   an Agent `deleting`. A repeated DELETE does not requeue failed deletion work.
-  This behavior also exists on main; the short-outage result does not establish
-  recovery after retry exhaustion. Preserve the failed fixture for investigation.
-- An already paired workspace node fails to reconnect after a Pod restart once
-  its setup code expires. In the selected native runtime, `node run
+  Current `OceWorker.finalizeAgentDeletion` still fails exhausted work, and
+  `OccController.deleteAgent` returns an already-deleting Agent without requeueing.
+  The short-outage result does not establish recovery after retry exhaustion.
+- The historical runtime above failed to reconnect an already paired workspace
+  node after a Pod restart once its setup code expired. Its `node run
 --pair-if-needed` decodes the code before consulting saved state and reports
   `Pairing setup code has expired`. The retained Agent's model call then returned
   500 because workspace discovery was unavailable. The 238-second test proves
   outage recovery for deletion, not aged live-Agent reconnection. A normal OCE
   redeploy issues fresh pairing material; it is not automatic reconnect proof.
-  Qualify a runtime fix before relying on long-lived restart recovery.
+  Revalidate natural expiry and restart with the selected current runtime;
+  this historical failure does not establish its present behavior.
 - Remote Codex plugin installation requires a ChatGPT-backed credential;
   an API-key model test does not establish that workflow. The HTTPS plugin-status
   authentication tests are separate evidence.
-- Replacement after a model turn also succeeded on the current pin, including
+- Replacement after a model turn also succeeded on that historical pin, including
   another model reply afterward, but took 396 seconds. Startup logs showed the
   prior Gateway owner lease delaying the replacement. Do not promise prompt
   replacement or clear a live lease to shorten the measurement.
 - Same-cluster Kubernetes fixture CI passed. It is distinct from a complete
   same-cluster real-model run.
 
-The expanded stop/resume scenario exposed concurrent candidates repeatedly
-replacing one shared authentication NetworkPolicy. The Driver now gives each
-revision its own policy and removes that grant after its workload terminates.
-The original failed runs and earlier 176-second lifecycle proof remain recorded
-separately; the final 238-second run includes the fix and expanded assertions.
+Earlier stop/resume testing exposed concurrent candidates repeatedly replacing
+one shared authentication NetworkPolicy. That 238-second result used a
+per-revision workaround. Current exclusive RWO replacement stops predecessors
+and supersedes their reconciliation before preparing a successor, so this profile
+uses the main Driver's Agent-owned policy with an exact-revision Pod selector.
+The refreshed test verifies the rejected Harness is gone and the policy selects
+only the corrected successor; earlier results do not establish this acceptance.

@@ -1,3 +1,5 @@
+/// <reference lib="es2024.string" />
+
 import type { V1Volume, V1VolumeMount } from "@kubernetes/client-node";
 import type {
   AgentRevision,
@@ -187,11 +189,13 @@ export function repositorySessionFiles(
   }
   for (const key of keys) {
     const content = files[key];
-    if (typeof content !== "string" || content.length === 0 || content.includes("\0")) {
-      return invalid();
-    }
-    const bytes = Buffer.from(content, "utf8");
-    if (bytes.length > limits[key as keyof typeof limits] || bytes.toString("utf8") !== content) {
+    if (
+      typeof content !== "string" ||
+      content.length === 0 ||
+      content.includes("\0") ||
+      Buffer.byteLength(content, "utf8") > limits[key as keyof typeof limits] ||
+      !content.isWellFormed()
+    ) {
       return invalid();
     }
   }

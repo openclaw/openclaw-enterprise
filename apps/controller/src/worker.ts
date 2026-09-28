@@ -22,8 +22,9 @@ import type {
   Namespace,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
-  ProviderDefinition,
+  BackendDefinition,
   SandboxDriver,
+  CredentialGatewayDriver,
   SecretBindings,
   SecretDriver,
   ResolvedHarnessAuth,
@@ -53,9 +54,9 @@ import {
   validateRuntimeFailureEvidence,
 } from "@openclaw-enterprise/occ";
 import {
-  providerDefinitionMap,
-  validateProviderDefinitions,
-  validateServiceAccountProviderBinding,
+  backendDefinitionMap,
+  validateBackendDefinitions,
+  validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
@@ -73,6 +74,7 @@ export interface ControllerWorkerOptions {
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
+  readonly credentialGatewayDriver?: CredentialGatewayDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
@@ -194,7 +196,8 @@ function validSecretDriver(driver: SecretDriver): boolean {
     typeof driver.create === "function" &&
     typeof driver.update === "function" &&
     typeof driver.delete === "function" &&
-    typeof driver.resolve === "function"
+    typeof driver.resolve === "function" &&
+    (driver.withValue === undefined || typeof driver.withValue === "function")
   );
 }
 
@@ -367,8 +370,9 @@ export class ControllerWorker {
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
-  private readonly providers: readonly ProviderDefinition[];
-  private readonly providerMap: ReadonlyMap<string, ProviderDefinition>;
+  private readonly credentialGateway: CredentialGatewayDriver | undefined;
+  private readonly backends: readonly BackendDefinition[];
+  private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
   private readonly pollIntervalMs: number;
   private readonly leaseDurationMs: number;
@@ -376,6 +380,7 @@ export class ControllerWorker {
   private readonly convergenceTimeoutMs: number;
   private readonly maintenanceIntervalMs: number | undefined;
   private readonly repoDriver: RepoDriver | undefined;
+  private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
   private readonly mode: "development" | "production";
@@ -412,8 +417,8 @@ export class ControllerWorker {
     };
     this.state = new PostgresPlatformState(options.pool, { workQueue: this.queueOptions });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
-    this.providers = validateProviderDefinitions(drivers?.installation.provider ?? []);
-    this.providerMap = providerDefinitionMap(this.providers);
+    this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
+    this.backendMap = backendDefinitionMap(this.backends);
     this.iamDriverId = drivers?.installation.drivers.iam.id ?? "native-iam";
     this.iam =
       drivers === undefined
@@ -457,6 +462,18 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.sandbox = drivers?.sandboxDriver ?? options.sandboxDriver;
+    this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
+    if (
+      (drivers?.installation.drivers.credential_gateway === undefined) !==
+      (drivers?.credentialGatewayDriver === undefined)
+    ) {
+      throw new Error(
+        "The selected Credential Gateway Driver requires shared startup configuration.",
+      );
+    }
+    if (this.credentialGateway !== undefined && this.sandbox === undefined) {
+      throw new Error("The selected Credential Gateway Driver requires a paired Sandbox Driver.");
+    }
     if (
       (drivers?.installation.drivers.sandbox === undefined) !==
       (drivers?.sandboxDriver === undefined)
@@ -480,6 +497,10 @@ export class ControllerWorker {
       });
     this.onHealthy = options.onHealthy;
     this.repoDriver = drivers?.repoDriver;
+    this.repositoryCleanupRetryMs = positiveInteger(
+      this.repoDriver?.maintenanceIntervalMs ?? 30_000,
+      "Repository cleanup retry interval",
+    );
     this.pluginDriver = drivers?.pluginDriver;
     if (this.repoDriver !== undefined) {
       const driver = this.repoDriver;
@@ -516,7 +537,7 @@ export class ControllerWorker {
     this.attachLifecycleDrivers(this.iam);
     const provisioning = new OpenClawController(installation, {
       state: this.state,
-      providers: this.providers,
+      backends: this.backends,
       recordOperations: true,
       ...(this.configuredServiceAccountDriverId === undefined
         ? {}
@@ -525,6 +546,7 @@ export class ControllerWorker {
     for (const driver of [
       this.configuration,
       this.sandbox,
+      this.credentialGateway,
       this.iam,
       this.secretDriver,
       this.repoDriver,
@@ -843,9 +865,9 @@ export class ControllerWorker {
     if (denied !== undefined) {
       throw new RepositoryCredentialAuthorityError(denied.code);
     }
-    const provider = await this.resolveRevisionProvider(revision);
-    if (provider !== undefined) {
-      throw new RepositoryCredentialAuthorityError(provider.code);
+    const backend = await this.resolveRevisionBackend(revision);
+    if (backend !== undefined) {
+      throw new RepositoryCredentialAuthorityError(backend.code);
     }
     if (typeof this.compute.validateRepositoryCredentials !== "function") {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
@@ -862,6 +884,17 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
+    if (this.compute.requiresStoppedPredecessors?.(revision) === true) {
+      const earlier = await this.state.read(async (view) =>
+        (await view.revisions.listRevisions(revision.namespaceId, revision.agentId)).filter(
+          (candidate) => candidate.revision < revision.revision,
+        ),
+      );
+      for (const previous of earlier) {
+        await this.closeRevisionCredentials(claim, previous);
+        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+      }
+    }
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
       const repositoryCredentials = await this.repositoryCredentials.prepare(claim, revision);
@@ -961,12 +994,12 @@ export class ControllerWorker {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
+      const attempts = await unit.repositorySessions.listRevisionAttempts({
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId!,
+        revisionId: claim.revisionId!,
+      });
       if (complete) {
-        const attempts = await unit.repositorySessions.listRevisionAttempts({
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId!,
-          revisionId: claim.revisionId!,
-        });
         complete = !attempts.some(
           (attempt) => attempt.phase === "closing" || attempt.phase === "invalidated",
         );
@@ -974,7 +1007,13 @@ export class ControllerWorker {
       if (complete) {
         await queue.complete(claim);
       } else {
-        await queue.defer(claim, { code: "REPOSITORY_CLEANUP_PENDING" });
+        await queue.defer(
+          claim,
+          { code: "REPOSITORY_CLEANUP_PENDING" },
+          attempts.some((attempt) => attempt.phase === "invalidated")
+            ? { delayMs: this.repositoryCleanupRetryMs }
+            : undefined,
+        );
       }
     }, this.queueOptions);
     this.emit({
@@ -1097,7 +1136,7 @@ export class ControllerWorker {
         return;
       }
       // Admission may change desired state while IAM is consulted. Reload the exact
-      // Agent immediately before any provider effect so a later deployment wins.
+      // Agent immediately before any backend effect so a later deployment wins.
       const resources = await this.state.read(async (view) => {
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
@@ -1739,9 +1778,9 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, denied);
         return;
       }
-      const provider = await this.resolveRevisionProvider(revision);
-      if (provider !== undefined) {
-        await this.finalizeRevision(claim, provider);
+      const backend = await this.resolveRevisionBackend(revision);
+      if (backend !== undefined) {
+        await this.finalizeRevision(claim, backend);
         return;
       }
       if (agent.desiredRuntimeState === "stopped") {
@@ -1777,6 +1816,28 @@ export class ControllerWorker {
           await this.retireEarlierRevisions(claim, revision);
         }
         await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
+        return;
+      }
+      // Exclusive preparation cannot allow an older maintenance/retry pass to
+      // recreate a predecessor between the replacement's readiness observations.
+      const successor =
+        this.compute.requiresStoppedPredecessors === undefined
+          ? undefined
+          : await this.state.read(async (view) =>
+              (await view.revisions.listRevisions(revision.namespaceId, revision.agentId)).find(
+                (candidate) =>
+                  candidate.revision > revision.revision &&
+                  candidate.compute.id === this.compute.id &&
+                  candidate.compute.implementation === this.compute.implementation &&
+                  this.compute.requiresStoppedPredecessors?.(candidate) === true,
+              ),
+            );
+      if (successor !== undefined) {
+        await this.finalizeRevision(claim, {
+          outcome: "success",
+          code: "REVISION_SUPERSEDED",
+          supersededBy: successor,
+        });
         return;
       }
       if (revision.repositoryCredentials !== undefined) {
@@ -1967,8 +2028,35 @@ export class ControllerWorker {
       ) {
         refs.push(auth.source);
       }
-    } else if (auth.method !== "chatgpt_service_account" && auth.method !== "runtime") {
+    } else if (
+      auth.method !== "chatgpt_service_account" &&
+      auth.method !== "credential_source" &&
+      auth.method !== "runtime"
+    ) {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
+    }
+    if (auth.method === "credential_source") {
+      // Both the deploying actor and the Agent principal must still operate the source.
+      for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
+        const sourceAuthorization: AuthorizationRequest = {
+          principalId,
+          action: "operate",
+          resource: {
+            kind: "credential_source",
+            id: auth.sourceId,
+            namespaceId: revision.namespaceId,
+          },
+        };
+        const sourceDecision = await this.iamDecision(driver, sourceAuthorization);
+        if (!sourceDecision.allowed) {
+          return {
+            outcome: "permanent",
+            code: "AUTHORIZATION_DENIED",
+            authorization: sourceAuthorization,
+            decision: sourceDecision,
+          };
+        }
+      }
     }
     for (const ref of refs) {
       for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
@@ -2012,14 +2100,14 @@ export class ControllerWorker {
     return undefined;
   }
 
-  private async resolveRevisionProvider(
+  private async resolveRevisionBackend(
     revision: Readonly<AgentRevision>,
   ): Promise<RevisionDispatchResult | undefined> {
     if (
-      revision.providerId !== null &&
-      this.providerMap.get(revision.providerId)?.type !== "chatgpt"
+      revision.backendId !== null &&
+      this.backendMap.get(revision.backendId)?.type !== "chatgpt"
     ) {
-      return { outcome: "permanent", code: "PROVIDER_UNAVAILABLE" };
+      return { outcome: "permanent", code: "BACKEND_UNAVAILABLE" };
     }
     const auth = revision.harnessAuth;
     if (auth.method !== "chatgpt_service_account") {
@@ -2030,7 +2118,7 @@ export class ControllerWorker {
         revision.namespaceId,
         auth.serviceAccountId,
       ),
-      binding: await view.serviceAccounts.findServiceAccountProviderBinding(
+      binding: await view.serviceAccounts.findServiceAccountBackendBinding(
         revision.namespaceId,
         auth.serviceAccountId,
       ),
@@ -2046,21 +2134,21 @@ export class ControllerWorker {
       return { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_CHANGED" };
     }
     try {
-      validateServiceAccountProviderBinding(this.providerMap, revision.providerId, binding);
-      const admitted = auth.providerBinding;
+      validateServiceAccountBackendBinding(this.backendMap, revision.backendId, binding);
+      const admitted = auth.backendBinding;
       if (
         admitted === undefined ||
         binding === undefined ||
-        binding.providerId !== admitted.providerId ||
+        binding.backendId !== admitted.backendId ||
         binding.driverId !== admitted.driverId ||
         binding.workspaceId !== admitted.workspaceId ||
         binding.credentialIssued !== admitted.credentialIssued
       ) {
-        return { outcome: "permanent", code: "SERVICE_ACCOUNT_PROVIDER_MISMATCH" };
+        return { outcome: "permanent", code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" };
       }
       return undefined;
     } catch {
-      return { outcome: "permanent", code: "SERVICE_ACCOUNT_PROVIDER_MISMATCH" };
+      return { outcome: "permanent", code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" };
     }
   }
 
@@ -2194,6 +2282,27 @@ export class ControllerWorker {
       // Admission verifies the physical source. Workers project authoritative
       // OCC metadata without requiring permission to read backend Secret values.
       harnessAuth = { ...auth, backendRef: secret.backendRef };
+    } else if (revision.harnessAuth.method === "credential_source") {
+      const auth = revision.harnessAuth;
+      if (
+        this.credentialGateway === undefined ||
+        auth.credentialGatewayId !== this.credentialGateway.id
+      ) {
+        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+      }
+      const source = await this.state.read((view) =>
+        view.credentialSources.findCredentialSource(revision.namespaceId, auth.sourceId),
+      );
+      // A deleting source can no longer be attached, even to an admitted revision.
+      if (
+        source === undefined ||
+        source.state !== "ready" ||
+        source.driverId !== auth.credentialGatewayId ||
+        source.type !== auth.sourceType
+      ) {
+        return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
+      harnessAuth = { ...auth, source };
     } else {
       harnessAuth = revision.harnessAuth;
     }
@@ -2640,7 +2749,7 @@ export class ControllerWorker {
         this.repositoryCredentials.validate(revision);
       }
       // Keep each failed observation bounded without permanently abandoning
-      // an authorized active runtime after one prolonged provider outage.
+      // an authorized active runtime after one prolonged backend outage.
       await queue.fail(claim, { code }, { continuingRevision: true });
       await this.enqueueMaintenance(queue, claim, revision);
     }, this.queueOptions);

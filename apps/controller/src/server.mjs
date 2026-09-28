@@ -37,6 +37,9 @@ function startupFailureCode(error) {
   if (/ChatGPT admin-key Secret/.test(message)) {
     return "CHATGPT_ADMIN_KEY_UNAVAILABLE";
   }
+  if (/Slack directory proxy/i.test(message)) {
+    return "CHANNEL_DIRECTORY_PROXY_INVALID";
+  }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
   }
@@ -163,6 +166,7 @@ function configuration() {
   }
 
   const gatewayApiKeyPath = process.env.OCC_GATEWAY_API_KEY_PATH;
+  const channelDirectoryProxyUrl = process.env.OCC_CHANNEL_DIRECTORY_PROXY_URL;
   if (gatewayApiKeyPath !== undefined) {
     if (gatewayApiKeyPath.trim().length === 0 || !isAbsolute(gatewayApiKeyPath)) {
       throw new Error("OCC_GATEWAY_API_KEY_PATH must identify an absolute mounted-file path.");
@@ -201,6 +205,7 @@ function configuration() {
       authSecret: requiredEnvironment("OCC_AUTH_SECRET"),
       authBaseURL,
       ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
+      ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
     });
   }
@@ -249,7 +254,7 @@ async function start() {
   const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
   if (selectedServiceAccountDriver !== undefined) {
     if (settings.databaseUrl === undefined) {
-      throw new Error("Provider-managed ServiceAccounts require PostgreSQL persistence.");
+      throw new Error("Backend-managed ServiceAccounts require PostgreSQL persistence.");
     }
     if (
       typeof drivers.computeDriver.storeServiceAccountCredential !== "function" ||
@@ -257,15 +262,15 @@ async function start() {
     ) {
       throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
     }
-    const providerDefinition = drivers.installation.provider.find(
-      (provider) =>
-        provider.type === "chatgpt" &&
-        provider.drivers.service_account === selectedServiceAccountDriver.id,
+    const backendDefinition = drivers.installation.backend.find(
+      (backend) =>
+        backend.type === "chatgpt" &&
+        backend.drivers.service_account === selectedServiceAccountDriver.id,
     );
-    if (providerDefinition === undefined) {
-      throw new Error("The selected ServiceAccount Driver requires an owning Provider.");
+    if (backendDefinition === undefined) {
+      throw new Error("The selected ServiceAccount Driver requires an owning Backend.");
     }
-    const { configuration } = providerDefinition;
+    const { configuration } = backendDefinition;
     let adminKey;
     try {
       adminKey = (await readFile(configuration.apiKeyPath, "utf8")).trim();
@@ -275,12 +280,12 @@ async function start() {
     if (adminKey.length === 0) {
       throw new Error("The mounted ChatGPT admin key must be nonempty.");
     }
-    const { ChatGPTClient } = await import("./providers/chatgpt.ts");
+    const { ChatGPTClient } = await import("./backends/chatgpt.ts");
     const { createChatGPTServiceAccountDriverFactory } =
       await import("./drivers/service-account/chatgpt.ts");
-    const provider = {
-      id: providerDefinition.id,
-      drivers: providerDefinition.drivers,
+    const backend = {
+      id: backendDefinition.id,
+      drivers: backendDefinition.drivers,
       client: new ChatGPTClient({
         workspaceId: configuration.workspaceId,
         adminKey,
@@ -290,7 +295,7 @@ async function start() {
       }),
     };
     serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(
-      provider,
+      backend,
       drivers.computeDriver,
     );
   }

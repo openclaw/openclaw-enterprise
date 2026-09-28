@@ -50,7 +50,7 @@ const forbidden = [
   "/sibling",
   "/app/dist/repository-credentials.js",
   "/app/dist/composition",
-  "/app/dist/providers",
+  "/app/dist/backends",
   "/app/dist/drivers/repo/github/credentials/driver",
   "/app/dist/drivers/repo/github/credentials/driver.js",
   "/app/dist/drivers/repo/github/credentials/factory.js",

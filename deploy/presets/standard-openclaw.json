@@ -1,0 +1,90 @@
+{
+  "name": "Standard OpenClaw",
+  "template": {
+    "variables": {
+      "name": {
+        "type": "string",
+        "description": "Name for the new Agent"
+      },
+      "model": {
+        "type": "string",
+        "description": "OpenAI model ID without the openai/ prefix"
+      },
+      "modelSecret": {
+        "type": "password",
+        "description": "Model API key; stored as a Secret when you create the Agent"
+      }
+    },
+    "agent": {
+      "name": "{{ vars.name }}",
+      "executionMode": "embedded",
+      "backendId": null,
+      "harnessAuth": {
+        "method": "api_key",
+        "secret": "{{ vars.modelSecret }}"
+      },
+      "plugins": {}
+    },
+    "configuration": {
+      "values": {
+        "gateway": {
+          "mode": "local",
+          "bind": "lan",
+          "controlUi": {
+            "enabled": true
+          },
+          "auth": {
+            "password": {
+              "source": "env",
+              "provider": "default",
+              "id": "OPENCLAW_GATEWAY_PASSWORD"
+            }
+          }
+        },
+        "agents": {
+          "defaults": {
+            "model": "openai/{{ vars.model }}",
+            "models": {
+              "openai/{{ vars.model }}": {
+                "agentRuntime": {
+                  "id": "openclaw"
+                }
+              }
+            }
+          }
+        },
+        "models": {
+          "providers": {
+            "openai": {
+              "baseUrl": "https://api.openai.com/v1",
+              "api": "openai-responses",
+              "models": [
+                {
+                  "id": "{{ vars.model }}",
+                  "name": "{{ vars.model }}"
+                }
+              ]
+            }
+          }
+        },
+        "browser": {
+          "enabled": false
+        },
+        "tools": {
+          "elevated": {
+            "enabled": false
+          },
+          "web": {
+            "search": {
+              "enabled": true
+            },
+            "fetch": {
+              "enabled": false
+            }
+          }
+        }
+      },
+      "secretBindings": {}
+    }
+  }
+}

@@ -10,23 +10,23 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createAccessTokenServiceAccount,
-  createProviderFixture,
-  providerDefinition,
-  providerId,
+  createBackendFixture,
+  backendDefinition,
+  backendId,
   requiresPostgres,
-  seedProviderBinding,
+  seedBackendBinding,
   serviceAccountDriverId,
-} from "../helpers/postgres-provider-state.mjs";
+} from "../helpers/postgres-backend-state.mjs";
 
 test(
   "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
   requiresPostgres,
   async (context) => {
-    const fixture = await createProviderFixture(context);
+    const fixture = await createBackendFixture(context);
     const { state, pool, actor } = fixture;
     const controller = new OpenClawController(fixture.installation, {
       state,
-      providers: [providerDefinition()],
+      backends: [backendDefinition()],
     });
     const deletedAccounts = [];
     for (const driver of [
@@ -35,11 +35,11 @@ test(
       createTestConfigurationDriver(),
       {
         id: serviceAccountDriverId,
-        providerId,
+        backendId,
         capability: "service_account",
         implementation: "deletion-observer",
         async create() {
-          assert.fail("This fixture seeds provider bindings.");
+          assert.fail("This fixture seeds backend bindings.");
         },
         async createCredential() {
           assert.fail("This fixture seeds credential references.");
@@ -63,7 +63,7 @@ test(
       ),
     );
     const account = await createAccessTokenServiceAccount(state, namespace.id, "deletion");
-    await seedProviderBinding(pool, account);
+    await seedBackendBinding(pool, account);
     const configuration = await controller.createConfiguration(actor.id, {
       namespaceId: namespace.id,
       kind: "agent",
@@ -74,7 +74,7 @@ test(
       name: "account-consumer",
       configurationId: configuration.id,
       harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
-      providerId,
+      backendId,
       executionMode: "dedicated",
     });
     const target = { namespaceId: namespace.id, agentId: agent.id };
@@ -150,7 +150,7 @@ test(
       namespace.id,
       "replacement",
     );
-    await seedProviderBinding(pool, replacementAccount);
+    await seedBackendBinding(pool, replacementAccount);
     await controller.updateAgent(actor.id, {
       ...target,
       configurationId: configuration.id,
@@ -190,7 +190,7 @@ test(
       namespace.id,
       "failed-deletion",
     );
-    await seedProviderBinding(pool, failedAccount);
+    await seedBackendBinding(pool, failedAccount);
     await controller.updateAgent(actor.id, {
       ...target,
       configurationId: configuration.id,

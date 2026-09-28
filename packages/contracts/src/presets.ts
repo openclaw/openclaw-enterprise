@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { immutableCopy } from "@openclaw-enterprise/utils";
+import { deepFreeze } from "@openclaw-enterprise/utils";
 import { SecretId, ServiceAccountId } from "./api/common.ts";
 import { isAllowedSecretBindingDestination } from "./secret-bindings.ts";
 import {
@@ -20,9 +20,14 @@ export type PresetVariable =
 export type PresetLaunchSettings = Omit<PresetTemplate, "variables">;
 
 // Typed launch fields may contain string tokens until rendering and admission.
+export interface PresetAgentTemplate extends Readonly<Record<string, unknown>> {
+  readonly initialWorkspaceFiles?: Readonly<Record<string, unknown>>;
+  readonly pluginApprovers?: ReadonlyArray<Readonly<{ channel: string; id: string }>>;
+}
+
 export interface PresetTemplate {
   readonly variables?: Readonly<Record<string, PresetVariable>>;
-  readonly agent?: Readonly<Record<string, unknown>>;
+  readonly agent?: PresetAgentTemplate;
   readonly configuration?: {
     readonly values?: Readonly<Record<string, unknown>>;
     readonly secretBindings?: Readonly<Record<string, unknown>>;
@@ -49,7 +54,7 @@ function hasFields(value: unknown, fields: string[]): value is Record<string, un
   );
 }
 
-/** Only credential bindings are admitted here; draft launch fields may be unfinished. */
+/** Only authentication defaults and credential bindings are admitted here; draft launch fields may be unfinished. */
 function validateCredentials(template: PresetTemplate, namespaceId: string) {
   const resolved = presetTemplateDefaults(template);
   const definitions = template.variables ?? {};
@@ -106,7 +111,12 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
   if (
     isRecord(auth) &&
     isRecord(value) &&
-    ((hasFields(auth, ["method"]) && scalar(auth.method, value.method, Type.Literal("runtime"))) ||
+    ((hasFields(auth, ["method"]) &&
+      scalar(
+        auth.method,
+        value.method,
+        Type.Union([Type.Literal("runtime"), Type.Literal("api_key"), Type.Literal("codex_pat")]),
+      )) ||
       (hasFields(auth, ["method", "secret"]) &&
         scalar(
           auth.method,
@@ -149,5 +159,5 @@ export function normalizePresetTemplate(input: unknown, namespaceId: string): Pr
     }
   }
   validateCredentials(template, namespaceId);
-  return immutableCopy(template);
+  return deepFreeze(template);
 }

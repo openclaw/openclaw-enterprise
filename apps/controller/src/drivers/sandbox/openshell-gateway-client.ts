@@ -1,4 +1,5 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -44,36 +45,143 @@ export interface OpenShellSandboxResponse {
   readonly serviceUrls: Readonly<Record<string, string>>;
 }
 
+export interface OpenShellWorkspaceResponse {
+  readonly name: string;
+  readonly id?: string;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly phase?: string | number;
+}
+
+export interface OpenShellProviderProfileEndpoint {
+  readonly host: string;
+  readonly port: number;
+  readonly protocol: string;
+  readonly path: string;
+}
+
+/** The subset of an upstream ProviderProfile that OpenClaw Enterprise defines. */
+export interface OpenShellProviderProfile {
+  readonly id: string;
+  readonly displayName: string;
+  readonly category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" | "PROVIDER_PROFILE_CATEGORY_OTHER";
+  readonly credentials: readonly {
+    readonly name: string;
+    readonly envVars: readonly string[];
+    readonly required: boolean;
+    readonly authStyle: string;
+    readonly headerName: string;
+  }[];
+  readonly endpoints: readonly OpenShellProviderProfileEndpoint[];
+  readonly binaries: readonly string[];
+  readonly inferenceCapable: boolean;
+  readonly annotations: Readonly<Record<string, string>>;
+}
+
+export interface OpenShellStoredProviderProfile {
+  readonly id: string;
+  readonly resourceVersion: string;
+  readonly annotations: Readonly<Record<string, string>>;
+}
+
+export interface OpenShellProviderCreateRequest {
+  readonly workspace: string;
+  readonly name: string;
+  readonly type: string;
+  readonly labels: Readonly<Record<string, string>>;
+  /** Write-only material; never logged or returned by this client. */
+  readonly credentials: Readonly<Record<string, string>>;
+}
+
+export interface OpenShellProviderResponse {
+  readonly name: string;
+  readonly type: string;
+  readonly labels: Readonly<Record<string, string>>;
+}
+
+export interface OpenShellSandboxProviderStatus {
+  readonly state: string;
+  readonly reason?: string;
+}
+
 export interface OpenShellGatewayClient {
   health(signal: AbortSignal): Promise<void>;
+  getWorkspace(name: string, signal: AbortSignal): Promise<OpenShellWorkspaceResponse | undefined>;
+  createWorkspace(
+    name: string,
+    labels: Readonly<Record<string, string>>,
+    signal: AbortSignal,
+  ): Promise<OpenShellWorkspaceResponse>;
+  deleteWorkspace(name: string, signal: AbortSignal): Promise<void>;
   createSandbox(
     request: OpenShellSandboxCreateRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse>;
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
+  getProviderProfile(
+    workspace: string,
+    id: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellStoredProviderProfile | undefined>;
+  importProviderProfile(
+    workspace: string,
+    profile: OpenShellProviderProfile,
+    signal: AbortSignal,
+  ): Promise<void>;
+  updateProviderProfile(
+    workspace: string,
+    profile: OpenShellProviderProfile,
+    expectedResourceVersion: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+  deleteProviderProfile(workspace: string, id: string, signal: AbortSignal): Promise<void>;
+  createProvider(
+    request: OpenShellProviderCreateRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderResponse>;
+  getProvider(
+    workspace: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderResponse | undefined>;
+  listProviders(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellProviderResponse[]>;
+  deleteProvider(workspace: string, name: string, signal: AbortSignal): Promise<void>;
+  getSandboxProviderStatus(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxProviderStatus>;
   close(): void;
 }
 
-interface OpenShellGrpcClient extends Client {
-  Health(
-    request: RecordValue,
-    metadata: Metadata,
-    options: { deadline: Date },
-    callback: (error: Error | null, response?: RecordValue) => void,
-  ): ClientUnaryCall;
-  CreateSandbox(
-    request: RecordValue,
-    metadata: Metadata,
-    options: { deadline: Date },
-    callback: (error: Error | null, response?: RecordValue) => void,
-  ): ClientUnaryCall;
-  DeleteSandbox(
-    request: RecordValue,
-    metadata: Metadata,
-    options: { deadline: Date },
-    callback: (error: Error | null, response?: RecordValue) => void,
-  ): ClientUnaryCall;
-}
+type OpenShellMethod =
+  | "Health"
+  | "GetWorkspace"
+  | "CreateWorkspace"
+  | "DeleteWorkspace"
+  | "CreateSandbox"
+  | "DeleteSandbox"
+  | "GetSandboxProviderStatus"
+  | "CreateProvider"
+  | "GetProvider"
+  | "ListProviders"
+  | "DeleteProvider"
+  | "GetProviderProfile"
+  | "ImportProviderProfiles"
+  | "UpdateProviderProfiles"
+  | "DeleteProviderProfile";
+
+type OpenShellUnaryMethod = (
+  request: RecordValue,
+  metadata: Metadata,
+  options: { deadline: Date },
+  callback: (error: Error | null, response?: RecordValue) => void,
+) => ClientUnaryCall;
+
+type OpenShellGrpcClient = Client & Record<OpenShellMethod, OpenShellUnaryMethod>;
 
 class OpenShellGatewayFailure extends Error {}
 
@@ -83,6 +191,24 @@ export class OpenShellSandboxAlreadyExistsError extends Error {
   constructor(sandboxName: string) {
     super(`OpenShell Sandbox ${sandboxName} already exists.`);
     this.sandboxName = sandboxName;
+  }
+}
+
+export class OpenShellProviderAlreadyExistsError extends Error {
+  readonly providerName: string;
+
+  constructor(providerName: string) {
+    super(`OpenShell provider ${providerName} already exists.`);
+    this.providerName = providerName;
+  }
+}
+
+export class OpenShellWorkspaceAlreadyExistsError extends Error {
+  readonly workspaceName: string;
+
+  constructor(workspaceName: string) {
+    super(`OpenShell Workspace ${workspaceName} already exists.`);
+    this.workspaceName = workspaceName;
   }
 }
 
@@ -104,6 +230,95 @@ function deadline(timeoutMs: number): Date {
 function statusCode(error: unknown): number | undefined {
   const candidate = asRecord(error)?.code;
   return typeof candidate === "number" ? candidate : undefined;
+}
+
+function workspaceResponse(response: RecordValue, operation: string): OpenShellWorkspaceResponse {
+  const workspace = asRecord(response.workspace);
+  const metadata = asRecord(workspace?.metadata);
+  const name = metadata?.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned no stable Workspace name.`);
+  }
+  const workspaceLabels = asRecord(metadata?.labels) ?? {};
+  if (Object.values(workspaceLabels).some((value) => typeof value !== "string")) {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned invalid Workspace labels.`);
+  }
+  return Object.freeze({
+    name,
+    ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
+    labels: Object.freeze({ ...(workspaceLabels as Record<string, string>) }),
+    ...(asRecord(workspace?.status)?.phase === undefined
+      ? {}
+      : { phase: asRecord(workspace?.status)?.phase as string | number }),
+  });
+}
+
+function stringMap(value: unknown, description: string): Readonly<Record<string, string>> {
+  const record = asRecord(value) ?? {};
+  if (Object.values(record).some((entry) => typeof entry !== "string")) {
+    throw new OpenShellGatewayFailure(`OpenShell ${description} must be a string map.`);
+  }
+  return Object.freeze({ ...(record as Record<string, string>) });
+}
+
+function providerResponse(value: unknown, operation: string): OpenShellProviderResponse {
+  const provider = asRecord(value);
+  const metadata = asRecord(provider?.metadata);
+  const name = metadata?.name;
+  if (typeof name !== "string" || name.trim().length === 0 || typeof provider?.type !== "string") {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned no stable provider.`);
+  }
+  // Credential values are never copied out of gateway responses.
+  return Object.freeze({
+    name,
+    type: provider.type,
+    labels: stringMap(metadata?.labels, "provider labels"),
+  });
+}
+
+function profileMessage(profile: OpenShellProviderProfile): RecordValue {
+  return {
+    id: profile.id,
+    display_name: profile.displayName,
+    category: profile.category,
+    credentials: profile.credentials.map((credential) => ({
+      name: credential.name,
+      env_vars: [...credential.envVars],
+      required: credential.required,
+      auth_style: credential.authStyle,
+      header_name: credential.headerName,
+    })),
+    endpoints: profile.endpoints.map((endpoint) => ({
+      host: endpoint.host,
+      port: endpoint.port,
+      protocol: endpoint.protocol,
+      path: endpoint.path,
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+    })),
+    binaries: profile.binaries.map((path) => ({ path })),
+    inference_capable: profile.inferenceCapable,
+    annotations: { ...profile.annotations },
+  };
+}
+
+function profileDiagnosticsFailure(response: RecordValue, operation: string): void {
+  const diagnostics = Array.isArray(response.diagnostics) ? response.diagnostics : [];
+  const errors = diagnostics
+    .map((entry) => asRecord(entry))
+    .filter((entry) => entry?.severity === "error");
+  if (errors.length > 0) {
+    const detail = errors
+      .map((entry) => `${String(entry?.field ?? "profile")}: ${String(entry?.message ?? "")}`)
+      .join("; ");
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} rejected the profile: ${detail}`);
+  }
+}
+
+function deletionConfirmed(response: RecordValue): boolean {
+  return ["DELETION_OUTCOME_COMPLETED", "DELETION_OUTCOME_ALREADY_ABSENT", 1, 3].includes(
+    response.outcome as string | number,
+  );
 }
 
 function normalizeEndpoint(endpoint: string): {
@@ -274,6 +489,82 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
   }
 
+  async getWorkspace(
+    name: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellWorkspaceResponse | undefined> {
+    try {
+      return workspaceResponse(
+        await this.unary(
+          "GetWorkspace",
+          { name: nonempty(name, "OpenShell Workspace name") },
+          signal,
+        ),
+        "GetWorkspace",
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (statusCode(error) === grpc.status.NOT_FOUND) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async createWorkspace(
+    name: string,
+    labels: Readonly<Record<string, string>>,
+    signal: AbortSignal,
+  ): Promise<OpenShellWorkspaceResponse> {
+    const workspaceName = nonempty(name, "OpenShell Workspace name");
+    try {
+      return workspaceResponse(
+        await this.unary(
+          "CreateWorkspace",
+          { name: workspaceName, labels: { ...labels }, request_id: randomUUID() },
+          signal,
+        ),
+        "CreateWorkspace",
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (statusCode(error) === grpc.status.ALREADY_EXISTS) {
+        throw new OpenShellWorkspaceAlreadyExistsError(workspaceName);
+      }
+      throw error;
+    }
+  }
+
+  async deleteWorkspace(name: string, signal: AbortSignal): Promise<void> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "DeleteWorkspace",
+        {
+          name: nonempty(name, "OpenShell Workspace name"),
+          allow_missing: true,
+          request_id: randomUUID(),
+        },
+        signal,
+      );
+    } catch (error) {
+      const { grpc } = await this.ensureClient();
+      if (statusCode(error) === grpc.status.NOT_FOUND) {
+        return;
+      }
+      throw error;
+    }
+    if (
+      !["DELETION_OUTCOME_COMPLETED", "DELETION_OUTCOME_ALREADY_ABSENT", 1, 3].includes(
+        response.outcome as string | number,
+      )
+    ) {
+      throw new OpenShellGatewayFailure(
+        "OpenShell DeleteWorkspace did not confirm Workspace deletion.",
+      );
+    }
+  }
+
   async createSandbox(
     request: OpenShellSandboxCreateRequest,
     signal: AbortSignal,
@@ -352,6 +643,209 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
   }
 
+  async getProviderProfile(
+    workspace: string,
+    id: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellStoredProviderProfile | undefined> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "GetProviderProfile",
+        { id: nonempty(id, "OpenShell provider profile ID"), workspace_scope: { workspace } },
+        signal,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return undefined;
+      }
+      throw error;
+    }
+    const profile = asRecord(response.profile);
+    if (typeof profile?.id !== "string" || profile.id !== id) {
+      throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
+    }
+    return Object.freeze({
+      id: profile.id,
+      resourceVersion: String(profile.resource_version ?? "0"),
+      annotations: stringMap(profile.annotations, "profile annotations"),
+    });
+  }
+
+  async importProviderProfile(
+    workspace: string,
+    profile: OpenShellProviderProfile,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const response = await this.unary(
+      "ImportProviderProfiles",
+      {
+        profiles: [{ profile: profileMessage(profile), source: "openclaw-enterprise" }],
+        workspace_scope: { workspace },
+        request_id: randomUUID(),
+      },
+      signal,
+    );
+    profileDiagnosticsFailure(response, "ImportProviderProfiles");
+    if (response.imported !== true) {
+      throw new OpenShellGatewayFailure("OpenShell ImportProviderProfiles did not import.");
+    }
+  }
+
+  async updateProviderProfile(
+    workspace: string,
+    profile: OpenShellProviderProfile,
+    expectedResourceVersion: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const response = await this.unary(
+      "UpdateProviderProfiles",
+      {
+        id: profile.id,
+        profile: { profile: profileMessage(profile), source: "openclaw-enterprise" },
+        expected_resource_version: expectedResourceVersion,
+        workspace_scope: { workspace },
+        request_id: randomUUID(),
+      },
+      signal,
+    );
+    profileDiagnosticsFailure(response, "UpdateProviderProfiles");
+    if (response.updated !== true) {
+      throw new OpenShellGatewayFailure("OpenShell UpdateProviderProfiles did not update.");
+    }
+  }
+
+  async deleteProviderProfile(workspace: string, id: string, signal: AbortSignal): Promise<void> {
+    const response = await this.unary(
+      "DeleteProviderProfile",
+      {
+        id: nonempty(id, "OpenShell provider profile ID"),
+        workspace_scope: { workspace },
+        allow_missing: true,
+        request_id: randomUUID(),
+      },
+      signal,
+    );
+    if (!deletionConfirmed(response)) {
+      throw new OpenShellGatewayFailure(
+        "OpenShell DeleteProviderProfile did not confirm deletion.",
+      );
+    }
+  }
+
+  async createProvider(
+    request: OpenShellProviderCreateRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderResponse> {
+    const name = nonempty(request.name, "OpenShell provider name");
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "CreateProvider",
+        {
+          provider: {
+            metadata: { name, labels: { ...request.labels } },
+            type: nonempty(request.type, "OpenShell provider type"),
+            // OCC imports its profiles into the same workspace as the provider.
+            profile_workspace: request.workspace,
+            credentials: { ...request.credentials },
+          },
+          workspace_scope: { workspace: request.workspace },
+          request_id: randomUUID(),
+        },
+        signal,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "ALREADY_EXISTS")) {
+        throw new OpenShellProviderAlreadyExistsError(name);
+      }
+      throw error;
+    }
+    return providerResponse(response.provider, "CreateProvider");
+  }
+
+  async getProvider(
+    workspace: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellProviderResponse | undefined> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "GetProvider",
+        { name: nonempty(name, "OpenShell provider name"), workspace_scope: { workspace } },
+        signal,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return undefined;
+      }
+      throw error;
+    }
+    return providerResponse(response.provider, "GetProvider");
+  }
+
+  async listProviders(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellProviderResponse[]> {
+    const providers: OpenShellProviderResponse[] = [];
+    let pageToken = "";
+    do {
+      const response = await this.unary(
+        "ListProviders",
+        { page_size: 100, page_token: pageToken, workspace_scope: { workspace } },
+        signal,
+      );
+      for (const provider of Array.isArray(response.providers) ? response.providers : []) {
+        providers.push(providerResponse(provider, "ListProviders"));
+      }
+      pageToken = typeof response.next_page_token === "string" ? response.next_page_token : "";
+    } while (pageToken.length > 0);
+    return Object.freeze(providers);
+  }
+
+  async deleteProvider(workspace: string, name: string, signal: AbortSignal): Promise<void> {
+    const response = await this.unary(
+      "DeleteProvider",
+      {
+        name: nonempty(name, "OpenShell provider name"),
+        workspace_scope: { workspace },
+        allow_missing: true,
+        request_id: randomUUID(),
+      },
+      signal,
+    );
+    if (!deletionConfirmed(response)) {
+      throw new OpenShellGatewayFailure("OpenShell DeleteProvider did not confirm deletion.");
+    }
+  }
+
+  async getSandboxProviderStatus(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxProviderStatus> {
+    const response = await this.unary(
+      "GetSandboxProviderStatus",
+      {
+        sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+        provider: nonempty(provider, "OpenShell provider name"),
+        workspace_scope: { workspace },
+      },
+      signal,
+    );
+    const status = asRecord(response.status);
+    if (typeof status?.state !== "string") {
+      throw new OpenShellGatewayFailure("OpenShell GetSandboxProviderStatus returned no state.");
+    }
+    return Object.freeze({
+      state: status.state,
+      ...(typeof status.reason === "string" ? { reason: status.reason } : {}),
+    });
+  }
+
   close(): void {
     const current = this.client;
     this.client = undefined;
@@ -363,7 +857,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   private async unary(
-    method: "Health" | "CreateSandbox" | "DeleteSandbox",
+    method: OpenShellMethod,
     request: RecordValue,
     signal: AbortSignal,
   ): Promise<RecordValue> {
@@ -395,6 +889,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         },
       );
     });
+  }
+
+  private async isStatus(error: unknown, name: "NOT_FOUND" | "ALREADY_EXISTS"): Promise<boolean> {
+    const { grpc } = await this.ensureClient();
+    return statusCode(error) === grpc.status[name];
   }
 
   private async ensureClient(): Promise<{

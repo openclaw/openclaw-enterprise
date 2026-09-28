@@ -442,6 +442,27 @@ function emptyFileResult(path, issues) {
   };
 }
 
+function imageDigests(env) {
+  const names = {
+    controller: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    postgres: "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+    node: "OCC_TEST_PRODUCTION_NODE_IMAGE",
+    fixture: "OCC_TEST_KUBERNETES_IMAGE",
+    gateway: "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    codex: "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    collector: "OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE",
+    prometheus: "OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE",
+    grafana: "OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE",
+    loki: "OCC_TEST_OBSERVABILITY_LOKI_IMAGE",
+  };
+  return Object.fromEntries(
+    Object.entries(names).flatMap(([role, name]) => {
+      const digest = env[name]?.match(/@(sha256:[a-f0-9]{64})$/)?.[1];
+      return digest ? [[role, digest]] : [];
+    }),
+  );
+}
+
 async function runFile(root, lane, file, statePath, prepareFile) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -494,6 +515,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
 
   let nodeResult = null;
   let tests = [];
+  let fileFailure;
   try {
     if (issues.length === 0) {
       nodeResult = spawnSync(
@@ -508,7 +530,25 @@ async function runFile(root, lane, file, statePath, prepareFile) {
         },
       );
 
-      tests = parseReporter(nodeResult.stdout)
+      const events = parseReporter(nodeResult.stdout);
+      const rootFailure = events.find(
+        (event) =>
+          event.type === "test:fail" &&
+          event.data?.file === absolutePath &&
+          event.data.name === absolutePath,
+      );
+      if (rootFailure) {
+        fileFailure = {
+          error: rootFailure.data.error,
+          ...(events.some(
+            (event) =>
+              event.type === "test:diagnostic" && event.data?.kind === "post-test-async-activity",
+          )
+            ? { diagnosticKind: "post-test-async-activity" }
+            : {}),
+        };
+      }
+      tests = events
         .filter((event) => isRealTestEvent(event, absolutePath))
         .map((event) => ({
           name: event.data.name,
@@ -594,13 +634,10 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     }
   }
 
-  const counts = {
-    passed: tests.filter((testCase) => testCase.status === "passed").length,
-    failed: tests.filter((testCase) => testCase.status === "failed").length,
-    skipped: tests.filter((testCase) => testCase.status === "skipped").length,
-    todo: tests.filter((testCase) => testCase.status === "todo").length,
-    total: tests.length,
-  };
+  const counts = { passed: 0, failed: 0, skipped: 0, todo: 0, total: tests.length };
+  for (const testCase of tests) {
+    counts[testCase.status] += 1;
+  }
   const nodeExitCode = nodeResult ? (nodeResult.status ?? (nodeResult.signal ? 1 : 0)) : null;
 
   return {
@@ -608,10 +645,12 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     status: nodeExitCode === 0 && issues.length === 0 ? "passed" : "failed",
     nodeExitCode,
     signal: nodeResult?.signal ?? null,
+    ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
     issues,
     cleanup: cleanupResult,
+    imageDigests: imageDigests(env),
   };
 }
 

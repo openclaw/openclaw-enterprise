@@ -71,7 +71,11 @@ test("service API keys authenticate scoped automation without replacing sessions
   t.after(() => app.close());
   const origin = `http://127.0.0.1:${app.server.address().port}`;
   const session = await signInWithEmailPassword({ origin, ...credentials });
-  async function request(method, path, { headers = { cookie: session.cookie }, body } = {}) {
+  async function request(
+    method,
+    path,
+    { headers = { cookie: session.cookie, origin: authOptions.baseURL }, body } = {},
+  ) {
     const response = await fetch(`${origin}${path}`, {
       method,
       headers: {

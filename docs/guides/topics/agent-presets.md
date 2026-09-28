@@ -1,7 +1,7 @@
 # Create an Agent from a Preset
 
 Use a Preset to reuse Agent settings across a Namespace. An operator creates the
-Preset through the HTTP API; users select it in the console and fill its
+Preset through the HTTP API or [Installation-linked JSON files](../../reference/presets.md#installation-defaults); users select it in the console and fill its
 variables. Each saved Agent gets its own Configuration and identity.
 
 For a dedicated Codex starting point with an empty tool-network allowlist and
@@ -57,13 +57,20 @@ To reuse more settings, add fields from the [Preset contract](../../reference/pr
    and select **Use Preset**. The chooser closes and the Agent form opens with
    the rendered copy. To use standard defaults, select **Start without Preset**.
 3. Review the model, execution mode, native Configuration JSON, authentication,
-   plugin selections, and Secret bindings. Edit any copied setting and fill
+   plugin selections, and workspace files under Advanced settings. Configure Slack
+   Secrets in its channel drawer. Edit any copied setting and fill
    missing values. Enter credentials only in password variables or credential
    fields; never in ordinary variables or native JSON.
 4. Select **Create Agent**. Then follow [credentials and deployment](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
    for that saved Agent. Creating the draft does not start a workload.
 
+Variables with defaults are prefilled and can be changed. A model password
+variable offers **Create new Secret** or **Use existing Secret** in the same
+Namespace. Enter a token only in new mode; it is stored when you create the Agent.
+Existing mode reuses the selected reference without reading credential bytes.
+
 Variables are used once to fill the form. Edit the resulting fields directly.
+You can navigate away and return to your [unsaved Console draft](../../reference/console/create-and-deploy.md#create-an-agent); reenter any new credentials.
 Before saving, to choose another Preset or supply different variables, select **Start over**
 and confirm that the unsaved draft can be discarded. A supplied
 `configuration.values` replaces the entire native JSON editor.

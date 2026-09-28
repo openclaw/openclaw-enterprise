@@ -330,7 +330,7 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       }),
     DriverSelectionError,
   );
-  for (const hook of ["ensureNamespace", "provisionHarness"]) {
+  for (const hook of ["ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
         controller.registerDriver({
@@ -661,7 +661,7 @@ test("Agent configuration references stay mutable while deployment admits deeply
       providers: {
         openai: {
           baseUrl: "https://replacement.example/v1",
-          apiKey: { source: "file", provider: "teamfile", id: "/providers/openai/apiKey" },
+          apiKey: { source: "file", provider: "teamfile", id: "/backends/openai/apiKey" },
         },
       },
     },

@@ -42,14 +42,16 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `namespace_id`
 - `name`
 - `configuration_id`
-- `provider_id`
+- `backend_id`
 - `execution_mode`
 - `plugins`
+- `plugin_approvers`
 - `repository_bindings`
 - `service_principal_id`
 - `harness_auth`
 - `harness_auth_secret_id`
 - `harness_auth_service_account_id`
+- `harness_auth_credential_source_id`
 - `active_revision_id`
 - `desired_runtime_state`
 - `status`
@@ -63,7 +65,7 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `namespace_id`
 - `agent_id`
 - `revision_number`
-- `provider_id`
+- `backend_id`
 - `admitted_spec`
 - `admitted_at`
 
@@ -115,6 +117,28 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `credential_sources`
+
+Stores credential sources registered with the selected Credential Gateway; the gateway holds the values.
+
+- `id`
+- `namespace_id`
+- `name`
+- `type`
+- `config`
+- `driver_id`
+- `state`
+- `created_at`
+
+### `credential_source_secrets`
+
+Links each credential source secret field to the Namespace Secret that supplied it.
+
+- `namespace_id`
+- `credential_source_id`
+- `field`
+- `secret_id`
+
 ### `service_accounts`
 
 Stores Namespace service accounts and any credential Secret references.
@@ -126,11 +150,11 @@ Stores Namespace service accounts and any credential Secret references.
 
 ### `service_account_driver_bindings`
 
-Links managed accounts to a Provider, Driver, upstream account, workspace, and any issued credential.
+Links managed accounts to a Backend, Driver, upstream account, workspace, and any issued credential.
 
 - `service_account_id`
 - `namespace_id`
-- `provider_id`
+- `backend_id`
 - `driver_id`
 - `external_account_id`
 - `external_credential_id`

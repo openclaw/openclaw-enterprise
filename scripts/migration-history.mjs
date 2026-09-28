@@ -77,10 +77,10 @@ async function requireMigrationRoles(client) {
   }
 }
 
-function classifyReceipts(receipts, manifest) {
+function receiptsMatchEntries(receipts, entries) {
   let previousId = 0;
   for (const [index, receipt] of receipts.entries()) {
-    const entry = manifest.entries[index];
+    const entry = entries[index];
     if (
       !Number.isSafeInteger(receipt.id) ||
       receipt.id <= previousId ||
@@ -88,9 +88,43 @@ function classifyReceipts(receipts, manifest) {
       receipt.hash !== entry.sha256 ||
       Number(receipt.created_at) !== entry.when
     ) {
-      refuse("the applied receipts differ from canonical history");
+      return false;
     }
     previousId = receipt.id;
+  }
+  return receipts.length <= entries.length;
+}
+
+function requireReceiptsMatchEntries(receipts, entries) {
+  if (!receiptsMatchEntries(receipts, entries)) {
+    refuse("the applied receipts differ from canonical history");
+  }
+}
+
+function classifyReceipts(receipts, manifest) {
+  const providerCompleted = manifest.compatibleLineages?.providerCompleted;
+  if (providerCompleted !== undefined && receipts.length >= providerCompleted.entries.length) {
+    const providerEntries = [
+      ...providerCompleted.entries,
+      ...manifest.entries.slice(providerCompleted.entries.length),
+    ];
+    if (receiptsMatchEntries(receipts, providerEntries)) {
+      if (receipts.length === manifest.entries.length) {
+        return "completed";
+      }
+      if (receipts.length === 32) {
+        return "backendTerminology";
+      }
+      if (receipts.length === 33) {
+        return "prePluginApprovers";
+      }
+      return "providerCompleted";
+    }
+    if (!receiptsMatchEntries(receipts, manifest.entries)) {
+      refuse("the applied receipts differ from canonical history");
+    }
+  } else {
+    requireReceiptsMatchEntries(receipts, manifest.entries);
   }
   if (receipts.length === 0) {
     return "empty";
@@ -116,7 +150,49 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 30) {
     return "agentProvisioning";
   }
+  if (receipts.length === 31) {
+    return "backendCompleted";
+  }
+  if (receipts.length === 32) {
+    return "backendTerminology";
+  }
+  if (receipts.length === 33) {
+    return "prePluginApprovers";
+  }
   refuse("an incomplete or unsupported development history is installed");
+}
+
+async function requireUnambiguousTerminologyData(client) {
+  const { rows } = await client.query(`
+    SELECT NOT (
+      EXISTS (
+        SELECT 1 FROM occ.agents
+        WHERE harness_auth ?& ARRAY['providerBinding', 'backendBinding']
+      ) OR EXISTS (
+        SELECT 1 FROM occ.agent_revisions
+        WHERE (admitted_spec #> '{harness_auth}') ?& ARRAY['providerBinding', 'backendBinding']
+      ) OR EXISTS (
+        SELECT 1
+        FROM occ.agent_revisions AS revision
+        CROSS JOIN LATERAL jsonb_array_elements(
+          revision.admitted_spec #> '{repository_credentials,bindings}'
+        ) AS binding
+        WHERE jsonb_typeof(revision.admitted_spec #> '{repository_credentials,bindings}') = 'array'
+          AND binding ?& ARRAY['providerId', 'backendId']
+      ) OR EXISTS (
+        SELECT 1 FROM occ.presets
+        WHERE (template #> '{agent}') ?& ARRAY['providerId', 'backendId']
+      ) OR EXISTS (
+        SELECT 1 FROM occ.repository_session_attempts
+        WHERE (cleanup_context #> '{binding}') ?& ARRAY['providerId', 'backendId']
+      ) OR EXISTS (
+        SELECT 1 FROM occ.agent_provisioning_work
+        WHERE plan ?& ARRAY['providerId', 'backendId']
+      )
+    ) AS compatible`);
+  if (rows[0]?.compatible !== true) {
+    refuse("Provider and Backend terminology data is ambiguous");
+  }
 }
 
 async function preflight(client, manifest) {
@@ -141,6 +217,9 @@ async function preflight(client, manifest) {
   }
   if (catalogDigest(await migrationCatalog(client)) !== manifest.catalogs[shape]) {
     refuse(`catalog objects or effective grants differ for ${shape}`);
+  }
+  if (shape === "providerCompleted" || shape === "backendCompleted") {
+    await requireUnambiguousTerminologyData(client);
   }
   return shape;
 }

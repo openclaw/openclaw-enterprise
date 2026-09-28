@@ -52,17 +52,25 @@ The commands below also use `jq`.
    ```
 
    `activeRevisionId` should match the revision ID from deployment. If it does
-   not, use that ID with the [deployment status API](../../reference/agents.md#deployment-status)
-   to see where work stopped. An active revision does not prove that the model
+   not, run `occ agent deployment-status "$AGENT_ID" '<revision-id>'` to see
+   where work stopped. The [deployment status reference](../../reference/agents.md#deployment-status)
+   defines each result. An active revision does not prove that the model
    responds; use the [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
 
 ## Inspect an earlier revision
 
-In the console, open the Agent's **Configuration** tab and choose a revision
-from the **AgentRevision** selector. **Selected by Agent** identifies the active
-revision. **New revision** shows the current Configuration. Viewing an older
-revision does not select it for deployment. The [HTTP API](../../reference/api.md#agent-revisions)
+In the console, open the Agent's **Versions** list. **Current version** marks
+the revision selected by OCC; selecting a version shows its read-only details
+beside the list. **Create new version** opens the current saved Configuration;
+**Deploy new version** uses those saved settings and Agent plugin selections.
+Viewing an older version does not select it for deployment. The
+[HTTP API](../../reference/api.md#agent-revisions)
 also lists and reads revisions; the CLI has no revision history command.
+
+The **Plugins** tab shows the saved Agent selections in **Create new version** and the
+frozen selections in an admitted revision. Change and save draft plugin policies
+before deploying; editing the reusable Configuration JSON does not update these
+Agent-owned selections.
 
 The public API has no rollback operation. To return to an earlier configuration,
 restore the settings you need from your saved source file, using the older

@@ -3,7 +3,7 @@
 Plugins give an Agent extra tools or access to an integration. Select them per
 Agent: two Agents can share a Configuration without sharing plugins. New Agents
 start with no user-selected plugins. An Installation operator must select a
-compatible Plugin Driver before an Agent can deploy with plugins.
+compatible Plugin Driver before an Agent can save nonempty plugin selections.
 
 ## Choose a supported plugin
 
@@ -13,7 +13,8 @@ compatible Plugin Driver before an Agent can deploy with plugins.
 - **Dedicated Codex** can use selected apps from its curated catalog when the
   runtime supports their approval policy. See [supported plugins and approval
   policies](../../reference/agent-plugins.md#current-support).
-- **SSH Compute** supports Agents without user-selected plugins only.
+- **SSH Compute** supports Agents without user-selected plugins or an Agent
+  default plugin approver policy only.
 
 ## Know when a change takes effect
 

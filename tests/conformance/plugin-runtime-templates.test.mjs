@@ -9,8 +9,7 @@ const nativeId = "fixture@openai-curated-remote";
 const selections = {
   [`codex-plugin:${nativeId}`]: {
     enabled: true,
-    approvalMode: "auto",
-    approvalsReviewer: "user",
+    toolDefaults: { approval: "provider_default", reviewer: "human" },
   },
 };
 const detail = {
@@ -67,6 +66,31 @@ test("serialized Agent startup ignores template metadata and configures only con
       },
     ]);
   }
+});
+
+test("serialized Agent startup carries repository broker policy into bridge config", () => {
+  const overlay = translator.codexOpenClawConfiguration({}, [], {
+    host: "git.openclaw-system.svc.cluster.local",
+    domains: { "github.com": "allow" },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(overlay.plugins.entries.codex.config)), {
+    appServer: {
+      networkProxy: {
+        enabled: true,
+        mode: "full",
+        allowLocalBinding: true,
+        readOnlyPaths: [
+          "/app/node_modules/openclaw",
+          "/home/node/.openclaw/plugin-skills",
+          "/home/node/openclaw-runtime-assets/plugin-skills",
+          "/opt/oce/repository-credentials",
+          "/run/oce/repository-credentials",
+        ],
+        domains: { "github.com": "allow", "git.openclaw-system.svc.cluster.local": "allow" },
+      },
+    },
+  });
 });
 
 test("serialized Agent startup cannot use templates in place of a concrete app mapping", () => {

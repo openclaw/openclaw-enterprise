@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadTestSuites } from "./test-suites.mjs";
+import { prepareRuntimeImageSmoke } from "./prepare.mjs";
 
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
@@ -198,7 +199,15 @@ export async function verifyEnvironment() {
   );
 }
 
+function publicationAlias(value) {
+  const tag = value || "latest";
+  assert.match(tag, /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/, "Invalid image tag.");
+  assert.ok(!/^(?:sha|bootstrap)-/i.test(tag), "Source and bootstrap tags are reserved.");
+  return tag;
+}
+
 async function validate(env) {
+  publicationAlias(env.IMAGE_TAG);
   await verifyMainSource(env);
   assert.equal(
     env.SOURCE_SHA,
@@ -302,7 +311,7 @@ export function readArchivePlatforms(archive, indexDigest) {
   return selected;
 }
 
-// Keep exported compressed blobs while dropping each platform's build snapshots.
+// Assemble the exact exports that passed startup tests on their native runners.
 // Hard links let assembly share those bytes until the final archive is written.
 async function assemble(directory, env) {
   const combined = join(directory, "combined");
@@ -312,6 +321,12 @@ async function assemble(directory, env) {
   const manifests = [];
   for (const arch of ["amd64", "arm64"]) {
     const layout = join(directory, arch);
+    const receipt = JSON.parse(await readFile(join(layout, "platform.json"), "utf8"));
+    for (const [key, value] of Object.entries(identity(env, env.IMAGE))) {
+      assert.deepEqual(receipt[key], value, `Platform receipt ${key} mismatch.`);
+    }
+    assert.equal(receipt.platform, `linux/${arch}`, "Platform receipt architecture mismatch.");
+    assert.equal(receipt.native, true, "Platform must pass smoke on its native runner.");
     async function retain(descriptor) {
       assert.match(descriptor.digest ?? "", digestPattern);
       const path = join(layout, "blobs/sha256", descriptor.digest.slice(7));
@@ -333,11 +348,7 @@ async function assemble(directory, env) {
     assert.equal(root.schemaVersion, 2);
     assert.equal(root.manifests.length, 1, "Expected exactly one exported platform.");
     let descriptor = root.manifests[0];
-    assert.equal(
-      descriptor.digest,
-      env[`${arch.toUpperCase()}_DIGEST`],
-      "Build output digest mismatch.",
-    );
+    assert.equal(descriptor.digest, receipt.digest, "Build output digest mismatch.");
     if (descriptor.mediaType === "application/vnd.oci.image.index.v1+json") {
       const index = JSON.parse(await readFile(await retain(descriptor), "utf8"));
       assert.equal(index.schemaVersion, 2);
@@ -362,7 +373,15 @@ async function assemble(directory, env) {
     for (const layer of manifest.layers) {
       await retain(layer);
     }
-    manifests.push({ ...descriptor, platform: { os: "linux", architecture: arch } });
+    // BuildKit's one-platform index may add exporter annotations such as the
+    // current build time. They do not describe the tested manifest bytes and
+    // must not make the assembled image identity depend on the workflow run.
+    manifests.push({
+      mediaType: descriptor.mediaType,
+      digest: descriptor.digest,
+      size: descriptor.size,
+      platform: { os: "linux", architecture: arch },
+    });
   }
   const index = {
     schemaVersion: 2,
@@ -391,51 +410,80 @@ async function assemble(directory, env) {
 
 async function smoke(directory, env) {
   assert.ok(images.includes(env.IMAGE));
-  const archive = join(directory, "image.tar");
-  const archiveSha256 = await fileDigest(archive);
-  assert.equal(inspectDigest(`oci-archive:${archive}`), env.IMAGE_DIGEST);
-  for (const image of readArchivePlatforms(archive, env.IMAGE_DIGEST)) {
-    const [, arch] = image.platform.split("/");
-    const tag = `localhost/enterprise-${env.IMAGE}:prepared-${arch}`;
-    skopeo(
-      [
-        "--override-os",
-        "linux",
-        "--override-arch",
-        arch,
-        "copy",
-        `oci-archive:${archive}`,
-        `docker-daemon:${tag}`,
-      ],
-      { stdio: "inherit" },
-    );
+  const arch = process.arch === "x64" ? "amd64" : process.arch;
+  assert.ok(["amd64", "arm64"].includes(arch));
+  assert.equal(env.PLATFORM, `linux/${arch}`, "Smoke requires the target's native runner.");
+  assert.equal(inspectDigest(`oci:${directory}`), env.IMAGE_DIGEST);
+  const root = JSON.parse(await readFile(join(directory, "index.json"), "utf8"));
+  assert.equal(root.manifests.length, 1);
+  let descriptor = root.manifests[0];
+  async function blob(entry) {
+    assert.match(entry.digest ?? "", digestPattern);
+    const bytes = await readFile(join(directory, "blobs/sha256", entry.digest.slice(7)));
+    assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, entry.digest);
+    return JSON.parse(bytes);
+  }
+  assert.equal(descriptor.digest, env.IMAGE_DIGEST);
+  let manifest = await blob(descriptor);
+  if (descriptor.mediaType === "application/vnd.oci.image.index.v1+json") {
+    assert.equal(manifest.manifests.length, 1);
+    descriptor = manifest.manifests[0];
+    manifest = await blob(descriptor);
+  }
+  assert.equal(manifest.mediaType, "application/vnd.oci.image.manifest.v1+json");
+  const tag = `localhost/enterprise-${env.IMAGE}:prepared-${arch}`;
+  skopeo(["copy", `oci:${directory}`, `docker-daemon:${tag}`], { stdio: "inherit" });
+  let prepared;
+  try {
     const [loaded] = JSON.parse(execFileSync("docker", ["image", "inspect", tag]));
-    // Docker may translate the manifest media type; the config ID binds the
-    // loaded image to this index entry and its ordered filesystem diff IDs.
-    assert.equal(loaded.Id, image.configDigest);
+    assert.equal(loaded.Id, manifest.config.digest);
     assert.equal(loaded.Os, "linux");
     assert.equal(loaded.Architecture, arch);
-    const controller = env.IMAGE === "controller";
-    console.log(`Smoke ${env.IMAGE} ${image.platform} @ ${image.digest}`);
+    if (env.IMAGE === "runtime") {
+      prepared = await prepareRuntimeImageSmoke({
+        image: loaded.Id,
+        statePath: join(env.RUNNER_TEMP ?? tmpdir(), `runtime-smoke-${arch}.json`),
+      });
+    }
+    console.log(`Smoke ${env.IMAGE} ${env.PLATFORM} @ ${descriptor.digest}`);
     execFileSync(
       process.execPath,
       [
         "--test",
-        `tests/integration/${controller ? "production" : "runtime"}-image-startup.test.mjs`,
+        `tests/integration/${env.IMAGE === "controller" ? "production" : "runtime"}-image-startup.test.mjs`,
       ],
       {
         env: {
           ...env,
-          OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER: arch === "arm64" ? "6" : "1",
-          [controller ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]: loaded.Id,
+          ...prepared?.env,
+          OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER: "1",
+          [env.IMAGE === "controller" ? "OCC_TEST_PRODUCTION_IMAGE" : "OCC_TEST_RUNTIME_IMAGE"]:
+            loaded.Id,
         },
         stdio: "inherit",
       },
     );
-    // Keep only one unpacked variant on this disposable preparation runner.
-    execFileSync("docker", ["image", "rm", tag], { stdio: "inherit" });
+    assert.equal(inspectDigest(`oci:${directory}`), env.IMAGE_DIGEST);
+    await writeFile(
+      join(directory, "platform.json"),
+      `${JSON.stringify(
+        {
+          ...identity(env, env.IMAGE),
+          platform: env.PLATFORM,
+          digest: env.IMAGE_DIGEST,
+          native: true,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } finally {
+    try {
+      await prepared?.cleanup();
+    } finally {
+      execFileSync("docker", ["image", "rm", tag], { stdio: "inherit" });
+    }
   }
-  assert.equal(await fileDigest(archive), archiveSha256, "OCI archive changed during smoke.");
 }
 
 async function seal(directory, env) {
@@ -463,7 +511,7 @@ export async function verifyGhcr(image, digest, tag) {
   return existing.length > 0;
 }
 
-export async function publishPrepared(directory, env, producer, verify) {
+export async function publishPrepared(directory, env, producer, verify, aliasTag) {
   await verify();
   const tag = `sha-${env.SOURCE_SHA}`;
   const prepared = [];
@@ -541,13 +589,55 @@ export async function publishPrepared(directory, env, producer, verify) {
         `Verified ${image.destination}:${tag} @ ${image.digest}${remoteDigest ? " (already published)" : ""}`,
       );
     }
+    if (aliasTag !== undefined) {
+      // Both immutable tags must be verified before either mutable alias moves.
+      for (const image of prepared) {
+        await verify();
+        await verifyGhcr(image.destination, image.digest, tag);
+        assert.equal(inspectDigest(`docker://${image.destination}:${tag}`, authfile), image.digest);
+        skopeo(
+          [
+            "copy",
+            "--all",
+            "--preserve-digests",
+            "--authfile",
+            authfile,
+            `oci-archive:${image.archive}`,
+            `docker://${image.destination}:${aliasTag}`,
+          ],
+          { stdio: "inherit" },
+        );
+        assert.equal(
+          inspectDigest(`docker://${image.destination}:${aliasTag}`, authfile),
+          image.digest,
+        );
+      }
+      // A second check catches drift while the other package was being copied.
+      for (const image of prepared) {
+        assert.equal(inspectDigest(`docker://${image.destination}:${tag}`, authfile), image.digest);
+        assert.equal(
+          inspectDigest(`docker://${image.destination}:${aliasTag}`, authfile),
+          image.digest,
+        );
+        console.log(`Verified ${image.destination}:${aliasTag} @ ${image.digest}`);
+      }
+    }
   } finally {
     await rm(authDirectory, { recursive: true, force: true });
   }
-  const receipt = prepared.map(({ archive, ...image }) => ({ ...image, tag }));
+  const receipt = prepared.map(({ archive, ...image }) => ({
+    ...image,
+    tag,
+    ...(aliasTag === undefined ? {} : { aliasTag }),
+  }));
   await appendFile(
     env.GITHUB_STEP_SUMMARY,
-    receipt.map((image) => `- ${image.image}: \`${image.destination}@${image.digest}\`\n`).join(""),
+    receipt
+      .map(
+        (image) =>
+          `- ${image.image}: \`${image.destination}@${image.digest}\`${aliasTag ? ` (tag: \`${aliasTag}\`)` : ""}\n`,
+      )
+      .join(""),
   );
   return receipt;
 }
@@ -570,6 +660,7 @@ async function main() {
       process.env,
       identity(process.env, "controller"),
       () => validate(process.env),
+      publicationAlias(process.env.IMAGE_TAG),
     );
     await writeFile(join(directory, "publication.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   } else {

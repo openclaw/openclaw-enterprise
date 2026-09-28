@@ -9,6 +9,7 @@ With infrastructure selectors unset:
 
 ```sh
 pnpm check:workspace
+pnpm check:modules
 pnpm lint
 pnpm format:check
 pnpm typecheck
@@ -20,7 +21,9 @@ pnpm test:integration
 `check:workspace` checks the active workspace, including the
 [repository credential source boundary](repository-credentials.md#check-source-authority-boundaries).
 The test scripts above run the same canonical workspace verification before
-their selected Node.js tests. `openapi:check` compares generated routes and the
+their selected Node.js tests. The conformance suite includes the
+[repository dependency policy test](repository-boundaries.md); `check:modules`
+runs that policy explicitly. `openapi:check` compares generated routes and the
 OpenAPI contract, HTTP API reference, and API cheat sheet with the checked-in
 versions. `typecheck` and `build` currently invoke the same TypeScript build command.
 
@@ -151,7 +154,7 @@ Fastify, Better Auth memory storage, Native IAM, and in-memory platform storage
 on an ephemeral loopback port. Configuration and Compute helpers are test-only.
 The Agent browser suite seeds active revision pointers only to render admitted
 history; that fixture does not prove runtime dispatch, worker leases, Compute
-Driver effects, PostgreSQL persistence, live Provider health, or deployed Agent
+Driver effects, PostgreSQL persistence, live Backend health, or deployed Agent
 runtime behavior.
 
 Native admin UI coverage in this suite should prove panel visibility, warning
@@ -184,6 +187,30 @@ retain screenshots at a chosen path; otherwise the suite uses a temporary
 directory. The existing
 [image smoke test](images.md#images-and-helm) also loads console assets from the built
 controller image; it does not claim a live production deployment.
+
+### Console navigation coverage
+
+`apps/controller/src/console/navigation.mjs` owns the route inventory. The shared
+loader previously cleared the shell and repeated session, Namespace, and resource
+reads on each return; only same-Agent tab changes avoided that path. Audit return
+behavior at this shared boundary whenever adding a page.
+
+| Route family             | Return and refresh checks                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
+| Agents collection        | Create/detail breadcrumbs, sidebar, repeated Back/Forward, retained search, empty results. |
+| Create Agent             | Preset and form drafts, password clearing, Cancel/Start over, pending saves.               |
+| Agent detail             | Each tab, draft/admitted revision, page return, exact-Agent denial, missing resource.      |
+| Namespaces               | Installation-wide rows, selection changes, access removal.                                 |
+| Backends                 | Direct hidden route, return through Settings, denied discovery.                            |
+| Settings                 | Account menu, Back destination, changed account identity.                                  |
+| Login and unknown routes | Direct load, safe return, logout, missing session, no restored private content.            |
+
+Delay real HTTP responses to check what remains visible before revalidation
+finishes. Include Refresh, focus/visibility restoration, direct first load,
+Namespace switches, `401`, authorization denial, dependency errors, late responses,
+and pagehide/pageshow. Existing draft-retention cases cover editor semantics;
+Storybook's delayed navigation stories provide simulated visual checks.
+A passing fixture does not establish production deployment or runtime behavior.
 
 ## Repository and tooling configuration
 

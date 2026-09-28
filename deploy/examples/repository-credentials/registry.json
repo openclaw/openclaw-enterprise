@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "providerId": "repository-provider",
+  "backendId": "repository-backend",
   "providerInstanceId": "github-team",
   "appId": "123456",
   "githubInstallationId": "789012",

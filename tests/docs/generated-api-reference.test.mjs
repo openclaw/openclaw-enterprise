@@ -4,6 +4,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 
 import { generateApiReferenceOutputs } from "../../scripts/generate-occ-api-reference.mjs";
@@ -27,8 +28,8 @@ test("generated API reference stays on the approved single page", async () => {
   );
 
   const page = outputs[0].content;
-  assert.match(page, /\| \[Agents\]\(#agents\) \| 15 operations \|/);
-  assert.match(page, /\| \[Providers\]\(#providers\) \| 1 operation \|/);
+  assert.match(page, /\| \[Agents\]\(#agents\) \| 20 operations \|/);
+  assert.match(page, /\| \[Backends\]\(#backends\) \| 1 operation \|/);
   assert.match(
     page,
     /\[`GET \/namespaces\/\{namespaceId\}\/agents\/\{agentId\}\/workspace\/files\/\{name\}`\]\(#get-namespacesnamespaceidagentsagentidworkspacefilesname\)/,
@@ -94,6 +95,42 @@ test("AccessBinding creation documents request body target read permissions", as
       condition: "iam_binding_target",
     },
   ]);
+});
+
+test("Agent plugin and first deployment operations document conditional grants", async () => {
+  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const agentPath = "/namespaces/{namespaceId}/agents/{agentId}";
+  const capabilities =
+    document.paths[`${agentPath}/plugins/capabilities`]?.get?.["x-openclaw-permissions"];
+  const discovery = document.paths[`${agentPath}/plugins`]?.post?.["x-openclaw-permissions"];
+  const details = document.paths[`${agentPath}/plugins/details`]?.post?.["x-openclaw-permissions"];
+  const deploy = document.paths[`${agentPath}/deploy`]?.post?.["x-openclaw-permissions"];
+
+  const agentRead = { action: "read", resourceKind: "agent", scope: "requested" };
+  const hostedSecret = {
+    action: "operate",
+    resourceKind: "secret",
+    scope: "requested",
+    condition: "authenticated_plugin_discovery",
+  };
+  assert.ok(capabilities.some((permission) => permission.action === "update"));
+  assert.ok(capabilities.some((permission) => isDeepStrictEqual(permission, agentRead)));
+  for (const permissions of [discovery, details]) {
+    assert.ok(permissions.some((permission) => isDeepStrictEqual(permission, agentRead)));
+    assert.ok(permissions.some((permission) => isDeepStrictEqual(permission, hostedSecret)));
+  }
+  for (const action of ["read", "operate"]) {
+    assert.ok(
+      deploy.some((permission) =>
+        isDeepStrictEqual(permission, {
+          action,
+          resourceKind: "agent",
+          scope: "requested",
+          condition: "missing_runtime_credentials",
+        }),
+      ),
+    );
+  }
 });
 
 test("OpenAPI check rejects unexpected generated API child pages in an isolated CLI fixture", async (t) => {
