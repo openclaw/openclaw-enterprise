@@ -109,16 +109,9 @@ function readPluginRuntime(kind) {
 function readGatewayPluginRuntime() {
   const runtime = readRuntimePayload();
   if (runtime === undefined) return undefined;
-  if (runtime.manifest?.kind === "openclaw") return runtime;
-  if (
-    runtime.manifest?.kind === "codex" &&
-    (Object.keys(runtime.manifest.selections ?? {}).length > 0 ||
-      runtime.manifest.repositoryBrokerNetworkPolicy !== undefined ||
-      runtime.manifest.pluginApprovers !== undefined)
-  ) {
+  if (runtime.manifest?.kind === "openclaw" || runtime.manifest?.kind === "codex") {
     return runtime;
   }
-  if (runtime.manifest?.kind === "codex") return undefined;
   throw new Error("Plugin runtime artifact kind mismatch.");
 }
 
@@ -1242,8 +1235,47 @@ function codexAppConfigEdits(configuration) {
 }
 
 async function writeCodexAppConfiguration(configuration) {
+  const effective = await readCodexAppConfiguration();
+  const edits = codexAppConfigEdits(configuration);
+  // Replacing a user table does not erase descendants inherited from other
+  // config layers. Materialize the selection and approval policy at those keys.
+  // Native requirements still apply independently; readback below remains mandatory.
+  for (const [appId, actual] of Object.entries(effective?.apps ?? {})) {
+    if (appId === "_default") continue;
+    const app = configuration.apps?.[appId];
+    const path = "apps." + codexConfigPathSegment(appId);
+    if (app === undefined) {
+      edits.push({ keyPath: path + ".enabled", mergeStrategy: "replace", value: false });
+      continue;
+    }
+    if (app.enabled === false) continue;
+    for (const [toolName, tool] of Object.entries(actual?.tools ?? {})) {
+      for (const [field, defaultField] of [
+        ["enabled", "default_tools_enabled"],
+        ["approval_mode", "default_tools_approval_mode"],
+      ]) {
+        const expected = app.tools?.[toolName]?.[field] ?? app[defaultField];
+        if (tool[field] == null || expected === undefined) continue;
+        edits.push({
+          keyPath: path + ".tools." + codexConfigPathSegment(toolName) + "." + field,
+          mergeStrategy: "replace",
+          value: expected,
+        });
+      }
+    }
+    for (const [linkId, link] of Object.entries(actual?.links ?? {})) {
+      for (const field of ["default_tools_approval_mode", "approvals_reviewer"]) {
+        if (link[field] == null || app[field] === undefined) continue;
+        edits.push({
+          keyPath: path + ".links." + codexConfigPathSegment(linkId) + "." + field,
+          mergeStrategy: "replace",
+          value: app[field],
+        });
+      }
+    }
+  }
   await codexAppServerRequest("config/batchWrite", {
-    edits: codexAppConfigEdits(configuration),
+    edits,
     reloadUserConfig: true,
   });
 }

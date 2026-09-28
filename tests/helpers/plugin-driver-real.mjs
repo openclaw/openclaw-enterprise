@@ -246,7 +246,12 @@ function installationConfiguration({
     gatewayImage,
     codexImage,
     cluster: `k3d-${proofPrefix}`,
+    codexSeccompProfile: process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE,
   });
+  if (pluginDriverId === "codex-plugin") {
+    configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
+    configuration.drivers.compute.configuration.resources.agent.limits.memory = "2Gi";
+  }
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
@@ -277,7 +282,7 @@ function installationConfiguration({
     "requests.memory": "2Gi",
     // Two Agent/gateway pairs plus an overlapping revision during cutover.
     "limits.cpu": "12",
-    "limits.memory": "6Gi",
+    "limits.memory": pluginDriverId === "codex-plugin" ? "12Gi" : "6Gi",
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   return configuration;

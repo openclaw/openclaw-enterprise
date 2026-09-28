@@ -16,6 +16,7 @@ export async function installProductionHelmControlPlane({
   apiClients,
   repositoryCredentials,
   gatewayRouting,
+  controlPlane,
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
@@ -79,6 +80,9 @@ export async function installProductionHelmControlPlane({
     metadata: metadata("bootstrap-password-prepare"),
     spec: {
       restartPolicy: "Never",
+      ...(controlPlane?.nodeSelector === undefined
+        ? {}
+        : { nodeSelector: controlPlane.nodeSelector }),
       automountServiceAccountToken: false,
       securityContext: {
         runAsUser: 0,
@@ -123,6 +127,9 @@ export async function installProductionHelmControlPlane({
     kind: "Pod",
     metadata: metadata("postgres", system, { app: "postgres" }),
     spec: {
+      ...(controlPlane?.nodeSelector === undefined
+        ? {}
+        : { nodeSelector: controlPlane.nodeSelector }),
       securityContext: { ...podSecurity, runAsUser: 999, runAsGroup: 999, fsGroup: 999 },
       containers: [
         {
@@ -194,6 +201,9 @@ export async function installProductionHelmControlPlane({
   }
   if (gatewayRouting !== undefined) {
     values.gatewayRouting = gatewayRouting;
+  }
+  if (controlPlane !== undefined) {
+    values.controlPlane = controlPlane;
   }
   if (executionCluster !== undefined) {
     values.executionCluster = executionCluster;

@@ -35,6 +35,13 @@ authorized credentials: plugin A remains usable when B fails, B is disabled in
 both native app and gateway bridge configuration, and sibling Agent/workspace
 state is unchanged.
 
+For dedicated Codex removal, clear the last selection through the Agent API and
+redeploy. Run a native shell command in both the existing conversation and a new
+one, and check its tool result against an independent workspace read. Confirm
+that native plugin features remain disabled and the packaged runtime is readable
+without granting broad filesystem access. Configuration readback alone does not
+prove that a command can execute inside the sandbox.
+
 The controlled status suite verifies the private status handoff through real
 Kubernetes and restart behavior; its controlled native producer does not establish
 Codex/OpenClaw compatibility. Missing, malformed, or foreign reports must not make
@@ -101,6 +108,11 @@ injected `CODEX_ACCESS_TOKEN` for the existing designated test account, and a
 runtime image that supports `OPENCLAW_STATE_DIR` for OpenClaw state writes when
 the test starts without a useful `HOME`. Set `OCC_TEST_OPENAI_MODEL` to a model
 supported by that Codex path; the current source default is `gpt-6-astra`.
+Prepare the reviewed [Codex sandbox profile](../guides/deploy/codex-sandbox.md)
+on the test nodes and set `OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE` to its
+kubelet-relative path. Codex fixtures use a 4 GiB Gateway limit and a 2 GiB
+Harness limit; the namespace quota allows two Agent pairs and revision overlap.
+Provide enough cluster memory for the selected scenario and its other workloads.
 The Calendar proof also needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen
 `list_calendars(max_results:1)` read during a normal Agent turn.

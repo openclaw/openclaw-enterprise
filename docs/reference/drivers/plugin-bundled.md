@@ -198,16 +198,18 @@ if managed `requiredOnModels` includes the current model, or model selection
 cannot be verified against a nonempty requirement. Omitted reviewers do not
 trigger these explicit-choice checks.
 
-Before readiness, startup reads configuration for the Agent workspace and checks
-all managed app fields, including unexpected enablement/category defaults and tool
-exposure restrictions. An enabled app outside the selection fails verification;
-unselected disabled apps remain permitted. Native serialized defaults/nulls and
-omitted reviewers preserve inheritance. Category settings (`destructive_enabled`
-and `open_world_enabled`) compare against the requested app value, then requested
-global value, then native `true`. An explicit native value equal to that expected
-default is accepted. Every nested tool's enablement/approval must match its override
-or app default; account approval must match the app. Unexpected explicit enablement
-is rejected because it can bypass category rules.
+Startup reads merged workspace configuration, explicitly disables unselected apps,
+and writes admitted approval values at inherited tool/account keys. Table replacement
+alone cannot remove lower-layer descendants. Tool enablement is replaced only when
+explicitly specified by an override or default; these writes leave native managed
+requirements unchanged.
+
+Readback must match the selected policy before readiness. Unselected disabled apps,
+serialized nulls, and omitted reviewers preserve inheritance. Category values resolve
+requested app → requested global → native `true`; equivalent explicit values pass.
+Nested tool enablement/approval must match its override or app default, and account
+approval must match its app. Unexpected tool enablement, category defaults, exposure
+restrictions, and enabled unselected apps fail verification.
 
 This verifies loaded startup configuration, including trusted workspace layers.
 Codex 0.156 does not expose managed app/tool requirements through `config/read` or
@@ -292,9 +294,9 @@ Agent behavior; contributor fixture setup and proof notes live in
 [Agent plugin testing](../../testing/plugins.md).
 
 Agent plugin approval is separate from platform IAM and workload containment.
-This Driver adds no sandbox, egress grant, filesystem grant, approval service,
-OAuth interface, or permission hook. Existing workload and managed policies
-remain mandatory. Package preparation preserves other Agents' state and does
+The runtime overlay grants read-only access to packaged Codex binaries even with
+no selected plugins; selected plugins also receive their skill-directory reads.
+Existing workload and managed policies remain mandatory. Package preparation preserves other Agents' state and does
 not write the shared native registry while the prior gateway is running.
 
 ## Source and verification

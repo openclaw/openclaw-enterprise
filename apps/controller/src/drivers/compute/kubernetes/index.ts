@@ -8219,12 +8219,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           (Object.keys(pluginRuntime.runtime.selections).length > 0 ||
             pluginRuntime.runtime.repositoryBrokerNetworkPolicy !== undefined)) ||
         (pluginRuntime.runtime.kind === "codex" && role === "agent" && runtime !== undefined) ||
-        (pluginRuntime.runtime.kind === "codex" &&
-          role === "gateway" &&
-          !embedded &&
-          (Object.keys(pluginRuntime.runtime.selections).length > 0 ||
-            pluginRuntime.runtime.pluginApprovers !== undefined ||
-            pluginRuntime.runtime.repositoryBrokerNetworkPolicy !== undefined)));
+        (pluginRuntime.runtime.kind === "codex" && role === "gateway" && !embedded));
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);

@@ -71,8 +71,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   const OCC_DRIVER_ID = "occ-plugin";
   const CODEX_DRIVER_ID = "codex-plugin";
   const CODEX_MARKETPLACE = "openai-curated-remote";
+  const CODEX_RUNTIME_READ_ONLY_PATHS = ["/app/node_modules/openclaw"];
   const CODEX_PLUGIN_READ_ONLY_PATHS = [
-    "/app/node_modules/openclaw",
+    ...CODEX_RUNTIME_READ_ONLY_PATHS,
     "/home/node/.openclaw/plugin-skills",
     "/home/node/openclaw-runtime-assets/plugin-skills",
   ];
@@ -786,16 +787,21 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     validatePolicies("codex", selections, defaultApprovers);
     const selected = selectionEntries(selections);
     const brokerConfiguration = codexBrokerOpenClawConfiguration(repositoryBrokerNetworkPolicy);
-    if (selected.length === 0 && brokerConfiguration === undefined) {
-      return defaultApprovers === undefined
-        ? undefined
-        : pluginApprovalOverlay("codex", selections, defaultApprovers);
-    }
     const failedPluginIds = failedPluginIdSet(failures);
     const pluginFilesystemConfiguration =
-      selected.length === 0 || brokerConfiguration !== undefined
+      brokerConfiguration !== undefined
         ? {}
-        : { appServer: { networkProxy: { readOnlyPaths: CODEX_PLUGIN_READ_ONLY_PATHS } } };
+        : {
+            appServer: {
+              networkProxy: {
+                // The native sandbox helper is packaged here even without selected plugins.
+                readOnlyPaths:
+                  selected.length === 0
+                    ? CODEX_RUNTIME_READ_ONLY_PATHS
+                    : CODEX_PLUGIN_READ_ONLY_PATHS,
+              },
+            },
+          };
     return {
       ...pluginApprovalOverlay("codex", selections, defaultApprovers),
       plugins: {

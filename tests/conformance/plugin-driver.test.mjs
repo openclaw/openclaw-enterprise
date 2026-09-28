@@ -201,10 +201,9 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
       linear: { approvers: [], tools: { [toolId]: { approvers: [second.id] } } },
     },
   });
-  assert.deepEqual(codexOpenClawConfiguration({}, [], undefined, []), {
-    approvals: { plugin: { slack: { approvers: [] } } },
+  assert.deepEqual(codexOpenClawConfiguration({}, [], undefined, []).approvals, {
+    plugin: { slack: { approvers: [] } },
   });
-  assert.equal(codexOpenClawConfiguration({}), undefined);
   assert.deepEqual(
     codexOpenClawConfiguration(codexSelection(linearPluginId, { approvers: [] })).approvals.plugin
       .slack,
@@ -405,6 +404,17 @@ test("Codex startup default-denies plugins", () => {
   assert.deepEqual(empty.configuration.apps, { _default: { enabled: false } });
   assert.deepEqual(empty.configuration.plugins, {});
   assert.deepEqual(empty.installs, []);
+});
+
+test("Codex bridge keeps runtime binaries readable after the last plugin is removed", () => {
+  // A normal no-plugin revision still starts the packaged native sandbox helper.
+  // Plugin skill and credential directories must not survive as incidental grants.
+  const config = codexOpenClawConfiguration({}).plugins.entries.codex.config;
+  assert.deepEqual(config, {
+    appServer: {
+      networkProxy: { readOnlyPaths: ["/app/node_modules/openclaw"] },
+    },
+  });
 });
 
 test("Codex bridge configuration carries repository broker network policy without plugins", () => {
