@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import {
   createKubernetesClient,
+  createRealKubernetesFixture,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
@@ -37,6 +38,9 @@ export async function installObservabilityDemo(t) {
   const release = `demo-${suffix}`;
   const sourceRelease = `fixture-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), "oce-demo-smoke-"));
+  const artifacts = join(process.env.RUNNER_TEMP ?? directory, "observability-demo");
+  let browser;
+  let forwarding;
   const password = randomBytes(32).toString("hex");
   const authorization = `Basic ${Buffer.from(`admin:${password}`).toString("base64")}`;
   const redact = (value) =>
@@ -79,6 +83,13 @@ export async function installObservabilityDemo(t) {
   // Register ownership before creating resources; cleanup is part of acceptance.
   t.after(async () => {
     const errors = [];
+    for (const close of [() => browser?.close(), () => forwarding?.stop()]) {
+      try {
+        await close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     try {
       await helm(
         "uninstall",
@@ -228,12 +239,30 @@ export async function installObservabilityDemo(t) {
   return {
     waitFor: kubernetes.waitFor,
     grafana,
+    artifacts,
+    async openBrowser() {
+      // Reuse the native loopback-only forward and its bounded process cleanup.
+      forwarding = await createRealKubernetesFixture(selection).startPortForwardTarget(
+        monitoring,
+        `service/${release}-grafana`,
+        "0:3000",
+      );
+      const { chromium } = await import("playwright");
+      browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
+      const login = await context.request.post(`${forwarding.url}/login`, {
+        data: { user: "admin", password },
+      });
+      assert.equal(login.status(), 200, "Grafana browser login failed");
+      await mkdir(artifacts, { recursive: true });
+      return { page: await context.newPage(), url: forwarding.url };
+    },
     async query(source, path) {
       const result = await grafana(`/api/datasources/proxy/uid/occ-${source}${path}`);
       assert.equal(result.status, 200, redact(result.text));
       return JSON.parse(result.text).data.result;
     },
-    async exportLog(body) {
+    async exportLog(body, { service = "demo-smoke", severity = "INFO", attributes = {} } = {}) {
       // Exercise Loki's actual OTLP endpoint; no Collector build or OCC lifecycle
       // is needed to prove this chart's ingestion and Grafana query connections.
       const result = await request(`http://${release}-loki.${monitoring}.svc:3100/otlp/v1/logs`, {
@@ -243,7 +272,7 @@ export async function installObservabilityDemo(t) {
           resourceLogs: [
             {
               resource: {
-                attributes: [{ key: "service.name", value: { stringValue: "demo-smoke" } }],
+                attributes: [{ key: "service.name", value: { stringValue: service } }],
               },
               scopeLogs: [
                 {
@@ -251,9 +280,16 @@ export async function installObservabilityDemo(t) {
                   logRecords: [
                     {
                       timeUnixNano: `${BigInt(Date.now()) * 1_000_000n}`,
-                      severityNumber: 9,
-                      severityText: "INFO",
+                      severityNumber: { INFO: 9, WARN: 13, ERROR: 17, FATAL: 21 }[severity],
+                      severityText: severity,
                       body: { stringValue: body },
+                      attributes: Object.entries(attributes).map(([key, value]) => ({
+                        key,
+                        value:
+                          typeof value === "number"
+                            ? { doubleValue: value }
+                            : { stringValue: value },
+                      })),
                     },
                   ],
                 },

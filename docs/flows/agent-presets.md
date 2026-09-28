@@ -173,6 +173,11 @@ without binding a Secret. The shared Secret picker requires a same-Namespace
 selection. **Create new Secret...** saves immediately and stages the reference;
 the browser never reads existing Secret bytes. Final Agent admission still
 requires a complete authentication binding.
+Rendered `agent.pluginApprovers` remains ordinary Agent draft data. Omission
+inherits the form default, an empty array keeps the explicit no-approver default,
+and selected channel identities are submitted through the normal Agent create
+body. The Agent API and selected Plugin Driver validate the concrete approvers
+after variable rendering.
 Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
 including explicit empty strings. The shared Preset validator checks supported
 filenames, Unicode, NUL, and byte limits before and after expansion; password

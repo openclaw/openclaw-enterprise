@@ -24,6 +24,9 @@ flowchart LR
     Worker --> IAM
     Worker --> Compute["ComputeDriver"]
     Compute -. "optional delegation" .-> Sandbox["SandboxDriver"]
+    API -. "optional registration" .-> CredGW["CredentialGatewayDriver"]
+    Compute -. "attachments" .-> CredGW
+    CredGW -. "paired Backend" .-> Sandbox
     Config --> ConfigStore["Configuration storage"]
     Secret --> SecretStore["Secret storage"]
     Compute --> Gateway["Dedicated Agent Gateway: control-plane target"]
@@ -40,7 +43,8 @@ infrastructure; they do not bypass OCC authorization or become resource owners.
 ## Platform resources
 
 Each deployment has one Installation. Its Namespaces contain Configurations,
-ServiceAccounts, Secrets, [Presets](reference/presets.md), and Agents. Each Agent owns immutable AgentRevisions.
+ServiceAccounts, Secrets, [credential sources](reference/credential-sources.md),
+[Presets](reference/presets.md), and Agents. Each Agent owns immutable AgentRevisions.
 References must stay within their admitted scope.
 
 [Concepts](guides/concepts.md) defines these resources and distinguishes platform
@@ -86,7 +90,11 @@ Compute owns workload provisioning, readiness, activation, and retirement.
 An optional SandboxDriver participates through Compute's Namespace and revision
 lifecycle. It can prepare provider Namespace state and own a dedicated Harness;
 its revision cleanup runs before retirement completes, and its Namespace cleanup
-runs before Compute releases tenant infrastructure.
+runs before Compute releases tenant infrastructure. An optional
+[CredentialGatewayDriver](reference/drivers/credential-gateway.md), paired with
+the Sandbox through one Backend, holds registered model credentials. Compute
+passes its per-revision attachments to the Sandbox and activates the revision
+only after the gateway reports them applied.
 Other Drivers may participate through bounded
 [Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).
 [Experimental Backends](reference/backends.md) supply authenticated clients to related Drivers.
@@ -183,11 +191,10 @@ and their enforcement limits.
 
 ## Deployment modes
 
-- **Local Kubernetes development:** Compose runs the API, worker, and PostgreSQL
-  on Docker Engine or Podman. Kubernetes Compute runs Agent workloads in a
-  disposable k3d cluster. Follow [Local Setup](guides/quickstart.md) to deploy
-  an Agent locally.
-- **Docker or Podman control-plane preview:** The default Compose profile runs
+- **Local Kubernetes development:** The API, worker, PostgreSQL, and Agent
+  workloads run in an owned k3d cluster hosted by Docker Engine or Podman.
+  Follow [Local Setup](guides/quickstart.md) to deploy an Agent locally.
+- **Docker or Podman control-plane preview:** The explicitly selected Compose profile runs
   the API, worker, and PostgreSQL; the API binds to loopback. Its Docker Compute
   Driver cannot provide the Harness authentication required to deploy Agents
   through OCC. See [Docker Compute](reference/drivers/docker-compute.md) for

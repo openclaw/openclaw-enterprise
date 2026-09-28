@@ -33,9 +33,8 @@ if [ "$development_sandbox_driver" = openshell ] && [ "$development_compute_driv
   echo "dev-up: configuration failed: OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes" >&2
   exit 2
 fi
-if [ "$development_control_plane" = kubernetes ] &&
-  { [ "$development_compute_driver" != kubernetes ] || [ "$development_sandbox_driver" != openshell ]; }; then
-  echo "dev-up: configuration failed: OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute with OpenShell" >&2
+if [ "$development_control_plane" = kubernetes ] && [ "$development_compute_driver" != kubernetes ]; then
+  echo "dev-up: configuration failed: OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute" >&2
   exit 2
 fi
 case "$development_compute_driver" in

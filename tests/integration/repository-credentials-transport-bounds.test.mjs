@@ -673,23 +673,33 @@ test(
 
 const streamBytes = 64 * 1024 * 1024;
 const streamChunk = Buffer.alloc(64 * 1024, 42);
-const producerAllowance = 16 * 1024 * 1024;
+const producerPauseTimeoutMs = 1000;
+const producerStableMs = 200;
 
 function writePayload(outgoing) {
   let producedBytes = 0;
+  let observedBackpressure = false;
+  const { promise: blocked, resolve: resolveBlocked } = Promise.withResolvers();
   const write = () => {
     while (producedBytes < streamBytes) {
       producedBytes += streamChunk.length;
       if (!outgoing.write(streamChunk)) {
+        if (!observedBackpressure) {
+          observedBackpressure = true;
+          resolveBlocked(producedBytes);
+        }
         outgoing.once("drain", write);
         return;
       }
     }
     outgoing.end();
+    if (!observedBackpressure) {
+      resolveBlocked(producedBytes);
+    }
   };
   outgoing.once("close", () => outgoing.off("drain", write));
   write();
-  return () => producedBytes;
+  return { blocked, producedBytes: () => producedBytes };
 }
 
 function payloadDigest() {
@@ -700,18 +710,36 @@ function payloadDigest() {
   return hash.digest("hex");
 }
 
-async function assertProducerBlocked(producedBytes) {
-  // Allow TLS and socket buffers to fill, then observe the peer's progress.
-  // This deliberately generous allowance is not a claim about Node buffer sizes.
-  await delay(300);
-  const before = producedBytes();
+async function assertProducerBlocked(producer) {
+  await Promise.race([
+    producer.blocked,
+    delay(producerPauseTimeoutMs).then(() => {
+      assert.fail("producer did not observe backpressure while consumer was paused");
+    }),
+  ]);
+  const deadline = Date.now() + producerPauseTimeoutMs;
+  let observed = producer.producedBytes();
+  let lastProgressAt = Date.now();
+  assert.ok(observed > 0, "producer did not start while consumer was paused");
+  // Keep the consumer paused for the entire window: an early plateau can be
+  // followed by more socket-buffer progress without the consumer resuming.
+  while (Date.now() < deadline) {
+    await delay(50);
+    const current = producer.producedBytes();
+    assert.ok(
+      current < streamBytes,
+      `producer completed ${current} bytes while consumer was paused`,
+    );
+    if (current !== observed) {
+      observed = current;
+      lastProgressAt = Date.now();
+    }
+  }
   assert.ok(
-    before > 0 && before <= producerAllowance,
-    `producer advanced ${before} bytes while consumer was paused`,
+    Date.now() - lastProgressAt >= producerStableMs,
+    `producer kept advancing while consumer was paused; last observed ${observed} bytes`,
   );
-  await delay(200);
-  assert.equal(producedBytes(), before, "producer kept advancing while consumer was paused");
-  return before;
+  return observed;
 }
 
 test("upstream response timing follows completed upload", { timeout: 15000 }, async (t) => {
@@ -861,9 +889,9 @@ test(
         "content-length": streamBytes,
       },
     });
-    const producedBytes = writePayload(client.outgoing);
+    const producer = writePayload(client.outgoing);
     await eventually(() => upstreamRequest !== undefined);
-    const pausedBytes = await assertProducerBlocked(producedBytes);
+    const pausedBytes = await assertProducerBlocked(producer);
     t.diagnostic(
       `Upload producer stopped at ${pausedBytes} of ${streamBytes} bytes before upstream resumed.`,
     );
@@ -875,7 +903,7 @@ test(
       bytes: 4,
       complete: true,
     });
-    assert.equal(producedBytes(), streamBytes);
+    assert.equal(producer.producedBytes(), streamBytes);
     assert.equal(receivedBytes, streamBytes);
     assert.equal(hash.digest("hex"), payloadDigest());
     assert.deepEqual(fixture.received, [{ method: "POST", path: push }]);
@@ -886,11 +914,11 @@ test(
   "a paused client bounds response producer progress and resumes without data loss",
   { timeout: 15000 },
   async (t) => {
-    let producedBytes;
+    let producer;
     const fixture = await startTransport(t, (incoming, outgoing) => {
       incoming.resume();
       outgoing.writeHead(200, replyHeaders);
-      producedBytes = writePayload(outgoing);
+      producer = writePayload(outgoing);
     });
     let incomingResponse;
     const client = startRequest(fixture, {
@@ -901,7 +929,7 @@ test(
     });
     client.outgoing.end();
     await eventually(() => incomingResponse !== undefined);
-    const pausedBytes = await assertProducerBlocked(producedBytes);
+    const pausedBytes = await assertProducerBlocked(producer);
     t.diagnostic(
       `Response producer stopped at ${pausedBytes} of ${streamBytes} bytes before client resumed.`,
     );
@@ -912,7 +940,7 @@ test(
       bytes: streamBytes,
       complete: true,
     });
-    assert.equal(producedBytes(), streamBytes);
+    assert.equal(producer.producedBytes(), streamBytes);
     assert.equal(client.digest(), payloadDigest());
     assert.deepEqual(fixture.received, [{ method: "GET", path: discovery }]);
   },

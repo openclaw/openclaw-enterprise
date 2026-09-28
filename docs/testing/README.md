@@ -19,7 +19,8 @@ before claiming coverage. Run prepared infrastructure suites by exact filename,
 one suite at a time. Keep suite variables scoped to one shell or process so
 database, Kubernetes, image, or provider selectors do not accidentally select
 another suite. The test scripts above run `scripts/verify-workspace-boundary.mjs`
-before the Node.js test runner.
+before the Node.js test runner. The conformance suite includes the
+[repository dependency policy test](repository-boundaries.md).
 
 For test audits, proof selection, diff cleanup, and independent review, see
 [Developer skills](developer-skills.md). For source dependency analysis with an
@@ -47,6 +48,21 @@ workspace check or prepare fixtures. It preserves Node's failure, skip, todo,
 process isolation, and cancellation behavior. A valid file selection or a green
 filtered run does not prove that the intended cases ran; inspect the reported
 case and skip counts. Existing suite discovery and CI selection remain available.
+
+### Run the local installation lane
+
+The `dev-up-k3d` lane selects all three real local installation cases and fails
+on skips. Install Node.js 24 or newer, the repository-pinned pnpm, the Go
+version from `go.mod`, Docker, k3d, kubectl, and Helm. Then build the CLI as
+described in [Local Kubernetes installation](kubernetes.md#local-kubernetes-installation).
+The lane creates its own disposable clusters. Run it with a fresh results
+directory:
+
+```sh
+run_dir=$(mktemp -d)
+node scripts/ci/run-tests.mjs run dev-up-k3d \
+  --state "$run_dir/state.json" --results "$run_dir/results.json"
+```
 
 ## Integration tests
 

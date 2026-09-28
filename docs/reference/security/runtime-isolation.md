@@ -107,8 +107,9 @@ Harness workload. The Compute-owned Pod templates above do not independently
 prove the containment of a provider-owned workload.
 
 The bundled OpenShell provider supports dedicated Codex and delegates containment
-outside the inner Codex sandbox. It requires upstream support for the workload's
-Secret references and projected identity. Stock gateway incompatibilities fail
+outside the inner Codex sandbox. Its paired Credential Gateway keeps the model
+API key outside the Harness. It still requires upstream support for the
+app-server token Secret reference and projected identity. Stock gateway incompatibilities fail
 explicitly, and test-only bridges are not production support. Do not infer a
 complete pre-execution policy barrier or command-level sandbox admission from
 Driver selection alone. See the [Sandbox overview](../../guides/topics/sandbox.md),

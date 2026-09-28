@@ -86,6 +86,17 @@ warnings record the observed startup result, not live plugin health.
 A later deployment admits a new revision with its own deployment status and does
 not rewrite the original result.
 
+### Current runtime diagnostics
+
+A bodyless `POST` to
+`/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
+requests fresh checks for the exact revision. It requires Agent read and operate
+plus AgentRevision read. The response has a revision ID, observation time, and
+at most 32 bounded checks. Kubernetes currently probes Slack configuration,
+authentication, and connectivity without sending. Missing Pods yield `unknown`;
+unavailable evidence yields `503`. The call changes no stored deployment state
+and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+
 ## Backend association
 
 An Agent can reference one Installation-configured [experimental Backend](backends.md)
@@ -131,6 +142,10 @@ For an already issued ChatGPT account credential, use
 `{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
 This requires dedicated Codex and the account's matching `backendId`. Binding
 an account does not issue its credential or change the model, Harness, or Backend.
+
+For dedicated Codex with a Credential Gateway, use
+`{ "method": "credential_source", "sourceId": "cs_…" }`; see
+[credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
@@ -292,24 +307,24 @@ you cannot restart an old revision directly.
 
 ## Deletion
 
-An authorized bodyless `DELETE /namespaces/:namespaceId/agents/:agentId`
-sets `status` to `deleting`, sets desired runtime state to `stopped`, queues
-teardown, and returns `202`. A deleting Agent remains readable while work is in
-flight, but update, deployment, runtime-credential provisioning, and workspace
-writes return `409`. Repeating deletion while the Agent exists converges on the
-same queued operation.
+A bodyless `DELETE /namespaces/:namespaceId/agents/:agentId` requires exact-Agent
+`delete`, sets `status: deleting` and desired state `stopped`, queues teardown,
+and returns `202`. Reads remain available; updates, deployment, credential
+provisioning, and workspace writes return `409`. Repeated DELETE leaves queued
+or running work unchanged.
 
-The worker reauthorizes the original caller, binds the persisted Agent identity
-into Compute, retires every revision, and removes the Agent's runtime credentials
-before atomically deleting the Agent, its
-revision history, service principal, service-principal API keys, and exact IAM
-bindings and restrictions. Kubernetes revision retirement waits for exact
-workload Pods and removes Agent-owned compute artifacts, including workspace
-data. Namespace-owned Configurations and Secrets survive. After success,
-the Agent disappears from reads and its name can be reused. Retryable cleanup
-failures leave the Agent in `deleting` while bounded queue retries continue.
-Permanent failures fail closed in `failed_permanent`; the Agent remains
-`deleting`, and the current API has no requeue or operator recovery path.
+The worker reauthorizes the original caller, binds the persisted identity into
+Compute, retires all revisions, and removes runtime credentials. It then
+atomically deletes the Agent, revisions, service principal, its API keys, and
+exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
+and removes owned artifacts, including workspace data. Namespace Configurations
+and Secrets survive. Successful deletion releases the Agent's name.
+
+Cleanup retries are bounded. After permanent failure or exhaustion, the Agent
+stays `deleting`. Once the cause is corrected, the initiating caller can repeat
+DELETE to replenish the attempt budget. OCC and the worker recheck permission;
+another actor cannot take over. Work identity and prior failure audits remain,
+and the retry adds an audit event. This recovery covers Agent deletion only.
 
 ## Editable configuration
 
@@ -339,8 +354,8 @@ each deployed Agent still owns its own gateway and stable service principal.
 ## Current limitations
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
-Brokered model credentials and controller API
-authentication for Agent service principals remain unavailable. The optional
+Controller API authentication for Agent service principals remains unavailable.
+The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
 Kubernetes Compute and dedicated Codex. Stock OpenShell cannot provide all the
 required workload credentials; review the documented compatibility limits before

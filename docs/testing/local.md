@@ -9,6 +9,7 @@ With infrastructure selectors unset:
 
 ```sh
 pnpm check:workspace
+pnpm check:modules
 pnpm lint
 pnpm format:check
 pnpm typecheck
@@ -20,7 +21,9 @@ pnpm test:integration
 `check:workspace` checks the active workspace, including the
 [repository credential source boundary](repository-credentials.md#check-source-authority-boundaries).
 The test scripts above run the same canonical workspace verification before
-their selected Node.js tests. `openapi:check` compares generated routes and the
+their selected Node.js tests. The conformance suite includes the
+[repository dependency policy test](repository-boundaries.md); `check:modules`
+runs that policy explicitly. `openapi:check` compares generated routes and the
 OpenAPI contract, HTTP API reference, and API cheat sheet with the checked-in
 versions. `typecheck` and `build` currently invoke the same TypeScript build command.
 

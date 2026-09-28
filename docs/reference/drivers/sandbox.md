@@ -42,8 +42,16 @@ and a cancellation signal. `SandboxHarnessContext` adds the immutable revision
 and `HarnessWorkloadRequirements`: image and startup command, Agent ServiceAccount,
 projected token audience/expiration/mount/path/read-only setting, approved PVC
 subpaths and mount modes, literal environment or Kubernetes `secretKeyRef`,
-explicit Harness login mode, and Agent/revision labels. Sandbox must use these
-prepared values rather than guessing login mode or resolving another credential.
+explicit Harness login mode, `credentialAttachments`, and Agent/revision labels.
+Sandbox must use these prepared values rather than guessing login mode or
+resolving another credential.
+
+`credentialAttachments` holds one opaque `{ sourceId, ref }` entry per
+credential source the revision binds; it is empty otherwise. The selected
+[CredentialGatewayDriver](credential-gateway.md) issues them, and only its
+paired Sandbox can consume them. The Sandbox must apply every attachment and
+reject any it did not issue. After the Harness is ready, Compute asks the
+gateway whether each attachment is applied before activating the revision.
 
 ### Sandbox resource identity
 
@@ -77,7 +85,8 @@ the same cleanup operation with or without a revision.
    It prepares the Agent gateway, identity, workspace, Services, and routing.
 3. The Sandbox provisions the dedicated Harness if it implements
    `provisionHarness`; otherwise Compute creates it. Compute waits for the exact
-   revision workload before activating traffic.
+   revision workload, and for every credential attachment to be `ready`, before
+   activating traffic.
 4. Stop and retirement call `cleanup` with the revision. If Compute owns the
    workload, it stops that workload first; its absence does not skip Sandbox
    cleanup. If Sandbox owns it, the method removes it.
@@ -110,8 +119,10 @@ prevent progress rather than weakening isolation.
 
 ## Implementations
 
-- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation. Trusted
-  YAML can also select an operator-installed Sandbox package.
+- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation, paired
+  with the OpenShell Credential Gateway through an `openshell` Backend. Trusted
+  YAML can also select an operator-installed Sandbox package, which cannot pair
+  with a Credential Gateway.
 
 ## Related
 

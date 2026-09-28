@@ -4,6 +4,11 @@ This companion to the [RFC](../31-repository-credentials.md) defines acceptance 
 
 ## Scope and exact artifacts
 
+**Historical consumer scope (2026-09-28):** The consumer support described in
+this section records the September 19 implementation. For current supported
+consumers, see the [repository credentials reference](../../docs/reference/repository-credentials.md).
+Use the [testing guide][testing] to qualify current source.
+
 | Source checkpoint                                                         | Contribution and evidence boundary                                                                                                                                                                                                            |
 | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`a3aa9da`][core], based on [`724dcb5`][main]                             | Core contracts, GitHub adapter, custody and sessions; incorporated #222 is history.                                                                                                                                                           |
@@ -53,6 +58,13 @@ Use trusted wall/monotonic clocks, never Agent-accessible clock control. Keep th
 Close during acquire, authentication, queueing and streaming. Capture refused-scope, insufficient-validity and late tokens under their original reservation; unknown issuance blocks remint. Preserve original outcome/handle identity and settlement before releasing slots. Test key-loss token cleanup, one session finalizing without closing the shared signing key, uncertain/non-204/lost-response retirement, drain-before active-push safety, replacement-preserving predecessor retirement and auxiliary finalization after access-slot reclamation. Invoked uncertain cleanup is not automatically replayed; pre-invocation queue rescheduling remains distinct. Exercise fairness, saturation, failed construction and finite grace exit with unresolved callbacks/capacity. [Service flow][flow] owns ordering and boundedness.
 
 ### T5 — profiles
+
+**Historical profile scope (2026-09-28):** The Git-only API exclusion in this
+section records the September 19 profile contract. Later changes expanded profile
+access. For current permissions and API boundaries, use
+[GitHub access levels](../../docs/reference/repository-credentials/access-levels.md)
+and the [testing guide](../../docs/testing/repository-credentials.md) when
+qualifying current source.
 
 On every issuance/replacement assert exactly one repository and the complete exact permission map; reject omitted, inherited, surplus, wrong-scope or invalid-expiry responses. Both Git-only profiles deny every API route. `git-read` denies receive-pack discovery and RPC **before mint/dispatch**, while real clone/fetch/checkout work and denied push leaves remote refs unchanged. Reject `read-write`; enforce Namespace ceilings and native repository policy without fallback or widening. [Profile/registry reference][reference] owns the maps and limits.
 

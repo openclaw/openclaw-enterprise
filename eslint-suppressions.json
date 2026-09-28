@@ -80,11 +80,6 @@
       "count": 1
     }
   },
-  "scripts/ci/codex-seccomp.mjs": {
-    "no-unsafe-finally": {
-      "count": 1
-    }
-  },
   "scripts/ci/logging.mjs": {
     "preserve-caught-error": {
       "count": 1
@@ -117,11 +112,6 @@
   },
   "scripts/generate-occ-openapi.mjs": {
     "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "tests/browser/console-agents.test.mjs": {
-    "no-empty": {
       "count": 1
     }
   },

@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, dismissOnBackdrop } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
@@ -356,7 +356,7 @@ function openDrawer(section, state, provider, retained) {
       "p",
       { className: "notice", role: "status" },
       state.copy.drawerNotice ??
-        "New revision. Changes affect future deployments using this Configuration. Use the Credentials tab for supported OpenAI and Slack credentials before first deploy.",
+        "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before first deploy.",
     ),
     enabled,
   );
@@ -437,6 +437,7 @@ function openDrawer(section, state, provider, retained) {
     }
   });
   dialog.append(body);
+  dismissOnBackdrop(dialog);
   section.append(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
   dialog.showModal();

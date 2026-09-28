@@ -1,4 +1,7 @@
 {
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
   "files": [
     {
       "path": "tests/conformance/audit.test.mjs"
@@ -14,6 +17,9 @@
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/credential-source-occ.test.mjs"
     },
     {
       "path": "tests/conformance/docker-compute.test.mjs"
@@ -50,6 +56,9 @@
     },
     {
       "path": "tests/conformance/platform-state-memory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/pr-status.test.mjs"
     },
     {
       "path": "tests/conformance/presets.test.mjs"
@@ -202,6 +211,12 @@
       "path": "tests/browser/console-agents.test.mjs"
     },
     {
+      "path": "tests/browser/console-agent-plugin-approvers.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-channels.test.mjs"
+    },
+    {
       "path": "tests/browser/console-repository-dedicated.test.mjs"
     },
     {
@@ -241,6 +256,9 @@
       "path": "tests/conformance/plugin-driver.test.mjs"
     },
     {
+      "path": "tests/conformance/slack-channel-directory.test.mjs"
+    },
+    {
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
     },
     {
@@ -257,6 +275,10 @@
     },
     {
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
     },
     {
       "path": "tests/integration/native-admin-access.test.mjs",
@@ -365,10 +387,23 @@
       "path": "tests/integration/repository-runtime-materialization.test.mjs"
     },
     {
+      "path": "tests/integration/kubernetes-peer-status.test.mjs",
+      "expectedTests": [
+        "real peer-status HTTPS transport authenticates its revision and verifies server trust"
+      ]
+    },
+    {
       "path": "tests/integration/runtime-assets.test.mjs"
     },
     {
       "path": "tests/conformance/module-boundaries.test.mjs"
+    },
+    {
+      "path": "tests/conformance/module-policy.test.mjs",
+      "expectedTests": [
+        "repository source obeys its dependency policy with exact current exceptions",
+        "repository policy allows a public root and rejects a new HTTP Driver import"
+      ]
     }
   ]
 }

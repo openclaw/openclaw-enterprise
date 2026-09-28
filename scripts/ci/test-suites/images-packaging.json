@@ -13,7 +13,7 @@
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [
-        "runtime image shares Codex 0.156.0 between the plugin and Dedicated command",
+        "runtime image shares Codex 0.158.0 between the plugin and Dedicated command",
         "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
         "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
@@ -39,6 +39,7 @@
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
       "expectedTests": [
+        "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
@@ -72,11 +73,13 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-images.test.mjs",
+      "path": "tests/integration/container-registry-real.test.mjs",
       "expectedTests": [
-        "Docker runtime image inspection follows attached images and rejects foreign revisions",
-        "runtime image metadata endpoint validates Enterprise and OpenClaw provenance independently"
+        "publication updates aliases using real Skopeo and a multi-platform registry"
       ]
     }
-  ]
+  ],
+  "env": {
+    "OCC_TEST_CONTAINER_REGISTRY": "1"
+  }
 }

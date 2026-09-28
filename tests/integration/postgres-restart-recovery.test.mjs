@@ -486,15 +486,18 @@ test(
   requiresPostgres,
   async (context) => {
     const { pool, queue } = await dependencies(context, { maxAttempts: 2 });
-    const { namespaceId, agents } = await createResources(pool, 2);
-    const staleRevisionId = await createQueueRevision(pool, namespaceId, agents[0]);
-    const exhaustedRevisionId = await createQueueRevision(pool, namespaceId, agents[1]);
+    const { namespaceId: revisionNamespaceId, agents } = await createResources(pool, 2);
+    const namespaceId = await createNamespace(pool, "provisioning");
+    const staleRevisionId = await createQueueRevision(pool, revisionNamespaceId, agents[0]);
+    const exhaustedRevisionId = await createQueueRevision(pool, revisionNamespaceId, agents[1]);
     const prefix = `queue-current-recovery:${randomUUID()}`;
     const staleRevisionKey = `${prefix}:stale-revision`;
     const exhaustedRevisionKey = `${prefix}:exhausted-revision`;
     const namespaceKey = `${prefix}:namespace`;
 
-    await queue.enqueue(revisionWork(namespaceId, staleRevisionKey, agents[0], staleRevisionId));
+    await queue.enqueue(
+      revisionWork(revisionNamespaceId, staleRevisionKey, agents[0], staleRevisionId),
+    );
     const staleRevision = await queue.claim();
     assert.equal(staleRevision.idempotencyKey, staleRevisionKey);
 
@@ -502,7 +505,13 @@ test(
     const staleNamespace = await queue.claim();
     assert.equal(staleNamespace.idempotencyKey, namespaceKey);
     await queue.enqueue(
-      revisionWork(namespaceId, exhaustedRevisionKey, agents[1], exhaustedRevisionId, new Date(2)),
+      revisionWork(
+        revisionNamespaceId,
+        exhaustedRevisionKey,
+        agents[1],
+        exhaustedRevisionId,
+        new Date(2),
+      ),
     );
 
     await pool.query(
@@ -524,6 +533,19 @@ test(
     assert.ok(recovery.requeued >= 2, "the exact stale revision and Namespace must be requeued");
     assert.ok(recovery.failedPermanent >= 1, "the exact exhausted revision must fail permanently");
     assert.ok(recovery.exhaustedQueued >= 1, "the exact exhausted revision must be counted");
+
+    // Retryable provisioning remains pending; exhausted Agent work must not
+    // change its already-ready tenant's lifecycle status.
+    assert.equal(
+      (await pool.query("SELECT status FROM occ.namespaces WHERE id = $1", [namespaceId])).rows[0]
+        .status,
+      "provisioning",
+    );
+    assert.equal(
+      (await pool.query("SELECT status FROM occ.namespaces WHERE id = $1", [revisionNamespaceId]))
+        .rows[0].status,
+      "ready",
+    );
 
     const recovered = await pool.query(
       `SELECT idempotency_key, state, attempt_count, claim_token
@@ -576,6 +598,150 @@ test(
     await queue.complete(recoveredNamespace);
   },
 );
+
+for (const source of ["claimed", "queued"]) {
+  test(
+    `exhausted ${source} recovery fails provisioning Namespaces atomically with work and audit`,
+    requiresPostgres,
+    async (context) => {
+      const { pool, queue, PostgresWorkQueue, WorkClaimLostError } = await dependencies(context, {
+        maxAttempts: 1,
+      });
+      const namespaceId = await createNamespace(pool, "provisioning");
+      const idempotencyKey = `queue-exhausted-${source}:${randomUUID()}`;
+      await queue.enqueue(namespaceWork(namespaceId, idempotencyKey));
+      const claim = await claimExpected(queue, idempotencyKey);
+
+      // A crashed final attempt leaves an expired claim. Queued exhaustion can
+      // also occur when a restarted worker lowers its configured attempt budget.
+      if (source === "claimed") {
+        await pool.query(
+          `UPDATE occ.controller_work
+           SET lease_expires_at = clock_timestamp() - interval '1 second'
+           WHERE idempotency_key = $1`,
+          [idempotencyKey],
+        );
+      } else {
+        const previousQueue = new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 });
+        await previousQueue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+      }
+
+      const reasonCode = source === "claimed" ? "LEASE_EXPIRED" : "MAX_ATTEMPTS_EXHAUSTED";
+      const snapshot = async (client) => {
+        const result = await client.query(
+          `SELECT namespace.status, work.state, work.claim_token, work.lease_expires_at,
+                  work.completed_at,
+                  (SELECT count(*)::integer FROM occ.audit_events
+                   WHERE resource_id = $2 AND details->>'reasonCode' = $3) AS evidence
+           FROM occ.controller_work AS work
+           JOIN occ.namespaces AS namespace ON namespace.id = work.namespace_id
+           WHERE work.idempotency_key = $1`,
+          [idempotencyKey, namespaceId, reasonCode],
+        );
+        return result.rows[0];
+      };
+      const before = await snapshot(pool);
+      const expected = {
+        status: "failed",
+        state: "failed_permanent",
+        claim_token: null,
+        lease_expires_at: null,
+        evidence: 1,
+      };
+
+      // Block Namespace publication to force a real server-side statement
+      // failure. Standalone recovery must not commit work or audit first.
+      const blocker = await pool.connect();
+      const recoveryClient = await pool.connect();
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
+          namespaceId,
+        ]);
+        await recoveryClient.query("SET lock_timeout = '100ms'");
+        await assert.rejects(
+          new PostgresWorkQueue(recoveryClient, { maxAttempts: 1 }).recoverStale(),
+          { code: "55P03" },
+        );
+        assert.deepEqual(await snapshot(pool), before);
+      } finally {
+        await blocker.query("ROLLBACK");
+        blocker.release();
+        await recoveryClient.query("RESET lock_timeout");
+        recoveryClient.release();
+      }
+
+      // Recovery must participate in its caller's transaction: neither the
+      // terminal work nor the Namespace failure may survive a rollback alone.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await new PostgresWorkQueue(client, { maxAttempts: 1 }).recoverStale();
+        const { completed_at, ...recovered } = await snapshot(client);
+        assert.ok(completed_at instanceof Date);
+        assert.deepEqual(recovered, expected);
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
+      assert.deepEqual(await snapshot(pool), before);
+
+      // A standalone pool call must publish all three effects together as well.
+      await queue.recoverStale();
+      const { completed_at, ...recovered } = await snapshot(pool);
+      assert.ok(completed_at instanceof Date);
+      assert.deepEqual(recovered, expected);
+      await assert.rejects(queue.complete(claim), WorkClaimLostError);
+      await queue.recoverStale();
+      assert.deepEqual(await snapshot(pool), { ...expected, completed_at });
+    },
+  );
+
+  test(
+    `exhausted ${source} recovery preserves ready and deleting Namespaces`,
+    requiresPostgres,
+    async (context) => {
+      const { pool, queue, PostgresWorkQueue } = await dependencies(context, { maxAttempts: 1 });
+      for (const [status, target, tombstone] of [
+        ["ready", "ready", false],
+        ["deleting", "ready", false],
+        ["deleting", "deleted", false],
+        ["deleting", "deleted", true],
+      ]) {
+        const namespaceId = await createNamespace(pool, status);
+        const key = `queue-exhausted-guard:${randomUUID()}`;
+        await queue.enqueue(namespaceWork(namespaceId, key, new Date(0), target));
+        const claim = await claimExpected(queue, key);
+        if (tombstone) {
+          // Teardown may already have published its tombstone before recovery.
+          await pool.query(
+            "UPDATE occ.namespaces SET deleted_at = clock_timestamp() WHERE id = $1",
+            [namespaceId],
+          );
+        }
+        if (source === "claimed") {
+          await pool.query(
+            `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
+             WHERE idempotency_key = $1`,
+            [key],
+          );
+        } else {
+          await new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 }).retry(claim, {
+            code: "DEPENDENCY_UNAVAILABLE",
+          });
+        }
+        await queue.recoverStale();
+        const result = await pool.query(
+          `SELECT namespace.status, namespace.deleted_at IS NOT NULL AS tombstone, work.state
+           FROM occ.namespaces AS namespace JOIN occ.controller_work AS work ON work.namespace_id = namespace.id
+           WHERE work.idempotency_key = $1`,
+          [key],
+        );
+        assert.deepEqual(result.rows, [{ status, tombstone, state: "failed_permanent" }]);
+      }
+    },
+  );
+}
 
 test(
   "transaction-scoped queue fencing rolls back Namespace mutation, completion, and audit together",

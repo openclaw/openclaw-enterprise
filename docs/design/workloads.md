@@ -128,10 +128,9 @@ Deploying an Agent follows one path.
 2. OCC authorizes deployment of the exact Agent and enforces applicable
    Restrictions through the authoritative `IAMDriver` for Agents.
 3. OCC resolves the Agent's referenced `Configuration`, `ServiceAccount`,
-   `Channel`, `Secret`, and `SandboxPolicy` resources, selects the approved
-   Harness from native provider/model policy, and checks its explicit execution
-   mode. Future `SecretBroker` references are outside the current deployment
-   path.
+   `Channel`, `Secret`, `CredentialSource`, and `SandboxPolicy` resources,
+   selects the approved Harness from native provider/model policy, and checks
+   its explicit execution mode.
 4. Each separately protected reference receives its own allow decision from
    the authoritative `IAMDriver` for that exact resource.
 5. OCC validates Namespace and Installation scope for every reference. It resolves

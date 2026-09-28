@@ -9,7 +9,8 @@ upstream credentials managed by [Service accounts](../service-accounts.md).
 ## Requirements
 
 - A working OCC Installation and a loopback development URL or approved
-  production HTTPS endpoint, assigned to `OCC_URL`.
+  production HTTPS endpoint, assigned to `OCC_URL`. Set `OCC_ORIGIN` to the
+  matching origin of `OCC_AUTH_BASE_URL` (scheme, host, and optional port only).
 - A human administrator session, or an Installation-scoped service principal
   with current `administer` on the singleton Installation.
 - An existing non-Agent service principal and its exact Namespace, if it has
@@ -34,7 +35,7 @@ export OCC_SERVICE_KEY_DIRECTORY='/secure/occ/service-keys'
 install -d -m 700 "$OCC_SERVICE_KEY_DIRECTORY"
 export OCC_SERVICE_KEY_FILE="$(mktemp "$OCC_SERVICE_KEY_DIRECTORY/key.XXXXXX")"
 curl --fail --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
-  "$OCC_URL/api/auth/service-keys" -H 'Content-Type: application/json' \
+  "$OCC_URL/api/auth/service-keys" -H "Origin: $OCC_ORIGIN" -H 'Content-Type: application/json' \
   --data '{"servicePrincipalId":"<service-principal-id>","namespaceId":"<namespace-id>","name":"nightly-reader","expiresIn":2592000}' \
   --output "$OCC_SERVICE_KEY_FILE"
 ```
@@ -66,6 +67,7 @@ To revoke the key in `OCC_SERVICE_KEY_FILE` with the administrator session:
 ```bash
 OCC_SERVICE_KEY_ID="$(python3 -c 'import json, os, pathlib; print(json.loads(pathlib.Path(os.environ["OCC_SERVICE_KEY_FILE"]).read_text())["data"]["id"])')"
 curl --fail --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
+  -H "Origin: $OCC_ORIGIN" \
   --request DELETE "$OCC_URL/api/auth/service-keys/$OCC_SERVICE_KEY_ID"
 ```
 
@@ -101,6 +103,7 @@ finished, revoke the session and remove its file:
 ```bash
 curl --fail-with-body --silent --show-error \
   --cookie "$OCC_SESSION_COOKIE_JAR" --cookie-jar "$OCC_SESSION_COOKIE_JAR" \
+  -H "Origin: $OCC_ORIGIN" \
   --request POST "$OCC_URL/api/auth/sign-out" --output /dev/null
 rm -- "$OCC_SESSION_COOKIE_JAR"
 rmdir -- "$OCC_SESSION_DIRECTORY"

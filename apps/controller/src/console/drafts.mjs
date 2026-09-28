@@ -14,6 +14,15 @@ export function createDraftStore() {
       }
       captures.clear();
     },
+    suspend() {
+      const suspended = new Map(captures);
+      this.flush();
+      return () => {
+        for (const [key, capture] of suspended) {
+          captures.set(key, capture);
+        }
+      };
+    },
     clear() {
       captures.clear();
       snapshots.clear();

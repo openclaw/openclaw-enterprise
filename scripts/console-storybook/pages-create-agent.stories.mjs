@@ -14,10 +14,14 @@ export const PluginsConfigured = {
 };
 export const PluginsCurated = story("createPluginsCurated");
 export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsPrefetch = story("createPluginsPrefetch");
+export const PluginsSearchLoading = story("createPluginsSearchLoading");
+export const PluginsToolsLoading = story("createPluginsToolsLoading");
 export const PluginsSelectedSecret = story("createPluginsSelectedSecret");
 export const PluginsSelectedSecretDenied = story("createPluginsSelectedSecretDenied");
 export const PluginsTools = story("createPluginsTools");
 export const PluginsPolicies = story("createPluginsPolicies");
+export const PluginApproversMissingSecret = story("createPluginApproversMissingSecret");
 export const PluginsSetupReminder = story("createPluginsSetupReminder");
 export const PluginsSecondPage = story("createPluginsSecondPage");
 export const PluginsEmpty = story("createPluginsEmpty");

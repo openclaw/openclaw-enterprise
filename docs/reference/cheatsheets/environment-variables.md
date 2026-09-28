@@ -33,6 +33,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
+- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup; set by Helm `api.channelDirectoryProxyUrl`.
 - `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC or gateway CA; read at process startup.
 
 ## PostgreSQL and migrations
@@ -81,28 +82,32 @@ These settings belong to the checkout's development stack. See
 [development settings](../settings/development.md#required-development-controller-environment)
 for supported engines, images, and security restrictions.
 
-- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; only the Kubernetes quickstart can deploy Agents.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
-- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` or `kubernetes`; defaults to `kubernetes` with OpenShell and `compose` otherwise. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute and OpenShell run in k3d.
-- `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only OpenShell uses it for k3d and image operations, while Compose mode also requires its Compose provider.
+- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
+- `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
+- `OCC_DEVELOPMENT_BROWSER_PORT` — Published HTTPS browser port on host loopback; default: `8443`.
 - `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` — Compose bridge allowed to reach the development API.
 - `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR` — Single private forwarding IP; supplied automatically for rootful macOS Podman.
 - `OCC_DEVELOPMENT_CONFIGURATION_ROOT` — Absolute path to the development filesystem Configuration Driver's root.
 - `OCC_DOCKER_RUNTIME_IMAGE` — Shared image for the Docker gateway and Agent; may replace the two separate images.
 - `OCC_DOCKER_GATEWAY_IMAGE` — Docker gateway image when a shared image is not used.
 - `OCC_DOCKER_AGENT_IMAGE` — Docker Codex Agent image when a shared image is not used.
-- `OCC_KUBERNETES_RUNTIME_IMAGE` — Existing local Kubernetes runtime image; otherwise each startup rebuilds the default from the checkout.
-- `OCC_DEVELOPMENT_CONTROLLER_IMAGE` — Existing local OCE controller image for the Kubernetes-only OpenShell profile; otherwise each startup rebuilds it from the checkout.
-- `OCC_DEVELOPMENT_POSTGRES_IMAGE` — Existing local PostgreSQL image for the Kubernetes-only OpenShell profile; defaults to the pinned PostgreSQL 18.6 image.
-- `OCC_DEVELOPMENT_NODE_BASE_IMAGE` — Immutable Node 24 base used only when building the OpenShell profile's OCE controller image.
+- `OCC_KUBERNETES_RUNTIME_IMAGE` — Existing local Kubernetes runtime image; Kubernetes-only startup requires a matching controller digest and checkout revision.
+- `OCC_DEVELOPMENT_CONTROLLER_IMAGE` — Existing local OCE controller digest matching the runtime and checkout revision for the Kubernetes-only profile.
+- `OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY` — Private local repository registry, App key, and approved upstream IPv4 `/32` endpoint inputs.
+- `OCC_DEVELOPMENT_REPOSITORY_IMAGE` — Optional matching immutable repository service image for the Kubernetes-only profile.
+- `OCC_DEVELOPMENT_POSTGRES_IMAGE` — Existing local PostgreSQL image for the Kubernetes-only profile; defaults to the pinned PostgreSQL 18.6 image.
+- `OCC_DEVELOPMENT_NODE_BASE_IMAGE` — Immutable Node 24 base used when building the Kubernetes-only OCE controller image.
 - `OCC_DEVELOPMENT_STATE_DIRECTORY` — Private Kubernetes profile state; default: `/tmp/openclaw-development`. Use the same value for cleanup.
-- `OCC_DEVELOPMENT_COMPOSE_PROJECT` — Compose control-plane project's name; default: `openclaw-enterprise-development-kubernetes`. Kubernetes-only OpenShell does not use Compose.
-- `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — OpenShell profile's platform Namespace; default: `oce-system`.
+- `OCC_DEVELOPMENT_COMPOSE_PROJECT` — Compose control-plane project's name; default: `openclaw-enterprise-development-kubernetes`. Kubernetes-only mode does not use Compose.
+- `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes-only profile's platform Namespace; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
-- `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile startup timeout; default: `300` seconds per wait, or `600` for OpenShell.
+- `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile startup timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
-- `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Kubernetes without OpenShell; default: `+v1.35`. OpenShell uses its pinned image.
+- `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for the Kubernetes-only k3d node.
+- `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.
 - `OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT` — Disposable cluster disk-pressure threshold; default: `5`.
 - `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART` — Optional absolute OpenShell Gateway chart directory or archive; set it together with the workspace chart override.
 - `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART` — Optional absolute OpenShell workspace chart directory or archive; set it together with the Gateway chart override.

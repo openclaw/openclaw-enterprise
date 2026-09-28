@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -84,6 +85,43 @@ func (r *runner) writeKubeconfigs(ctx context.Context, s *developmentState) erro
 	}
 	// The directory stays 0700; these two files are individually mounted into non-root containers.
 	return exclusiveWrite(filepath.Join(s.directory, "container-kubeconfig"), data, 0644)
+}
+
+func (r *runner) waitForDevelopmentKubernetesNamespace(ctx context.Context, timeout time.Duration) (string, string, error) {
+	var name string
+	var namespaceID string
+	err := poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		data, err := r.output(ctx, "kubectl", "get", "namespaces", "--selector", "openclaw.dev/namespace", "-o", "json")
+		if err != nil {
+			return false, nil
+		}
+		var list struct {
+			Items []struct {
+				Metadata struct {
+					Name        string            `json:"name"`
+					Labels      map[string]string `json:"labels"`
+					Annotations map[string]string `json:"annotations"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(data, &list); err != nil {
+			return false, fmt.Errorf("invalid Kubernetes Namespace inventory: %w", err)
+		}
+		if len(list.Items) == 0 {
+			return false, nil
+		}
+		if len(list.Items) != 1 {
+			return false, fmt.Errorf("development requires exactly one bootstrap Namespace")
+		}
+		item := list.Items[0].Metadata
+		identifier := item.Labels["openclaw.dev/namespace"]
+		if item.Name == "" || identifier == "" || item.Annotations["openclaw.dev/namespace-id"] != identifier {
+			return false, fmt.Errorf("bootstrap Namespace is missing OCC ownership evidence")
+		}
+		name, namespaceID = item.Name, identifier
+		return true, nil
+	})
+	return name, namespaceID, err
 }
 
 var imageDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -193,7 +231,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 
 // The local profile trusts only Pod loopback; first-agent verifies model access
 // with the separate loopback password. Routed installations supply Envoy source CIDRs.
-func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets) error {
+func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets, codexSeccompProfile string) error {
 	auth := map[string]any{"mode": "kubeconfig", "kubeconfigPath": "/run/openclaw-development/kubeconfig", "context": "k3d-" + s.Cluster}
 	gatewayClientNamespace := "default"
 	if s.DeploymentMode == "k3d" {
@@ -216,11 +254,26 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			}},
 		},
 	}
+	if codexSeccompProfile != "" {
+		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
+		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
+	}
+	if s.DeploymentMode == "k3d" && s.SandboxDriver == "none" {
+		config["presets"] = map[string]any{"includeDefaults": true}
+		config["drivers"].(map[string]any)["plugin"] = map[string]any{
+			"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+		}
+	}
 	if s.SandboxDriver == "openshell" {
 		if openShell == nil {
 			return fmt.Errorf("OpenShell development assets are required")
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
+		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
+			"id":            openShellCredentialGatewayID,
+			"configuration": map[string]any{"binaries": []string{openShellCodexBinary}},
+		}
+		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
 	if err != nil {
@@ -229,22 +282,43 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	return exclusiveWrite(filepath.Join(s.directory, "installation.yaml"), data, 0644)
 }
 
-func openShellInstallationConfiguration(s *developmentState, workspaceResources []any) map[string]any {
-	gatewayNamespace := openShellGatewayNamespace
+const (
+	openShellSandboxID           = "sandbox-openshell-development"
+	openShellCredentialGatewayID = "credential-gateway-openshell-development"
+	// The native Codex binary is the only process allowed to use injected model credentials.
+	openShellCodexBinary = "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.158.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"
+)
+
+// openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
+// Credential Gateway Drivers.
+func openShellBackendConfiguration(s *developmentState) map[string]any {
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)
 	if s.DeploymentMode == "k3d" {
+		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace)
+	}
+	return map[string]any{
+		"id":   "openshell",
+		"type": "openshell",
+		// The development gateway is unauthenticated plain HTTP; the profile's NetworkPolicies
+		// admit only the OCE API, worker, and OpenShell supervisors.
+		"configuration": map[string]any{"endpoint": endpoint, "insecureTransport": "network-policy"},
+		"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+	}
+}
+
+func openShellInstallationConfiguration(s *developmentState, workspaceResources []any) map[string]any {
+	gatewayNamespace := openShellGatewayNamespace
+	if s.DeploymentMode == "k3d" {
 		gatewayNamespace = s.PlatformNamespace
-		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", openShellGatewayService, gatewayNamespace)
 	}
 	gatewayLabels := map[string]string{
 		"app.kubernetes.io/name":     "openshell",
 		"app.kubernetes.io/instance": openShellGatewayService,
 	}
 	return map[string]any{
-		"id": "sandbox-openshell-development",
+		"id": openShellSandboxID,
 		"configuration": map[string]any{
 			"gateway": map[string]any{
-				"endpoint":      endpoint,
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
@@ -276,8 +350,9 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			"policy": map[string]any{
 				"process": map[string]string{"runAsUser": "1000", "runAsGroup": "1000"},
 				"networkPolicies": []any{
+					// Model egress comes from the credential source's OpenShell profile, which
+					// terminates TLS so the proxy can inject the key; an uninspected rule would conflict.
 					map[string]any{"name": "source-control", "endpoints": []any{map[string]any{"host": "github.com", "ports": []int{443}, "tls": "skip"}}, "binaries": []any{map[string]string{"path": "/usr/bin/git"}}},
-					map[string]any{"name": "model-provider", "endpoints": []any{map[string]any{"host": "api.openai.com", "ports": []int{443}, "tls": "skip"}}, "binaries": []any{map[string]string{"path": "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.156.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"}}},
 				},
 			},
 			"sandboxNamePrefix": "os",

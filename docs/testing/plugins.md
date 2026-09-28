@@ -35,6 +35,13 @@ authorized credentials: plugin A remains usable when B fails, B is disabled in
 both native app and gateway bridge configuration, and sibling Agent/workspace
 state is unchanged.
 
+For dedicated Codex removal, clear the last selection through the Agent API and
+redeploy. Run a native shell command in both the existing conversation and a new
+one, and check its tool result against an independent workspace read. Confirm
+that native plugin features remain disabled and the packaged runtime is readable
+without granting broad filesystem access. Configuration readback alone does not
+prove that a command can execute inside the sandbox.
+
 The controlled status suite verifies the private status handoff through real
 Kubernetes and restart behavior; its controlled native producer does not establish
 Codex/OpenClaw compatibility. Missing, malformed, or foreign reports must not make
@@ -101,6 +108,11 @@ injected `CODEX_ACCESS_TOKEN` for the existing designated test account, and a
 runtime image that supports `OPENCLAW_STATE_DIR` for OpenClaw state writes when
 the test starts without a useful `HOME`. Set `OCC_TEST_OPENAI_MODEL` to a model
 supported by that Codex path; the current source default is `gpt-6-astra`.
+Prepare the reviewed [Codex sandbox profile](../guides/deploy/codex-sandbox.md)
+on the test nodes and set `OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE` to its
+kubelet-relative path. Codex fixtures use a 4 GiB Gateway limit and a 2 GiB
+Harness limit; the namespace quota allows two Agent pairs and revision overlap.
+Provide enough cluster memory for the selected scenario and its other workloads.
 The Calendar proof also needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
 `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen
 `list_calendars(max_results:1)` read during a normal Agent turn.
@@ -145,7 +157,7 @@ identifiers.
 ## Per-call approval acceptance
 
 The Calendar scenario also redeploys the same Agent with
-`toolDefaults: { approval: "prompt", reviewer: "human" }`. It connects an
+`toolDefaults: { approval: "all_actions", reviewer: "human" }`. It connects an
 operator approval client to the disposable Gateway, allows one read, then denies
 the repeated read in the same session. Transcript evidence must contain no tool
 result while approval is pending, a successful result after approval, and an
@@ -169,11 +181,11 @@ scenario. An unselected scenario is skipped and provides no enforcement proof.
 The same Calendar scenario continues after per-call review with two deployments.
 It binds the known harmless read's raw MCP name and connector owner from
 `mcpServerStatus/list` to its app-scoped OCE tool ID. With
-`toolDefaults: { enabled: false, approval: "prompt", reviewer: "human" }`, only
-that tool receives `{ enabled: true, approval: "approve" }`. The read must execute
+`toolDefaults: { enabled: false, approval: "all_actions", reviewer: "human" }`, only
+that tool receives `{ enabled: true, approval: "none" }`. The read must execute
 without a human approval client and return the expected provider result. A second
 deployment enables tools by default but sets that tool's `enabled` to `false`
-while retaining `approve`; a completed native turn must contain no call to the
+while retaining `none`; a completed native turn must contain no call to the
 previously working read.
 
 Native configuration is checked for every app and observed sibling tool. The raw
@@ -187,8 +199,9 @@ requirements, or future session/model compatibility.
 
 The nested policy contract and translation changes have not been verified in a
 real Kubernetes Agent deployment. This includes default/tool overrides, Codex
-per-call review and reviewer selection, and destructive defaults with explicit
-tool exceptions. Contract/API/startup-fixture checks prove their own boundaries;
+`all_actions` and `write_actions` review, reviewer selection, and destructive
+defaults with explicit tool exceptions. Contract/API/startup-fixture checks prove
+their own boundaries;
 older model-turn results below do not prove these new policies. In particular,
 explicit `reviewer:"auto"` must reach native automatic review, which can deny;
 omission must retain the effective Harness reviewer.
@@ -200,16 +213,21 @@ Native proof needs a runtime containing OpenClaw
 above. Verify effective native app/tool configuration, session approval and
 permission profile, and a real normal Agent turn before claiming approval
 enforcement. A session using `never` with permissive permissions can bypass MCP
-review unless strict review applies; app-level `prompt` alone is not proof.
+review unless strict review applies; an app-level review default alone is not proof.
 Startup now checks explicit app reviewers against effective app/link settings,
 allowed reviewers, current approval policy, and managed current-model requirements.
 That check does not establish future turn routing, session/model changes, or the
-turn's strict-review flag. Startup fixtures also exercise every nested tool's
-enablement/approval and account/link approval defaults against the requested
-policy, including unexpected exceptions that would otherwise pass subset
-verification. Managed requirements beyond reviewer checks, workspace configuration,
-and live reviewer availability remain draft acceptance gates. Confirm a disabled plugin remains
-blocked despite an enabled tool override, and a tool exception preserves native
+turn's strict-review flag. Startup fixtures check app/global fields, unselected
+apps, nested tools, and account/link approval against the requested policy. They
+reject an inherited `default_tools_enabled:true` that bypasses destructive
+denial and include project overrides through `config/read.cwd`. Native defaults,
+nulls, and omitted reviewer inheritance remain valid. Codex 0.156 readback omits
+managed app/tool requirements applied during execution. Native effective-policy
+introspection, later workspace/session changes, and live reviewer availability
+remain acceptance gates. For `write_actions`, verify that a native read-only
+action runs without added review while a non-read-only action requests review
+through a normal Agent turn. Confirm a disabled plugin remains blocked despite
+an enabled tool override, and a tool exception preserves native
 operator restrictions. Installation composition also remains unproven on a real
 deployment.
 

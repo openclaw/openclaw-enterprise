@@ -66,7 +66,7 @@ sandbox and network proxy settings therefore apply only to **Standard Codex**.
 ## DevDay custom presets
 
 [`SWE Agent`](../../deploy/presets/devday.json) copies
-**Standard Codex** and adds Slack Socket Mode with four prefilled channels.
+**Standard Codex** and adds Slack Socket Mode with six prefilled channels.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
 model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
@@ -90,12 +90,14 @@ and Community Agent. Uncomment only the custom presets you want to install.
 
 SWE Agent, Q&A Agent, and Oncall Agent prefill these channels:
 
-| Channel           | ID            |
-| ----------------- | ------------- |
-| oce-feedback      | `C0C49E7CS4A` |
-| oce-team          | `C0C43A2QA11` |
-| oce-feedback-test | `C0C569NN9ME` |
-| oce-team-test     | `C0C4A0JH2BG` |
+| Channel            | ID            |
+| ------------------ | ------------- |
+| oce-feedback       | `C0C49E7CS4A` |
+| oce-team           | `C0C43A2QA11` |
+| oce-feedback-test  | `C0C569NN9ME` |
+| oce-team-test      | `C0C4A0JH2BG` |
+| oce-community      | `C0C5KF0JLSC` |
+| oce-community-test | `C0C5KF0DWLQ` |
 
 Community Agent prefills its own channel list:
 
@@ -108,7 +110,7 @@ Community Agent prefills its own channel list:
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
 choose allowed senders and bind Slack app/bot Secrets. The presets allow all channel members (`users: ["*"]`)
-and do not require mentions in any of the four channels. Narrow the sender list in the drawer if
+and do not require mentions in their configured channels. Narrow the sender list in the drawer if
 needed. No credentials are stored in the file.
 The preset includes the supplied instructions in
 `template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.
@@ -133,6 +135,7 @@ is valid. Its optional fields are:
 | `agent.harnessAuth`            | Auth method default, credential binding, password variable token, or null; never stored credential bytes. |
 | `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                                    |
 | `agent.plugins`                | Desired plugin selections and policies.                                                                   |
+| `agent.pluginApprovers`        | Agent-wide default plugin approvers copied into the editable draft.                                       |
 | `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings.      |
 | `configuration.secretBindings` | Bindings to Secrets in this Namespace.                                                                    |
 
@@ -141,6 +144,13 @@ contracts. Installation-owned Driver selection, generated identities, runtime
 state, and Agent revision IDs are not template settings. A supplied
 `configuration.values` replaces the console's starter JSON; it does not merge
 with it. Omitted settings use the form's normal defaults.
+
+`agent.pluginApprovers` uses the Agent default plugin approver semantics from
+[Agent Plugins](agent-plugins.md#slack-approver-users). Omit it to inherit
+the form default. Use an empty array to select no Slack approvers, or a
+list of channel user identities to prefill selected approvers. Variable tokens
+can appear inside those identity strings; the completed Agent request still
+validates the rendered approvers with the selected Plugin Driver.
 
 ## Workspace files
 

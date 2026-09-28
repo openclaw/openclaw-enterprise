@@ -23,13 +23,17 @@ import {
   normalizeInitialWorkspaceFiles,
   type InitialWorkspaceFiles,
   ErrorResponse,
+  AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   JsonValue,
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
   PluginDriverIdentitySchema,
   PluginToolPolicySchema,
+  PluginToolDefaultsSchema,
+  PluginApproversSchema,
   SecretResponse,
+  CredentialSourceResponse,
   occApiRoutes,
   type Agent,
   type ProvisionAgentBody,
@@ -38,6 +42,7 @@ import {
   type AuditEvent,
   type AuthorizationEvidence,
   type ConfigurationDriver,
+  type ChannelDriver,
   type ComputeDriver,
   type HarnessExecutionMode,
   type HarnessAuthBinding,
@@ -64,6 +69,7 @@ import {
   ResourceConflictError,
   type DeploymentStatusResult,
   type AgentProvisioningProgress,
+  type DeployAgentAuthorization,
   type ProvisionAgentInput,
   type HarnessResolver,
   type OpenClawController,
@@ -113,6 +119,7 @@ import {
 import { configurationHandlers } from "./http/configurations.ts";
 import { presetHandlers } from "./http/presets.ts";
 import { secretHandlers } from "./http/secrets.ts";
+import { credentialSourceHandlers } from "./http/credential-sources.ts";
 import { iamHandlers } from "./http/iam.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
@@ -130,6 +137,7 @@ export interface ControllerAppOptions {
   readonly iamDriver: IAMDriver;
   readonly computeDriver?: ComputeDriver;
   readonly configurationDriver?: ConfigurationDriver;
+  readonly channelDriver?: ChannelDriver;
   readonly secretDriver?: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
@@ -192,9 +200,12 @@ interface RequiredPermission {
     | "associated_service_account"
     | "existing_namespace"
     | "bound_secret"
+    | "directory_lookup"
     | "selected_secret"
     | "iam_binding_target"
-    | "provisioning_work";
+    | "provisioning_work"
+    | "missing_runtime_credentials"
+    | "authenticated_plugin_discovery";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -205,6 +216,7 @@ const resourceHandlers: ResourceHandlers = {
   ...configurationHandlers,
   ...presetHandlers,
   ...secretHandlers,
+  ...credentialSourceHandlers,
   ...iamHandlers,
   ...serviceAccountHandlers,
 };
@@ -224,6 +236,7 @@ const RESOURCE_ID = {
   configurationId: /^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   serviceAccountId: /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   secretId: /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  credentialSourceId: /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   agentId: /^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   revisionId: /^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
 } as const;
@@ -348,6 +361,8 @@ function operationTarget(
     typeof params.serviceAccountId === "string" ? params.serviceAccountId : undefined;
   const presetId = typeof params.presetId === "string" ? params.presetId : undefined;
   const secretId = typeof params.secretId === "string" ? params.secretId : undefined;
+  const credentialSourceId =
+    typeof params.credentialSourceId === "string" ? params.credentialSourceId : undefined;
   const agentId = typeof params.agentId === "string" ? params.agentId : undefined;
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
   if (operation.operationId === "createNamespace") {
@@ -376,6 +391,16 @@ function operationTarget(
   }
   if (secretId && namespaceId) {
     return { kind: "secret", id: secretId, namespaceId };
+  }
+  if (
+    (operation.operationId === "createCredentialSource" ||
+      operation.operationId === "listCredentialSources") &&
+    namespaceId
+  ) {
+    return { kind: "credential_source", id: namespaceId, namespaceId };
+  }
+  if (credentialSourceId && namespaceId) {
+    return { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
     (operation.operationId === "createAgent" ||
@@ -460,6 +485,35 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [{ ...permission, scope: "namespace" }];
   }
 
+  if (operation.operationId === "lookupChannelDirectory") {
+    return [
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: "request_body",
+        condition: "directory_lookup",
+      },
+      {
+        action: "create",
+        resourceKind: "agent",
+        scope: "namespace",
+        condition: "directory_lookup",
+      },
+      {
+        action: "update",
+        resourceKind: "agent",
+        scope: "request_body",
+        condition: "directory_lookup",
+      },
+      {
+        action: "update",
+        resourceKind: "configuration",
+        scope: "request_body",
+        condition: "directory_lookup",
+      },
+    ];
+  }
+
   if (operation.operationId === "createIAMAccessBinding") {
     return [
       { action: "administer", resourceKind: "installation", scope: "requested" },
@@ -541,6 +595,22 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               scope: "requested" as const,
             },
           ]),
+      ...(operation.operationId === "deployAgent"
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+              condition: "missing_runtime_credentials" as const,
+            },
+            {
+              action: "operate" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+              condition: "missing_runtime_credentials" as const,
+            },
+          ]
+        : []),
       {
         action: "read",
         resourceKind: "service_account",
@@ -574,6 +644,35 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { ...permission, scope: "requested" },
       { action: "read", resourceKind: "agent", scope: "requested" },
+    ];
+  }
+
+  if (
+    operation.operationId === "getSavedAgentPluginPolicyCapabilities" ||
+    operation.operationId === "discoverSavedAgentPlugins" ||
+    operation.operationId === "discoverSavedAgentPluginDetails"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      ...(operation.operationId === "getSavedAgentPluginPolicyCapabilities"
+        ? []
+        : [
+            {
+              action: "operate" as const,
+              resourceKind: "secret" as const,
+              scope: "requested" as const,
+              condition: "authenticated_plugin_discovery" as const,
+            },
+          ]),
+    ];
+  }
+
+  if (operation.operationId === "diagnoseAgentDeployment") {
+    return [
+      { action: "operate", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent_revision", scope: "requested" },
     ];
   }
 
@@ -616,6 +715,7 @@ function permissionDescription(
     secret: "Secret",
     agent: "Agent",
     agent_revision: "AgentRevision",
+    credential_source: "CredentialSource",
   };
 
   const description = permissions
@@ -623,6 +723,15 @@ function permissionDescription(
       const name = names[resourceKind];
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
+      }
+      if (condition === "directory_lookup") {
+        if (resourceKind === "secret") {
+          return "Requires operate permission on the exact Secret named by secretId.";
+        }
+        if (action === "create") {
+          return "Without an edit target, requires Agent create permission in the Namespace.";
+        }
+        return `With ${resourceKind === "agent" ? "agentId" : "configurationId"}, requires update permission on that exact ${name}.`;
       }
       if (condition === "existing_namespace") {
         return `Requires ${action} permission on the ${name} when selecting an existing Kubernetes namespace.`;
@@ -644,6 +753,12 @@ function permissionDescription(
       }
       if (condition === "provisioning_work") {
         return `Requires current ${action} authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.`;
+      }
+      if (condition === "missing_runtime_credentials") {
+        return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
+      }
+      if (condition === "authenticated_plugin_discovery") {
+        return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -698,6 +813,7 @@ function clientAgent(agent: Readonly<Agent>): Record<string, unknown> {
     backendId: agent.backendId,
     executionMode: agent.executionMode,
     ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
+    ...(agent.pluginApprovers === undefined ? {} : { pluginApprovers: agent.pluginApprovers }),
     ...(agent.repositoryBindings === undefined
       ? {}
       : { repositoryBindings: agent.repositoryBindings }),
@@ -749,6 +865,9 @@ function clientRevision(revision: Readonly<AgentRevision>): Record<string, unkno
     ...(revision.secretDriverId === undefined ? {} : { secretDriverId: revision.secretDriverId }),
     ...(revision.secretBindings === undefined ? {} : { secretBindings: revision.secretBindings }),
     ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
+    ...(revision.pluginApprovers === undefined
+      ? {}
+      : { pluginApprovers: revision.pluginApprovers }),
     ...(revision.repositoryCredentials === undefined
       ? {}
       : {
@@ -864,7 +983,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.removeContentTypeParser("text/plain");
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
+  app.addSchema(PluginApproversSchema);
   app.addSchema(PluginToolPolicySchema);
+  app.addSchema(PluginToolDefaultsSchema);
   app.addSchema(PluginDesiredSelectionSchema);
   app.addSchema(PluginDesiredStateSchema);
   void app.register(swagger, {
@@ -1022,7 +1143,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     evidence?: AuthorizationEvidence,
     result?: { readonly outcome: "success" | "denied" | "failure"; readonly reasonCode?: string },
     authorization?: NonNullable<AuthorizationDeniedError["authorization"]>,
+    validatedAuthorization?: Readonly<DeployAgentAuthorization>,
   ): AuditEvent {
+    const authorizationEvidence = validatedAuthorization?.decision.evidence ?? evidence;
+    const outcome =
+      result?.outcome ?? (kind === "bootstrap" || kind === "mutation" ? "success" : "denied");
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -1038,8 +1163,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               subject: context.subject,
             },
             admissionDecisionId: context.admissionDecisionId,
-            iamDriverId: selectedIAMDriver().id,
-            authorization: {
+            iamDriverId: validatedAuthorization?.decision.driverId ?? selectedIAMDriver().id,
+            authorization: validatedAuthorization?.request ?? {
               principalId: context.actorId,
               action: authorization?.action ?? operation.iamAction,
               resource:
@@ -1050,29 +1175,28 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   request.params as Record<string, unknown>,
                 ),
             },
-            ...(evidence === undefined
+            ...(authorizationEvidence === undefined
               ? {}
               : {
-                  ...(evidence.restrictionIds.length > 0
+                  ...(outcome === "denied" && authorizationEvidence.restrictionIds.length > 0
                     ? { decisionReason: "A matching Restriction denied the operation." }
                     : {}),
                   details: {
                     iamEvidence: {
-                      ...(evidence.identityId === undefined
+                      ...(authorizationEvidence.identityId === undefined
                         ? {}
-                        : { identityId: evidence.identityId }),
-                      groupIds: evidence.groupIds,
-                      bindingIds: evidence.bindingIds,
-                      roleIds: evidence.roleIds,
-                      restrictionIds: evidence.restrictionIds,
+                        : { identityId: authorizationEvidence.identityId }),
+                      groupIds: authorizationEvidence.groupIds,
+                      bindingIds: authorizationEvidence.bindingIds,
+                      roleIds: authorizationEvidence.roleIds,
+                      restrictionIds: authorizationEvidence.restrictionIds,
                     },
                   },
                 }),
           }),
       action: operation.action,
       resource,
-      outcome:
-        result?.outcome ?? (kind === "bootstrap" || kind === "mutation" ? "success" : "denied"),
+      outcome,
       ...(result?.reasonCode === undefined
         ? kind === "authorization_denial"
           ? { reasonCode: "AUTHORIZATION_DENIED" }
@@ -1674,7 +1798,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     let admitted: AdmittedCaller;
     try {
-      admitted = await options.auth.admissionVerifier.verify({
+      admitted = await options.auth.admissionVerifier.verifyControllerRequest({
         requestId: request.id,
         method: request.method,
         routeId: operation.operationId,
@@ -1844,6 +1968,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.registerDriver(options.secretDriver);
           created.selectDriver("secret", options.secretDriver.id);
         }
+        if (options.channelDriver) {
+          created.registerDriver(options.channelDriver);
+          created.selectDriver("channel", options.channelDriver.id);
+        }
         if (options.sandboxDriver) {
           created.registerDriver(options.sandboxDriver);
           created.selectDriver("sandbox", options.sandboxDriver.id);
@@ -1982,6 +2110,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
         ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+        ...(body?.q === undefined ? {} : { q: body.q as string }),
       });
       reply.header("cache-control", "no-store");
       reply.send({ data: catalog, meta: { requestId: request.id } });
@@ -1997,6 +2126,61 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getSavedAgentPluginPolicyCapabilities") {
+      const capabilities = await controller.getSavedAgentPluginPolicyCapabilities(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: capabilities, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverSavedAgentPlugins") {
+      const catalog = await controller.discoverSavedAgentPlugins(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+        {
+          ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+          ...(body?.q === undefined ? {} : { q: body.q as string }),
+        },
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: catalog, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "discoverSavedAgentPluginDetails") {
+      const plugin = await controller.discoverSavedAgentPluginDetails(
+        context.actorId,
+        namespaceId,
+        params.agentId as string,
+        { pluginId: body?.pluginId as string },
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: plugin, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "lookupChannelDirectory") {
+      const directory = await controller.lookupChannelDirectory(context.actorId, namespaceId, {
+        secretId: body?.secretId as string,
+        kind: body?.kind as "users" | "channels",
+        ...(body?.query === undefined ? {} : { query: body.query as string }),
+        ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
+        ...(body?.ids === undefined ? {} : { ids: body.ids as string[] }),
+        ...(body?.agentId === undefined ? {} : { agentId: body.agentId as string }),
+        ...(body?.configurationId === undefined
+          ? {}
+          : { configurationId: body.configurationId as string }),
+      });
+      reply.header("cache-control", "no-store");
+      reply.send({ data: directory, meta: { requestId: request.id } });
       return;
     }
 
@@ -2064,6 +2248,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(provisionBody.plugins === undefined
             ? {}
             : { plugins: provisionBody.plugins as never }),
+          ...(provisionBody.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: provisionBody.pluginApprovers as never }),
           ...(provisionBody.repositoryBindings === undefined
             ? {}
             : {
@@ -2155,6 +2342,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
+          ...(body?.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: body.pluginApprovers as never }),
           ...(body?.repositoryBindings === undefined
             ? {}
             : {
@@ -2258,6 +2448,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
+          ...(body?.pluginApprovers === undefined
+            ? {}
+            : { pluginApprovers: body.pluginApprovers as never }),
           ...(body?.repositoryBindings === undefined
             ? {}
             : {
@@ -2344,7 +2537,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "deployAgent") {
       try {
         const revision = await controller.transact(async (unit) => {
-          const admitted = await controller!.deployAgent(
+          const admitted = await controller!.deployAgentWithAuthorization(
             context.actorId,
             { namespaceId, agentId },
             options.resolveHarness,
@@ -2353,12 +2546,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             event(
               operation,
               request,
-              { kind: "agent_revision", id: admitted.id, namespaceId },
+              { kind: "agent_revision", id: admitted.revision.id, namespaceId },
               "mutation",
               context,
+              undefined,
+              undefined,
+              undefined,
+              admitted.authorization,
             ),
           );
-          return clientRevision(admitted);
+          return clientRevision(admitted.revision);
         });
         reply.status(202).send({ data: revision, meta: { requestId: request.id } });
         return;
@@ -2615,6 +2812,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.deploymentId as string,
       );
       reply.send({ data: clientDeploymentStatus(status), meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "diagnoseAgentDeployment") {
+      const diagnostics = await controller.diagnoseAgentDeployment(
+        context.actorId,
+        namespaceId,
+        agentId,
+        params.deploymentId as string,
+      );
+      reply.send({ data: diagnostics, meta: { requestId: request.id } });
       return;
     }
 
@@ -3201,8 +3409,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   void app.register(async (routes) => {
     routes.addSchema(ErrorResponse);
+    routes.addSchema(AgentDeploymentDiagnosticsResponse);
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
+    routes.addSchema(CredentialSourceResponse);
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,

@@ -28,7 +28,7 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
-  return new Driver(
+  const compute = new Driver(
     {
       ...(provisioning
         ? {
@@ -65,6 +65,9 @@ function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = fals
     },
     provisioning ? { nodeEnrollment: {} } : {},
   );
+  // Repository admission has no cluster; its transport credential prerequisite is satisfied.
+  compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
+  return compute;
 }
 
 function sshCompute() {

@@ -38,6 +38,11 @@ installing OCE:
    Publish images for the node architecture and use their immutable digests.
 6. Outbound access for required image pulls and model calls through the approved
    NAT or endpoint design, plus an operator-managed HTTPS origin for OCC.
+7. For Slack-enabled installations, reviewed private CONNECT proxies for both
+   [gateway messaging and API directory lookup](../integrations/slack.md#configure-both-slack-proxies).
+   Require both paths before admitting Slack Agents. Allow their intended
+   callers through proxy access rules, security groups, and network controls;
+   a NAT route alone does not satisfy the channel proxy requirement.
 
 The current OCE chart requires IPv4 `/32` database and Kubernetes API egress
 rules. Use an IPv4 cluster for this procedure; AWS notes that IPv4 policies are
@@ -176,17 +181,25 @@ route-attachment label or old direct-API ingress rule.
 Follow [production installation](production-installation.md) in the same shell.
 At **Configure the Installation**, apply these choices to the copied examples:
 
-| Input                                                                     | EKS setting                                                                                                                                                                         |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `values.yaml`: `controlPlane.nodeSelector`                                | Labels on the OCC managed node group; also places the private Envoy proxy.                                                                                                          |
-| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector` | Labels on the Agent managed node group.                                                                                                                                             |
-| `runtime.gatewayNodeSelector`                                             | Labels on the trusted OCC managed node group (`oce-role=control` in this guide). Keep its eligible nodes disjoint from the Agent pool.                                              |
-| `runtime.gatewayStorageClassName`                                         | The EBS-backed gateway class.                                                                                                                                                       |
-| `bootstrap-pvc.yaml`: `spec.storageClassName`                             | The protected EBS-backed bootstrap class.                                                                                                                                           |
-| `values.yaml`: `database.cidrs`, `cluster.cidrs`                          | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.                                                                   |
-| `values.yaml`: `api.modelDiscoveryCidrs`                                  | Optional provider IPv4 `/32` hosts for the [model-discovery API](../../reference/console/create-and-deploy.md#create-an-agent). Console model selection does not require discovery. |
-| `installation.yaml`: Compute `network`                                    | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used.                                                       |
-| Controller and runtime image references                                   | Published registry digests matching the node architecture.                                                                                                                          |
+| Input                                                                          | EKS setting                                                                                                                                                                         |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `values.yaml`: `controlPlane.nodeSelector`                                     | Labels on the OCC managed node group; also places the private Envoy proxy.                                                                                                          |
+| `installation.yaml`: `drivers.compute.configuration.runtime.nodeSelector`      | Labels on the Agent managed node group.                                                                                                                                             |
+| `runtime.gatewayNodeSelector`                                                  | Labels on the trusted OCC managed node group (`oce-role=control` in this guide). Keep its eligible nodes disjoint from the Agent pool.                                              |
+| `runtime.gatewayStorageClassName`                                              | The EBS-backed gateway class.                                                                                                                                                       |
+| `bootstrap-pvc.yaml`: `spec.storageClassName`                                  | The protected EBS-backed bootstrap class.                                                                                                                                           |
+| `values.yaml`: `database.cidrs`, `cluster.cidrs`                               | Exact database and API destination addresses observed from Pods, with reviewed ports in the corresponding values.                                                                   |
+| `values.yaml`: `api.modelDiscoveryCidrs`                                       | Optional provider IPv4 `/32` hosts for the [model-discovery API](../../reference/console/create-and-deploy.md#create-an-agent). Console model selection does not require discovery. |
+| `values.yaml`: `api.channelDirectoryProxyUrl`                                  | Required for Slack-enabled installations: approved proxy IPv4 address and port for [Console directory lookup](../integrations/slack.md#configure-both-slack-proxies).               |
+| `installation.yaml`: `drivers.compute.configuration.runtime.channels.proxyUrl` | Required for Slack-enabled installations: approved gateway proxy for Slack API and Socket Mode traffic. Configure this separately from the API directory proxy.                     |
+| `installation.yaml`: Compute `network`                                         | Actual DNS selectors; omit gateway clients with routing enabled. Keep API proxy sources when plugin status reporting is used.                                                       |
+| Controller and runtime image references                                        | Published registry digests matching the node architecture.                                                                                                                          |
+
+For Slack, merge both proxy settings into the protected copies before installing
+the chart. A shared proxy endpoint still needs both settings and access from
+both consumers. Require successful Console user/channel search and a connected
+gateway Socket Mode account before handing off the installation; follow the
+[proxy configuration and verification steps](../integrations/slack.md#configure-both-slack-proxies).
 
 Install Envoy Gateway and cert-manager controllers on the trusted control pool.
 Configure both runtime selectors. `controlPlane.nodeSelector` places the OCC API

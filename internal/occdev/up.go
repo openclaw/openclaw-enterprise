@@ -28,19 +28,12 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if sandboxDriver != "none" && sandboxDriver != "openshell" {
 		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
 	}
-	defaultControlPlane := "compose"
-	if sandboxDriver == "openshell" {
-		defaultControlPlane = "kubernetes"
-	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", defaultControlPlane)
+	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
-	if controlPlane == "kubernetes" && sandboxDriver != "openshell" {
-		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell")
-	}
 	if controlPlane == "kubernetes" {
-		return upOpenShellK3d(ctx, opts)
+		return upK3d(ctx, opts, sandboxDriver)
 	}
 	timeout, err := positiveSetting(r, "OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS", 300, 86400)
 	if err != nil {
@@ -220,7 +213,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return err
 		}
 	}
-	if err := writeInstallation(state, reference, openShellAssets); err != nil {
+	if err := writeInstallation(state, reference, openShellAssets, ""); err != nil {
 		return err
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
@@ -236,7 +229,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	keyWritten = true
 	if sandboxDriver == "openshell" {
-		_, namespaceID, err := r.waitForOpenShellNamespace(ctx, time.Duration(timeout)*time.Second)
+		_, namespaceID, err := r.waitForDevelopmentKubernetesNamespace(ctx, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}

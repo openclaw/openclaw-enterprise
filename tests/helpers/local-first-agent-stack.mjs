@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { randomInt, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readFile, realpath } from "node:fs/promises";
-import { createServer, isIP } from "node:net";
+import { createServer } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,9 +10,8 @@ const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");
 const minute = 60_000;
 const phases = [
-  ["Starting the Compose database, migration, and bootstrap services", "database and bootstrap"],
-  ["Creating k3d cluster", "Kubernetes cluster"],
-  ["Starting the Compose controller and Kubernetes worker", "controller and Kubernetes worker"],
+  ["Creating Kubernetes-only k3d cluster", "Kubernetes cluster"],
+  ["Installing OCE in Namespace", "database and control plane"],
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
 
@@ -128,7 +127,7 @@ async function recordedStack(directory) {
     if ((await realpath(directory)) !== directory || !(await privatePath(directory, true))) {
       return undefined;
     }
-    for (const name of [".openclaw-development", "state.json", "compose.yaml", "kubeconfig"]) {
+    for (const name of [".openclaw-development", "state.json", "kubeconfig"]) {
       if (!(await privatePath(join(directory, name)))) {
         return undefined;
       }
@@ -145,7 +144,15 @@ async function recordedStack(directory) {
       state.computeDriver !== "kubernetes" ||
       state.sandboxDriver !== "none" ||
       !["docker", "podman"].includes(state.containerEngine) ||
-      !/^[a-z0-9][a-z0-9_-]*$/.test(state.composeProject ?? "") ||
+      !["", undefined, "k3d"].includes(state.deploymentMode) ||
+      (state.deploymentMode === "k3d"
+        ? state.composeProject !== "" ||
+          !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(state.platformNamespace ?? "") ||
+          !Number.isInteger(state.apiPort) ||
+          state.apiPort < 1 ||
+          state.apiPort > 65535
+        : !/^[a-z0-9][a-z0-9_-]*$/.test(state.composeProject ?? "") ||
+          !(await privatePath(join(directory, "compose.yaml")))) ||
       !/^occ-dev-[a-z0-9][a-z0-9-]*$/.test(state.cluster ?? "") ||
       typeof state.dockerHost !== "string" ||
       !state.dockerHost.startsWith("unix:///") ||
@@ -189,6 +196,9 @@ function loopbackOrigin(value) {
 async function existingOrigin(directory, state, environment) {
   if (environment.OCC_URL) {
     return loopbackOrigin(environment.OCC_URL);
+  }
+  if (state.deploymentMode === "k3d") {
+    return loopbackOrigin(`http://127.0.0.1:${state.apiPort}`);
   }
   const subprocessEnvironment = withoutModelCredentials({
     ...environment,
@@ -241,65 +251,6 @@ async function availablePorts() {
   }
 }
 
-function addressRange(cidr) {
-  const [address, bits] = cidr.split("/");
-  if (isIP(address) !== 4 || !/^(?:[0-9]|[12][0-9]|3[0-2])$/.test(bits ?? "")) {
-    return undefined;
-  }
-  const raw = address.split(".").reduce((value, octet) => (value << 8n) | BigInt(octet), 0n);
-  const length = 1n << BigInt(32 - Number(bits));
-  const first = (raw / length) * length;
-  return [first, first + length - 1n];
-}
-
-async function availableSubnet(environment) {
-  const networks = (
-    await run(
-      "docker",
-      ["network", "ls", "--quiet"],
-      environment,
-      "List Docker networks",
-      minute,
-      true,
-    )
-  )
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  const occupied = [];
-  for (let index = 0; index < networks.length; index += 50) {
-    const output = await run(
-      "docker",
-      [
-        "network",
-        "inspect",
-        "--format",
-        "{{range .IPAM.Config}}{{if .Subnet}}{{println .Subnet}}{{end}}{{end}}",
-        ...networks.slice(index, index + 50),
-      ],
-      environment,
-      "Read Docker network subnets",
-      minute,
-      true,
-    );
-    occupied.push(...output.trim().split(/\s+/).map(addressRange).filter(Boolean));
-  }
-  const secondStart = randomInt(10);
-  const thirdStart = randomInt(254);
-  for (let secondOffset = 0; secondOffset < 10; secondOffset++) {
-    const second = 29 - ((secondStart + secondOffset) % 10);
-    for (let thirdOffset = 0; thirdOffset < 254; thirdOffset++) {
-      const third = 1 + ((thirdStart + thirdOffset) % 254);
-      const candidate = "172." + second + "." + third + ".0/24";
-      const [first, last] = addressRange(candidate);
-      if (!occupied.some(([otherFirst, otherLast]) => first <= otherLast && otherFirst <= last)) {
-        return candidate;
-      }
-    }
-  }
-  throw new Error("No unused private Docker bridge subnet is available for Local Setup.");
-}
-
 export async function localFirstAgentStack(context) {
   if (process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL !== "1") {
     throw new Error("The protected local first-Agent test must be explicitly enabled.");
@@ -342,22 +293,21 @@ export async function localFirstAgentStack(context) {
       2 * minute,
     );
   }
-  const subnet = await availableSubnet(safe);
-  const [controller, postgres, kubernetes] = await availablePorts();
+  const [controller, kubernetes, browser] = await availablePorts();
   const suffix = randomUUID().replaceAll("-", "").slice(0, 16);
   const directory = join(await realpath("/tmp"), "occ-first-agent-" + suffix);
   const environment = {
     ...testEnvironment,
     COMPOSE_DISABLE_ENV_FILE: "1",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+    OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     OCC_DEVELOPMENT_STATE_DIRECTORY: directory,
-    OCC_DEVELOPMENT_COMPOSE_PROJECT: "occ-first-agent-" + suffix,
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-first-agent-" + suffix,
     OCC_DEVELOPMENT_KUBERNETES_API_PORT: String(kubernetes),
+    OCC_DEVELOPMENT_BROWSER_PORT: String(browser),
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "600",
-    OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: subnet,
-    OCC_POSTGRES_PORT: String(postgres),
     OPENCLAW_DEV_PORT: String(controller),
     OCC_SERVICE_KEY_FILE: join(directory, "initial-admin-service-key.json"),
     OCC_URL: "http://127.0.0.1:" + controller,

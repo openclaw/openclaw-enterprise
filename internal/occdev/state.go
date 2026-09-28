@@ -23,6 +23,7 @@ type developmentState struct {
 	DeploymentMode    string `json:"deploymentMode,omitempty"`
 	PlatformNamespace string `json:"platformNamespace,omitempty"`
 	APIPort           int    `json:"apiPort,omitzero"`
+	BrowserPort       int    `json:"browserPort,omitzero"`
 	ContainerEngine   string `json:"containerEngine"`
 	ComposeProject    string `json:"composeProject"`
 	Cluster           string `json:"cluster"`
@@ -133,7 +134,7 @@ func readState(directory string) (*developmentState, error) {
 			return nil, err
 		}
 	case "k3d":
-		if state.SandboxDriver != "openshell" || state.ComposeProject != "" || !namespaceName.MatchString(state.PlatformNamespace) || state.APIPort < 1 || state.APIPort > 65535 {
+		if state.ComposeProject != "" || !namespaceName.MatchString(state.PlatformNamespace) || state.APIPort < 1 || state.APIPort > 65535 || state.BrowserPort < 0 || state.BrowserPort > 65535 {
 			return nil, fmt.Errorf("unsupported development state")
 		}
 	default:

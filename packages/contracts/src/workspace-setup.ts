@@ -36,7 +36,7 @@ export function normalizeInitialWorkspaceFiles(value: unknown): InitialWorkspace
       typeof content !== "string" ||
       !isWellFormed.call(content) ||
       content.includes("\0") ||
-      new TextEncoder().encode(content).byteLength > 16 * 1024
+      Buffer.byteLength(content, "utf8") > 16 * 1024
     ) {
       throw new TypeError(
         "Initial workspace file content must be valid Unicode without NUL and at most 16 KiB.",

@@ -32,14 +32,12 @@ Place these operator inputs in a private directory such as `/secure/occ/reposito
 | `tls.crt`, `tls.key` | Gateway certificate chain and matching private key               |
 | `ca.crt`             | Public PEM CA trust for that certificate, without private keys   |
 
-Provision the certificate through your issuer. Its exact DNS SAN must cover the
-internal Service host selected by Helm's `repositoryCredentials.hostname`.
-When empty, the chart derives `<serviceName>.<namespace>.svc.<clusterDomain>`,
-which defaults to `git.openclaw-system.svc.cluster.local`; wildcard or Common Name fallback does
-not satisfy the Kubernetes projection check. Change the namespace, Service name,
-and cluster domain consistently if installing elsewhere. The internal Service
-exposes HTTPS 443 and forwards to sidecar port 8443. Do not disable certificate
-verification or use the TLS private-key Secret as the public trust input.
+Leave `tls.crt`, `tls.key`, and `ca.crt` absent until Helm renders the broker
+origin in the next section. The certificate's exact DNS SAN must cover the
+rendered internal Service hostname. Wildcard or Common Name fallback does not
+satisfy the Kubernetes projection check. The internal Service exposes HTTPS 443
+and forwards to sidecar port 8443. Do not disable certificate verification or
+use the TLS private-key Secret as the public trust input.
 
 Write `config.json` with the same Backend ID and duration policy as the registry:
 
@@ -73,7 +71,7 @@ with explicit file paths instead.
 ```bash
 chmod 700 /secure/occ/repositories
 chmod 600 /secure/occ/repositories/config.json \
-  /secure/occ/repositories/private-key.pem /secure/occ/repositories/tls.key
+  /secure/occ/repositories/private-key.pem
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create configmap occ-repository-registry-v1 \
   --from-file=registry.json=/secure/occ/repositories/registry.json \
@@ -86,17 +84,11 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create secret generic occ-repository-app \
   --from-file=private-key.pem=/secure/occ/repositories/private-key.pem
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret tls occ-repository-tls \
-  --cert=/secure/occ/repositories/tls.crt --key=/secure/occ/repositories/tls.key
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
-  create secret generic occ-repository-ca \
-  --from-file=ca.crt=/secure/occ/repositories/ca.crt
 ```
 
 These commands create new operator-owned inputs and intentionally fail on
-existing Secret names. Keep key contents out of Installation YAML, Helm values,
-Agent configuration and command arguments.
+existing ConfigMap or Secret names. Keep key contents out of Installation YAML,
+Helm values, Agent configuration and command arguments.
 
 ## Select composition and network access
 
@@ -168,6 +160,41 @@ destinations. Explicit denies, TLS verification, and broker authorization remain
 in effect. Unbound Agents receive no generated policy change. Because worker and
 sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
+
+Render the chart and use the rendered broker origin as the source of truth for
+the certificate. The helper reads the worker sidecar argument from the rendered
+manifests; it does not construct a second hostname.
+
+```bash
+node scripts/render-repository-credentials-origin.mjs \
+  --release oce --namespace openclaw-system \
+  --values "$OCC_INPUT_DIRECTORY/values.yaml" \
+  > "$OCC_INPUT_DIRECTORY/repository-broker.json"
+export REPOSITORY_BROKER_HOSTNAME="$(yq -p=json -r '.hostname' \
+  "$OCC_INPUT_DIRECTORY/repository-broker.json")"
+export REPOSITORY_BROKER_ORIGIN="$(yq -p=json -r '.origin' \
+  "$OCC_INPUT_DIRECTORY/repository-broker.json")"
+test "$REPOSITORY_BROKER_ORIGIN" = "https://$REPOSITORY_BROKER_HOSTNAME"
+```
+
+Provision the certificate through your issuer with
+`$REPOSITORY_BROKER_HOSTNAME` as a DNS SAN, then save the resulting public chain,
+private key, and public CA as `/secure/occ/repositories/tls.crt`,
+`/secure/occ/repositories/tls.key`, and `/secure/occ/repositories/ca.crt`.
+If you change namespace, Service name, or cluster domain, rerun the helper and
+reissue the certificate before applying the chart.
+
+Create the TLS and public-CA Secrets after the files exist:
+
+```bash
+chmod 600 /secure/occ/repositories/tls.key
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret tls occ-repository-tls \
+  --cert=/secure/occ/repositories/tls.crt --key=/secure/occ/repositories/tls.key
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic occ-repository-ca \
+  --from-file=ca.crt=/secure/occ/repositories/ca.crt
+```
 
 The [image upgrade helper](../deploy/production-upgrade.md) carries forward the
 running broker's Service name and exact hostname automatically. For direct Helm

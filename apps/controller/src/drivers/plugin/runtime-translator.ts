@@ -1,7 +1,9 @@
 import type {
   OpenClawConfigurationDocument,
   PluginCatalogEntry,
+  PluginApprovalMode,
   PluginDesiredState,
+  PluginApprovers,
 } from "@openclaw-enterprise/contracts";
 
 export type OpenClawRuntimeResolvedArtifacts = {
@@ -69,8 +71,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   const OCC_DRIVER_ID = "occ-plugin";
   const CODEX_DRIVER_ID = "codex-plugin";
   const CODEX_MARKETPLACE = "openai-curated-remote";
+  const CODEX_RUNTIME_READ_ONLY_PATHS = ["/app/node_modules/openclaw"];
   const CODEX_PLUGIN_READ_ONLY_PATHS = [
-    "/app/node_modules/openclaw",
+    ...CODEX_RUNTIME_READ_ONLY_PATHS,
     "/home/node/.openclaw/plugin-skills",
     "/home/node/openclaw-runtime-assets/plugin-skills",
   ];
@@ -175,24 +178,61 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   }
 
   function toolPolicy(value: unknown): Record<string, unknown> {
-    const policy = policyRecord(value, "Tool policy", ["enabled", "approval", "reviewer"]);
+    const policy = policyRecord(value, "Tool policy", [
+      "enabled",
+      "approval",
+      "reviewer",
+      "approvers",
+    ]);
     if (policy.enabled !== undefined && typeof policy.enabled !== "boolean") {
       throw new Error("Tool enabled must be a boolean.");
     }
     if (
       policy.approval !== undefined &&
-      !["native", "prompt", "approve"].includes(policy.approval as string)
+      !["provider_default", "all_actions", "write_actions", "none"].includes(
+        policy.approval as string,
+      )
     ) {
       throw new Error("Tool approval policy is unsupported.");
     }
     if (policy.reviewer !== undefined && !["human", "auto"].includes(policy.reviewer as string)) {
       throw new Error("Tool reviewer must be human or auto.");
     }
+    if (policy.approvers !== undefined) {
+      slackApprovers(policy.approvers);
+    }
     return policy;
   }
 
+  function slackApprovers(value: unknown): string[] {
+    if (!Array.isArray(value) || value.length > 64) {
+      throw new Error("Plugin approvers must be a bounded list.");
+    }
+    const ids = value.map((entry) => {
+      if (
+        !isRecord(entry) ||
+        Object.keys(entry).length !== 2 ||
+        entry.channel !== "slack" ||
+        typeof entry.id !== "string" ||
+        !/^(?:[UW][A-Z0-9]+|team:T[A-Z0-9]+:user:[UW][A-Z0-9]+)$/i.test(entry.id)
+      ) {
+        throw new Error("Plugin approver must identify a Slack user.");
+      }
+      return entry.id;
+    });
+    if (new Set(ids).size !== ids.length) {
+      throw new Error("Plugin approvers must be unique.");
+    }
+    return ids;
+  }
+
   function defaults(selection: Record<string, unknown>): Record<string, unknown> {
-    return toolPolicy(selection.toolDefaults === undefined ? {} : selection.toolDefaults);
+    const policy = policyRecord(
+      selection.toolDefaults === undefined ? {} : selection.toolDefaults,
+      "Plugin tool defaults",
+      ["enabled", "approval", "reviewer"],
+    );
+    return toolPolicy(policy);
   }
 
   function toolPolicies(
@@ -232,16 +272,27 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     throw new Error("Codex tool policy requires an observed scoped tool ID.");
   }
 
-  function validatePolicies(kind: "codex" | "openclaw", selections: unknown): void {
+  function validatePolicies(
+    kind: "codex" | "openclaw",
+    selections: unknown,
+    defaultApprovers?: unknown,
+  ): void {
+    if (defaultApprovers !== undefined) {
+      slackApprovers(defaultApprovers);
+    }
     for (const [pluginId, selection] of selectionEntries(selections)) {
       policyRecord(selection, "Plugin selection", [
         "enabled",
+        "approvers",
         "toolDefaults",
         "tools",
         "driverPolicy",
       ]);
       if (typeof selection.enabled !== "boolean") {
         throw new Error("Plugin enabled must be a boolean.");
+      }
+      if (selection.approvers !== undefined) {
+        slackApprovers(selection.approvers);
       }
       const toolDefaults = defaults(selection);
       const tools = toolPolicies(selection);
@@ -291,19 +342,73 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           if (!descriptor.toolNames.includes(id)) {
             throw new Error("Unknown OpenClaw plugin tool selection.");
           }
-          if (policy.approval === "prompt") {
-            throw new Error("OpenClaw plugin prompt approval is unsupported.");
+          if (policy.approval === "all_actions" || policy.approval === "write_actions") {
+            throw new Error("OpenClaw plugin " + policy.approval + " approval is unsupported.");
           }
         }
-        if (toolDefaults.approval === "prompt") {
-          throw new Error("OpenClaw plugin prompt approval is unsupported.");
+        if (toolDefaults.approval === "all_actions" || toolDefaults.approval === "write_actions") {
+          throw new Error("OpenClaw plugin " + toolDefaults.approval + " approval is unsupported.");
         }
       }
     }
   }
 
   function codexApproval(approval: unknown): unknown {
-    return approval === "native" ? "auto" : approval;
+    return (
+      {
+        provider_default: "auto",
+        all_actions: "prompt",
+        write_actions: "writes",
+        none: "approve",
+      } satisfies Record<PluginApprovalMode, string>
+    )[approval as PluginApprovalMode];
+  }
+
+  function pluginApprovalOverlay(
+    kind: "codex" | "openclaw",
+    selections: unknown,
+    defaultApprovers?: unknown,
+  ): Record<string, unknown> {
+    const plugins: Record<string, unknown> = {};
+    for (const [pluginId, selection] of selectionEntries(selections)) {
+      const key =
+        kind === "codex"
+          ? codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId))
+          : pluginId.startsWith(OCC_DRIVER_ID + ":")
+            ? pluginId.slice((OCC_DRIVER_ID + ":").length)
+            : pluginId;
+      const tools = Object.fromEntries(
+        Object.entries(toolPolicies(selection))
+          .filter(([, policy]) => policy.approvers !== undefined)
+          .map(([toolId, policy]) => [
+            kind === "codex" ? toolId : encodeURIComponent(toolId),
+            { approvers: slackApprovers(policy.approvers) },
+          ]),
+      );
+      if (selection.approvers !== undefined || Object.keys(tools).length > 0) {
+        plugins[key] = {
+          ...(selection.approvers === undefined
+            ? {}
+            : { approvers: slackApprovers(selection.approvers) }),
+          ...(Object.keys(tools).length === 0 ? {} : { tools }),
+        };
+      }
+    }
+    if (defaultApprovers === undefined && Object.keys(plugins).length === 0) {
+      return {};
+    }
+    return {
+      approvals: {
+        plugin: {
+          slack: {
+            ...(defaultApprovers === undefined
+              ? {}
+              : { approvers: slackApprovers(defaultApprovers) }),
+            ...(Object.keys(plugins).length === 0 ? {} : { plugins }),
+          },
+        },
+      },
+    };
   }
 
   function codexNeedsToolInventory(selections: unknown): boolean {
@@ -464,7 +569,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     }
     // TODO: support app templates. For now, ignore their metadata and derive
     // enabled app IDs only from detail.apps.
-    for (const field of ["hooks", "skills", "mcpServers"]) {
+    // Native Codex owns bundled skills; they do not grant app tool permissions.
+    requiredArray(detail.skills, "Codex plugin detail skills");
+    for (const field of ["hooks", "mcpServers"]) {
       if (requiredArray(detail[field], "Codex plugin detail " + field).length > 0) {
         throw new Error("Codex plugin detail exposes unsupported " + field + ".");
       }
@@ -675,19 +782,28 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     selections: unknown,
     failures: unknown = [],
     repositoryBrokerNetworkPolicy: unknown = undefined,
+    defaultApprovers?: unknown,
   ): Record<string, unknown> | undefined {
-    validatePolicies("codex", selections);
+    validatePolicies("codex", selections, defaultApprovers);
     const selected = selectionEntries(selections);
     const brokerConfiguration = codexBrokerOpenClawConfiguration(repositoryBrokerNetworkPolicy);
-    if (selected.length === 0 && brokerConfiguration === undefined) {
-      return undefined;
-    }
     const failedPluginIds = failedPluginIdSet(failures);
     const pluginFilesystemConfiguration =
-      selected.length === 0 || brokerConfiguration !== undefined
+      brokerConfiguration !== undefined
         ? {}
-        : { appServer: { networkProxy: { readOnlyPaths: CODEX_PLUGIN_READ_ONLY_PATHS } } };
+        : {
+            appServer: {
+              networkProxy: {
+                // The native sandbox helper is packaged here even without selected plugins.
+                readOnlyPaths:
+                  selected.length === 0
+                    ? CODEX_RUNTIME_READ_ONLY_PATHS
+                    : CODEX_PLUGIN_READ_ONLY_PATHS,
+              },
+            },
+          };
     return {
+      ...pluginApprovalOverlay("codex", selections, defaultApprovers),
       plugins: {
         entries: {
           codex: {
@@ -750,7 +866,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           const existing = appEntries.get(appId);
           const requested = {
             enabled: true,
-            default_tools_approval_mode: codexApproval(toolDefaults.approval ?? "native"),
+            default_tools_approval_mode: codexApproval(toolDefaults.approval ?? "provider_default"),
             ...(toolDefaults.enabled === undefined
               ? {}
               : { default_tools_enabled: toolDefaults.enabled }),
@@ -794,8 +910,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
   function openClawRuntimeArtifact(
     selections: unknown,
     failures: unknown = [],
+    defaultApprovers?: unknown,
   ): Record<string, unknown> {
-    validatePolicies("openclaw", selections);
+    validatePolicies("openclaw", selections, defaultApprovers);
     const failedPluginIds = failedPluginIdSet(failures);
     const entries: Record<string, unknown> = {};
     const installs: Record<string, unknown>[] = [];
@@ -848,6 +965,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     return {
       kind: "openclaw",
       configuration: {
+        ...pluginApprovalOverlay("openclaw", selections, defaultApprovers),
         plugins: { entries },
         ...(alsoAllow.length === 0
           ? {}
@@ -904,21 +1022,25 @@ export function codexOpenClawConfiguration(
   selections: PluginDesiredState,
   failures: PluginRuntimeFailureInput = [],
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  defaultApprovers?: PluginApprovers,
 ): OpenClawConfigurationDocument | undefined {
   return pluginRuntimeTranslator.codexOpenClawConfiguration(
     selections,
     failures,
     repositoryBrokerNetworkPolicy,
+    defaultApprovers,
   ) as OpenClawConfigurationDocument | undefined;
 }
 
 export function openClawRuntimeArtifact(
   selections: PluginDesiredState,
   failures: PluginRuntimeFailureInput = [],
+  defaultApprovers?: PluginApprovers,
 ): PluginRuntimeResolvedArtifacts {
   return pluginRuntimeTranslator.openClawRuntimeArtifact(
     selections,
     failures,
+    defaultApprovers,
   ) as PluginRuntimeResolvedArtifacts;
 }
 
@@ -939,6 +1061,10 @@ export function codexRuntimeReadParams(
   return pluginRuntimeTranslator.codexReadParamsForSelections(selections, listResponse);
 }
 
-export function validatePolicies(kind: "codex" | "openclaw", selections: PluginDesiredState): void {
-  pluginRuntimeTranslator.validatePolicies(kind, selections);
+export function validatePolicies(
+  kind: "codex" | "openclaw",
+  selections: PluginDesiredState,
+  defaultApprovers?: PluginApprovers,
+): void {
+  pluginRuntimeTranslator.validatePolicies(kind, selections, defaultApprovers);
 }

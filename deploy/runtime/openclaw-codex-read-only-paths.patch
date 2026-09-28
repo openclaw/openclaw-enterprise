@@ -1,0 +1,306 @@
+diff --git a/extensions/codex/openclaw.plugin.json b/extensions/codex/openclaw.plugin.json
+index d3c11de..295dec5 100644
+--- a/extensions/codex/openclaw.plugin.json
++++ b/extensions/codex/openclaw.plugin.json
+@@ -454,6 +454,10 @@
+                   "enum": ["allow", "none"]
+                 }
+               },
++              "readOnlyPaths": {
++                "type": "array",
++                "items": { "type": "string", "minLength": 1 }
++              },
+               "proxyUrl": { "type": "string" },
+               "socksUrl": { "type": "string" },
+               "enableSocks5": { "type": "boolean" },
+@@ -782,6 +786,11 @@
+       "help": "Unix socket allow and none rules for Codex sandboxed networking.",
+       "advanced": true
+     },
++    "appServer.networkProxy.readOnlyPaths": {
++      "label": "Read-Only Paths",
++      "help": "Additional literal absolute filesystem paths to grant read access in the generated Codex permissions profile.",
++      "advanced": true
++    },
+     "appServer.networkProxy.proxyUrl": {
+       "label": "HTTP Proxy URL",
+       "help": "HTTP listener URL used by Codex sandboxed networking.",
+diff --git a/extensions/codex/src/app-server/config-network-proxy.test.ts b/extensions/codex/src/app-server/config-network-proxy.test.ts
+index ef2da68..a92aa91 100644
+--- a/extensions/codex/src/app-server/config-network-proxy.test.ts
++++ b/extensions/codex/src/app-server/config-network-proxy.test.ts
+@@ -74,6 +74,104 @@ describe("Codex network proxy config admission", () => {
+     );
+   });
+
++  it.each([
++    { name: "relative path", readOnlyPaths: ["app/node_modules/openclaw"] },
++    { name: "root path", readOnlyPaths: ["/"] },
++    { name: "special profile key", readOnlyPaths: [":minimal"] },
++    { name: "glob path", readOnlyPaths: ["/app/*"] },
++    { name: "traversal path", readOnlyPaths: ["/app/../etc"] },
++    { name: "control character", readOnlyPaths: ["/app/node_modules/openclaw\n"] },
++  ])("rejects malformed network proxy read-only paths: $name", ({ readOnlyPaths }) => {
++    const pluginConfig = {
++      appServer: {
++        networkProxy: {
++          enabled: true,
++          domains: { "example.com": "allow" },
++          readOnlyPaths,
++        },
++      },
++    };
++    const validated = validateJsonSchemaValue({
++      schema: manifest.configSchema,
++      value: pluginConfig,
++      applyDefaults: true,
++    });
++    expect(validated.ok).toBe(true);
++    if (!validated.ok) {
++      throw new Error("Expected manifest-valid read-only path config");
++    }
++    expect(() => resolveRuntimeForTest({ pluginConfig: validated.value })).toThrow(
++      new Error(
++        'Invalid plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
++      ),
++    );
++  });
++
++  it("admits a stock Codex repository broker network profile", () => {
++    const pluginConfig = {
++      appServer: {
++        networkProxy: {
++          enabled: true,
++          profileName: "repository-broker-test",
++          mode: "full",
++          allowLocalBinding: true,
++          readOnlyPaths: [
++            "/app/node_modules/openclaw",
++            "/opt/oce/repository-credentials",
++            "/run/oce/repository-credentials",
++          ],
++          domains: {
++            "git.123-control.svc": "allow",
++            "api.openai.com": "allow",
++            "169.254.169.254": "deny",
++            "blocked.example.com": "deny",
++          },
++        },
++      },
++    };
++
++    const validated = validateJsonSchemaValue({
++      schema: manifest.configSchema,
++      value: pluginConfig,
++      applyDefaults: true,
++    });
++    expect(validated.ok).toBe(true);
++    if (!validated.ok) {
++      throw new Error("Expected manifest-valid repository broker network profile");
++    }
++
++    expect(
++      resolveRuntimeForTest({ pluginConfig: validated.value }).networkProxy?.configPatch,
++    ).toMatchObject({
++      permissions: {
++        "repository-broker-test": {
++          filesystem: {
++            "/app/node_modules/openclaw": "read",
++            "/opt/oce/repository-credentials": "read",
++            "/run/oce/repository-credentials": "read",
++          },
++          network: {
++            mode: "full",
++            allow_local_binding: true,
++            domains: {
++              "git.123-control.svc": "allow",
++              "api.openai.com": "allow",
++              "169.254.169.254": "deny",
++              "blocked.example.com": "deny",
++            },
++          },
++        },
++      },
++    });
++    const permissions = resolveRuntimeForTest({
++      pluginConfig: validated.value,
++    }).networkProxy?.configPatch.permissions as Record<
++      string,
++      { network: Record<string, unknown> }
++    >;
++    expect(permissions["repository-broker-test"]?.network).not.toHaveProperty("private_endpoints");
++  });
++
+   it("preserves blank-field admission and fallback without an enabled proxy", () => {
+     for (const appServer of [
+       {
+diff --git a/extensions/codex/src/app-server/config-parsing.ts b/extensions/codex/src/app-server/config-parsing.ts
+index 56a05ef..d2a98d7 100644
+--- a/extensions/codex/src/app-server/config-parsing.ts
++++ b/extensions/codex/src/app-server/config-parsing.ts
+@@ -61,6 +61,7 @@ const codexAppServerNetworkProxySchema = z.strictObject({
+   mode: z.enum(["limited", "full"]).optional(),
+   domains: z.record(z.string(), z.enum(["allow", "deny"])).optional(),
+   unixSockets: z.record(z.string(), z.enum(["allow", "none"])).optional(),
++  readOnlyPaths: z.array(z.string().min(1)).optional(),
+   proxyUrl: z.string().trim().min(1).optional(),
+   socksUrl: z.string().trim().min(1).optional(),
+   enableSocks5: z.boolean().optional(),
+diff --git a/extensions/codex/src/app-server/config-security.ts b/extensions/codex/src/app-server/config-security.ts
+index ab2fc60..c662704 100644
+--- a/extensions/codex/src/app-server/config-security.ts
++++ b/extensions/codex/src/app-server/config-security.ts
+@@ -1,5 +1,6 @@
+ import { createHash } from "node:crypto";
+ import { hostname as readHostName } from "node:os";
++import path from "node:path";
+ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+ import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
+ import type {
+@@ -66,6 +67,7 @@ export function resolveCodexAppServerNetworkProxy(
+   const profile = {
+     filesystem: {
+       ":minimal": "read",
++      ...resolveNetworkProxyReadOnlyPaths(config),
+       ":project_roots": {
+         ".": fileSystemMode,
+       },
+@@ -115,6 +117,72 @@ function normalizeNetworkProxyPermissionMap(
+   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+ }
+
++function resolveNetworkProxyReadOnlyPaths(
++  config: CodexAppServerNetworkProxyConfig,
++): Record<string, "read"> | undefined {
++  const normalizedPaths = (config.readOnlyPaths ?? []).map((value) =>
++    normalizeNetworkProxyReadOnlyPath(value),
++  );
++  const uniquePaths = [...new Set(normalizedPaths)].toSorted();
++  return uniquePaths.length > 0
++    ? Object.fromEntries(uniquePaths.map((entry) => [entry, "read"]))
++    : undefined;
++}
++
++function normalizeNetworkProxyReadOnlyPath(value: string): string {
++  const trimmed = value.trim();
++  if (!trimmed) {
++    throw invalidNetworkProxyReadOnlyPathsError();
++  }
++  const parser = trimmed.startsWith("/") ? path.posix : path.win32;
++  const normalized = stripTrailingPathSeparators(parser.normalize(trimmed));
++  const parsed = parser.parse(normalized);
++  const originalSegments = trimmed.slice(parser.parse(trimmed).root.length).split(/[\\/]+/u);
++  const segments = normalized.slice(parsed.root.length).split(/[\\/]+/u);
++  if (
++    trimmed.startsWith(":") ||
++    hasControlCharacter(value) ||
++    /[*?[\]{}]/u.test(trimmed) ||
++    !isLiteralAbsolutePath(trimmed) ||
++    normalized === parsed.root ||
++    originalSegments.some((segment) => segment === "..") ||
++    segments.some((segment) => segment === "..")
++  ) {
++    throw invalidNetworkProxyReadOnlyPathsError();
++  }
++  return normalized;
++}
++
++function hasControlCharacter(value: string): boolean {
++  for (const character of value) {
++    const codePoint = character.codePointAt(0);
++    if (codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++function stripTrailingPathSeparators(value: string): string {
++  const rootLength = path.win32.isAbsolute(value)
++    ? path.win32.parse(value).root.length
++    : path.posix.parse(value).root.length;
++  return value.length > rootLength ? value.replace(/[\\/]+$/u, "") : value;
++}
++
++function isLiteralAbsolutePath(value: string): boolean {
++  if (value.startsWith("/")) {
++    return path.posix.isAbsolute(value);
++  }
++  return /^[A-Za-z]:[\\/]/u.test(value) || /^\\\\[^\\]+\\[^\\]+(?:[\\/]|$)/u.test(value);
++}
++
++function invalidNetworkProxyReadOnlyPathsError(): Error {
++  return new Error(
++    'Invalid plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
++  );
++}
++
+ function removeUndefinedJsonFields(value: Record<string, JsonValue | undefined>): JsonObject {
+   return Object.fromEntries(
+     Object.entries(value).filter((entry): entry is [string, JsonValue] => entry[1] !== undefined),
+diff --git a/extensions/codex/src/app-server/config.test.ts b/extensions/codex/src/app-server/config.test.ts
+index 4b6e1b0..2a55ace 100644
+--- a/extensions/codex/src/app-server/config.test.ts
++++ b/extensions/codex/src/app-server/config.test.ts
+@@ -165,21 +165,28 @@ describe("Codex app-server config", () => {
+           networkProxy: {
+             enabled: true,
+             profileName: "mock-proxy",
+-            mode: "limited",
++            mode: "full",
+             domains: {
++              " git.123-control.svc ": "allow",
+               " api.openai.com ": "allow",
+               "blocked.example.com": "deny",
++              "169.254.169.254": "deny",
+             },
+             unixSockets: {
+               " /tmp/mock-proxy.sock ": "allow",
+               "/tmp/blocked.sock": "none",
+             },
++            readOnlyPaths: [
++              "/opt/openclaw/repository-credentials",
++              "/app/node_modules/openclaw",
++              "/app/node_modules/openclaw/",
++            ],
+             proxyUrl: "http://127.0.0.1:3128",
+             socksUrl: "socks5h://127.0.0.1:8081",
+             enableSocks5: true,
+             enableSocks5Udp: false,
+             allowUpstreamProxy: true,
+-            allowLocalBinding: false,
++            allowLocalBinding: true,
+           },
+         },
+       },
+@@ -199,16 +206,20 @@ describe("Codex app-server config", () => {
+           "mock-proxy": {
+             filesystem: {
+               ":minimal": "read",
++              "/app/node_modules/openclaw": "read",
++              "/opt/openclaw/repository-credentials": "read",
+               ":project_roots": {
+                 ".": "write",
+               },
+             },
+             network: {
+               enabled: true,
+-              mode: "limited",
++              mode: "full",
+               domains: {
++                "git.123-control.svc": "allow",
+                 "api.openai.com": "allow",
+                 "blocked.example.com": "deny",
++                "169.254.169.254": "deny",
+               },
+               unix_sockets: {
+                 "/tmp/mock-proxy.sock": "allow",
+@@ -219,7 +230,7 @@ describe("Codex app-server config", () => {
+               enable_socks5: true,
+               enable_socks5_udp: false,
+               allow_upstream_proxy: true,
+-              allow_local_binding: false,
++              allow_local_binding: true,
+             },
+           },
+         },

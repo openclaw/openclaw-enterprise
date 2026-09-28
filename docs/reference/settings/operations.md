@@ -55,7 +55,9 @@ pnpm db:migrate --check
 An exit-0 `migration.checked` record reports one reviewed history shape:
 `empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
 `repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
-`backendCompleted`, `providerCompleted`, or `completed`. `prePresetsMain` means
+`backendCompleted`, `providerCompleted`, `backendTerminology`, `prePluginApprovers`,
+or `completed`.
+`prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
 `0025_repository_credentials` and `0026_privileged_function_search_paths`.
@@ -63,8 +65,10 @@ the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 through `0029_agent_provisioning_work`. `backendCompleted` is the exact
 31-receipt Backend terminology history published before the compatibility
 migration. `providerCompleted` is the exact 31-receipt Provider terminology
-history published before the rename. `completed` is the current canonical
-history with all receipts, including the compatibility migration.
+history published before the rename. `backendTerminology` has the 32 receipts
+through `0031_backend_terminology_compatibility`; `prePluginApprovers` adds
+`0032_credential_sources` for 33 receipts. `completed` is the current
+canonical history with all receipts, including the Agent plugin approver migration.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
@@ -210,8 +214,9 @@ bootstrap, API, and worker. `occ dev up` starts the supported development
 profile; the checkout-local `scripts/dev-up` entry point uses the same path.
 Startup validates Compose configuration, waits for services, copies
 the bootstrap service-key response to a private file, and proves authenticated
-access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or the
-Compose-hosted [local Kubernetes profile](../../guides/deploy/local-kubernetes-development.md).
+access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
+Compute. Kubernetes Compute can use a Compose control plane or the
+[Kubernetes-only profile](../../guides/deploy/local-kubernetes-development.md).
 The helper prefers a usable Docker Engine and otherwise selects Podman directly,
 even when no `docker` compatibility alias exists. Podman requires the standalone
 `podman-compose` provider; Docker Compute also requires `yq` v4. The helper

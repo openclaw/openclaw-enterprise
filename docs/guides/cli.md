@@ -133,8 +133,9 @@ revision history and persistent state.
 Run `occ agent delete '<agent-id>'` only when you intend to remove the Agent,
 its revision history, and its runtime credentials. Kubernetes also removes
 Agent-owned workspace data; Namespace-owned Configurations and Secrets survive.
-Deletion runs asynchronously. See [Agent deletion](../reference/agents.md#deletion)
-for the full cleanup behavior.
+Deletion runs asynchronously. If cleanup exhausts its retries, correct the
+reported cause, then repeat the command as the original caller with current
+delete permission. See [Agent deletion](../reference/agents.md#deletion).
 
 ## Provision integration Secrets
 
@@ -155,6 +156,12 @@ Bind the returned Secret references through the owning Agent or Configuration an
 grant the consuming Agent service principal exact `operate` permission before
 deployment. See [Configuration secrets and channels](../reference/configuration/secrets.md)
 for binding shape and delivery boundaries.
+
+When the Installation selects a Credential Gateway, register the Secret as a
+credential source and bind the source instead. `occ credential-source create`,
+`list`, `get`, and `delete` follow the same `--file` pattern; `get` also shows
+the gateway's live status. See [credential sources](../reference/credential-sources.md)
+and the [local OpenShell walkthrough](deploy/openshell-credential-sources.md).
 
 ## Manage Namespace IAM
 

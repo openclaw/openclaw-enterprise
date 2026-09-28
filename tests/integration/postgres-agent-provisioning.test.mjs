@@ -127,6 +127,7 @@ function createRuntimeComputeDriver(options = {}) {
   return {
     ...base,
     agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
     calls,
     validateAgentProvisioning(input) {
       if (input.executionMode !== "dedicated") {
@@ -588,7 +589,10 @@ test(
     const secretCreateCallCount = fixture.secretDriver.calls.filter(
       ({ operation }) => operation === "create",
     ).length;
-    const body = provisioningBody(namespace.id, secrets, { repositoryBindings });
+    const body = {
+      ...provisioningBody(namespace.id, secrets, { repositoryBindings }),
+      pluginApprovers: [],
+    };
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -596,6 +600,7 @@ test(
 
     const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
+    assert.deepEqual(queued.plan.pluginApprovers, []);
     assert.equal(queued.agent_id, null);
     const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
@@ -676,10 +681,12 @@ test(
     assert.equal(revisions.length, 1);
     assert.equal(revisions[0].id, status.revisionId);
     assert.equal(revisions[0].configurationGeneration, 1);
+    assert.deepEqual(revisions[0].pluginApprovers, []);
     const agentPath = `/namespaces/${namespace.id}/agents/${status.agentId}`;
     const agent = await fixture.request("GET", agentPath);
     assert.equal(agent.status, 200, JSON.stringify(agent.body));
     assert.deepEqual(agent.data.repositoryBindings, repositoryBindings);
+    assert.deepEqual(agent.data.pluginApprovers, []);
     const revisionPath = `${agentPath}/revisions/${status.revisionId}`;
     const revision = await fixture.request("GET", revisionPath);
     assert.equal(revision.status, 200, JSON.stringify(revision.body));
@@ -1076,14 +1083,18 @@ test(
       return { namespace, admitted, failed, pendingEffect: pending.rows[0].pending_effect };
     }
 
-    function failingTransportDriver() {
+    function failingTransportDriver(reportStoredCredentials = () => false) {
       const computeDriver = createRuntimeComputeDriver();
       const provisionRuntimeCredentials = computeDriver.provisionAgentRuntimeCredentials;
+      const getRuntimeCredentialStatus = computeDriver.getAgentRuntimeCredentialStatus;
       computeDriver.provisionAgentRuntimeCredentials = async (...args) => {
         await provisionRuntimeCredentials(...args);
         throw new Error("synthetic pre-handoff transport failure");
       };
-      computeDriver.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: false });
+      computeDriver.getAgentRuntimeCredentialStatus = async (...args) =>
+        reportStoredCredentials()
+          ? getRuntimeCredentialStatus(...args)
+          : { transportConfigured: false };
       return computeDriver;
     }
 
@@ -1105,7 +1116,10 @@ test(
       return settled;
     }
 
-    const stopFixture = await createFixture(context, { computeDriver: failingTransportDriver() });
+    let reportStoredCredentials = false;
+    const stopFixture = await createFixture(context, {
+      computeDriver: failingTransportDriver(() => reportStoredCredentials),
+    });
     const stopTarget = await createFailedPreHandoffAgent(stopFixture);
     const stopped = await stopFixture.request(
       "POST",
@@ -1122,6 +1136,7 @@ test(
     assert.equal(stoppedProvisioning.data.error?.code, "PROVISIONING_CANCELLED");
 
     await settleLateTransport(stopFixture, stopTarget);
+    reportStoredCredentials = true;
     const deployed = await stopFixture.request(
       "POST",
       `/namespaces/${stopTarget.namespace.id}/agents/${stopTarget.failed.agentId}/deploy`,

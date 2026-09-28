@@ -44,6 +44,16 @@ function productionInstallation(adminKeyPath) {
           service_account: "chatgpt-service-accounts",
         },
       },
+      {
+        id: "openshell",
+        type: "openshell",
+        configuration: {
+          endpoint: "127.0.0.1:9",
+          auth: { mode: "unauthenticated" },
+          insecureTransport: "network-policy",
+        },
+        drivers: { sandbox: "sandbox-openshell", credential_gateway: "openshell-credentials" },
+      },
     ],
     drivers: {
       configuration: {
@@ -100,13 +110,15 @@ function productionInstallation(adminKeyPath) {
           },
         },
       },
+      credential_gateway: {
+        id: "openshell-credentials",
+        configuration: { binaries: ["/app/bin/model-client"] },
+      },
       sandbox: {
         id: "sandbox-openshell",
         configuration: {
           gateway: {
             workspaceMode: "operator",
-            endpoint: "127.0.0.1:9",
-            auth: { mode: "unauthenticated" },
           },
           kubernetes: {
             runtimeClassName: "openshell",

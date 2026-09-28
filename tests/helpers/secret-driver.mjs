@@ -84,6 +84,7 @@ export function createTestSecretDriver(options = {}) {
       entries.delete(key);
     },
     async withValue(secret, use) {
+      calls.push({ operation: "withValue", secret: clone(secret) });
       const entry = entries.get(keyOf(secret));
       if (entry === undefined || !isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
         throw new Error("Secret backend is unavailable.");

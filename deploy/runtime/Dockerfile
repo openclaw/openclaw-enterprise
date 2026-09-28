@@ -1,4 +1,4 @@
-ARG OPENCLAW_COMMIT=b08e73f4426ef65aa88e18c4901b95d7ac11f0a0
+ARG OPENCLAW_COMMIT=9190ad7c12667af435734d4944060effd6ad0a71
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
@@ -23,12 +23,22 @@ COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/reposito
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
 RUN corepack pnpm credentials:build
 
+# Build the service from the same checkout as the runtime client. Keep the
+# service closure separate from the Agent runtime and its unprivileged client.
+FROM ${NODE_BASE_IMAGE} AS repository-credentials-service
+WORKDIR /app
+COPY --from=repository-client-build /build/.build/repository-credentials/service/package.json ./package.json
+COPY --from=repository-client-build /build/.build/repository-credentials/service/dist ./dist
+RUN chmod -R a=rX /app
+USER node
+ENTRYPOINT ["node", "/app/dist/repository-credentials.js"]
+
 FROM ${NODE_BASE_IMAGE} AS openclaw-source
 
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-27T06:07:15Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-28T21:38:10Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -36,23 +46,20 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo 'dde567ccaa03d391d551452a6b17d992c6ef99ffeb1f19f5e1be4de7f2e3b407  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    echo '5393d25ac73b98030609fa40b2c2bc3f44c62a455660b7cc3f28371fc92dc851  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
-# Retain the reviewed broker read-path contract while its upstream PR is pending.
-# Keep the applied patch in the runtime inventory and source provenance.
-COPY deploy/runtime/repository-broker-read-paths.patch patches/oce-repository-broker-read-paths.patch
-RUN git apply patches/oce-repository-broker-read-paths.patch
-# Pin the stock Codex package used by the bundled upstream OpenClaw extension.
-COPY deploy/runtime/stock-codex-0.156.0-dependency-pin.patch /tmp/codex-dependency-pin.patch
-RUN git apply /tmp/codex-dependency-pin.patch
+# TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
+COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
+RUN echo '62328f7cc72ada024a97a5a7bf89e988db3f91b64b4c6d7fa6809c218fc8b72e  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-read-only-paths.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-27T06:07:15Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-28T21:38:10Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
@@ -136,9 +143,11 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 
 ARG TARGETARCH
-ENV OPENAI_CODEX_VERSION=0.156.0
+ENV OPENAI_CODEX_VERSION=0.158.0
 
 ENV NODE_ENV=production
+# Keep local npm commands from issuing unrelated background update requests.
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 ENV PATH=/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /app

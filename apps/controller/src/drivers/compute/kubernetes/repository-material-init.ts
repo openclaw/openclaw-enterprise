@@ -19,7 +19,9 @@ function requireValid(condition) {
 function exactKeys(value, keys) {
   requireValid(value !== null && typeof value === "object" && !Array.isArray(value));
   const actual = Object.keys(value).sort();
-  requireValid(actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]));
+  requireValid(actual.length === keys.length);
+  const expected = [...keys].sort();
+  requireValid(actual.every((key, index) => key === expected[index]));
 }
 
 function hash(value) {

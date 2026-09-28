@@ -3,12 +3,11 @@
 ## Overview
 
 `ComputeDriver` prepares and removes Namespace infrastructure and runs Agent
-revisions. OpenClaw Control Plane (OCC) selects one Compute Driver per
-Installation, authorizes operations, and records each revision's configuration;
-that record cannot change. Compute manages the Agent gateway, workload identity,
-routing, and activation; it also reports when the workload is ready. Its backend owns the underlying
+revisions. OCC selects one Driver per Installation, authorizes operations, and
+stores immutable revision configurations. Compute owns gateway, workload
+identity, routing, activation, and readiness; its backend owns underlying
 resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
-workload; Compute keeps its other responsibilities.
+workload.
 
 See [Driver selection](selection.md) for supported combinations and package trust,
 the [feature matrix](compute-matrix.md) to compare Drivers, and the
@@ -18,8 +17,8 @@ current and planned placement.
 ## Interface
 
 The [shared contracts](../../../packages/contracts/src/index.ts) define the types.
-Every `ComputeDriver` has an `id`,
-an `implementation`, and `capability: "compute"`.
+Every `ComputeDriver` has an `id`, `implementation`, and
+`capability: "compute"`.
 
 The optional `getRuntimeImages(revision)` method observes containers belonging to
 that admitted revision and returns `{workload, container, image, imageId, commit, openclawCommit}`
@@ -69,6 +68,7 @@ activation after authorization.
 | `validateHarnessAuth(harness, auth, configuration)`                    | Deployment requires this check of the Harness, authentication snapshot, and native Configuration. It must have no side effects. A missing method causes a dependency-unavailable error; a thrown error becomes a resource conflict before queueing. |
 | `activateRevision(revision, context?)`, `deactivateRevision(revision)` | Production startup requires both. The worker also calls activation if a development Driver provides it. See [revision stages](#production-revision-stages).                                                                                         |
 | `setLifecycleDrivers(drivers)`                                         | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                                                                                         |
+| `resolveSandboxNamespace(namespace)`                                   | Returns the Sandbox runtime placement for [credential source](credential-gateway.md) registration.                                                                                                                                                  |
 | `activationOrder`, `maintenanceIntervalMs`                             | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                                                          |
 
 `requiresStoppedPredecessors(revision)` opts into [exclusive replacement](#production-revision-stages).
@@ -101,15 +101,21 @@ for the bundled route implementation.
 
 ### Optional initial runtime credential provisioning
 
-`getAgentRuntimeCredentialStatus(binding)` returns `transportConfigured`: whether
-complete generated transport credentials are stored for this Agent.
+`getAgentRuntimeCredentialStatus(binding)` returns `transportConfigured` when
+complete generated transport credentials are stored.
 `provisionAgentRuntimeCredentials(binding, input)` accepts an empty input object and
-sets up those transport credentials. Channel credentials use Namespace Secrets and
-Configuration `secretBindings` instead of this endpoint. The caller holds Namespace
-and Agent locks and requires a ready Namespace with no earlier Agent revision. It
-passes approved identities, never physical storage names. Missing methods return an
-error. External writes can survive a database or audit failure; refresh status
-before retrying. See the [initial credential workflow](../console/create-and-deploy.md#initial-runtime-credentials).
+sets up those transport credentials. Channel credentials use Namespace Secrets
+and Configuration `secretBindings`. The caller holds Namespace and Agent locks
+and requires a ready Namespace with no earlier revision. It passes approved
+identities, never storage names. Missing methods fail. External writes can
+survive database or audit failure; refresh status before retrying. See the
+[initial credential workflow](../console/create-and-deploy.md#initial-runtime-credentials).
+
+`requiresAgentRuntimeCredentials: true` means the Driver needs generated
+transport credentials to deploy. OCC checks stored status for these Drivers and
+creates missing credentials before the first revision with the caller's exact
+Agent `read` and `operate` permission. Later revisions cannot regenerate them.
+Other Drivers skip this deployment step.
 
 `deleteAgentRuntimeCredentials(binding)` is the idempotent teardown counterpart.
 During Agent deletion, the worker calls it after retiring every revision and
@@ -133,6 +139,22 @@ At the convergence deadline, the worker persists that observation with its
 terminal result. The existing [deployment status API](../agents.md#deployment-status)
 returns the saved evidence under the caller's exact-revision read permission.
 It does not invoke Compute while serving the GET request.
+
+### Optional runtime diagnostics
+
+`diagnoseAgentDeployment(binding)` returns current checks for an exact revision
+using its approved Namespace and Agent. OCC first authorizes exact Agent read
+and operate and revision read.
+
+The Driver owns native collection and maps its evidence to generic
+`component`, `check`, `state`, nullable `checkedAt`, and optional safe `code`
+fields. It must verify runtime identity, bound response size and time, and omit
+credentials, raw provider output, and logs. OCC rejects mismatched revisions,
+invalid timestamps, more than 32 checks, and unsupported states.
+
+The call does not update deployment work, rerun the startup probe, send
+messages, or prove a model response. Missing support returns dependency
+unavailable; Drivers unable to collect safe evidence should omit the method.
 
 ### Runtime logging ownership
 
@@ -161,10 +183,12 @@ Reading initial credential status requires Agent `read`; provisioning requires
 Agent `read` and `operate`. Resolving a gateway endpoint also requires access to
 that Agent. See [authorization](../authorization.md).
 
-`ComputeRevisionContext.harnessAuth` contains either the approved API-key source
-and its current backend reference, the managed-account credential reference and
-private Backend binding, or just `{ method: "runtime" }` for operator-managed
-authentication. None contains credential values. The separate `secretEnvironment`
+`ComputeRevisionContext.harnessAuth` contains the approved API-key source and
+its current backend reference, the managed-account credential reference and
+private Backend binding, the current [credential source](../credential-sources.md)
+record, or just `{ method: "runtime" }` for operator-managed authentication.
+None contains credential values.
+The separate `secretEnvironment`
 contains Configuration bindings for gateway credentials. Deliver model credentials
 only to the selected Harness workload. Channel tokens are ordinary Namespace Secrets
 referenced by Configuration bindings; never expose them in responses, Configuration,
@@ -289,6 +313,7 @@ prove readiness. See [Kubernetes startup status](kubernetes-compute.md#plugin-st
 
 - [Harness execution](../harness-execution.md) and [Agent lifecycle](../agents.md)
 - [Driver selection](selection.md) and [deployment guide](../../guides/deploy.md)
+- [Agent deployment diagnostics flow](../../flows/agent-deployment-diagnostics.md)
 - [Controller reconciliation](../controller/reconciliation.md) and [Harness execution topology](../../flows/harness-execution-topology.md)
 - [Worker source](../../../apps/controller/src/worker.ts) and [OCC admission and resource operations](../../../packages/occ/src/index.ts)
 - [Docker Compose development flow](../../flows/docker-compose-development.md) and [verification guide](../../testing/README.md)

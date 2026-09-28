@@ -35,6 +35,13 @@ runs:
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
+    - name: Install registry transport for image publication test
+      if: inputs.lane == 'images-packaging'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y skopeo
+        skopeo --version | grep -Fx 'skopeo version 1.13.3'
     - name: Enable Kubernetes bridge packet filtering
       if: startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
@@ -53,7 +60,7 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'checks-baseline' || inputs.lane == 'gateway-routing'
+      if: inputs.lane == 'checks-baseline' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
@@ -124,6 +131,14 @@ runs:
         name: image-reconciliation-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/image-reconciliation/images-${{ github.run_id }}-${{ github.run_attempt }}.json
         overwrite: false
+        if-no-files-found: error
+        retention-days: 7
+    - name: Retain runtime image fixture receipt
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always() && inputs.lane == 'runtime-image-fixture'
+      with:
+        name: runtime-image-fixture-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/state/runtime-image-fixture-receipt.json
         if-no-files-found: error
         retention-days: 7
     - name: Upload cluster setup diagnostics

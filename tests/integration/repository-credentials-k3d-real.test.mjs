@@ -57,14 +57,19 @@ const runtimeStartupSummaryScript = String.raw`
   })().catch(() => process.exitCode = 1);
 `;
 
+async function agentPods(f, agentId) {
+  const namespaces = [...new Set([f.tenant, f.gatewayRuntimeNamespace])];
+  const groups = await Promise.all(
+    namespaces.map((namespace) =>
+      f.kubernetes.resources("pods", namespace, "-l", `openclaw.dev/agent=${agentId}`),
+    ),
+  );
+  return groups.flat();
+}
+
 async function recordRuntimeStartupFailure(f, agent) {
   try {
-    const pods = await f.kubernetes.resources(
-      "pods",
-      f.tenant,
-      "-l",
-      `openclaw.dev/agent=${agent.id}`,
-    );
+    const pods = await agentPods(f, agent.id);
     const summaries = [];
     for (const pod of pods.slice(0, 4)) {
       for (const container of pod.spec.containers.filter((c) =>
@@ -84,7 +89,7 @@ async function recordRuntimeStartupFailure(f, agent) {
               await f.kubectl(
                 "--request-timeout=10s",
                 "-n",
-                f.tenant,
+                pod.metadata.namespace,
                 "exec",
                 pod.metadata.name,
                 "-c",
@@ -294,8 +299,24 @@ function installedRepositoryJourney(mode) {
       const backendId = "repository-proof";
       const repositoryRef = "authorized-repository";
       const driverId = "repository-proof-driver";
-      const serviceName = "git";
-      const origin = `https://${serviceName}.${f.system}.svc`;
+      const repositoryValues = {
+        enabled: true,
+        image: images.credentials,
+        serviceName: "git",
+        backendId,
+        registryConfigMapName: "repository-registry-v1",
+        registryKey: "registry.json",
+        serviceConfigSecretName: "repository-service-config",
+        serviceConfigKey: "config.json",
+        appKeySecretName: "repository-app-key",
+        appKeyKey: "private-key.pem",
+        tlsSecretName: "repository-tls",
+        publicCaSecretName: "repository-public-ca",
+        publicCaKey: "ca.crt",
+        upstreamCidrs,
+      };
+      const renderedBroker = await f.renderRepositoryCredentials(repositoryValues);
+      const { origin, serviceName } = renderedBroker;
       const registry = {
         version: 1,
         backendId,
@@ -391,22 +412,7 @@ function installedRepositoryJourney(mode) {
         podLabels: workerLabels,
         port: 8443,
       };
-      await f.upgrade({
-        enabled: true,
-        image: images.credentials,
-        serviceName,
-        backendId,
-        registryConfigMapName: "repository-registry-v1",
-        registryKey: "registry.json",
-        serviceConfigSecretName: "repository-service-config",
-        serviceConfigKey: "config.json",
-        appKeySecretName: "repository-app-key",
-        appKeyKey: "private-key.pem",
-        tlsSecretName: "repository-tls",
-        publicCaSecretName: "repository-public-ca",
-        publicCaKey: "ca.crt",
-        upstreamCidrs,
-      });
+      assert.deepEqual(await f.upgrade(repositoryValues), renderedBroker);
       // The service shares the worker Pod but neither the API nor worker process
       // receives App key/TLS mounts or the Agent's model credential.
       const pods = await f.kubernetes.resources("pods", f.system);
@@ -650,11 +656,12 @@ function installedRepositoryJourney(mode) {
         300000,
       );
       const configMap = `gateway-${kubernetesHash(agent.id)}-rev-${kubernetesHash(revision.id)}`;
+      const gatewayNamespace = dedicated ? f.gatewayRuntimeNamespace : f.tenant;
       gateway = await f.waitFor("one Ready Pod serving the exact admitted revision", async () => {
         const candidates = (
           await f.kubernetes.resources(
             "pods",
-            f.tenant,
+            gatewayNamespace,
             "-l",
             `openclaw.dev/agent=${agent.id},openclaw.dev/workload-role=gateway`,
           )
@@ -785,6 +792,7 @@ function installedRepositoryJourney(mode) {
         assert.match(versions.codex, /^codex-cli \d+\.\d+\.\d+/);
       }
       const service = await f.get("service", serviceName);
+      assert.equal(origin, `https://${renderedBroker.hostname}`);
       const probe = `const net=require('node:net'); const socket=net.createConnection({host:process.argv[1],port:443}); let done=false; function finish(result){if(done)return;done=true;console.log(result);socket.destroy()}socket.setTimeout(3000);socket.on('connect',()=>finish('connected'));socket.on('timeout',()=>finish('timeout'));socket.on('error',error=>finish(error.code));`;
       assert.equal((await consumerExec(probe, [service.spec.clusterIP])).trim(), "connected");
       if (dedicated) {
@@ -850,7 +858,7 @@ function installedRepositoryJourney(mode) {
       await f.run("kubectl", [
         ...f.kubernetes.kubectlArguments([]),
         "-n",
-        f.tenant,
+        gateway.metadata.namespace,
         "exec",
         gateway.metadata.name,
         "-c",
@@ -965,6 +973,7 @@ ${commandSpecs.map(({ operation, workdir, argv }) => `${operation}: working dire
               ...(dedicated
                 ? {
                     gatewayUrl: `https://${f.gatewayHostname}/namespaces/${f.namespace.id}/agents/${agent.id}`,
+                    completionMarker: marker,
                   }
                 : {}),
             }),
@@ -1104,12 +1113,12 @@ ${commandSpecs.map(({ operation, workdir, argv }) => `${operation}: working dire
         failureSummary,
       });
       assert.equal(
-        (await f.get("pod", gateway.metadata.name, f.tenant)).metadata.uid,
+        (await f.get("pod", gateway.metadata.name, gateway.metadata.namespace)).metadata.uid,
         gateway.metadata.uid,
         "the task must remain bound to the observed Agent Pod",
       );
       assert.equal(
-        (await f.get("pod", consumer.metadata.name, f.tenant)).metadata.uid,
+        (await f.get("pod", consumer.metadata.name, consumer.metadata.namespace)).metadata.uid,
         consumer.metadata.uid,
         "the task must remain bound to the observed repository consumer",
       );
@@ -1303,12 +1312,7 @@ ${commandSpecs.map(({ operation, workdir, argv }) => `${operation}: working dire
           );
           await f.waitFor("Agent stop, session disposal and material deletion", async () => {
             const current = await f.api("GET", `/namespaces/${f.namespace.id}/agents/${agent.id}`);
-            const pods = await f.kubernetes.resources(
-              "pods",
-              f.tenant,
-              "-l",
-              `openclaw.dev/agent=${agent.id}`,
-            );
+            const pods = await agentPods(f, agent.id);
             const materials = (
               await f.kubectl(
                 "-n",

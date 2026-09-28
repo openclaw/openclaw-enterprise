@@ -10,6 +10,7 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 - [Platform startup](../flows/platform-startup.md) and [production startup](../flows/production-startup.md)
 - [Controller worker and durable reconciliation](../flows/controller-worker.md)
 - [Logging](../flows/common-logging.md)
+- [Audit ledger](../flows/audit-ledger.md)
 - [Docker Compose development](../flows/docker-compose-development.md): [stack startup](../flows/docker-compose-development/startup.md) and [Agent execution limits](../flows/docker-compose-development/agent-execution.md)
 
 ## Console, configuration, and Agents
@@ -29,6 +30,7 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 
 - [Local password authentication](../flows/local-password-authentication.md) and [service API keys](../flows/service-api-keys.md)
 - [Secret storage and delivery](../flows/secret-storage-and-delivery.md)
+- [Credential source lifecycle](../flows/credential-source-lifecycle.md): gateway registration, Agent binding, admission, and retried deletion
 - [Harness authentication binding](../flows/native-service-account-credential-delivery.md) and [ServiceAccount Driver credential delivery](../flows/service-account-driver-credential-delivery.md)
 
 ## Drivers and placement

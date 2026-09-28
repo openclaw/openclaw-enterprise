@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { publishWorkflow, repository } from "../../scripts/ci/container-release.mjs";
 
-test("recovery preserves producer bytes and identity across a partial publication", async (t) => {
+test("publication aliases and recovery preserve producer bytes and identity", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "container-resume-test-"));
   const original = { PATH: process.env.PATH, GH_TOKEN: process.env.GH_TOKEN };
   t.after(async () => {
@@ -22,8 +22,8 @@ test("recovery preserves producer bytes and identity across a partial publicatio
   });
   process.env.GH_TOKEN = "test-token";
   process.env.PATH = `${directory}:${process.env.PATH}`;
-  const sourceSha = "a".repeat(40);
   const workflowSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  let sourceSha = "a".repeat(40);
   const statePath = join(directory, "registry.json");
   const env = {
     GITHUB_REPOSITORY: repository,
@@ -43,12 +43,14 @@ test("recovery preserves producer bytes and identity across a partial publicatio
     PREPARATION_ARTIFACT_IDS: "10,11",
     WORKFLOW_CI_RUN_ID: "789",
     WORKFLOW_CI_ATTEMPT: "1",
-    NODE_BASE_IMAGE: `docker.io/library/node:24-bookworm@sha256:${"b".repeat(64)}`,
+    NODE_BASE_IMAGE: JSON.parse(
+      await readFile("scripts/ci/test-suites/images-packaging.json", "utf8"),
+    ).prepare.defaultEnv.NODE_BASE_IMAGE,
     GHCR_CONTROLLER_IMAGE: "ghcr.io/openclaw/enterprise-controller",
     GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/enterprise-runtime",
     GH_TOKEN: "test-token",
   };
-  const tag = `sha-${sourceSha}`;
+  let tag = `sha-${sourceSha}`;
   const repo = { full_name: repository, private: true, default_branch: "main" };
   const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
   const images = ["controller", "runtime"];
@@ -92,11 +94,15 @@ const args = process.argv.slice(2);
 if (args[0] === "inspect") {
   const ref = args.at(-1);
   if (!ref.startsWith("oci-archive:") && (state.remoteError || !state.remote[ref])) {
-    process.stderr.write(state.remoteError ?? ('reading manifest ${tag} in ' + ref.slice(9).split(':')[0] + ': manifest unknown'));
+    process.stderr.write(state.remoteError ?? ('reading manifest ' + ref.split(':').at(-1) + ' in ' + ref.slice(9).split(':')[0] + ': manifest unknown'));
     process.exit(1);
   }
   process.stdout.write(ref.startsWith("oci-archive:") ? readFileSync(ref.slice(12)) : (state.inspectOverride ?? state.remote[ref]));
 } else if (args[0] === "copy") {
+  if (state.failCopyRef === args.at(-1)) {
+    process.stderr.write("simulated registry copy failure");
+    process.exit(1);
+  }
   state.copies.push(args.at(-1));
   state.remote[args.at(-1)] = readFileSync(args.at(-2).slice(12), "utf8");
   writeFileSync(statePath, JSON.stringify(state));
@@ -144,7 +150,12 @@ if (args[0] === "inspect") {
       return Response.json(repo);
     }
     if (path.includes("/compare/")) {
-      return Response.json({ status: "ahead" });
+      return Response.json({
+        status:
+          path.endsWith(`${sourceSha}...${workflowSha}`) && sourceSha === workflowSha
+            ? "identical"
+            : "ahead",
+      });
     }
     if (path.endsWith("/workflows/ci.yml")) {
       return Response.json({ id: 1, path: ".github/workflows/ci.yml", state: "active" });
@@ -233,7 +244,7 @@ globalThis.fetch = ${fetchFixture.toString()};
 globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
 `,
   );
-  const runRecovery = async () => {
+  const writeFixture = async () => {
     await writeFile(
       fixtureConfig,
       JSON.stringify({
@@ -256,6 +267,9 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
         tag,
       }),
     );
+  };
+  const runRecovery = async () => {
+    await writeFixture();
     execFileSync(
       process.execPath,
       ["--import", preload, "scripts/ci/container-resume.mjs", "publish", directory],
@@ -393,4 +407,98 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
   // Retrying recovery verifies both existing digests without another copy.
   await runRecovery();
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  // The ordinary publication command updates a mutable alias only after both
+  // immutable tags exist. Recovery above must not move an older build to latest.
+  const latestRefs = images.map(
+    (image) => `docker://${env[`GHCR_${image.toUpperCase()}_IMAGE`]}:latest`,
+  );
+  const customRefs = images.map(
+    (image) => `docker://${env[`GHCR_${image.toUpperCase()}_IMAGE`]}:candidate`,
+  );
+  sourceSha = workflowSha;
+  metadataMissing = false;
+  tag = `sha-${sourceSha}`;
+  env.SOURCE_SHA = sourceSha;
+  for (const [index, image] of images.entries()) {
+    prepared[index].metadata.sourceSha = sourceSha;
+    prepared[index].metadata.workflowSha = sourceSha;
+    prepared[index].remote = `docker://${env[`GHCR_${image.toUpperCase()}_IMAGE`]}:${tag}`;
+    await writeFile(
+      join(prepared[index].path, "metadata.json"),
+      JSON.stringify(prepared[index].metadata),
+    );
+  }
+  const runPublication = async (alias = "") => {
+    await writeFixture();
+    execFileSync(
+      process.execPath,
+      ["--import", preload, "scripts/ci/container-release.mjs", "publish", directory],
+      {
+        env: {
+          ...process.env,
+          ...env,
+          GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/main`,
+          GITHUB_RUN_ID: "123",
+          CI_RUN_ID: "456",
+          CI_ATTEMPT: "1",
+          PUBLISH: "true",
+          IMAGE_TAG: alias,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    return JSON.parse(await readFile(join(directory, "publication.json"), "utf8"));
+  };
+  const priorState = { ...state, remote: { ...state.remote } };
+  for (const ref of latestRefs) {
+    priorState.remote[ref] = "previous image";
+  }
+  // A conflicting immutable tag must stop publication before moving either alias.
+  const conflict = {
+    ...priorState,
+    remote: { ...priorState.remote, [prepared[1].remote]: "conflict" },
+  };
+  await writeFile(statePath, JSON.stringify(conflict));
+  await assert.rejects(runPublication(), /overwrite/);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), conflict);
+  // A failure during the second source copy also leaves both aliases untouched.
+  await writeFile(statePath, JSON.stringify({ ...priorState, failCopyRef: prepared[1].remote }));
+  await assert.rejects(runPublication(), /simulated registry copy failure/);
+  const sourceFailure = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(sourceFailure.remote[prepared[0].remote], prepared[0].bytes);
+  for (const ref of latestRefs) {
+    assert.equal(sourceFailure.remote[ref], "previous image");
+  }
+  await writeFile(statePath, JSON.stringify(priorState));
+  const publication = await runPublication();
+  const latestState = JSON.parse(await readFile(statePath, "utf8"));
+  for (const [index, ref] of latestRefs.entries()) {
+    assert.equal(latestState.remote[ref], prepared[index].bytes);
+    assert.equal(latestState.remote[prepared[index].remote], prepared[index].bytes);
+    assert.equal(publication[index].tag, tag);
+    assert.equal(publication[index].aliasTag, "latest");
+  }
+  const customPublication = await runPublication("candidate");
+  const customState = JSON.parse(await readFile(statePath, "utf8"));
+  for (const [index, ref] of customRefs.entries()) {
+    assert.equal(customState.remote[ref], prepared[index].bytes);
+    assert.equal(customState.remote[latestRefs[index]], latestState.remote[latestRefs[index]]);
+    assert.equal(customPublication[index].aliasTag, "candidate");
+  }
+  for (const invalid of [`sha-${"f".repeat(40)}`, "bootstrap-123", "bad/tag", "x".repeat(129)]) {
+    await assert.rejects(runPublication(invalid));
+    assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), customState);
+  }
+  // The aliases are separate registry writes: a failure must not produce a receipt.
+  const partial = { ...customState, remote: { ...customState.remote }, failCopyRef: latestRefs[1] };
+  for (const ref of latestRefs) {
+    partial.remote[ref] = "previous image";
+  }
+  await writeFile(statePath, JSON.stringify(partial));
+  await rm(join(directory, "publication.json"));
+  await assert.rejects(runPublication(), /simulated registry copy failure/);
+  const failedState = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(failedState.remote[latestRefs[0]], prepared[0].bytes);
+  assert.equal(failedState.remote[latestRefs[1]], "previous image");
+  await assert.rejects(readFile(join(directory, "publication.json")), { code: "ENOENT" });
 });

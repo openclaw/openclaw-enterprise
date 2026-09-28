@@ -62,7 +62,7 @@ saving Agent selections and deploying supported selections can still use the
 Agent runtime's discovery path.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
-cursor?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
+cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
@@ -70,7 +70,10 @@ and its `/details` child. The selected Driver reports `pluginDiscovery.credentia
 in Installation capabilities as `required` or `none`. When required, supply
 exactly one credential source: `accessToken`, or `secretRef` with the standard
 `{kind, namespaceId, id}` Secret reference. When none is required, omit both.
-For details also provide `pluginId`; for a list you can provide `cursor`.
+For details also provide `pluginId`; for discovery you can provide `q` (up to
+1,024 characters) and `cursor`. The Driver searches the complete catalog; an
+empty query lists it. Keep the same query while paging and omit the cursor when
+changing the query.
 Both routes require Agent `create` in the Namespace. A Secret reference must
 belong to that Namespace and additionally requires caller `operate` on the exact
 Secret. OCC reads the current value through the selected SecretDriver and passes

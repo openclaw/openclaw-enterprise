@@ -1,5 +1,11 @@
 import { isAbsolute } from "node:path";
-import type { Driver, BackendDefinition, BackendRef } from "@openclaw-enterprise/contracts";
+import type {
+  Driver,
+  BackendDefinition,
+  BackendRef,
+  DriverCapability,
+  OpenShellBackendDefinition,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DriverSelectionError, ResourceConflictError, ScopeViolationError } from "./errors.ts";
 
@@ -31,8 +37,12 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     }
   }
   const id = backendId(candidate.id, `backend[${index}].id`);
-  if (candidate.type !== "chatgpt" && candidate.type !== "github") {
-    throw new ScopeViolationError(path(id, "type") + " must be chatgpt or github.");
+  if (
+    candidate.type !== "chatgpt" &&
+    candidate.type !== "github" &&
+    candidate.type !== "openshell"
+  ) {
+    throw new ScopeViolationError(path(id, "type") + " must be chatgpt, github, or openshell.");
   }
 
   const configuration = asRecord(candidate.configuration);
@@ -42,6 +52,9 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   const drivers = asRecord(candidate.drivers);
   if (drivers === undefined) {
     throw new ScopeViolationError(path(id, "drivers") + " must be one object.");
+  }
+  if (candidate.type === "openshell") {
+    return validateOpenShellBackend(id, configuration, drivers);
   }
   if (candidate.type === "github") {
     for (const key of Object.keys(configuration)) {
@@ -122,6 +135,182 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   });
 }
 
+/** Matches the gRPC client: a bare host:port, or an origin without credentials or path. */
+function validGatewayEndpoint(value: unknown): boolean {
+  if (!isNonEmptyString(value) || /\s/.test(value)) {
+    return false;
+  }
+  if (!value.includes("://")) {
+    return /^[^/:]+:[0-9]{1,5}$/.test(value);
+  }
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.pathname === "/" &&
+      parsed.search === "" &&
+      parsed.hash === "" &&
+      parsed.username === "" &&
+      parsed.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Upper bound for one OpenShell RPC deadline; it bounds late credential-provider creates. */
+export const OPENSHELL_MAX_REQUEST_TIMEOUT_MS = 30_000;
+
+function validateOpenShellBackend(
+  id: string,
+  configuration: Readonly<Record<string, unknown>>,
+  drivers: Readonly<Record<string, unknown>>,
+): OpenShellBackendDefinition {
+  const allowed = [
+    "endpoint",
+    "scheme",
+    "serviceName",
+    "port",
+    "auth",
+    "requestTimeoutMs",
+    "rootCertificatePath",
+    "insecureTransport",
+  ];
+  for (const key of Object.keys(configuration)) {
+    if (!allowed.includes(key)) {
+      throw new ScopeViolationError(path(id, `configuration.${key}`) + " is unsupported.");
+    }
+  }
+  const { endpoint, scheme, serviceName, port, requestTimeoutMs, rootCertificatePath } =
+    configuration;
+  if (endpoint !== undefined && !validGatewayEndpoint(endpoint)) {
+    throw new ScopeViolationError(
+      path(id, "configuration.endpoint") + " must be host:port or an http or https origin.",
+    );
+  }
+  if (endpoint === undefined && !isNonEmptyString(serviceName)) {
+    throw new ScopeViolationError(path(id, "configuration") + " requires endpoint or serviceName.");
+  }
+  if (serviceName !== undefined && !isNonEmptyString(serviceName)) {
+    throw new ScopeViolationError(path(id, "configuration.serviceName") + " is invalid.");
+  }
+  if (scheme !== undefined && scheme !== "http" && scheme !== "https") {
+    throw new ScopeViolationError(path(id, "configuration.scheme") + " must be http or https.");
+  }
+  if (
+    port !== undefined &&
+    (!Number.isSafeInteger(port) || (port as number) < 1 || (port as number) > 65535)
+  ) {
+    throw new ScopeViolationError(path(id, "configuration.port") + " is invalid.");
+  }
+  // Credential registration fences late gateway creates by this bound; see the OCC core.
+  if (
+    requestTimeoutMs !== undefined &&
+    (!Number.isSafeInteger(requestTimeoutMs) ||
+      (requestTimeoutMs as number) < 1000 ||
+      (requestTimeoutMs as number) > OPENSHELL_MAX_REQUEST_TIMEOUT_MS)
+  ) {
+    throw new ScopeViolationError(
+      path(id, "configuration.requestTimeoutMs") +
+        ` must be between 1000 and ${OPENSHELL_MAX_REQUEST_TIMEOUT_MS} ms.`,
+    );
+  }
+  if (
+    rootCertificatePath !== undefined &&
+    (!isNonEmptyString(rootCertificatePath) || !isAbsolute(rootCertificatePath))
+  ) {
+    throw new ScopeViolationError(
+      path(id, "configuration.rootCertificatePath") + " must be an absolute file path.",
+    );
+  }
+  const authRecord = configuration.auth === undefined ? undefined : asRecord(configuration.auth);
+  if (configuration.auth !== undefined && authRecord === undefined) {
+    throw new ScopeViolationError(path(id, "configuration.auth") + " must be one object.");
+  }
+  let auth: OpenShellBackendDefinition["configuration"]["auth"];
+  if (authRecord !== undefined) {
+    if (authRecord.mode === "unauthenticated" && Object.keys(authRecord).length === 1) {
+      auth = { mode: "unauthenticated" };
+    } else if (
+      authRecord.mode === "bearerTokenFile" &&
+      Object.keys(authRecord).length === 2 &&
+      isNonEmptyString(authRecord.path) &&
+      isAbsolute(authRecord.path)
+    ) {
+      auth = { mode: "bearerTokenFile", path: authRecord.path };
+    } else {
+      throw new ScopeViolationError(
+        path(id, "configuration.auth") +
+          " must be unauthenticated or bearerTokenFile with an absolute path.",
+      );
+    }
+  }
+  // Registration sends resolved credentials to the gateway. Plain or unauthenticated transport
+  // requires an explicit statement that NetworkPolicy isolates the gateway inside the cluster.
+  const insecureTransport = configuration.insecureTransport;
+  if (insecureTransport !== undefined && insecureTransport !== "network-policy") {
+    throw new ScopeViolationError(
+      path(id, "configuration.insecureTransport") + " must be network-policy.",
+    );
+  }
+  const tls =
+    endpoint === undefined
+      ? (scheme ?? (rootCertificatePath === undefined ? "http" : "https")) === "https"
+      : (endpoint as string).startsWith("https://");
+  const protectedTransport = tls && auth?.mode === "bearerTokenFile";
+  if (!protectedTransport && insecureTransport === undefined) {
+    throw new ScopeViolationError(
+      path(id, "configuration") +
+        " requires TLS with bearerTokenFile authentication, or insecureTransport: network-policy.",
+    );
+  }
+  if (protectedTransport && insecureTransport !== undefined) {
+    throw new ScopeViolationError(
+      path(id, "configuration.insecureTransport") + " is only for unprotected transport.",
+    );
+  }
+  for (const key of Object.keys(drivers)) {
+    if (key !== "sandbox" && key !== "credential_gateway") {
+      throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
+    }
+  }
+  if (!isNonEmptyString(drivers.sandbox) || !isNonEmptyString(drivers.credential_gateway)) {
+    throw new ScopeViolationError(
+      path(id, "drivers") + " requires sandbox and credential_gateway members.",
+    );
+  }
+  return deepFreeze({
+    id,
+    type: "openshell",
+    configuration: {
+      ...(endpoint === undefined ? {} : { endpoint: endpoint as string }),
+      ...(scheme === undefined ? {} : { scheme: scheme as "http" | "https" }),
+      ...(serviceName === undefined ? {} : { serviceName: serviceName as string }),
+      ...(port === undefined ? {} : { port: port as number }),
+      ...(auth === undefined ? {} : { auth }),
+      ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs: requestTimeoutMs as number }),
+      ...(rootCertificatePath === undefined
+        ? {}
+        : { rootCertificatePath: rootCertificatePath as string }),
+      ...(insecureTransport === undefined ? {} : { insecureTransport }),
+    },
+    drivers: { sandbox: drivers.sandbox, credential_gateway: drivers.credential_gateway },
+  });
+}
+
+function backendMembers(backend: BackendDefinition): readonly string[] {
+  if (backend.type === "chatgpt") {
+    return [`service_account:${backend.drivers.service_account}`];
+  }
+  if (backend.type === "github") {
+    return [`repo:${backend.drivers.repo}`];
+  }
+  return [
+    `sandbox:${backend.drivers.sandbox}`,
+    `credential_gateway:${backend.drivers.credential_gateway}`,
+  ];
+}
+
 export function validateBackendDefinitions(value: unknown = []): readonly BackendDefinition[] {
   if (!Array.isArray(value)) {
     throw new ScopeViolationError("backend must be an array.");
@@ -134,24 +323,21 @@ export function validateBackendDefinitions(value: unknown = []): readonly Backen
       throw new ScopeViolationError("Backend IDs must be unique.");
     }
     ids.add(backend.id);
-    const member =
-      backend.type === "chatgpt"
-        ? `service_account:${backend.drivers.service_account}`
-        : `repo:${backend.drivers.repo}`;
-    if (members.has(member)) {
-      throw new ScopeViolationError(
-        backend.type === "chatgpt"
-          ? "A ServiceAccount Driver cannot belong to multiple Backends."
-          : "A repository credential Driver cannot belong to multiple Backends.",
-      );
+    for (const member of backendMembers(backend)) {
+      if (members.has(member)) {
+        throw new ScopeViolationError("A Driver cannot belong to multiple Backends.");
+      }
+      members.add(member);
     }
-    members.add(member);
   }
   if (backends.filter((backend) => backend.type === "chatgpt").length > 1) {
     throw new ScopeViolationError("Only one bundled ChatGPT Backend can be configured.");
   }
   if (backends.filter((backend) => backend.type === "github").length > 1) {
     throw new ScopeViolationError("Only one bundled GitHub Backend can be configured.");
+  }
+  if (backends.filter((backend) => backend.type === "openshell").length > 1) {
+    throw new ScopeViolationError("Only one bundled OpenShell Backend can be configured.");
   }
   return Object.freeze(backends);
 }
@@ -178,27 +364,38 @@ export function assertConfiguredBackend(
 
 export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
-  selectedServiceAccountDriver: Driver | undefined,
-  selectedRepoDriver?: Driver,
+  selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
 ): void {
+  const requires = (capability: DriverCapability, id: string, label: string): void => {
+    const driver = selected[capability];
+    if (driver?.capability !== capability || driver.id !== id) {
+      throw new DriverSelectionError(`The configured Backend requires its ${label}.`);
+    }
+  };
   for (const backend of backends) {
     if (backend.type === "github") {
-      if (
-        selectedRepoDriver?.capability !== "repo" ||
-        selectedRepoDriver.id !== backend.drivers.repo
-      ) {
-        throw new DriverSelectionError(
-          "The configured Backend requires its repository credential Driver.",
-        );
-      }
-      continue;
+      requires("repo", backend.drivers.repo, "repository credential Driver");
+    } else if (backend.type === "chatgpt") {
+      requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");
+    } else {
+      requires("sandbox", backend.drivers.sandbox, "Sandbox Driver");
+      requires(
+        "credential_gateway",
+        backend.drivers.credential_gateway,
+        "Credential Gateway Driver",
+      );
     }
-    if (
-      selectedServiceAccountDriver?.capability !== "service_account" ||
-      selectedServiceAccountDriver.id !== backend.drivers.service_account
-    ) {
-      throw new DriverSelectionError("The configured Backend requires its ServiceAccount Driver.");
-    }
+  }
+  const gateway = selected.credential_gateway;
+  if (
+    gateway !== undefined &&
+    !backends.some((backend) =>
+      backendMembers(backend).includes(`credential_gateway:${gateway.id}`),
+    )
+  ) {
+    throw new DriverSelectionError(
+      "The selected Credential Gateway Driver must belong to a configured Backend.",
+    );
   }
 }
 

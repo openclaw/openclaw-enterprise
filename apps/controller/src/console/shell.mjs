@@ -179,6 +179,29 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
+  function updateNamespaces(readable) {
+    if (!namespaceSelect?.isConnected) {
+      return;
+    }
+    if (
+      readable.length === namespaces.length &&
+      readable.every(
+        (item, index) => item.id === namespaces[index].id && item.name === namespaces[index].name,
+      )
+    ) {
+      return;
+    }
+    namespaces = readable;
+    namespaceSelect.replaceChildren(
+      ...readable.map((item) => element("option", { value: item.id }, item.name)),
+    );
+    namespaceSelect.value = namespaceId;
+    const scope = app.querySelector(".content .scope");
+    if (scope && route().feature === "agents") {
+      scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
+    }
+  }
+
   function renderShell(feature, state) {
     ({ session, namespaces, namespaceId } = state);
     namespaceSelect = null;
@@ -395,6 +418,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderShell,
     renderRows,
     switchNamespace,
+    updateNamespaces,
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-25
-last_updated_session: authoring-run/a81f3e71-1c8e-4692-8e2e-d462ddacc10b
+updated: 2026-09-28
+last_updated_session: 01a0e441-02f9-70b2-ad45-0a1a5049954a
 ---
 
 # Compose development startup
@@ -13,19 +13,19 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 `scripts/dev-up` selects Docker or Kubernetes Compute and starts the requested
 development topology from a checkout. Docker Compute and Compose-backed
 Kubernetes profiles run PostgreSQL, migration, bootstrap, the API, and the
-worker in Compose. The Kubernetes-only OpenShell profile delegates those
-services to the owned k3d cluster. This flow ends after authenticated
-Installation access and, for OpenShell, bootstrap Workspace readiness.
+worker in Compose. The explicitly selected Kubernetes-only profile runs those
+services in the owned k3d cluster. This flow ends after authenticated Installation and
+bootstrap Namespace readiness; OpenShell also requires Workspace readiness.
 
 ## Entry Points
 
 - Trigger: `./scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`.
 - Source: `scripts/dev-up:require_command`
 - Source: `internal/occdev/up.go:Up`
-- Source: `internal/occdev/openshell_k3d.go:upOpenShellK3d`
+- Source: `internal/occdev/openshell_k3d.go:upK3d`
 - Assumptions: the checkout-local OCC CLI is built; the selected container
-  engine is running; Kubernetes profiles also have k3d and kubectl, while
-  OpenShell requires Helm and its pinned or explicitly selected assets.
+  engine is running; Kubernetes profiles also have k3d and kubectl; Kubernetes-only and OpenShell
+  profiles require Helm, and OpenShell requires its pinned or selected assets.
 
 ## Flow
 
@@ -34,13 +34,13 @@ graph TD
   A["<b>Start development</b><br/>scripts/dev-up"] --> B{"<b>Compute Driver</b><br/>Docker or Kubernetes"}
   B -- "Docker" --> C["<b>Render Compose</b><br/>Validate publications"]
   B -- "Kubernetes" --> D{"<b>Control plane</b><br/>Compose or Kubernetes"}
-  D -- "Kubernetes" --> E["<b>Owned k3d stack</b><br/>PostgreSQL, OCE, OpenShell"]
+  D -- "Kubernetes" --> E["<b>Owned k3d stack</b><br/>PostgreSQL and OCE"]
   D -- "Compose" --> F["<b>Hybrid stack</b><br/>Compose OCC and k3d Compute"]
   C --> G["<b>Prove Installation</b><br/>Authenticated service key"]
   F --> G
   E --> G
-  F --> H["<b>Own Workspace</b><br/>OpenShell operator mode"]
-  E --> H
+  F -- "OpenShell" --> H["<b>Own Workspace</b><br/>OpenShell operator mode"]
+  E -- "OpenShell" --> H
   G --> I["<b>Record cleanup</b><br/>Exact engine and resources"]
   H --> I
 ```
@@ -52,19 +52,12 @@ graph TD
 `scripts/dev-up:require_command`, `internal/occdev/compose.go:AnalyzeCompose`,
 `deploy/runtime/Dockerfile`
 
-The helper runs from the checkout root and requires the executable OCC CLI at
-`bin/occ`, as produced by `pnpm cli:build`; it does not resolve `occ` from
-`PATH`. It accepts an optional `--key-output` destination and forwards arguments
-after `--` to the selected Compose
-implementation, so native project names, profiles, and override files keep
-their normal precedence. This trace covers the default
-`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` path. Selecting `kubernetes` dispatches
-to the [local Kubernetes development profile](../../guides/deploy/local-kubernetes-development.md),
-which keeps OCC in Compose and uses k3d for Compute. That profile accepts
-`OCC_DEVELOPMENT_SANDBOX_DRIVER=none` or `openshell`; OpenShell is rejected
-with Docker Compute. OpenShell defaults to a Kubernetes control plane;
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` retains the Compose-backed path traced
-below.
+The helper requires the checkout-local `bin/occ` from `pnpm cli:build`, accepts
+`--key-output`, and forwards arguments after `--` to Compose. This section traces
+the default `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker`. OpenShell requires
+Kubernetes Compute. Kubernetes Compute also defaults to the Compose control
+plane; explicitly select `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` for
+[local Kubernetes-only development](../../guides/deploy/local-kubernetes-development.md).
 
 The Docker Compute path first probes a running Docker Engine and the JSON
 configuration capability required from Docker Compose. If that probe fails, it
@@ -198,6 +191,55 @@ Every claimed operation reauthorizes the original actor before calling Compute.
 The worker is the only Compose service with Docker-compatible engine access. It
 does not mount the configuration volume.
 
+<span id="default-kubernetes-only-startup"></span>
+
+### Kubernetes-only startup
+
+`internal/occdev/openshell_k3d.go:upK3d`,
+`internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
+`internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
+
+The Kubernetes-only profile creates its owned k3d cluster in K3s legacy
+iptables mode, imports matching OCE images, and runs PostgreSQL, migration,
+bootstrap, API, and
+worker inside Kubernetes. An explicitly selected IPv4 resolver replaces k3d's
+node DNS rewriting; the host resolver is unchanged.
+
+Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
+manifests. It waits for the k3s-owned Gateway API CRDs to be created and
+established before installing Envoy, and prints k3s add-on status before rollback
+if that wait fails. Before configuring gateway proxy trust,
+`internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
+checks allowed and denied direct Pod traffic with credential-free Pods and a
+temporary policy. After bootstrap creates the initial Gateway Namespace, it
+repeats the checks against the Driver's actual policies. Probe Pods use short
+graceful shutdowns and are deleted with UID preconditions. Cleanup waits for
+the selector-matching Pods before removing their egress policy; any failed
+probe or cleanup prevents startup success. This is a point-in-time, single-node
+check, not continuous enforcement.
+
+Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs`
+probes the imported runtime in a credential-free Pod on the owned node. If
+`RuntimeDefault` blocks the sandbox, the shared reviewed generator derives a
+content-addressed Localhost profile from that node's effective policy. Startup
+verifies the loaded policy, workspace and outside-write behavior, and missing
+profile failure before selecting it for dedicated Codex containers. Failure
+rolls back the owned cluster; the state directory records nonsecret provenance.
+
+Startup waits for the Gateway, certificate, and proxy Pods before reporting
+success. Envoy source addresses must fall inside the selected node's Pod CIDR;
+the tenant ingress policy must still admit only the Gateway's exact proxy peer.
+
+The loopback development proxy also terminates browser HTTPS using a private
+per-installation CA and a leaf limited to that installation's console and Agent
+hosts. The API and browser NodePorts are published only to host loopback. The
+bootstrap administrator password, service key, and CA private key remain in the
+private state directory. Browser CA trust is an explicit operator action.
+
+If repository inputs are selected, startup creates the scoped broker after the
+actual initial Namespace exists and waits for authenticated repository-option
+discovery. This does not prove a model turn, native sandbox, or Git operation.
+
 ### 12. Select Kubernetes development and preserve cleanup ownership
 
 `internal/occdev/command.go:selectEngine`,
@@ -223,13 +265,27 @@ operator overrides the subnet. Startup and
 cleanup both use that snapshot, so later `.env` edits cannot change the saved
 project configuration.
 
-Selecting `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell` defaults to branching
+With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
 before Compose rendering into
-`internal/occdev/openshell_k3d.go:upOpenShellK3d`. That profile uses the engine
-only for k3d and image operations. Selecting
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` continues through the Compose snapshot
-and startup sequence. Any other control-plane value fails before resource
-creation. The
+`internal/occdev/openshell_k3d.go:upK3d`. That profile uses the engine
+only for k3d and image operations, and adds OpenShell only when selected.
+Without OpenShell, the Installation selects the bundled Presets and curated
+Codex Plugin Driver. Startup copies the generated administrator password and
+service key into the private state directory.
+
+When repository inputs are selected, `internal/occdev/repository_k3d.go` first
+validates their private directory, explicit Namespace placeholder, profiles, App
+key, and approved egress IPv4 `/32` endpoints. After authenticated bootstrap and Namespace
+readiness, it substitutes the server-assigned Namespace ID into the immutable
+registry, generates a CA and exact-host certificate, creates separate Kubernetes
+inputs, and upgrades Helm with the selected Repo Driver and worker sidecar.
+Startup compares authenticated repository discovery with the approved references
+and profiles. It does not perform Git operations; see the
+[local repository procedure](../../guides/deploy/local-repository-credentials.md).
+
+The default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` continues through the
+Compose snapshot and startup sequence. An unsupported control-plane value fails
+before resource creation. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns both OpenShell control-plane sequences.
 
@@ -316,4 +372,8 @@ external key if a later OpenShell readiness step fails.
 
 ## Changelog
 
+- 2026-09-28 00:34: Restored Compose defaults and explicit Kubernetes-only startup. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 201f31d511464133f06e0526bb5545ed1cb27e25)
+
+- 2026-09-27 21:52: Waited for k3s Gateway API CRD creation and establishment before Envoy setup and preserved add-on diagnostics on failure. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
+- 2026-09-27 20:39: Added node-local legacy firewall selection, optional DNS configuration, and startup network-policy enforcement probes. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
 - 2026-09-25 12:23: Added the selectable Compose-backed OpenShell topology and brought the existing startup trace into the current flow-document structure. (authoring-run/a81f3e71-1c8e-4692-8e2e-d462ddacc10b - 64ab72aed5c4926e4a2080ade91d785e531801a2)

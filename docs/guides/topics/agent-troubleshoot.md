@@ -15,9 +15,10 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 
 ## Deployment is blocked or has no selected revision
 
-On Kubernetes, open the Agent's **New revision → Credentials** and confirm that
-**Transport** shows **Stored**. Check that the saved model authentication matches
-the execution mode. For an OpenAI API key, the person selecting it and the
+On Kubernetes, open the Agent's **Create new version** draft, then
+**Credentials**. Confirm that **Transport** shows **Stored**. Check that the
+saved model authentication matches the execution mode. For an OpenAI API key,
+the person selecting it and the
 Agent's own identity both need `operate` on the exact platform Secret. See
 [Harness authentication](../../reference/agents.md#harness-authentication).
 
@@ -42,11 +43,12 @@ For Kubernetes workload problems, operators can use the
 
 ## Verify runtime health after deployment
 
-The console displays persisted deployment status; it has no live gateway-health
-or chat view. **Selected revision** means the control plane selected that revision. It
-cannot tell you whether the model still accepts the credential or can answer.
-Use [Deploy your first Agent](../first-agent.md) to verify your local setup or
-ask an operator to [verify a production workload](../deploy/production-agents.md#verify-production-workloads).
+The console's **Deployment activity** shows persisted status; it has no live
+gateway-health or chat view. **Current version** means the control plane selected
+that revision. That selection cannot tell you whether the model still accepts
+the credential or can answer. Use [Deploy your first Agent](../first-agent.md)
+to verify your local setup or ask an operator to
+[verify a production workload](../deploy/production-agents.md#verify-production-workloads).
 Check for an actual answer from the configured model, not just an active
 revision or successful file read.
 
@@ -54,8 +56,10 @@ revision or successful file read.
 
 The operation may have succeeded. Before retrying:
 
-- For credentials, select **Refresh status** and check what is already stored.
-- For deployment, inspect the Agent's revision history and the status for the
+- For model and channel credentials, reload the Agent's Credentials tab and check
+  its saved bindings. An operator can inspect generated transport storage through
+  the exact Agent runtime-credentials API.
+- For deployment, inspect the Agent's **Versions** list and the status for the
   revision already admitted; a second deployment creates another revision.
 - For a workspace file, reload that file and compare its content with your
   intended edit before saving again.

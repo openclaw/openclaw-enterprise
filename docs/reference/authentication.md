@@ -87,12 +87,16 @@ File existence alone is not proof of successful initialization.
 
 ## Browser request origin
 
-Browser sign-in and sign-out requests must use the origin configured by
-`OCC_AUTH_BASE_URL`. An explicit untrusted or malformed `Origin` is rejected
-before password verification or session revocation. A request marked
-`Sec-Fetch-Site: cross-site` without an Origin is also rejected. Rejection leaves
-an existing session intact. Command-line clients that send neither browser
-header keep the documented sign-in/sign-out flow.
+Controller API requests that use a session cookie for a mutation must include an
+`Origin` matching the origin of `OCC_AUTH_BASE_URL`. This includes sign-out. A missing,
+malformed, or different origin is rejected with `403`. If `Sec-Fetch-Site` is
+present, it must be `same-origin`. Safe reads do not require an Origin.
+
+Sign-in rejects an explicitly untrusted or malformed Origin and also rejects
+`Sec-Fetch-Site: cross-site` when Origin is missing. Command-line sign-in may
+omit both headers. For later cookie-authenticated mutations, command-line clients
+must provide the configured Origin. An explicitly supplied service API key does
+not require Origin, and an invalid key never falls back to a session cookie.
 
 ## Session lifecycle
 

@@ -3,6 +3,7 @@ import { story } from "./story.mjs";
 export default { title: "Components/Plugins" };
 
 export const Available = story("pluginsAvailable");
+export const UnavailableReasonPopover = story("pluginsUnavailableReasonPopover");
 export const Selected = story("pluginsSelected");
 export const UnsupportedToolReviewer = story("pluginsUnsupportedToolReviewer");
 export const UnknownTools = story("pluginsUnknownTools");

@@ -53,6 +53,14 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+      "expectedTests": [
+        "xid8 comparison preserves the tuple transaction ID across epochs",
+        "native IAM barrier fixture rejects unsafe connection targets before connecting",
+        "native IAM policy barrier holds the original authority and blocks all six writers"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-production-wireup.test.mjs",
       "expectedTests": [
         "production bootstrap creates a generated-password administrator that can authenticate"
@@ -124,6 +132,7 @@
       "path": "tests/integration/postgres-worker-agent-revision.test.mjs",
       "expectedTests": [
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
+        "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "Agent stop cleans a terminal candidate without an active revision",
         "Agent stop reauthorizes the recorded actor before Compute mutation",

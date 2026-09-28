@@ -347,6 +347,21 @@ function sqlState(error: unknown): string | undefined {
   return typeof error.code === "string" ? error.code : undefined;
 }
 
+// Recovery has no worker finalization step; publish provisioning failure in
+// the same statement as terminal work and its attributable audit evidence.
+const FAIL_EXHAUSTED_NAMESPACES_SQL = `
+  failed_namespaces AS (
+    UPDATE occ.namespaces AS namespace
+    SET status = 'failed'
+    FROM transitioned
+    WHERE namespace.id = transitioned.namespace_id
+      AND namespace.status = 'provisioning'
+      AND namespace.deleted_at IS NULL
+      AND transitioned.namespace_target = 'ready'
+      AND transitioned.state = 'failed_permanent'
+    RETURNING namespace.id
+  )`;
+
 const INSERT_EVIDENCE_CTE_SQL = `
   evidence AS (
     INSERT INTO occ.audit_events (
@@ -1018,7 +1033,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [
         requestedLimit,
@@ -1052,7 +1068,8 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED"],
     );

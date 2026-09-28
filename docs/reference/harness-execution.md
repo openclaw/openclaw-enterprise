@@ -91,10 +91,19 @@ model-auth selector. Kubernetes supports these combinations:
 | `api_key` with an OCC Secret   | Dedicated Codex   | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
 | `codex_pat` with an OCC Secret | Dedicated Codex   | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
 | `chatgpt_service_account`      | Dedicated Codex   | Only Codex receives the account token and forced workspace.                                                       |
+| `credential_source`            | Dedicated Codex   | Codex receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.          |
 
 Kubernetes workload rendering prepares one explicit login mode and exact Secret
 projections. The selected Sandbox consumes the same already-rendered workload
-requirements. It does not resolve a second credential source. Other Compute
+requirements. It does not resolve a second credential source.
+
+A [`credential_source`](credential-sources.md) binding requires a selected
+Credential Gateway, the paired OpenShell Sandbox, dedicated Codex, and a source
+type whose Harness authentication is OpenAI `api_key`. Compute projects no model
+Secret; it sets `CODEX_LOGIN_MODE=api_key` and passes the gateway's attachments
+to the Sandbox. The revision activates only after every attachment is `ready`.
+While a Credential Gateway is selected, deployment rejects the Secret-backed and
+account methods with `409`. Other Compute
 implementations reject bindings they do not support. SSH embedded OpenClaw accepts
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
 and OCC checks gateway readiness without validating model authentication. Host
@@ -121,7 +130,9 @@ Readiness polling does not repeat model calls.
 Both startup checks call the configured primary model. OpenClaw disables tools
 and model fallback. Codex ignores user configuration and rules, disables execution
 and external tools, and uses read-only filesystem policy without approval grants;
-a tool event cannot satisfy its success check. Each probe has a process timeout
+a tool event cannot satisfy its success check. The Codex probe runs with a minimal
+environment that keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
+`SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Each probe has a process timeout
 and captures native output, emitting only a fixed failure message if unsuccessful.
 A failed Codex probe also holds the process unready until restart.
 
@@ -206,8 +217,9 @@ and routing; a capable selected SandboxDriver can provision the dedicated Harnes
 
 The bundled OpenShell implementation supports dedicated Codex. It configures
 Codex for external containment instead of nested internal sandboxing. Its
-upstream gateway must support the exact Secret references and projected workload
-identity required by the admitted workload. Stock OpenShell incompatibilities
+paired Credential Gateway supplies the model key. The upstream gateway must still
+support the app-server token Secret reference and projected workload identity
+required by the admitted workload. Stock OpenShell incompatibilities
 fail explicitly; test bridges do not establish turnkey production support.
 There is no current command-level `exec` facet or per-tool sandbox admission.
 See [SandboxDriver](drivers/sandbox.md) and [OpenShell](drivers/openshell-sandbox.md)

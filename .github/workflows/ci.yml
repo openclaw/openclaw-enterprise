@@ -120,12 +120,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  runtime-image-fixture:
+    name: Runtime Image Fixture
+    # GitHub-hosted jobs receive a fresh VM and the job's existing Docker engine.
+    # Only this lane writes fixture tags; its process awaits each Docker command.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: runtime-image-fixture
+          profile: postgres
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: ci-results
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-22.04
     needs:
       - audit
       - pr-safe
+      - runtime-image-fixture
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -147,7 +165,7 @@ jobs:
           const fs = require("fs");
           const needs = JSON.parse(process.env.NEEDS_JSON);
           const lanes = ["checks-baseline", "postgres", "postgres-application", "images-packaging", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "logging-collector", "repository-credentials-container", "repository-credentials-platform"];
-          const expanded = { audit: needs.audit };
+          const expanded = { audit: needs.audit, "runtime-image-fixture": needs["runtime-image-fixture"] };
           for (const lane of lanes) {
             expanded[lane] = { result: needs["pr-safe"]?.result ?? "missing" };
           }

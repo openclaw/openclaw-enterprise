@@ -5,6 +5,7 @@ import {
   type PluginCatalogPage,
   type PluginDriver,
   type PluginDesiredState,
+  type PluginApprovers,
   type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
@@ -72,9 +73,7 @@ const CODEX_POLICY_SCHEMA: JSONSchema = deepFreeze({
 const OCC_CATALOG: readonly BundledCatalogEntry[] = deepFreeze(openClawCatalogEntries());
 
 // Entries use recorded marketplace identities; account access and tools remain unknown.
-// Releases with unsupported skills or local components must not be selectable.
-const CURATED_UNSUPPORTED =
-  "The recorded plugin release requires skills or local components that OCE does not support.";
+// Concrete apps and native component support are rechecked during deployment.
 const OPENAI_CURATED_CATALOG: readonly BundledCatalogEntry[] = deepFreeze([
   {
     id: "codex-plugin:linear@openai-curated-remote",
@@ -119,8 +118,7 @@ const OPENAI_CURATED_CATALOG: readonly BundledCatalogEntry[] = deepFreeze([
     websiteUrl: "https://www.notion.so/",
     privacyPolicyUrl: "https://www.notion.com/help/privacy",
     termsOfServiceUrl: "https://www.notion.so/legal/terms-of-use",
-    available: false,
-    unavailableReason: CURATED_UNSUPPORTED,
+    selectableWithoutTools: true,
     tools: null,
   },
   {
@@ -131,8 +129,7 @@ const OPENAI_CURATED_CATALOG: readonly BundledCatalogEntry[] = deepFreeze([
     websiteUrl: "https://www.figma.com",
     privacyPolicyUrl: "https://www.figma.com/legal/privacy/",
     termsOfServiceUrl: "https://www.figma.com/legal/tos/",
-    available: false,
-    unavailableReason: CURATED_UNSUPPORTED,
+    selectableWithoutTools: true,
     tools: null,
   },
   {
@@ -143,8 +140,7 @@ const OPENAI_CURATED_CATALOG: readonly BundledCatalogEntry[] = deepFreeze([
     websiteUrl: "https://www.canva.com",
     privacyPolicyUrl: "https://www.canva.com/policies/privacy-policy/",
     termsOfServiceUrl: "https://www.canva.com/policies/terms-of-use/",
-    available: false,
-    unavailableReason: CURATED_UNSUPPORTED,
+    selectableWithoutTools: true,
     tools: null,
   },
   {
@@ -167,7 +163,7 @@ const OPENAI_CURATED_CATALOG: readonly BundledCatalogEntry[] = deepFreeze([
     privacyPolicyUrl: "https://sentry.io/privacy/",
     termsOfServiceUrl: "https://sentry.io/terms/",
     available: false,
-    unavailableReason: CURATED_UNSUPPORTED,
+    unavailableReason: "The recorded plugin release has no concrete hosted app supported by OCE.",
     tools: null,
   },
   {
@@ -178,8 +174,7 @@ const OPENAI_CURATED_CATALOG: readonly BundledCatalogEntry[] = deepFreeze([
     websiteUrl: "https://www.adobe.com",
     privacyPolicyUrl: "https://www.adobe.com/privacy/policy.html",
     termsOfServiceUrl: "https://www.adobe.com/legal/terms.html",
-    available: false,
-    unavailableReason: CURATED_UNSUPPORTED,
+    selectableWithoutTools: true,
     tools: null,
   },
   {
@@ -311,9 +306,13 @@ class BundledPluginDriverBase {
     }
   }
 
-  protected validate(kind: "codex" | "openclaw", selections: PluginDesiredState): void {
+  protected validate(
+    kind: "codex" | "openclaw",
+    selections: PluginDesiredState,
+    defaultApprovers?: PluginApprovers,
+  ): void {
     try {
-      validatePolicies(kind, selections);
+      validatePolicies(kind, selections, defaultApprovers);
     } catch (error) {
       const field =
         error instanceof Error && "policyField" in error ? error.policyField : undefined;
@@ -331,13 +330,14 @@ class BundledPluginDriverBase {
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
-    toolDefaults: { enabled: true, approval: ["native", "approve"], reviewer: [] },
-    tools: { enabled: true, approval: ["native", "approve"], reviewer: [] },
+    approvers: { agent: true, plugin: true, tools: true },
+    toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+    tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState): void {
-    this.validate("openclaw", selections);
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
+    this.validate("openclaw", selections, defaultApprovers);
   }
 
   static validateConfiguration(configuration: unknown): void {
@@ -357,20 +357,25 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
-  // TODO: gate prompt on enforceable session constraints before this draft ships.
+  // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: {
       enabled: true,
-      approval: ["native", "prompt", "approve"],
+      approval: ["provider_default", "all_actions", "write_actions", "none"],
       reviewer: ["human", "auto"],
     },
-    tools: { enabled: true, approval: ["native", "prompt", "approve"], reviewer: [] },
+    tools: {
+      enabled: true,
+      approval: ["provider_default", "all_actions", "write_actions", "none"],
+      reviewer: [],
+    },
     driverPolicySchema: CODEX_POLICY_SCHEMA,
   });
 
-  validatePolicies(selections: PluginDesiredState): void {
-    this.validate("codex", selections);
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
+    this.validate("codex", selections, defaultApprovers);
   }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";
@@ -381,15 +386,20 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   async discoverCatalog(
-    input: { readonly accessToken?: string; readonly cursor?: string },
+    input: { readonly accessToken?: string; readonly cursor?: string; readonly q?: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
     if (this.catalogSource === "openai-curated") {
       if (input.cursor !== undefined) {
         throw new PluginDiscoveryError("invalid_response");
       }
+      const query = input.q?.trim().toLowerCase() ?? "";
       return {
-        plugins: this.catalog(OPENAI_CURATED_CATALOG),
+        plugins: this.catalog(OPENAI_CURATED_CATALOG).filter((entry) =>
+          [entry.name, entry.id, entry.description ?? ""].some((text) =>
+            text.toLowerCase().includes(query),
+          ),
+        ),
         nextCursor: null,
         setup: CURATED_SETUP,
       };
@@ -401,6 +411,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       {
         accessToken: input.accessToken,
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        ...(input.q === undefined ? {} : { q: input.q }),
       },
       signal,
     );

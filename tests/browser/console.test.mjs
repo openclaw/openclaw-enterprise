@@ -225,9 +225,21 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   await panel.getByText("Beta runtime", { exact: true }).waitFor();
   assert.doesNotMatch(await panel.textContent(), /Alpha runtime/);
   assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
+  const runtimeRow = await panel.locator(".runtime-debug-images details").elementHandle();
+  await runtimeRow.evaluate((node) => {
+    node.open = true;
+  });
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  await page.goBack();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  assert.equal(
+    await runtimeRow.evaluate((node) => node.isConnected && node.open),
+    true,
+    "Returning preserves expanded runtime image diagnostics",
+  );
   await page.goto(`${fixture.origin}/console/agents?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.locator(".runtime-debug").count(), 0);
@@ -376,14 +388,21 @@ test("console keeps loaded route families visible while return reads refresh", a
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Retained routes", { ready: true });
+  await fixture.createNamespace("A second Namespace", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Retained route Agent");
   const { page } = await newPage(t, fixture);
 
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  const originalAgentRow = await page
+    .getByRole("link", { name: "Retained route Agent", exact: true })
+    .elementHandle();
 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  const originalNamespaceList = await page
+    .getByRole("list", { name: "Namespaces", exact: true })
+    .elementHandle();
   const agentsPattern = "**/namespaces/" + namespace.id + "/agents";
   const agentsHold = await holdRoute(t, page, agentsPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -393,6 +412,12 @@ test("console keeps loaded route families visible while return reads refresh", a
   await agentsHold.waitForRelease();
   await expectRetainedPreview(page, "Retained route Agent");
   await releaseHeldRoute(page, agentsPattern, agentsHold);
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  assert.equal(
+    await originalAgentRow.evaluate((node) => node.isConnected),
+    true,
+    "Unchanged Agent rows retain their DOM and handlers on return",
+  );
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
@@ -408,6 +433,12 @@ test("console keeps loaded route families visible while return reads refresh", a
   await namespacesHold.waitForRelease();
   await expectRetainedPreview(page, "Retained routes");
   await releaseHeldRoute(page, namespacesPattern, namespacesHold);
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  assert.equal(
+    await originalNamespaceList.evaluate((node) => node.isConnected),
+    true,
+    "Namespace ordering does not force unchanged rows to rebuild",
+  );
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
 
   await page.goto(fixture.origin + "/console/backends?namespace=" + namespace.id);
@@ -449,6 +480,8 @@ test("console keeps loaded route families visible while return reads refresh", a
   const workspaceNotice =
     "Workspace files require a deployed Agent with an active revision and a reachable gateway.";
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
+  await page.locator(".native-admin-access").waitFor({ state: "attached" });
+  const originalNativePanel = await page.locator(".native-admin-access").elementHandle();
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const detailPattern = "**/namespaces/" + namespace.id + "/agents/" + agent.id;
@@ -461,6 +494,12 @@ test("console keeps loaded route families visible while return reads refresh", a
   await expectRetainedPreview(page, workspaceNotice);
   assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
   await releaseHeldRoute(page, detailPattern, detailHold);
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  assert.equal(
+    await originalNativePanel.evaluate((node) => node.isConnected),
+    true,
+    "Native admin access is not reconstructed after admission succeeds",
+  );
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
 
   await page.getByRole("link", { name: "← Agents", exact: true }).click();

@@ -544,6 +544,216 @@ select:not([multiple])[size="1"] {
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
 }
+.agent-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agent-current-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.agent-current-summary > div {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  padding: 16px 20px;
+}
+.agent-current-summary > div + div {
+  border-left: 1px solid var(--line);
+}
+.agent-current-summary strong {
+  color: var(--text-strong);
+  font-size: 21px;
+}
+.agent-current-summary p {
+  margin: 0;
+  font-size: 12px;
+}
+.agent-status-line {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  color: var(--warning);
+  background: var(--warning-subtle);
+}
+.eyebrow {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.deployment-heading,
+.agent-version-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.deployment-heading h2,
+.agent-version-heading h2 {
+  margin-bottom: 4px;
+}
+.deployment-heading p,
+.agent-version-heading p {
+  margin-bottom: 0;
+}
+.deployment-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  list-style: none;
+  padding: 0;
+  margin: 20px 0;
+}
+.deployment-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.deployment-step strong,
+.deployment-step span:not(.deployment-step-marker) {
+  display: block;
+}
+.deployment-step span:not(.deployment-step-marker) {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.deployment-step-marker {
+  display: block;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 2px solid var(--input-border);
+  background: var(--surface);
+}
+.deployment-step-complete {
+  border-color: var(--success);
+  background: var(--success-subtle);
+}
+.deployment-step-complete .deployment-step-marker {
+  border-color: var(--success);
+  background: var(--success);
+}
+.deployment-step-active {
+  border-color: var(--warning);
+  background: var(--warning-subtle);
+}
+.deployment-step-active .deployment-step-marker {
+  border-color: var(--warning);
+  background: var(--warning);
+}
+.deployment-step-failed {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+}
+.deployment-step-failed .deployment-step-marker {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.deployment-outcome {
+  font-weight: 600;
+}
+.deployment-warnings {
+  padding: 12px 16px;
+  background: var(--warning-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.deployment-warnings h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.deployment-warnings ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.agent-version-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.agent-version-detail {
+  min-width: 0;
+}
+.agent-version-heading {
+  padding: 20px 0 0;
+}
+.agent-version-heading .resource-id {
+  margin: 8px 0 4px;
+  overflow-wrap: anywhere;
+}
+.version-list {
+  display: grid;
+  gap: 8px;
+  max-height: 480px;
+  overflow-y: auto;
+  margin: 14px 0 22px;
+}
+@media (max-width: 1100px) {
+  .agent-version-layout {
+    grid-template-columns: 1fr;
+  }
+  .version-list {
+    max-height: 250px;
+  }
+}
+.version-item,
+.revision-create {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  border-color: var(--line);
+}
+.version-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.version-item[aria-current="page"],
+.revision-create[aria-current="page"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+.version-current {
+  width: fit-content;
+  margin-top: 3px;
+  color: var(--success);
+  font-size: 11px;
+  font-weight: 650;
+}
+.agent-draft-actions {
+  margin: 18px 0;
+}
+.agent-draft-actions h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.agent-draft-actions > button.primary {
+  margin-top: 4px;
+}
+.draft-steps {
+  display: flex;
+  gap: 22px;
+  padding-left: 20px;
+  flex-wrap: wrap;
+}
 .agent-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -807,6 +1017,16 @@ summary:focus-visible {
   .agent-card {
     padding: 18px;
   }
+  .agent-current-summary {
+    grid-template-columns: 1fr;
+  }
+  .agent-current-summary > div + div {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .deployment-progress {
+    grid-template-columns: 1fr;
+  }
   .repository-options {
     grid-template-columns: 1fr;
   }
@@ -855,7 +1075,7 @@ summary:focus-visible {
   min-height: 200px;
 }
 
-.runtime-credentials {
+.channel-secrets {
   max-width: 960px;
 }
 .credential-status-list {
@@ -893,6 +1113,136 @@ summary:focus-visible {
 
 .plugin-fields {
   margin-block: 1.5rem;
+}
+.slack-approver-field {
+  display: grid;
+  gap: 0.5rem;
+  margin-block: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.slack-approver-field[hidden],
+.slack-directory-field[hidden],
+.slack-directory-panel[hidden],
+.slack-directory-pagination[hidden],
+.slack-directory-panel button[hidden] {
+  display: none;
+}
+.slack-approver-field label,
+.slack-directory-field > label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+.slack-approver-field select {
+  width: 100%;
+}
+.slack-approver-field .hint,
+.slack-directory-field .hint,
+.slack-directory-field .error {
+  margin: 0;
+}
+.slack-directory-field {
+  position: relative;
+  display: grid;
+  gap: 0.5rem;
+  margin-block: 1rem;
+  min-width: 0;
+}
+.slack-directory-field p:empty,
+.slack-directory-workspace:empty,
+.slack-directory-chips:empty {
+  display: none;
+}
+.slack-directory-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.slack-directory-input:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.slack-directory-input input {
+  flex: 1 1 15rem;
+  width: auto;
+  min-width: 0;
+  padding: 0.35rem 0;
+  border: 0;
+  box-shadow: none;
+  outline: none;
+  background: transparent;
+}
+.slack-directory-chips {
+  display: contents;
+}
+.slack-directory-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  padding: 0.25rem 0.4rem 0.25rem 0.6rem;
+  background: var(--surface-muted);
+  border-radius: 6px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.slack-directory-chip button {
+  padding: 0 0.25rem;
+  border: 0;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+.slack-directory-panel {
+  position: absolute;
+  z-index: 20;
+  inset: calc(100% + 4px) 0 auto;
+  background: var(--surface);
+  display: grid;
+  gap: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem;
+  box-shadow: var(--shadow);
+}
+.slack-directory-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.slack-directory-results {
+  display: grid;
+  gap: 0.25rem;
+  max-height: 16rem;
+  overflow: auto;
+}
+.slack-directory-result {
+  width: 100%;
+  text-align: left;
+  border: 0;
+}
+.slack-directory-result.active {
+  background: var(--surface-muted);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.slack-directory-result span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.slack-directory-result code {
+  margin-left: auto;
+  font-size: 0.8em;
 }
 .plugin-dialog {
   width: min(72rem, calc(100vw - 2rem));
@@ -971,6 +1321,31 @@ summary:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+.plugin-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plugin-loading::before {
+  content: "";
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: plugin-loading-spin 0.8s linear infinite;
+}
+@keyframes plugin-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plugin-loading::before {
+    animation: none;
+  }
 }
 .plugin-browser-status button {
   flex-shrink: 0;
@@ -1104,6 +1479,7 @@ summary:focus-visible {
   overflow-wrap: anywhere;
 }
 .plugin-tool-row > summary .plugin-tool-heading,
+.plugin-tool-row > summary .plugin-id,
 .plugin-tool-description {
   grid-column: 1;
 }
@@ -1207,7 +1583,7 @@ summary:focus-visible {
   padding-top: 16px;
   border-top: 1px solid var(--line);
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .plugin-tool-row > summary {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1357,9 +1733,55 @@ summary:focus-visible {
 .plugin-access-help {
   flex-shrink: 0;
 }
-.plugin-list-row .plugin-unavailable {
-  margin: 8px 4px 0;
-  font-size: 0.8125rem;
+.plugin-list-row {
+  position: relative;
+}
+.plugin-list-item:has(+ .plugin-unavailable-trigger) {
+  padding-right: 48px;
+}
+.plugin-unavailable-trigger {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.plugin-unavailable-trigger span {
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 13px;
+}
+.plugin-unavailable-popover {
+  inset: auto;
+  position-area: bottom span-right;
+  position-try-order: most-height;
+  position-try-fallbacks:
+    flip-inline,
+    flip-block,
+    flip-inline flip-block;
+  width: 20rem;
+  max-width: calc(100vw - 32px);
+  margin: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.plugin-unavailable-popover .plugin-unavailable {
+  margin: 0;
+  font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
 .plugin-setup-reminder {

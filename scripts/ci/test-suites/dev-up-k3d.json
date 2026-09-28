@@ -1,0 +1,16 @@
+{
+  "env": {
+    "OCC_TEST_DEV_UP_K3D_REAL": "1"
+  },
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/dev-up-k3d-real.test.mjs",
+      "expectedTests": [
+        "dev-up refuses mismatched image selections before creating a cluster",
+        "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy",
+        "dev-up installs the selected Kubernetes control plane and cleans up its owned cluster"
+      ]
+    }
+  ]
+}

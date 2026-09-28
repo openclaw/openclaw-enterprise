@@ -3,6 +3,7 @@ import { PresetValidationError } from "@openclaw-enterprise/contracts";
 import {
   AgentDeletingError,
   AuthorizationDeniedError,
+  ChannelDirectoryError,
   DependencyUnavailableError,
   ModelDiscoveryError,
   PluginDiscoveryError,
@@ -135,6 +136,40 @@ export function isDependencyUnavailable(error: unknown): boolean {
 export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
+  }
+  if (error instanceof ChannelDirectoryError) {
+    switch (error.reason) {
+      case "credentials_rejected":
+        return failure(
+          400,
+          "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED",
+          "The channel provider rejected the selected credential. Check the Secret and retry.",
+        );
+      case "missing_scope":
+        return failure(
+          400,
+          "CHANNEL_DIRECTORY_MISSING_SCOPE",
+          "The channel credential lacks directory permissions. Update its provider scopes and retry.",
+        );
+      case "rate_limited":
+        return failure(
+          429,
+          "CHANNEL_DIRECTORY_RATE_LIMITED",
+          "The channel provider rate-limited directory lookup. Wait and retry.",
+        );
+      case "invalid_response":
+        return failure(
+          503,
+          "CHANNEL_DIRECTORY_INVALID_RESPONSE",
+          "The channel provider returned an invalid directory response. Retry or enter an exact ID.",
+        );
+      case "unavailable":
+        return failure(
+          503,
+          "CHANNEL_DIRECTORY_UNAVAILABLE",
+          "Channel directory lookup is unavailable. Retry or enter an exact ID.",
+        );
+    }
   }
   if (error instanceof ModelDiscoveryError) {
     switch (error.reason) {

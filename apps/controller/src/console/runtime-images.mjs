@@ -1,13 +1,13 @@
 import { element } from "./dom.mjs";
 
-export async function renderRuntimeImages(target, { request, namespaceId, lifetime, active }) {
+export async function renderRuntimeImages(target, { request, namespaceId, isCurrent }) {
   const content = element(
     "div",
     { className: "runtime-debug-images", "aria-live": "polite" },
     "Loading runtime images…",
   );
   target.append(content);
-  const current = () => lifetime.isCurrent(active) && target.isConnected;
+  const current = () => isCurrent() && target.isConnected;
   if (namespaceId === null) {
     content.textContent = "Select a readable Namespace to inspect runtime images.";
     return;

@@ -12,10 +12,17 @@ Choose [Local Setup](docs/guides/quickstart.md) to run OCC on your machine, or [
 
 ```bash
 pnpm cli:build
-OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes ./bin/occ dev up
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
+export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
+./bin/occ dev up
 ```
 
-You need Docker Engine with Compose or Podman with `podman-compose`, k3d, kubectl, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
+This selects the Kubernetes-only profile for Agent deployment. With no profile
+selection, `occ dev up` starts a Compose control-plane preview that cannot deploy
+Agents.
+
+You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 
 After local setup, [deploy your first Agent](docs/guides/first-agent.md) and send it a model request. You need an OpenAI API key with access to the [default model or your selected override](docs/guides/first-agent.md#before-you-start) for that step. If you installed on an existing cluster, [deploy and verify an Agent on that installation](docs/guides/deploy/production-agents.md).
 

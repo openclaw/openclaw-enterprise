@@ -13,6 +13,35 @@ export interface ClientFiles {
   readonly hasPublicCa: boolean;
 }
 
+function ghHosts(client: RepositoryCredentialClientConfiguration, bearer: string): string {
+  return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
+}
+
+/** Refuse a direct gh session whose private files disagree. */
+export async function requireGhMaterial(
+  configuration: ClientFiles,
+  directory: string,
+): Promise<void> {
+  const credential = await readPrivateFile(join(directory, "bearer"), 256);
+  let hosts: Buffer | undefined;
+  let expected: Buffer | undefined;
+  try {
+    const bearer = credential.toString("utf8");
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(bearer)) {
+      throw new Error("invalid-client-gh-material");
+    }
+    hosts = await readPrivateFile(join(directory, "gh", "hosts.yml"), 16 * 1024);
+    expected = Buffer.from(ghHosts(configuration.client, bearer));
+    if (!hosts.equals(expected)) {
+      throw new Error("invalid-client-gh-material");
+    }
+  } finally {
+    credential.fill(0);
+    hosts?.fill(0);
+    expected?.fill(0);
+  }
+}
+
 function validateClient(client: RepositoryCredentialClientConfiguration): void {
   if (Object.hasOwn(client, "pushRefAllowlist")) {
     normalizePushRefAllowlist(client.pushRefAllowlist);
@@ -76,7 +105,7 @@ export function encodeRepositoryCredentialSessionFiles(
     "client.json": clientJson,
     gitconfig:
       "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
-    "gh/hosts.yml": `${JSON.stringify(opened.client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(opened.client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(opened.bearer)}\n`,
+    "gh/hosts.yml": ghHosts(opened.client, opened.bearer),
     "gh/config.yml": "version: 1\nprompt: disabled\ngit_protocol: https\n",
     ...(publicCa === undefined
       ? {}

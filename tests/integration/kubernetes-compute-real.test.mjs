@@ -2302,6 +2302,14 @@ test(
             },
           },
     );
+    const proxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS?.split(",")
+      .map((cidr) => cidr.trim())
+      .filter(Boolean);
+    assert.ok(
+      proxyCidrs?.length,
+      "the real diagnostics route requires the k3d API server Pod proxy source CIDR",
+    );
+    configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs = proxyCidrs;
     for (const capability of ["configuration", "secret"]) {
       configuration.drivers[capability].configuration.authentication = {
         mode: "kubeconfig",
@@ -2731,9 +2739,11 @@ test(
     });
     const adoptedTenant = await createAgent(namespaceIds[2], "adopted-tenant");
     if (runtimeImage !== undefined) {
-      // Real runtime integration fails closed when any Agent-owned credential is absent.
+      const firstCredentialsPath = `/namespaces/${namespaceIds[0]}/agents/${first.id}/runtime-credentials`;
+      const beforeDeploy = await request("GET", firstCredentialsPath);
+      assert.equal(beforeDeploy.status, 200, JSON.stringify(beforeDeploy.error));
+      assert.deepEqual(beforeDeploy.data, { transportConfigured: false });
       for (const [namespaceId, agent] of [
-        [namespaceIds[0], first],
         [namespaceIds[0], second],
         [namespaceIds[0], boundSecretAgent],
         [namespaceIds[1], separateTenant],
@@ -2773,6 +2783,19 @@ test(
       deploy(namespaceIds[2], adoptedTenant.id),
       deploy(namespaceIds[0], boundSecretAgent.id),
     ]);
+    if (runtimeImage !== undefined) {
+      const afterDeploy = await request(
+        "GET",
+        `/namespaces/${namespaceIds[0]}/agents/${first.id}/runtime-credentials`,
+      );
+      assert.equal(afterDeploy.status, 200, JSON.stringify(afterDeploy.error));
+      assert.deepEqual(afterDeploy.data, { transportConfigured: true });
+      await resource(
+        "secret",
+        `transport-${hash(first.id)}`,
+        kubernetesGatewayNamespaceName(namespaceIds[0]),
+      );
+    }
 
     await Promise.all(
       [
@@ -2923,6 +2946,48 @@ test(
         }
       }),
     );
+
+    const deploymentPath = `/namespaces/${namespaceIds[0]}/agents/${first.id}/deployments/${admitted[0].id}`;
+    const persistedBefore = await waitFor("first revision deployment to settle", async () => {
+      const observed = await request("GET", deploymentPath);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    const diagnosticsPath = `${deploymentPath}/diagnostics`;
+    const diagnostics = await request("POST", diagnosticsPath);
+    assert.equal(diagnostics.status, 200, JSON.stringify(diagnostics.error));
+    assert.equal(diagnostics.data.revisionId, admitted[0].id);
+    assert.equal(new Date(diagnostics.data.observedAt).toISOString(), diagnostics.data.observedAt);
+    assert.ok(diagnostics.data.checks.length <= 32);
+    if (runtimeImage === undefined) {
+      assert.deepEqual(
+        diagnostics.data.checks,
+        ["agent", "gateway"].map((component) => ({
+          component,
+          check: "runtime-status",
+          state: "unknown",
+          checkedAt: null,
+          code: "UNAVAILABLE",
+        })),
+        "the fixture image cannot provide current runtime checks",
+      );
+    } else {
+      const gatewayConfiguration = diagnostics.data.checks.find(
+        ({ component, check }) => component === "gateway" && check === "configuration",
+      );
+      assert.ok(gatewayConfiguration, "the real Gateway must answer its native Slack check");
+      assert.equal(
+        new Date(gatewayConfiguration.checkedAt).toISOString(),
+        gatewayConfiguration.checkedAt,
+      );
+    }
+    assert.equal(
+      (await request("POST", diagnosticsPath, undefined, { session: false })).status,
+      401,
+    );
+    const persistedAfter = await request("GET", deploymentPath);
+    assert.equal(persistedAfter.status, 200, JSON.stringify(persistedAfter.error));
+    assert.deepEqual(persistedAfter.data, persistedBefore);
 
     if (runtimeImage !== undefined) {
       const gatewayTarget = kubernetesGatewayNamespaceName(namespaceIds[0]);

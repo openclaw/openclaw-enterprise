@@ -149,7 +149,8 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
     invalid();
   }
   const apps = array(release.app_ids, 100).map((id) => text(id, 256));
-  const skills = array(release.skills, 1000);
+  // Native Codex loads skills from the installed bundle; validate catalog metadata here.
+  array(release.skills, 1000);
   if (
     !["AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE"].includes(
       String(plugin.installation_policy),
@@ -178,10 +179,10 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
         unavailableReason =
           "Unavailable for this account. Ask a ChatGPT workspace administrator to review plugin access; the service did not provide a recognized reason.";
     }
-  } else if (release.requires_local_executor !== false || skills.length > 0) {
-    // The list can rule out unsupported plugins; details must still check their local surfaces.
+  } else if (release.requires_local_executor !== false) {
+    // The list can rule out local executors; details still check native component support.
     unavailableReason =
-      "This plugin requires local components or skills that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
+      "This plugin requires a local executor that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
   } else if (apps.length === 0) {
     unavailableReason = "This plugin has no concrete hosted app supported by OCE.";
   }
@@ -209,15 +210,19 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
 }
 
 export async function discoverHostedPlugins(
-  input: { readonly accessToken: string; readonly cursor?: string },
+  input: { readonly accessToken: string; readonly cursor?: string; readonly q?: string },
   signal?: AbortSignal,
 ): Promise<PluginCatalogPage> {
   return withCredential(input.accessToken, signal, async (request) => {
     const query = new URLSearchParams({ scope: "GLOBAL", limit: String(PAGE_SIZE) });
+    const search = input.q?.trim();
+    if (search) {
+      query.set("q", search);
+    }
     if (input.cursor !== undefined) {
       query.set("pageToken", text(input.cursor));
     }
-    const response = await request(`plugins/list?${query}`);
+    const response = await request(`plugins/${search ? "search" : "list"}?${query}`);
     const next = record(response.pagination).next_page_token;
     const nextCursor = next === null ? null : text(next);
     if (nextCursor !== null && nextCursor === input.cursor) {

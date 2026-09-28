@@ -238,10 +238,36 @@ test("console auth routes reject untrusted browser origins and issue production 
   });
   assert.equal(crossSiteNoOrigin.response.status, 403);
 
-  const cliSignOut = await fixture.rawRequest("POST", "/api/auth/sign-out", {
+  const originlessSignOut = await fixture.rawRequest("POST", "/api/auth/sign-out", {
     headers: { cookie: requestCookie },
   });
+  assert.equal(originlessSignOut.response.status, 403);
+
+  const cliSignOut = await fixture.rawRequest("POST", "/api/auth/sign-out", {
+    headers: { cookie: requestCookie, origin: fixture.origin },
+  });
   assert.equal(cliSignOut.response.status, 200, cliSignOut.text);
+});
+
+test("untrusted cookie mutations do not clean up an expired session", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { development: { enabled: false } });
+  await fixture.bootstrap();
+  const session = await fixture.signIn();
+  const expired = fixture.memoryDatabase.session.at(-1);
+  assert.ok(expired);
+  expired.expiresAt = new Date(0);
+
+  const denied = await fixture.rawRequest("POST", "/api/auth/service-keys", {
+    headers: { cookie: session.cookie, origin: "http://127.0.0.1:1" },
+  });
+  assert.ok(fixture.memoryDatabase.session.includes(expired), "untrusted request changed session");
+  assert.equal(denied.response.status, 403, denied.text);
+
+  const trusted = await fixture.rawRequest("POST", "/api/auth/service-keys", {
+    headers: { cookie: session.cookie, origin: fixture.origin },
+  });
+  assert.equal(trusted.response.status, 401, trusted.text);
+  assert.equal(fixture.memoryDatabase.session.includes(expired), false);
 });
 
 test("public Agent revisions return the selected binding without private credential resolution metadata", async (t) => {

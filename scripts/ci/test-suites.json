@@ -11,6 +11,7 @@
     "k3d-fixture-plugins": "./test-suites/k3d-fixture-plugins.json",
     "docker-model": "./test-suites/docker-model.json",
     "k3d-model": "./test-suites/k3d-model.json",
+    "dev-up-k3d": "./test-suites/dev-up-k3d.json",
     "gateway-routing": "./test-suites/gateway-routing.json",
     "production-tui": "./test-suites/production-tui.json",
     "slack": "./test-suites/slack.json",
@@ -25,8 +26,10 @@
     "repository-credentials-live": "./test-suites/repository-credentials-live.json",
     "repository-credentials-platform": "./test-suites/repository-credentials-platform.json",
     "repository-credentials-installed": "./test-suites/repository-credentials-installed.json",
+    "k3d-two-cluster": "./test-suites/k3d-two-cluster.json",
     "k3d-observability": "./test-suites/k3d-observability.json",
-    "k3d-observability-demo": "./test-suites/k3d-observability-demo.json"
+    "k3d-observability-demo": "./test-suites/k3d-observability-demo.json",
+    "runtime-image-fixture": "./test-suites/runtime-image-fixture.json"
   },
   "groups": {
     "ci": [
@@ -34,6 +37,7 @@
       "postgres",
       "postgres-application",
       "images-packaging",
+      "runtime-image-fixture",
       "k3d-fixture-configuration",
       "k3d-fixture-state",
       "k3d-fixture-plugins",
@@ -47,6 +51,7 @@
       "postgres",
       "postgres-application",
       "images-packaging",
+      "runtime-image-fixture",
       "k3d-fixture-configuration",
       "k3d-fixture-state",
       "k3d-fixture-plugins",

@@ -70,7 +70,7 @@ export async function signInWithEmailPassword({
   const setCookie = setCookieHeaders(response);
   const cookie = cookieHeaderFromSetCookie(setCookie);
   assert.ok(cookie.length > 0, "Better Auth sign-in must issue a session cookie");
-  return { response, setCookie, cookie };
+  return { response, setCookie, cookie, origin: new URL(origin).origin };
 }
 
 export function authenticatedHeaders(session, headers = {}) {
@@ -78,6 +78,9 @@ export function authenticatedHeaders(session, headers = {}) {
   assert.equal(typeof cookie, "string", "a session cookie header is required");
   assert.ok(cookie.length > 0, "a session cookie header is required");
   return {
+    ...(typeof session === "string" || session.origin === undefined
+      ? {}
+      : { origin: session.origin }),
     ...headers,
     cookie,
   };

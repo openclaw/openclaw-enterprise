@@ -16,15 +16,14 @@ test("runtime assembly preserves executable assets and links while excluding dev
     "pnpm-lock.yaml": `lockfileVersion: '9.0'
 
 packages:
-  '@openai/codex@0.156.0':
+  '@openai/codex@0.158.0':
     resolution: {integrity: sha512-codex}
-  '@openai/codex-linux-arm64@0.156.0':
+  '@openai/codex-linux-arm64@0.158.0':
     resolution: {integrity: sha512-codexlinuxarm}
-  '@openai/codex-linux-x64@0.156.0':
+  '@openai/codex-linux-x64@0.158.0':
     resolution: {integrity: sha512-codexlinux}
 `,
     "dist/index.js": "export const ready = true;\n",
-    "patches/oce-repository-broker-read-paths.patch": "repository broker patch fixture\n",
     "openclaw.mjs":
       'import { ready } from "./node-compile-cache.mjs"; process.stdout.write(ready);\n',
     "node-compile-cache.mjs": 'export const ready = "runtime-ready";\n',
@@ -35,18 +34,18 @@ packages:
     "docs/images/screenshot.png": "image bytes",
     "qa/scenario.json": "{}",
     "src/server.ts": "development source",
-    "dist/extensions/codex/package.json": '{"dependencies":{"@openai/codex":"0.156.0"}}',
+    "dist/extensions/codex/package.json": '{"dependencies":{"@openai/codex":"0.158.0"}}',
     "node_modules/codex/bin.js": "#!/usr/bin/env node\n",
-    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex/package.json":
-      '{"name":"@openai/codex","version":"0.156.0","optionalDependencies":{"@openai/codex-linux-x64":"0.156.0"}}',
-    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-arm64/package.json":
-      '{"name":"@openai/codex-linux-arm64","version":"0.156.0"}',
-    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex":
-      "#!/usr/bin/env node\nconsole.log('codex-cli 0.156.0');\n",
-    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-x64/package.json":
-      '{"name":"@openai/codex-linux-x64","version":"0.156.0"}',
-    "node_modules/.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex":
-      "#!/usr/bin/env node\nconsole.log('codex-cli 0.156.0');\n",
+    "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex/package.json":
+      '{"name":"@openai/codex","version":"0.158.0","optionalDependencies":{"@openai/codex-linux-x64":"0.158.0"}}',
+    "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64/package.json":
+      '{"name":"@openai/codex-linux-arm64","version":"0.158.0"}',
+    "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex":
+      "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
+    "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64/package.json":
+      '{"name":"@openai/codex-linux-x64","version":"0.158.0"}',
+    "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex":
+      "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
     LICENSE: "license notice",
     "node_modules/.pnpm/dep@1.0.0/node_modules/dep/package.json":
       '{"name":"dep","version":"1.0.0"}',
@@ -69,15 +68,15 @@ packages:
   await symlink("../codex/bin.js", join(root, "node_modules/.bin/codex"));
   await mkdir(join(root, "node_modules/@openai"), { recursive: true });
   await symlink(
-    "../.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex",
+    "../.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex",
     join(root, "node_modules/@openai/codex"),
   );
   await symlink(
-    "../.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-arm64",
+    "../.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64",
     join(root, "node_modules/@openai/codex-linux-arm64"),
   );
   await symlink(
-    "../.pnpm/@openai+codex@0.156.0/node_modules/@openai/codex-linux-x64",
+    "../.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64",
     join(root, "node_modules/@openai/codex-linux-x64"),
   );
   await symlink(".pnpm/dep@1.0.0/node_modules/dep", join(root, "node_modules/dep"));
@@ -121,7 +120,6 @@ packages:
     "node_modules/.pnpm/dep@2.0.0/node_modules/dep/package.json",
     "node_modules/.pnpm/optional@1.0.0/node_modules/optional/package.json",
     "dist/index.js",
-    "patches/oce-repository-broker-read-paths.patch",
     "docs/help.md",
     "extensions/slack/skills/slack/SKILL.md",
     "LICENSE",
@@ -143,16 +141,7 @@ packages:
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
   );
-  assert.equal(provenance.codex.version, "0.156.0");
-  assert.deepEqual(provenance.sourcePatches, [
-    {
-      path: "patches/oce-repository-broker-read-paths.patch",
-      upstreamPullRequest: "https://github.com/openclaw/openclaw/pull/158724",
-      sha256: createHash("sha256")
-        .update(files["patches/oce-repository-broker-read-paths.patch"])
-        .digest("hex"),
-    },
-  ]);
+  assert.equal(provenance.codex.version, "0.158.0");
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 });

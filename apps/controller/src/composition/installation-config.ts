@@ -6,12 +6,15 @@ import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadYaml } from "@kubernetes/client-node";
 import type {
+  Backend,
   ComputeDriver,
   ConfigurationDriver,
+  CredentialGatewayDriver,
   DriverImplementation,
   IAMDriver,
   Identity,
   BackendDefinition,
+  OpenShellBackendDefinition,
   Preset,
   BackendSummary,
   RepoDriver,
@@ -47,6 +50,11 @@ import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.t
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
 import { GitHubRepoDriver } from "../drivers/repo/github/driver.ts";
 import { composeRepoDriver } from "./repository-credentials/platform.ts";
+import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
+import {
+  OpenShellCredentialGatewayDriver,
+  type OpenShellCredentialGatewayOptions,
+} from "../drivers/credential-gateway/openshell.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -74,6 +82,7 @@ export interface InstallationStartupConfiguration {
     readonly compute: SelectedDriverConfiguration;
     readonly secret: SelectedDriverConfiguration;
     readonly sandbox?: SelectedDriverConfiguration;
+    readonly credential_gateway?: SelectedDriverConfiguration;
     readonly plugin?: SelectedDriverConfiguration;
     readonly service_account?: { readonly id: string };
     readonly repo?: SelectedDriverConfiguration;
@@ -92,6 +101,7 @@ export interface InstallationRuntimeDrivers {
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
+  readonly credentialGatewayDriver?: CredentialGatewayDriver;
   readonly pluginDriver?: PluginDriver;
   readonly repoDriver?: RepoDriver;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
@@ -213,7 +223,11 @@ interface LoadedDriverPackage {
 interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
   readonly OpenShellSandboxDriver: new (
     configuration: ConfigurationRecord,
-    selection: { readonly id: string; readonly implementation: string },
+    selection: {
+      readonly id: string;
+      readonly implementation: string;
+      readonly backend: Backend<OpenShellGateway>;
+    },
   ) => SandboxDriver;
 }
 
@@ -282,6 +296,7 @@ function backendConfiguration(
   value: unknown,
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
+  credentialGatewayId: string | undefined,
 ): readonly BackendDefinition[] {
   const backends = validateBackendDefinitions(value ?? []);
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
@@ -290,7 +305,24 @@ function backendConfiguration(
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
     throw new Error("drivers.repo requires an owning backend entry with type github.");
   }
+  if (
+    credentialGatewayId !== undefined &&
+    !backends.some((backend) => backend.type === "openshell")
+  ) {
+    throw new Error(
+      "drivers.credential_gateway requires an owning backend entry with type openshell.",
+    );
+  }
   for (const backend of backends) {
+    if (backend.type === "openshell") {
+      // Sandbox membership is checked once the Sandbox selection is resolved.
+      if (backend.drivers.credential_gateway !== credentialGatewayId) {
+        throw new Error(
+          `backend[${backend.id}].drivers.credential_gateway must match the selected drivers.credential_gateway.id.`,
+        );
+      }
+      continue;
+    }
     if (backend.type === "github") {
       if (repoSelection === undefined) {
         throw new Error(`backend[${backend.id}].drivers.repo requires drivers.repo.`);
@@ -503,7 +535,15 @@ async function loadDriverPackage(
 
 function selected(
   value: unknown,
-  capability: "configuration" | "iam" | "compute" | "secret" | "sandbox" | "plugin" | "repo",
+  capability:
+    | "configuration"
+    | "iam"
+    | "compute"
+    | "secret"
+    | "sandbox"
+    | "credential_gateway"
+    | "plugin"
+    | "repo",
   implementation: string,
   driver: DriverImplementation,
 ): SelectedDriverConfiguration {
@@ -540,7 +580,14 @@ export async function loadInstallationConfiguration(options: {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly packageRoot?: string;
   readonly startupConfiguration?: StartupConfigurationSnapshot;
-  readonly createSandboxDriver?: (selection: SelectedDriverConfiguration) => SandboxDriver;
+  /** Real-runtime tests replace the transport or the Driver; never a production path. */
+  readonly createOpenShellBackend?: (
+    definition: OpenShellBackendDefinition,
+  ) => Backend<OpenShellGateway>;
+  readonly createSandboxDriver?: (
+    selection: SelectedDriverConfiguration,
+    backend: Backend<OpenShellGateway> | undefined,
+  ) => SandboxDriver;
 }): Promise<InstallationRuntimeDrivers | undefined> {
   const environment = options.environment ?? process.env;
   if (environment.OCC_INSTALLATION_ID !== undefined) {
@@ -624,7 +671,17 @@ export async function loadInstallationConfiguration(options: {
   const drivers = object(configuration.drivers, "drivers");
   closed(
     drivers,
-    ["configuration", "iam", "compute", "secret", "sandbox", "plugin", "service_account", "repo"],
+    [
+      "configuration",
+      "iam",
+      "compute",
+      "secret",
+      "sandbox",
+      "credential_gateway",
+      "plugin",
+      "service_account",
+      "repo",
+    ],
     "drivers",
   );
 
@@ -645,7 +702,26 @@ export async function loadInstallationConfiguration(options: {
     closed(selection, ["id", "configuration"], "drivers.repo");
     repoSelection = selected(selection, "repo", "github", GitHubRepoDriver);
   }
-  const backends = backendConfiguration(configuration.backend, serviceAccount, repoSelection);
+  let credentialGateway: SelectedDriverConfiguration | undefined;
+  if (drivers.credential_gateway !== undefined) {
+    const selection = object(drivers.credential_gateway, "drivers.credential_gateway");
+    closed(selection, ["id", "configuration"], "drivers.credential_gateway");
+    credentialGateway = selected(
+      selection,
+      "credential_gateway",
+      "openshell",
+      OpenShellCredentialGatewayDriver,
+    );
+  }
+  const backends = backendConfiguration(
+    configuration.backend,
+    serviceAccount,
+    repoSelection,
+    credentialGateway?.id,
+  );
+  const openShellBackend = backends.find(
+    (backend): backend is OpenShellBackendDefinition => backend.type === "openshell",
+  );
 
   const configurationSelection = object(drivers.configuration, "drivers.configuration");
   const iamSelection = object(drivers.iam, "drivers.iam");
@@ -784,6 +860,24 @@ export async function loadInstallationConfiguration(options: {
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
+  if (sandbox !== undefined && sandboxPackage === undefined && openShellBackend === undefined) {
+    throw new Error(
+      "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
+    );
+  }
+  if (
+    openShellBackend !== undefined &&
+    (sandbox === undefined ||
+      sandboxPackage !== undefined ||
+      openShellBackend.drivers.sandbox !== sandbox.id)
+  ) {
+    throw new Error(
+      `backend[${openShellBackend.id}].drivers.sandbox must match the selected bundled OpenShell drivers.sandbox.id.`,
+    );
+  }
+  if (credentialGateway !== undefined && !kubernetesCompute) {
+    throw new Error("drivers.credential_gateway requires the bundled Kubernetes Compute Driver.");
+  }
   if (options.mode === "production" && kubernetesCompute) {
     const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
     if (kubernetes.images.requireImmutableDigest !== true) {
@@ -809,6 +903,7 @@ export async function loadInstallationConfiguration(options: {
       compute,
       secret,
       ...(sandbox === undefined ? {} : { sandbox }),
+      ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
       ...(plugin === undefined ? {} : { plugin }),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
       ...(repoSelection === undefined ? {} : { repo: repoSelection }),
@@ -825,17 +920,35 @@ export async function loadInstallationConfiguration(options: {
           configured,
           "configuration",
         ) as ConfigurationDriver);
+  // One gateway object serves both member Drivers, so they share clients and naming.
+  const openShell =
+    openShellBackend === undefined
+      ? undefined
+      : (options.createOpenShellBackend?.(openShellBackend) ??
+        createOpenShellBackend(openShellBackend));
   const sandboxDriver =
     sandbox === undefined
       ? undefined
       : options.createSandboxDriver !== undefined
-        ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox), sandbox)
+        ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
         : sandboxPackage === undefined
           ? new bundledSandboxPackage!.OpenShellSandboxDriver(sandbox.configuration, {
               id: sandbox.id,
               implementation: sandbox.implementation,
+              backend: openShell!,
             })
           : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
+  const credentialGatewayDriver =
+    credentialGateway === undefined
+      ? undefined
+      : new OpenShellCredentialGatewayDriver(
+          credentialGateway.configuration as unknown as OpenShellCredentialGatewayOptions,
+          {
+            id: credentialGateway.id,
+            implementation: credentialGateway.implementation,
+            backend: openShell!,
+          },
+        );
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -860,6 +973,7 @@ export async function loadInstallationConfiguration(options: {
         implementation: compute.implementation,
         lifecycleDrivers: [configurationDriver],
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+        ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         nodeEnrollment: createGatewayNodeEnrollment(() =>
           readWorkspaceFilesApiKey(
             nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
@@ -921,6 +1035,7 @@ export async function loadInstallationConfiguration(options: {
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+    ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),

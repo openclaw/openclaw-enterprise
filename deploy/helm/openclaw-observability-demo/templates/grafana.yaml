@@ -36,4 +36,4 @@ data:
   metrics.json: |
     {{- .Files.Get "files/dashboard.json" | nindent 4 }}
   logs.json: |
-    {"uid":"occ-logs","title":"OCC operational logs (demonstration)","schemaVersion":39,"version":1,"refresh":"5s","time":{"from":"now-15m","to":"now"},"panels":[{"id":1,"type":"logs","title":"Filtered operational events","datasource":{"type":"loki","uid":"occ-loki"},"gridPos":{"h":20,"w":24,"x":0,"y":0},"targets":[{"refId":"A","expr":"{service_name=~\"occ-api|occ-worker|openclaw-gateway|codex-app-server\"}"}]}]}
+    {{- .Files.Get "files/logs-dashboard.json" | nindent 4 }}

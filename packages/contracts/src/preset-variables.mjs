@@ -227,7 +227,15 @@ export function validatePresetTemplate(template) {
   if (Object.hasOwn(template, "agent")) {
     closedObject(
       template.agent,
-      ["name", "executionMode", "backendId", "harnessAuth", "plugins", "initialWorkspaceFiles"],
+      [
+        "name",
+        "executionMode",
+        "backendId",
+        "harnessAuth",
+        "plugins",
+        "pluginApprovers",
+        "initialWorkspaceFiles",
+      ],
       "agent",
     );
     checkInitialWorkspaceFiles(template.agent.initialWorkspaceFiles, "agent.initialWorkspaceFiles");

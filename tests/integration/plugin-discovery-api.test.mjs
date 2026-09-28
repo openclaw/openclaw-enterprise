@@ -6,11 +6,11 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, PluginDiscoveryError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const accessToken = "at-plugin-discovery-private-fixture";
 const pluginId = "codex-plugin:knowledge@openai-remote";
@@ -93,14 +93,69 @@ async function createFixture(
   };
 }
 
+async function createSavedAgent(fixture, method = "codex_pat") {
+  const secret = await fixture.createSecret(
+    fixture.namespace.id,
+    `Plugin discovery credential ${randomUUID()}`,
+    accessToken,
+  );
+  const dedicated = method === "codex_pat";
+  const agent = await fixture.createAgent(
+    fixture.namespace.id,
+    `Stored credential Agent ${randomUUID()}`,
+    createHarnessConfiguration(dedicated ? "codex" : "openclaw", "gpt-5.1"),
+    {
+      executionMode: dedicated ? "dedicated" : "embedded",
+      harnessAuth: { method, source: secret.ref },
+    },
+  );
+  // Runtime and discovery both need the Agent's own authority to operate its bound Secret.
+  if (method === "codex_pat") {
+    const roleId = `agent-plugin-secret-${randomUUID()}`;
+    fixture.policy.identities.push({
+      id: agent.servicePrincipalId,
+      kind: "service_principal",
+      namespaceId: fixture.namespace.id,
+      agentId: agent.id,
+    });
+    fixture.policy.roles.push({
+      id: roleId,
+      namespaceId: fixture.namespace.id,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    fixture.policy.bindings.push({
+      id: `binding-${roleId}`,
+      namespaceId: fixture.namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId,
+      resourceKind: "secret",
+      resourceId: secret.id,
+    });
+  }
+  return { agent, secret, path: `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins` };
+}
+
+function trackSecretValueReads(secretDriver) {
+  const withValue = secretDriver.withValue.bind(secretDriver);
+  let reads = 0;
+  secretDriver.withValue = (secret, use) => {
+    reads++;
+    return withValue(secret, use);
+  };
+  return () => reads;
+}
+
 test("Plugin discovery uses the selected Driver through authenticated HTTP without creating resources", async (t) => {
   const fixture = await createFixture(t);
-  const catalog = await fixture.request("POST", fixture.path, { body: { accessToken } });
+  const catalog = await fixture.request("POST", fixture.path, {
+    body: { accessToken, q: "knowledge" },
+  });
   assert.equal(catalog.status, 200);
   assert.equal(catalog.headers.get("cache-control"), "no-store");
   assert.deepEqual(catalog.data, { plugins: [catalogEntry], nextCursor: "second-page" });
   const next = await fixture.request("POST", fixture.path, {
-    body: { accessToken, cursor: catalog.data.nextCursor },
+    body: { accessToken, q: "knowledge", cursor: catalog.data.nextCursor },
   });
   assert.equal(next.status, 200);
   assert.deepEqual(next.data, { plugins: [], nextCursor: null });
@@ -111,8 +166,8 @@ test("Plugin discovery uses the selected Driver through authenticated HTTP witho
   assert.equal(details.headers.get("cache-control"), "no-store");
   assert.deepEqual(details.data, pluginDetails);
   assert.deepEqual(fixture.calls, [
-    { operation: "list", input: { accessToken } },
-    { operation: "list", input: { accessToken, cursor: "second-page" } },
+    { operation: "list", input: { accessToken, q: "knowledge" } },
+    { operation: "list", input: { accessToken, q: "knowledge", cursor: "second-page" } },
     { operation: "details", input: { accessToken, pluginId: remoteId } },
   ]);
   assert.deepEqual(
@@ -182,6 +237,7 @@ test("Plugin discovery validates bounded credential and identity input before Dr
     ["", { accessToken: "" }],
     ["", { accessToken: "x".repeat(16385) }],
     ["", { accessToken, cursor: "x".repeat(8193) }],
+    ["", { accessToken, q: "x".repeat(1025) }],
     ["", { accessToken, accountId: "caller-supplied-authority" }],
     ["/details", { accessToken, pluginId: "" }],
     ["/details", { accessToken, pluginId: "x".repeat(257) }],
@@ -230,6 +286,373 @@ test("Plugin discovery reports unsupported selected Drivers without attempting r
     assert.equal(unsupported.body.error.code, "NOT_IMPLEMENTED");
   }
   assert.deepEqual(fixture.calls, []);
+});
+
+test("Saved Agent plugin discovery uses its current Secret for catalog and tools without exposing the token", async (t) => {
+  const fixture = await createFixture(t);
+  const { secret, path } = await createSavedAgent(fixture);
+
+  // Search and pagination preserve Agent-owned credential authority on every read.
+  const catalog = await fixture.request("POST", path, { body: { q: "linear" } });
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+  assert.deepEqual(catalog.data, { plugins: [catalogEntry], nextCursor: "second-page" });
+  const next = await fixture.request("POST", path, {
+    body: { cursor: catalog.data.nextCursor, q: "linear" },
+  });
+  assert.equal(next.status, 200, JSON.stringify(next.body));
+  assert.deepEqual(next.data, { plugins: [], nextCursor: null });
+  const details = await fixture.request("POST", `${path}/details`, {
+    body: { pluginId: remoteId },
+  });
+  assert.equal(details.status, 200, JSON.stringify(details.body));
+  assert.deepEqual(details.data, pluginDetails);
+  assert.deepEqual(fixture.calls, [
+    { operation: "list", input: { accessToken, q: "linear" } },
+    { operation: "list", input: { accessToken, cursor: "second-page", q: "linear" } },
+    { operation: "details", input: { accessToken, pluginId: remoteId } },
+  ]);
+
+  const rotatedToken = `at-plugin-discovery-rotated-${randomUUID()}`;
+  const rotated = await fixture.request(
+    "PATCH",
+    `/namespaces/${fixture.namespace.id}/secrets/${secret.id}`,
+    { body: { value: rotatedToken } },
+  );
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  const refreshed = await fixture.request("POST", path, { body: {} });
+  assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
+  assert.deepEqual(fixture.calls.at(-1), {
+    operation: "list",
+    input: { accessToken: rotatedToken },
+  });
+  assert.equal(
+    JSON.stringify([
+      catalog.body,
+      next.body,
+      details.body,
+      refreshed.body,
+      fixture.auditSink.events,
+    ]).includes(accessToken),
+    false,
+  );
+  assert.equal(
+    JSON.stringify([rotated.body, refreshed.body, fixture.auditSink.events]).includes(rotatedToken),
+    false,
+  );
+
+  // A stored-credential route must never accept caller-selected credential authority.
+  const selected = await fixture.request("POST", path, {
+    body: { accessToken: "at-caller-selected-credential" },
+  });
+  assert.equal(selected.status, 400);
+  assert.equal(fixture.calls.length, 4);
+});
+
+test("Saved Agent plugin discovery requires exact Agent and Secret grants before credential use", async (t) => {
+  const fixture = await createFixture(t);
+  const { agent, secret, path } = await createSavedAgent(fixture);
+  const secretReads = trackSecretValueReads(fixture.secretDriver);
+  const actor = await fixture.createAccountWithPolicy("saved-plugin-editor", () => {});
+  const session = await fixture.signIn(actor.credentials);
+  const agentRole = {
+    id: `agent-plugin-editor-${randomUUID()}`,
+    namespaceId: fixture.namespace.id,
+    permissions: [{ action: "update", resourceKind: "agent" }],
+  };
+  const secretRole = {
+    id: `agent-plugin-source-${randomUUID()}`,
+    namespaceId: fixture.namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  };
+  fixture.policy.roles.push(agentRole, secretRole);
+  fixture.policy.bindings.push({
+    id: `binding-${agentRole.id}`,
+    namespaceId: fixture.namespace.id,
+    subjectKind: "identity",
+    subjectId: actor.principal.id,
+    roleId: agentRole.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  const actorSecretBinding = {
+    id: `binding-${secretRole.id}`,
+    namespaceId: fixture.namespace.id,
+    subjectKind: "identity",
+    subjectId: actor.principal.id,
+    roleId: secretRole.id,
+    resourceKind: "secret",
+    resourceId: secret.id,
+  };
+  fixture.policy.bindings.push(actorSecretBinding);
+  const agentSecretBinding = fixture.policy.bindings.find(
+    (binding) =>
+      binding.subjectId === agent.servicePrincipalId &&
+      binding.resourceKind === "secret" &&
+      binding.resourceId === secret.id,
+  );
+  assert.ok(agentSecretBinding);
+
+  async function expectDenied(action, principalId, resource) {
+    for (const [suffix, body] of [
+      ["", {}],
+      ["/details", { pluginId: remoteId }],
+    ]) {
+      const result = await fixture.request("POST", `${path}${suffix}`, { session, body });
+      assert.equal(result.status, 403, JSON.stringify(result.body));
+      assert.equal(result.body.error.code, "FORBIDDEN");
+      const denial = fixture.auditSink.events.at(-1);
+      assert.equal(denial.kind, "authorization_denial");
+      assert.deepEqual(denial.authorization, { principalId, action, resource });
+    }
+    assert.deepEqual(fixture.calls, []);
+    assert.equal(secretReads(), 0);
+  }
+
+  // Each permission is checked independently before the stored PAT can reach the Plugin Driver.
+  await expectDenied("read", actor.principal.id, {
+    kind: "agent",
+    id: agent.id,
+    namespaceId: fixture.namespace.id,
+  });
+  agentRole.permissions = [{ action: "read", resourceKind: "agent" }];
+  await expectDenied("update", actor.principal.id, {
+    kind: "agent",
+    id: agent.id,
+    namespaceId: fixture.namespace.id,
+  });
+  agentRole.permissions.push({ action: "update", resourceKind: "agent" });
+  fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(actorSecretBinding), 1);
+  await expectDenied("operate", actor.principal.id, secret.ref);
+  fixture.policy.bindings.push(actorSecretBinding);
+  fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(agentSecretBinding), 1);
+  // The request audit attributes the failed subordinate grant to the authenticated actor.
+  await expectDenied("operate", actor.principal.id, secret.ref);
+  fixture.policy.bindings.push(agentSecretBinding);
+
+  const allowed = await fixture.request("POST", path, { session, body: {} });
+  assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
+  assert.deepEqual(fixture.calls, [{ operation: "list", input: { accessToken } }]);
+});
+
+test("Saved Agent plugin discovery rechecks Secret authority after the backend read", async (t) => {
+  const fixture = await createFixture(t);
+  const { agent, secret, path } = await createSavedAgent(fixture);
+  const bindingIndex = fixture.policy.bindings.findIndex(
+    (binding) =>
+      binding.subjectId === agent.servicePrincipalId &&
+      binding.resourceKind === "secret" &&
+      binding.resourceId === secret.id,
+  );
+  assert.notEqual(bindingIndex, -1);
+  const withValue = fixture.secretDriver.withValue.bind(fixture.secretDriver);
+  let secretReads = 0;
+  fixture.secretDriver.withValue = (source, use) =>
+    withValue(source, (value) => {
+      secretReads++;
+      // Revoke consumption after the backend yields the value, before discovery uses it.
+      fixture.policy.bindings.splice(bindingIndex, 1);
+      return use(value);
+    });
+
+  const denied = await fixture.request("POST", path, { body: {} });
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assert.equal(secretReads, 1);
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(
+    JSON.stringify([denied.body, fixture.auditSink.events]).includes(accessToken),
+    false,
+  );
+});
+
+test("Saved Agent plugin discovery denies unauthorized callers before reporting Driver support", async (t) => {
+  const fixture = await createFixture(t, { supported: false });
+  const { path } = await createSavedAgent(fixture);
+  const secretReads = trackSecretValueReads(fixture.secretDriver);
+  const actor = await fixture.createAccountWithPolicy("ungranted-plugin-editor", () => {});
+  const session = await fixture.signIn(actor.credentials);
+
+  for (const [suffix, body] of [
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
+  ]) {
+    const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+  }
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(secretReads(), 0);
+});
+
+test("Saved Agent plugin discovery rejects other Harness authentication without reading credentials", async (t) => {
+  const fixture = await createFixture(t);
+  const { path } = await createSavedAgent(fixture, "api_key");
+  const secretReads = trackSecretValueReads(fixture.secretDriver);
+  for (const [suffix, body] of [
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
+  ]) {
+    const unsupported = await fixture.request("POST", `${path}${suffix}`, { body });
+    assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));
+    assert.equal(unsupported.body.error.code, "NOT_IMPLEMENTED");
+  }
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(secretReads(), 0);
+});
+
+test("Saved Agent uses a credential-free curated catalog for an API-key Codex Agent", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, { secretDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Curated Agent plugins", { ready: true });
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Curated API-key Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  const secretReads = trackSecretValueReads(secretDriver);
+  const editor = await fixture.createAccountWithPolicy("curated-plugin-editor", (principal) => {
+    fixture.policy.roles.push({
+      id: "curated-plugin-editor-role",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "agent" },
+        { action: "update", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "curated-plugin-editor-binding",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "curated-plugin-editor-role",
+      resourceKind: "agent",
+      resourceId: agent.id,
+    });
+  });
+  const session = await fixture.signIn(editor.credentials);
+
+  const installation = await fixture.request("GET", "/installation", { session });
+  assert.equal(installation.status, 403, JSON.stringify(installation.body));
+  const capabilities = await fixture.request("GET", `${path}/capabilities`, { session });
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  assert.equal(capabilities.headers.get("cache-control"), "no-store");
+  assert.deepEqual(capabilities.data, {
+    driver: { id: driver.id, implementation: driver.implementation },
+    ...driver.policyCapabilities,
+    discoveryCredential: "none",
+  });
+  assert.equal(secretReads(), 0);
+
+  // Agent read/update suffices for static discovery; no Secret operate grant or model-key read is used.
+  const catalog = await fixture.request("POST", path, { session, body: {} });
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+  const linear = catalog.data.plugins.find(
+    (entry) => entry.id === "codex-plugin:linear@openai-curated-remote",
+  );
+  assert.equal(linear?.selectableWithoutTools, true);
+  const details = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: linear.remoteId },
+  });
+  assert.equal(details.status, 200, JSON.stringify(details.body));
+  assert.deepEqual(details.data, linear);
+  assert.equal(secretReads(), 0);
+
+  const embedded = await fixture.createAgent(
+    namespace.id,
+    "Embedded Agent",
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+    { executionMode: "embedded" },
+  );
+  const unsupported = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${embedded.id}/plugins`,
+    { body: {} },
+  );
+  assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));
+  assert.equal(secretReads(), 0);
+
+  const role = fixture.policy.roles.find((item) => item.id === "curated-plugin-editor-role");
+  role.permissions = [{ action: "read", resourceKind: "agent" }];
+  const denied = await fixture.request("POST", path, { session, body: {} });
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  const capabilitiesDenied = await fixture.request("GET", `${path}/capabilities`, { session });
+  assert.equal(capabilitiesDenied.status, 403, JSON.stringify(capabilitiesDenied.body));
+  role.permissions.push({ action: "update", resourceKind: "agent" });
+  const deletion = await fixture.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+  const deleting = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: linear.remoteId },
+  });
+  assert.equal(deleting.status, 409, JSON.stringify(deleting.body));
+  assert.equal(deleting.body.error.code, "AGENT_DELETING");
+  const capabilitiesDeleting = await fixture.request("GET", `${path}/capabilities`, { session });
+  assert.equal(capabilitiesDeleting.status, 409, JSON.stringify(capabilitiesDeleting.body));
+  assert.equal(capabilitiesDeleting.body.error.code, "AGENT_DELETING");
+  assert.equal(secretReads(), 0);
+});
+
+test("Saved Agent hosted capabilities need Agent edit grants but no Secret access", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, { secretDriver });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Hosted Agent policy", { ready: true });
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const secret = await fixture.createSecret(namespace.id, "Hosted Agent token", accessToken);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Hosted Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated", harnessAuth: { method: "codex_pat", source: secret.ref } },
+  );
+  const editor = await fixture.createAccountWithPolicy("hosted-policy-editor", (principal) => {
+    fixture.policy.roles.push({
+      id: "hosted-policy-editor-role",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "agent" },
+        { action: "update", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "hosted-policy-editor-binding",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "hosted-policy-editor-role",
+      resourceKind: "agent",
+      resourceId: agent.id,
+    });
+  });
+  const session = await fixture.signIn(editor.credentials);
+  const secretReads = trackSecretValueReads(secretDriver);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+
+  const installation = await fixture.request("GET", "/installation", { session });
+  assert.equal(installation.status, 403, JSON.stringify(installation.body));
+  const capabilities = await fixture.request("GET", `${path}/capabilities`, { session });
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  assert.deepEqual(capabilities.data, {
+    driver: { id: driver.id, implementation: driver.implementation },
+    ...driver.policyCapabilities,
+    discoveryCredential: "required",
+  });
+  assert.equal(secretReads(), 0);
+  const catalog = await fixture.request("POST", path, { session, body: {} });
+  assert.equal(catalog.status, 403, JSON.stringify(catalog.body));
+  assert.equal(secretReads(), 0);
 });
 
 test("Unsupported discovery still authorizes the exact selected Secret before capability errors", async (t) => {
@@ -343,6 +766,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   const rotated = "at-rotated-private-fixture";
   const originalFetch = globalThis.fetch;
   const credentials = [];
+  const catalogRequests = [];
   let echoCredential = false;
   const plugin = {
     id: "remote-fixture",
@@ -357,7 +781,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
       requires_local_executor: false,
       app_ids: ["fixture-app"],
       app_manifest: null,
-      skills: [],
+      skills: [{ name: "knowledge-workflow" }],
       mcp_servers: [],
     },
   };
@@ -382,7 +806,9 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
       });
     }
     assert.equal(init.headers["ChatGPT-Account-ID"], "account-fixture");
-    if (address.includes("plugins/list")) {
+    if (address.includes("plugins/list") || address.includes("plugins/search")) {
+      const request = new URL(address);
+      catalogRequests.push({ path: request.pathname, q: request.searchParams.get("q") });
       return Response.json({
         plugins: [
           {
@@ -411,22 +837,42 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     });
   });
 
-  const list = await fixture.request("POST", fixture.path, { body: { secretRef: secret.ref } });
+  const list = await fixture.request("POST", fixture.path, {
+    body: { secretRef: secret.ref, q: "fixture" },
+  });
   assert.equal(list.status, 200);
   assert.equal(list.data.plugins[0].remoteId, "remote-fixture");
+  assert.equal(list.data.plugins[0].available, true);
+  assert.deepEqual(catalogRequests, [{ path: "/backend-api/ps/plugins/search", q: "fixture" }]);
   const details = await fixture.request("POST", `${fixture.path}/details`, {
     body: { secretRef: secret.ref, pluginId: "remote-fixture" },
   });
   assert.equal(details.status, 200);
+  assert.equal(details.data.available, true);
   assert.equal(details.data.tools[0].id, "fixture-app/search");
   assert.ok(credentials.every((value) => value === accessToken));
+
+  // Skills must not prevent a discovered plugin from entering a real Agent revision.
+  const agent = await fixture.createAgent(
+    fixture.namespace.id,
+    "Knowledge agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const plugins = { [details.data.id]: { enabled: true } };
+  await fixture.updateAgent(fixture.namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    plugins,
+  });
+  const revision = await fixture.deployAgent(fixture.namespace.id, agent.id);
+  assert.deepEqual(revision.plugins.plugins, plugins);
 
   // A discovered policy must reach the raw native tool despite its renamed prefix.
   const artifact = codexRuntimeArtifact(
     {
       [details.data.id]: {
         enabled: true,
-        tools: { [details.data.tools[0].id]: { enabled: true, approval: "prompt" } },
+        tools: { [details.data.tools[0].id]: { enabled: true, approval: "all_actions" } },
       },
     },
     [
@@ -438,7 +884,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
             version: "1.0.0",
           },
           apps: [{ id: "fixture-app" }],
-          skills: [],
+          skills: [{ name: "knowledge-workflow" }],
           hooks: [],
           mcpServers: [],
         },
@@ -636,7 +1082,7 @@ test("Selected Secret backend failures suppress sensitive error details", async 
   );
 });
 
-test("Curated discovery admits Linear without provider I/O and saves its selection in a revision", async (t) => {
+test("Curated discovery admits plugins with skills without provider I/O and saves selections in a revision", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Curated plugins", { ready: true });
@@ -668,6 +1114,10 @@ test("Curated discovery admits Linear without provider I/O and saves its selecti
   assert.equal(linear.remoteId, "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c");
   assert.equal(linear.tools, null);
   assert.equal(linear.selectableWithoutTools, true);
+  const search = await fixture.request("POST", path, { body: { q: "  LiNeAr  " } });
+  assert.equal(search.status, 200);
+  assert.deepEqual(search.data.plugins, [linear]);
+  assert.equal(search.data.nextCursor, null);
   const details = await fixture.request("POST", `${path}/details`, {
     body: { pluginId: linear.remoteId },
   });
@@ -685,7 +1135,9 @@ test("Curated discovery admits Linear without provider I/O and saves its selecti
   const notion = page.data.plugins.find(
     (entry) => entry.id === "codex-plugin:notion@openai-curated-remote",
   );
-  assert.equal(notion?.available, false);
+  assert.ok(notion);
+  assert.notEqual(notion.available, false);
+  assert.equal(notion.selectableWithoutTools, true);
   assert.equal(
     (await fixture.request("POST", `${path}/details`, { body: { pluginId: "unknown" } })).status,
     503,
@@ -700,8 +1152,9 @@ test("Curated discovery admits Linear without provider I/O and saves its selecti
     { executionMode: "dedicated" },
   );
   const plugins = {
-    [linear.id]: { enabled: true, toolDefaults: { reviewer: "auto" } },
+    [linear.id]: { enabled: true, toolDefaults: { approval: "write_actions", reviewer: "human" } },
     [slack.id]: { enabled: true, toolDefaults: { reviewer: "auto" } },
+    [notion.id]: { enabled: true },
   };
   const updated = await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,

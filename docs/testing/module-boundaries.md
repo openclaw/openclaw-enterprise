@@ -10,8 +10,9 @@ pnpm analyze:modules --root tests/fixtures/module-boundaries --policy policy.jso
 The checked-in fixture policy demonstrates the command. To analyze another tree,
 provide its root and a policy using the schema below. Policy and exception file
 paths resolve relative to `--root`; absolute paths also work. Without `--root`,
-the command uses this repository. There is no default repository policy or
-mandatory module-boundary preflight in this tool.
+the command uses this repository. The analyzer requires an explicit policy;
+[repository dependency checks](repository-boundaries.md) select this repository's
+policy and explain its CI adoption.
 
 Prepare the [pinned workspace dependencies](README.md#requirements-and-credentials)
 first. The analyzer uses the JavaScript TypeScript compiler API through the

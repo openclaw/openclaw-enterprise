@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-25
-last_updated_session: 01a0d992-db83-7843-b40c-355c0f2c2b9a
+updated: 2026-09-26
+last_updated_session: authoring-run/6d7cf57f-03f3-4ea7-8694-38edd9f3c9c2
 ---
 
 # Bootstrap and Local Password Authentication Flow
@@ -45,7 +45,11 @@ graph TD
   Bootstrap -->|Any error| H["Exit unsuccessfully; preserve tracked artifacts for manual repair"]
   subgraph Request["Human controller request"]
     G --> J["Sign in and receive session cookie"]
-    J --> K["Resolve current IAM identity and exact authority"]
+    J --> N{"Unsafe session request?"}
+    N -->|Yes| O["Check console origin and Fetch Metadata"]
+    N -->|No| K["Resolve current IAM identity and exact authority"]
+    O -->|Trusted| K
+    O -->|Rejected| M
     K -->|Allowed| L["Run and audit OCC operation"]
     K -->|Invalid session or denied authority| M["Return 401 or 403"]
   end
@@ -130,6 +134,12 @@ revokes the session, and public signup is disabled.
 
 ### 4. Admit and authorize protected API calls
 
+`ControllerAdmissionVerifier.verifyControllerRequest` requires the configured console Origin for
+unsafe session requests before admission. A supplied `Sec-Fetch-Site` must be
+`same-origin`. Sign-out applies the same check before revoking the session.
+Explicit service API keys do not use the cookie origin check, and an invalid key
+cannot fall back to a cookie.
+
 `apps/controller/src/index.ts:createFastifyApp` validates the session, resolves
 its installation-owned issuer and user ID through the selected IAM Driver, and
 authorizes the exact resource through that same Driver. The Driver loads current
@@ -149,6 +159,8 @@ implicit permissions.
 
 ## Debugging and Verification
 
+- `node --test tests/integration/native-admin-access.test.mjs` covers trusted and
+  untrusted origins on session mutations and sign-out, plus service-key admission.
 - `node --test tests/integration/postgres-production-wireup.test.mjs` with
   `OCC_PRODUCTION_WIREUP_DATABASE_URL` proves actual bootstrap, protected random
   password/key delivery, human sign-in, service-key access, and no reissue on rerun.
@@ -190,6 +202,8 @@ implicit permissions.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-26 21:09: Trace origin checks for cookie-authenticated mutations and sign-out. (authoring-run/6d7cf57f-03f3-4ea7-8694-38edd9f3c9c2 - 849b2b24111fe237b12da5be1d4b411d3146cefb)
 
 - 2026-09-25 17:27: Trace noncredential session identity for Console lifetime invalidation in accompanying changes. (01a0d992-db83-7843-b40c-355c0f2c2b9a - 64ab72aed5c4926e4a2080ade91d785e531801a2)
 

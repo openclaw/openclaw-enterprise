@@ -225,6 +225,20 @@
       "when": 1787000000031,
       "tag": "0031_backend_terminology_compatibility",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1787000000032,
+      "tag": "0032_credential_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1787000000033,
+      "tag": "0033_agent_plugin_approvers",
+      "breakpoints": true
     }
   ]
 }

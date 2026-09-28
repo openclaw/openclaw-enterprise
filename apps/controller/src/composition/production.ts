@@ -11,6 +11,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import { createPostgresControllerAuth } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
+import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
@@ -42,6 +43,7 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly channelDirectoryProxyUrl?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
 }
 
@@ -55,6 +57,7 @@ export async function composeProduction(config: ProductionConfig) {
     configurationDriver,
     secretDriver,
     sandboxDriver,
+    credentialGatewayDriver,
     pluginDriver,
     repoDriver,
     createIAMDriver,
@@ -153,9 +156,21 @@ export async function composeProduction(config: ProductionConfig) {
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
+    if (config.channelDirectoryProxyUrl !== undefined) {
+      const channelDriver = new SlackChannelDriver(
+        globalThis.fetch,
+        config.channelDirectoryProxyUrl,
+      );
+      controller.registerDriver(channelDriver);
+      controller.selectDriver("channel", channelDriver.id);
+    }
     if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
+    }
+    if (credentialGatewayDriver !== undefined) {
+      controller.registerDriver(credentialGatewayDriver);
+      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);

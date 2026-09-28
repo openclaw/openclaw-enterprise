@@ -1278,13 +1278,19 @@ test(
     const [
       { Pool },
       { OCCPluginDriver },
+      { createControllerWorker },
+      { createDevelopmentComputeDriver },
       { PostgresPlatformState },
       { createTestConfigurationDriver },
+      { createBackendWorkerDrivers },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/drivers/plugin/index.ts"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../helpers/development.mjs"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../helpers/configuration-driver.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
     context.after(() => pool.end());
@@ -1333,8 +1339,9 @@ test(
     const initialPlugins = {
       "occ-plugin:diffs": {
         enabled: true,
-        toolDefaults: { enabled: false, approval: "approve" },
-        tools: { diffs: { enabled: true } },
+        approvers: [{ channel: "slack", id: "team:T123:user:U123" }],
+        toolDefaults: { enabled: false, approval: "none" },
+        tools: { diffs: { enabled: true, approvers: [] } },
       },
     };
     const malformedCreateAgentId = `agt_${randomUUID()}`;
@@ -1370,6 +1377,7 @@ test(
         name: `postgres-plugin-agent-${randomUUID()}`,
         configurationId: configuration.id,
         plugins: initialPlugins,
+        pluginApprovers: [],
       });
     });
     // An Agent mutation may share its caller's transaction, but the borrowed
@@ -1382,11 +1390,14 @@ test(
       view.agents.findAgent(namespace.id, agent.id),
     );
     assert.equal(persistedAgent.configurationId, configuration.id);
+    assert.deepEqual(persistedAgent.pluginApprovers, []);
 
-    const storedSelection = await pool.query("SELECT plugins FROM occ.agents WHERE id = $1", [
-      agent.id,
-    ]);
+    const storedSelection = await pool.query(
+      "SELECT plugins, plugin_approvers FROM occ.agents WHERE id = $1",
+      [agent.id],
+    );
     assert.deepEqual(storedSelection.rows[0].plugins, initialPlugins);
+    assert.deepEqual(storedSelection.rows[0].plugin_approvers, []);
     const stateBeforeFailure = await state.read((view) =>
       view.agents.findAgent(namespace.id, agent.id),
     );
@@ -1479,6 +1490,7 @@ test(
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       plugins: initialPlugins,
     });
+    assert.deepEqual(revision.pluginApprovers, []);
     assert.equal(Object.hasOwn(revision.plugins, "artifacts"), false);
     const omittedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
@@ -1486,20 +1498,27 @@ test(
       configurationId: replacementConfiguration.id,
     });
     assert.deepEqual(omittedPlugins.plugins, initialPlugins);
+    assert.deepEqual(omittedPlugins.pluginApprovers, []);
     const replacementPlugins = {
       "occ-plugin:diffs": {
         enabled: true,
-        toolDefaults: { approval: "native" },
-        tools: { diffs: { approval: "approve" } },
+        toolDefaults: { approval: "provider_default" },
+        tools: { diffs: { approval: "none" } },
       },
     };
+    const rawSlackApprovers = [
+      { channel: "slack", id: "U456" },
+      { channel: "slack", id: "W789" },
+    ];
     const replacedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
       agentId: agent.id,
       configurationId: replacementConfiguration.id,
       plugins: replacementPlugins,
+      pluginApprovers: rawSlackApprovers,
     });
     assert.deepEqual(replacedPlugins.plugins, replacementPlugins);
+    assert.deepEqual(replacedPlugins.pluginApprovers, rawSlackApprovers);
     const clearedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
       agentId: agent.id,
@@ -1507,19 +1526,102 @@ test(
       plugins: {},
     });
     assert.deepEqual(clearedPlugins.plugins, {});
+    assert.deepEqual(clearedPlugins.pluginApprovers, rawSlackApprovers);
 
     const [reloadedAgent, reloadedRevision] = await state.read(async (view) => [
       await view.agents.findAgent(namespace.id, agent.id),
       await view.revisions.findRevision(namespace.id, agent.id, revision.id),
     ]);
     assert.deepEqual(reloadedAgent.plugins, {});
+    assert.deepEqual(reloadedAgent.pluginApprovers, rawSlackApprovers);
     assert.deepEqual(reloadedRevision.plugins.plugins, initialPlugins);
+    assert.deepEqual(reloadedRevision.pluginApprovers, []);
 
     const durableRevision = await pool.query(
       "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
       [revision.id],
     );
     assert.deepEqual(durableRevision.rows[0].admitted_spec.plugins, revision.plugins);
+    assert.deepEqual(durableRevision.rows[0].admitted_spec.plugin_approvers, []);
+
+    const pluginFreeRevision = await controller.deployAgent(
+      principalId,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveHarness,
+    );
+    assert.equal(Object.hasOwn(pluginFreeRevision, "plugins"), false);
+    assert.deepEqual(pluginFreeRevision.pluginApprovers, rawSlackApprovers);
+
+    const durablePluginFreeRevision = await pool.query(
+      "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
+      [pluginFreeRevision.id],
+    );
+    assert.deepEqual(
+      durablePluginFreeRevision.rows[0].admitted_spec.plugin_approvers,
+      rawSlackApprovers,
+    );
+
+    const workerPool = new Pool({ connectionString: databaseUrl, max: 1 });
+    let worker;
+    let workerPoolClosed = false;
+    context.after(async () => {
+      if (workerPoolClosed) {
+        return;
+      }
+      if (worker === undefined) {
+        await workerPool.end();
+      } else {
+        await worker.stop();
+      }
+    });
+    const developmentCompute = createDevelopmentComputeDriver();
+    const observedRawApproverHandoffs = [];
+    const workerDrivers = createBackendWorkerDrivers(
+      {
+        ...developmentCompute,
+        async prepareRevision(candidate, deploymentContext) {
+          if (candidate.id === pluginFreeRevision.id) {
+            assert.deepEqual(candidate.pluginApprovers, rawSlackApprovers);
+            observedRawApproverHandoffs.push(candidate.pluginApprovers);
+          }
+          return developmentCompute.prepareRevision(candidate, deploymentContext);
+        },
+      },
+      [],
+      { secretDriver: harnessSecretDriver },
+    );
+    worker = createControllerWorker({
+      pool: workerPool,
+      pollIntervalMs: 20,
+      drivers: { ...workerDrivers, pluginDriver },
+      emit() {},
+    });
+    await worker.start();
+    await pollUntil("raw Slack approver AgentRevision deployment to reach Compute", async () => {
+      const work = await pool.query(
+        "SELECT state FROM occ.controller_work WHERE revision_id = $1",
+        [pluginFreeRevision.id],
+      );
+      assert.equal(work.rowCount, 1);
+      return work.rows[0].state === "succeeded" ? work.rows[0] : undefined;
+    });
+    await worker.stop();
+    workerPoolClosed = true;
+    worker = undefined;
+    assert.deepEqual(observedRawApproverHandoffs, [rawSlackApprovers]);
+
+    const clearedApprovers = await controller.updateAgent(principalId, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: replacementConfiguration.id,
+      pluginApprovers: null,
+    });
+    assert.equal(Object.hasOwn(clearedApprovers, "pluginApprovers"), false);
+    const storedApprovers = await pool.query(
+      "SELECT plugin_approvers FROM occ.agents WHERE id = $1",
+      [agent.id],
+    );
+    assert.equal(storedApprovers.rows[0].plugin_approvers, null);
 
     const malformedPlugins = {
       ...revision.plugins,

@@ -7,35 +7,38 @@ entrypoints:
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated Codex app-server: `codex app-server`.
 
+The image sets `NPM_CONFIG_UPDATE_NOTIFIER=false` so local npm commands do not
+start npm's background version check. This avoids unrelated network approval
+requests during commands such as `npm test`; package installation and explicit
+network requests still use the configured network policy.
+
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The reviewed `stock-codex-0.156.0-dependency-pin.patch` updates only Codex dependency
-versions and package integrities before the frozen install; it does not modify the Codex binary. Both
-Codex entrypoints use the same stock `0.156.0` installation.
+The selected upstream source pins Codex `0.158.0` in its package manifest and
+lockfile. Both Codex entrypoints use that same stock installation; no dependency
+version override or Codex binary patch is applied.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin includes saved-token reconnect after the setup code expires and
-[OpenClaw #159466](https://github.com/openclaw/openclaw/pull/159466), which recovers
-unopened Codex connections during Harness replacement. The build also applies
-`repository-broker-read-paths.patch` from
-[OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) to preserve the
-reviewed broker read-path configuration pending its upstream merge. This patch
-changes three OpenClaw files; it does not change the Codex binary. Its contents
-are packaged and its hash is recorded in `provenance.json#sourcePatches`.
-The commit and archive checksum below identify this unreleased source build.
+The source pin is an OpenClaw main commit, not a published OpenClaw release.
+Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
+an equivalent implementation is available upstream, the build applies its
+`readOnlyPaths` compatibility change as
+`openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
+filesystem profile required by the repository broker and selected plugins.
+The source archive and patch hashes identify the resulting custom build.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `b08e73f4426ef65aa88e18c4901b95d7ac11f0a0`                                                                   |
-| Source archive SHA-256                       | `dde567ccaa03d391d551452a6b17d992c6ef99ffeb1f19f5e1be4de7f2e3b407`                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.156.0`                                                                                                    |
+| OpenClaw source commit                       | `9190ad7c12667af435734d4944060effd6ad0a71`                                                                   |
+| Source archive SHA-256                       | `5393d25ac73b98030609fa40b2c2bc3f44c62a455660b7cc3f28371fc92dc851`                                           |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.158.0`                                                                                                    |
 
 The source's package version is `2026.9.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+hash, bridge patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled
@@ -76,7 +79,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/b08e73f4426ef65aa88e18c4901b95d7ac11f0a0/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/9190ad7c12667af435734d4944060effd6ad0a71/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
@@ -86,7 +89,7 @@ The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version. Alternate
 `NODE_BASE_IMAGE` values must provide Node.js 24.16 or newer within the 24 series.
 The Dedicated command and bundled plugin both resolve the same
-[Codex 0.156.0](https://github.com/openai/codex/releases/tag/rust-v0.156.0) installation.
+[Codex 0.158.0](https://github.com/openai/codex/releases/tag/rust-v0.158.0) installation.
 For multi-architecture builds, the frozen npm install selects the stock
 `@openai/codex-linux-x64` or `@openai/codex-linux-arm64` package for the target
 architecture. The image rebuilds `/opt/oce/runtime/contents.json` from
@@ -98,7 +101,7 @@ The OpenClaw bridge forwards the repository-bound Agent's stock
 `allow_local_binding = true` and `mode = "full"` settings; the
 [networking contract](../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines their scope and remaining controls.
-Update the reviewed dependency patch and compatibility assertion together when
+Update the upstream source selection and compatibility assertion together when
 changing that version. Run the compatibility
 check below against the resulting image. Provider model availability still
 requires a real model turn with the selected credential.
@@ -171,7 +174,7 @@ The smoke starts task-owned containers with the Docker Compute Driver gateway
 entrypoint, the Kubernetes Compute Driver gateway entrypoint, and the native
 Codex command execution path, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed runtime directories. The private broker endpoint smoke requires the
-reviewed Codex 0.156.0 seccomp profile above so the nested bubblewrap sandbox can
+reviewed Codex 0.158.0 seccomp profile above so the nested bubblewrap sandbox can
 start without broadening to an unconfined Docker seccomp profile.
 Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
 the bundled Codex and Slack plugins load without missing package dependencies,

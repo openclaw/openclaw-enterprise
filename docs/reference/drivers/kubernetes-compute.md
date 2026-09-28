@@ -4,6 +4,9 @@ The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
 or adopts a data-plane namespace for each tenant and creates an OpenClaw gateway
 for each deployed Agent. Dedicated Gateways run in a separate managed control-plane
 runtime namespace; embedded OpenClaw remains in the data plane.
+The experimental `executionCluster` configuration selects a second Kubernetes
+API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/two-cluster-local.md)
+before using it; cloud deployment and complete runtime acceptance remain pending.
 Kubernetes supports a managed model API key for both modes and a managed
 ChatGPT service-account credential for dedicated Codex only.
 
@@ -46,6 +49,8 @@ For detailed operator contracts, see:
 - Approved, digest-pinned gateway and Agent images.
 - Explicit container resource limits, namespace quotas, DNS settings, approved
   proxy clients, and `network.gatewayTrustedProxyCidrs` for gateway trust.
+  Native workspace initialization uses `resources.gateway`, including in dedicated
+  Harness Pods, because it loads the OpenClaw CLI.
 - For real gateways in either topology, an explicitly selected
   `runtime.gatewayStorageClassName` for a private disk supporting `10Gi`
   `ReadWriteOnce` filesystem claims. Use `local-path` in the disposable k3d
@@ -154,7 +159,7 @@ drivers:
         gatewayNodeSelector: { oce-role: control-plane }
         transportSecretPrefix: openclaw-agent-transport
         # Optional; first install this reviewed profile on every eligible node.
-        codexSeccompProfile: profiles/codex-0.156.0.json
+        codexSeccompProfile: profiles/codex-0.158.0.json
 ```
 
 This example shows only the Compute Driver portion of the Installation
@@ -258,6 +263,26 @@ failure. There are no plugin receipt ConfigMaps, Pod finalizers, failure latches
 or post-commit acknowledgment steps. This behavior does not mutate requested
 revision selections, uninstall account-wide plugins, or promise rollback.
 
+### Current runtime diagnostics
+
+Kubernetes Compute implements the optional deployment diagnostics contract. OCC
+authorizes the exact Agent and revision, then the Driver reads the owned
+runtime Pods through the Kubernetes apiserver Pod proxy. The private runtime
+endpoint returns bounded generic checks for the requested revision. The API needs
+Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
+Dedicated Gateways are read in their managed Gateway namespace, while Harnesses
+are read in the tenant namespace. The chart adds these read permissions to the
+unbound tenant API and Gateway observer roles; operators retain control of their
+namespace-local bindings.
+Missing Pods or unavailable private endpoints report unknown diagnostic checks
+instead of mutating deployment status. The Agent container currently returns no
+channel checks.
+
+The bundled gateway currently maps Slack channel status into configuration,
+authentication, and connectivity checks. These diagnostics do not include raw
+Slack responses, credential values, logs, or message text, and they do not post
+a message or run a model turn.
+
 See the [Harness execution topology flow](../../flows/harness-execution-topology.md)
 for additional execution details.
 
@@ -272,6 +297,9 @@ for additional execution details.
   workload readiness. Dedicated Codex Harness containers clear the plugin
   readiness marker at process start so a marker left in the Pod's temporary
   volume by a previous container attempt cannot make a restarted runtime ready.
+  Access-token login retries only native process timeouts, up to three 30-second
+  attempts. Credential refusals and model probes are not retried; exhausted
+  startup remains unready until an explicit restart.
   Native plugin startup, authentication, transport, and installation failures
   remain generic workload startup failures unless the Compute-owned runtime
   reports a verified current-startup warning for an admitted selected plugin.
