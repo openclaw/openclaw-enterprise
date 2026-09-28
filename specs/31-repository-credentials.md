@@ -5,7 +5,7 @@
 
 ## Decision
 
-An API-created ordinary Agent clones or fetches an approved repository, edits and tests, commits, pushes a branch, and creates a same-repository PR when explicitly assigned `git-full`. A separate credential process authenticates upstream requests. The Agent receives private gateway-bearer/client files and public trust material; GitHub App keys, JWTs, installation tokens and provider renewal secrets stay outside its workload.
+An API-created ordinary Agent clones or fetches an approved repository, edits and tests, commits, pushes a branch, and creates a same-repository PR when assigned `git-write` or `git-full`. A separate credential process authenticates upstream requests. The Agent receives private gateway-bearer/client files and public trust material; GitHub App keys, JWTs, installation tokens and provider renewal secrets stay outside its workload.
 
 Use **`RepoDriver extends Driver`**, capability **`repo`**, and **`GitHubRepoDriver`**, retaining `resolve`, `open`, `status`, `close` and the maintenance interval. The [platform contract][contract] adds no repository CRUD or public token-issuance API. Follow the established [Driver/Provider ownership][design].
 
@@ -15,13 +15,15 @@ Repository access is **team-first**: the current service uses GitHub App install
 
 The implemented consumer supports Kubernetes Compute, embedded OpenClaw, `api_key` Harness authentication, no SandboxDriver, and one worker/credential-service owner. Integration is opt-in; Agents without bindings retain their existing lifecycle. Unsupported topologies reject repository-bearing revisions. One configured GitHub App installation supports multiple approved repositories: an Agent selects at most **16 bindings**, each session fixing one repository, resolved grant and original absolute deadline. Registry policy is the Namespace ceiling; configuration changes cannot widen an active revision.
 
-| Profile                               | Exact permission ceiling and behavior                                                                      |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `git-read`                            | `metadata:read`, `contents:read`; clone/fetch/checkout; deny push discovery, push RPC and every API route. |
-| `git-write` — omitted-profile default | `metadata:read`, `contents:write`; Git writes under native repository rules; no API.                       |
-| `git-full` — explicit                 | Also `pull_requests:write`, `issues:write`; selected REST and GraphQL PR/issue/comment operations.         |
+Every profile requests `metadata:read`, `checks:read` and `statuses:read`.
 
-Every issuance explicitly selects one repository and the complete permission map. Missing permissions fail without widening or ambient-credential fallback. Reject obsolete `read-write`. `git-full` provides no branch-only or per-field GraphQL authorization: GitHub may also return permitted public information; every GraphQL POST is treated as a possible write. Administration, extra workflow permissions, SSH, LFS and additional-repository submodules are excluded.
+| Profile                               | Additional permissions and behavior                                                                                       |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `git-read`                            | `contents:read`, `issues:read`, `pull_requests:read`; clone/fetch and selected REST reads; deny Git push and REST writes. |
+| `git-write` — omitted-profile default | `contents:write`, `issues:read`, `pull_requests:write`; Git push and supported PR work.                                   |
+| `git-full` — explicit                 | `contents:write`, `issues:write`, `pull_requests:write`; Git push, supported PR work and ordinary issue management.       |
+
+Every issuance explicitly selects one repository and the complete permission map. Missing permissions fail without widening or ambient-credential fallback. Reject obsolete `read-write`. All profiles allow unfiltered, token-bounded GraphQL; selected REST routing does not filter GraphQL fields or operations. GitHub may also return permitted public information, and every GraphQL POST is treated as a possible write. Writable tokens can permit merges or ref changes subject to GitHub repository rules; no profile provides branch-only or per-field GraphQL authorization. Administration, extra workflow permissions, SSH, LFS and additional-repository submodules are excluded.
 
 The [reference][reference] owns exact profiles, registry limits, control protocol and client restrictions. The qualified API client is **`gh` 2.100.0**, using canonical `github.com` identity and verified gateway TLS on port 443. Routing is not network confinement. Bearer possession authorizes the session but proves neither workload origin nor the current human requester. Ordinary process/container/filesystem separation remains the trust assumption.
 
