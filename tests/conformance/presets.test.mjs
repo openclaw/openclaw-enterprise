@@ -51,6 +51,30 @@ test("preset variables produce typed launch values and native model keys without
   assert.equal(template.agent.name, "agent-{{ vars.name }}");
 });
 
+test("preset agent plugin approvers preserve inheritance, denial, and rendered identities", () => {
+  assert.equal(
+    Object.hasOwn(renderPresetTemplate({ agent: { name: "omitted" } }).agent, "pluginApprovers"),
+    false,
+  );
+  assert.deepEqual(renderPresetTemplate({ agent: { pluginApprovers: [] } }).agent, {
+    pluginApprovers: [],
+  });
+
+  const template = {
+    variables: {
+      team: { type: "string", default: "T123" },
+      user: { type: "string" },
+    },
+    agent: {
+      pluginApprovers: [{ channel: "slack", id: "team:{{ vars.team }}:user:{{ vars.user }}" }],
+    },
+  };
+  assert.deepEqual(renderPresetTemplate(template, { user: "U456" }).agent.pluginApprovers, [
+    { channel: "slack", id: "team:T123:user:U456" },
+  ]);
+  assert.deepEqual(normalizePresetTemplate(template, namespaceId), template);
+});
+
 test("preset workspace files render editable seed text and enforce create-time limits", () => {
   const template = {
     variables: {

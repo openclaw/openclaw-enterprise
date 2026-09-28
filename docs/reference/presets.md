@@ -135,6 +135,7 @@ is valid. Its optional fields are:
 | `agent.harnessAuth`            | Auth method default, credential binding, password variable token, or null; never stored credential bytes. |
 | `agent.initialWorkspaceFiles`  | Optional creation-time workspace contents keyed by supported filename.                                    |
 | `agent.plugins`                | Desired plugin selections and policies.                                                                   |
+| `agent.pluginApprovers`        | Agent-wide default plugin approvers copied into the editable draft.                                       |
 | `configuration.values`         | Native Agent Configuration JSON, including models, Harness settings, channels, and sandbox settings.      |
 | `configuration.secretBindings` | Bindings to Secrets in this Namespace.                                                                    |
 
@@ -143,6 +144,13 @@ contracts. Installation-owned Driver selection, generated identities, runtime
 state, and Agent revision IDs are not template settings. A supplied
 `configuration.values` replaces the console's starter JSON; it does not merge
 with it. Omitted settings use the form's normal defaults.
+
+`agent.pluginApprovers` uses the Agent default plugin approver semantics from
+[Agent Plugins](agent-plugins.md#slack-approver-users). Omit it to inherit
+the form default. Use an empty array to select no Slack approvers, or a
+list of channel user identities to prefill selected approvers. Variable tokens
+can appear inside those identity strings; the completed Agent request still
+validates the rendered approvers with the selected Plugin Driver.
 
 ## Workspace files
 

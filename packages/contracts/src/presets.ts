@@ -22,6 +22,7 @@ export type PresetLaunchSettings = Omit<PresetTemplate, "variables">;
 // Typed launch fields may contain string tokens until rendering and admission.
 export interface PresetAgentTemplate extends Readonly<Record<string, unknown>> {
   readonly initialWorkspaceFiles?: Readonly<Record<string, unknown>>;
+  readonly pluginApprovers?: ReadonlyArray<Readonly<{ channel: string; id: string }>>;
 }
 
 export interface PresetTemplate {
