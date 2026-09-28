@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-09-21"
-last_updated_session: "01a0c750-0c10-7492-97eb-f4124cded820"
+updated: "2026-09-28"
+last_updated_session: "01a0cf72-6985-7712-ba92-d8cc32470f24"
 ---
 
 # Agent Native Admin UI Flow
@@ -50,6 +50,9 @@ graph TD
   R -->|yes| T["Resolve current active revision and supported native config"]
   T --> U["OCC strips browser credentials and proxies HTTP to private gateway"]
   T -->|WebSocket with exact Origin| V["OCC proxies 101 upgrade with revision lease"]
+  U -->|HTML preview with sandbox routing enabled| W["Browser loads public shell from separate preview origin"]
+  W --> Z["Envoy sandbox listener routes to Agent sandbox port"]
+  Z --> AA["Native UI delivers HTML into runtime-isolated iframe"]
 ```
 
 ## Execution Trace
@@ -137,6 +140,22 @@ The API process intercepts `upgrade` before Fastify routing. It accepts only der
 
 The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each lease bounded to 5 seconds. Failed, denied, timed-out, or revision-changed lease checks close both sockets and preserve the IAM denial audit when authorization is the reason. An authorized reconnect uses the current active revision. Native chat does not renew the OCE session.
 
+### 8. Runtime renders HTML on a separate origin
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:gatewaySandboxConfiguration`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:reconcileGatewayRoute`
+
+With operator sandbox routing configured, preparation and activation render the
+Agent's stable preview origin and adjacent sandbox port in its native document.
+The worker reconciles its GET/HEAD route, public-shell SecurityPolicy and
+Agent-scoped backend ingress policy under the serving revision. A separate Helm listener admits only configured ingress
+peers, and the backend targets the sandbox port instead of the admin port.
+The preview domain is outside the shared session cookie scope. Native UI still
+reads private file content through its authenticated connection, then delivers
+it to the runtime's isolated iframe. The sandbox listener serves public shell
+and registered renderer assets; runtime CSP and nested frame isolation remain
+responsible for executing generated content. See the [routing contract](../reference/gateway-routing.md#public-preview-routing).
+
 ## Debugging and Verification
 
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to invalid native admin enablement, missing public origin, invalid Agent domain, invalid shared cookie parent domain, invalid Better Auth cookie scope, or insufficient auth secret material.
@@ -166,6 +185,8 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 16:20: Added the accompanying optional sandbox routing implementation and separate-origin preview flow. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 33a2528163d5bbff311bb685345e60aadb24a70a)
 
 - 2026-09-21 21:20: Distinguished authorized stopped Agents with no active revision from unavailable running deployments. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-21 21:17: Clarified the console's active-revision dependency message and its independence from the viewed configuration snapshot. (01a0c750-0c10-7492-97eb-f4124cded820 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)

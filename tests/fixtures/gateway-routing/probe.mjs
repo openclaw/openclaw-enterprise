@@ -289,6 +289,19 @@ async function assertNativeNodeRouteAuthentication({
 const input = await readInput();
 let result;
 switch (input.action) {
+  case "sandbox-preview":
+    result = await requestGatewayHello({
+      ...input,
+      onConnected: (client) =>
+        client.request(
+          "canvas.document.preview",
+          {
+            html: "<!doctype html><html><body><h1>OCE preview integration</h1></body></html>",
+          },
+          { timeoutMs: 15_000 },
+        ),
+    });
+    break;
   case "certificate":
     result = await certificate(input.url);
     break;

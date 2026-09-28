@@ -21,6 +21,7 @@ test(
       const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
         gatewayPassword: true,
         workspaceGateway: true,
+        sandboxPreview: true,
       });
       const connection = await topology.workspaceGateway.connect(topology);
       // Trusted-proxy routing must retain password-authenticated direct loopback access.
@@ -57,6 +58,7 @@ test(
       );
       await connection.assertSecurity();
       await connection.assertNodeAuthentication();
+      await connection.assertSandboxPreview();
       context.diagnostic(
         "Compute enrollment observed native pairing and reconnect; missing attachment upload support failed readiness. Forged proxy identity and operator escalation were denied.",
       );
@@ -95,6 +97,7 @@ test(
       await assertRoutedWorkspaceFileReads(topology, proof.files);
       await assertRoutedWorkspaceModelTurn(topology, connection, proof.marker);
       await connection.assertNodeAuthentication();
+      await connection.assertSandboxPreview();
       context.diagnostic(
         "Gateway Pod UID changed; unchanged route served four persisted files and a second fresh model session.",
       );
@@ -110,6 +113,9 @@ test(
           ["httproute", topology.gatewayServiceName],
           ["httproute", `${topology.gatewayServiceName}-node`],
           ["securitypolicy", `${topology.gatewayServiceName}-node`],
+          ["httproute", `${topology.gatewayServiceName}-sandbox`],
+          ["securitypolicy", `${topology.gatewayServiceName}-sandbox`],
+          ["networkpolicy", `${topology.gatewayServiceName}-sandbox`],
         ]) {
           const remaining = await kubectl(
             "get",

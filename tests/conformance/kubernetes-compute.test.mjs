@@ -1482,6 +1482,85 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   }
 });
 
+test("sandbox routing keeps generated HTML off the administrative origin and backend", () => {
+  const driver = createKubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      gatewayRouting: {
+        ...gatewayRouting,
+        sandbox: { domain: "previews.example.test", publicPort: 9443 },
+      },
+    }),
+  );
+  const revision = routedRevision(driver);
+  const document = driver.gatewaySandboxConfiguration(revision, revision.configuration);
+  const origin = new URL(document.mcp.apps.sandboxOrigin);
+  assert.equal(origin.protocol, "https:");
+  assert.equal(origin.port, "9443");
+  assert(origin.hostname.endsWith(".previews.example.test"));
+  assert.notEqual(origin.hostname, gatewayRouting.hostname);
+  assert.deepEqual(document.gateway, revision.configuration.gateway);
+  const embeddedConfiguration = {
+    ...revision.configuration,
+    mcp: { apps: { sandboxOrigin: "https://embedded-preview.example.test" } },
+  };
+  assert.deepEqual(
+    driver.gatewaySandboxConfiguration(
+      { ...revision, harness: { ...revision.harness, mode: "embedded" } },
+      embeddedConfiguration,
+    ),
+    embeddedConfiguration,
+    "dedicated preview routing must not replace an Embedded Agent's native configuration",
+  );
+  assert.equal(
+    driver.gatewaySandboxConfiguration({ ...revision, id: "replacement" }, revision.configuration)
+      .mcp.apps.sandboxOrigin,
+    origin.origin,
+  );
+  assert.notEqual(
+    driver.gatewaySandboxConfiguration(
+      { ...revision, agentId: "another-agent" },
+      revision.configuration,
+    ).mcp.apps.sandboxOrigin,
+    origin.origin,
+  );
+  assert.throws(
+    () =>
+      driver.gatewaySandboxConfiguration(revision, {
+        ...revision.configuration,
+        mcp: { apps: { sandboxOrigin: "https://trusted-admin.example.test" } },
+      }),
+    /Compute-owned sandbox route/,
+  );
+  const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
+  const namespace = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+  const service = driver.service("gateway-test", ownership, namespace, {});
+  const route = driver.gatewayRoute(revision, ownership, namespace, service, "sandbox");
+  assert.deepEqual(route.spec.hostnames, [origin.hostname]);
+  assert.equal(route.spec.parentRefs[0].sectionName, "sandbox");
+  const rule = route.spec.rules[0];
+  assert.deepEqual(
+    rule.matches.map((match) => match.method),
+    ["GET", "HEAD"],
+  );
+  assert.equal(rule.backendRefs[0].port, document.mcp.apps.sandboxPort);
+  assert.notEqual(
+    rule.backendRefs[0].port,
+    driver.gatewayRoute(revision, ownership, namespace, service).spec.rules[0].backendRefs[0].port,
+  );
+  const headers = rule.filters[0].requestHeaderModifier;
+  for (const name of ["cookie", "authorization", "x-api-key", "x-occ-identity"]) {
+    assert(headers.remove.includes(name));
+    assert(!headers.set.some((header) => header.name === name));
+  }
+  assert(service.spec.ports.some((port) => port.port === rule.backendRefs[0].port));
+  const disabled = createKubernetesComputeDriver(routedOptions());
+  assert.equal(
+    disabled.gatewayRoute(revision, ownership, namespace, service, "sandbox"),
+    undefined,
+  );
+});
+
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -6433,6 +6512,11 @@ for (const cutover of ["already deployed", "during Deployment deletion", "during
         },
         async deleteNamespacedDeployment({ body }) {
           remove("Deployment", body);
+        },
+      },
+      networking: {
+        async readNamespacedNetworkPolicy() {
+          return read("NetworkPolicy");
         },
       },
       objects: {

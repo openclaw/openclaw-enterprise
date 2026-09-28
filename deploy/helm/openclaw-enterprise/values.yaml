@@ -114,6 +114,15 @@ gatewayRouting:
   remoteNodeCidrs: []
   tenantGatewayPort: 8080
   envoyHttpsTargetPort: 10443
+  sandbox:
+    enabled: false
+    # A dedicated wildcard domain outside the OCE session cookie domain.
+    domain: ""
+    # Existing wildcard HTTPS certificate in the release namespace.
+    tlsSecretName: ""
+    # Separate listener: public ingress must not admit the private admin port.
+    listenerPort: 8443
+    ingressPeers: []
   issuerRef:
     # Empty bootstraps a namespaced SelfSigned root and CA Issuer for the leaf.
     name: ""

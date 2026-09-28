@@ -1451,7 +1451,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     await ensureEnvoyGatewayControllers(gatewayHelpers);
     workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
       context,
-      { platformNamespace },
+      { platformNamespace, sandboxPreview: options.sandboxPreview },
       gatewayHelpers,
     );
   }

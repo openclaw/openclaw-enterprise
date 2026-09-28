@@ -251,6 +251,32 @@ intercepted before the normal API not-found path, resolved to the exact Agent
 represented by the host, and checked against the current active revision before
 the API proxies HTTP or WebSocket traffic through the private route.
 
+## Public preview routing
+
+Optional `gatewayRouting.sandbox` in Kubernetes Compute adds a stable per-Agent
+HTTPS origin for dedicated execution under the operator's preview domain.
+Embedded OpenClaw retains its native preview configuration. Compute owns the native
+`sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
+The sandbox backend port is `network.gatewayPort + 1`, so the main port must be
+below 65535. The selected runtime must support the dedicated sandbox listener.
+
+The Agent's `-sandbox` HTTPRoute attaches only to the shared Gateway's separate
+`sandbox` listener. It accepts GET and HEAD and forwards to the sandbox port,
+never the administrative Gateway port. Cookies, authorization, API keys and
+native identity headers are removed. A route-specific SecurityPolicy permits
+public shell and renderer assets without granting the OCC administrative identity.
+The runtime owns shell CSP, resource allowlisting and iframe isolation; private
+HTML content still arrives through the authenticated native UI.
+
+Sandbox routes and policies follow serving revision ownership. Replacing a Pod
+keeps the origin stable; stopping or deleting its serving revision removes the
+route before its policy. Retiring an older revision preserves newer resources.
+An Agent-owned ingress policy and the Envoy egress policy admit the additional
+backend port only when configured. Agent deployment reconciles preview ingress
+even when the tenant namespace already exists. Helm requires explicit ingress peers on the separate listener,
+a wildcard certificate, and a domain outside the shared session cookie scope.
+See [HTML preview setup](../guides/deploy/native-admin.md#enable-html-previews).
+
 ## Source and verification
 
 - [Helm values](../../deploy/helm/openclaw-enterprise/values.yaml),

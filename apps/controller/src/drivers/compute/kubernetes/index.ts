@@ -157,6 +157,10 @@ export interface KubernetesGatewayRoutingOptions {
   readonly gatewayNamespace: string;
   readonly envoyNamespace: string;
   readonly envoyHttpsTargetPort?: number;
+  readonly sandbox?: {
+    readonly domain: string;
+    readonly publicPort?: number;
+  };
 }
 
 export type {
@@ -1159,6 +1163,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
           gatewayNamespace: { type: "string" },
           envoyNamespace: { type: "string" },
           envoyHttpsTargetPort: { type: "integer", minimum: 1, maximum: 65535 },
+          sandbox: {
+            type: "object",
+            required: ["domain"],
+            additionalProperties: false,
+            properties: {
+              domain: { type: "string" },
+              publicPort: { type: "integer", minimum: 1, maximum: 65535 },
+            },
+          },
         },
       },
     },
@@ -1434,6 +1447,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Gateway routing Envoy namespace",
       );
       validatePort(routing.envoyHttpsTargetPort ?? 10443, "Envoy HTTPS target port");
+      if (routing.sandbox !== undefined) {
+        validateDnsHostname(required(routing.sandbox.domain, "Sandbox domain"), "Sandbox domain");
+        validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
+        validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
+        if (options.runtime === undefined) {
+          throw new ConfigurationFailure("Sandbox routing requires a native Gateway runtime.");
+        }
+      }
     }
   }
 
@@ -2423,8 +2444,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       repositoryConsumer?.role !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration =
-      this.kubernetesGatewayConfigurationDocument(nativeConfiguration);
+    const admittedNativeConfiguration = this.gatewaySandboxConfiguration(
+      revision,
+      this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+    );
     const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     const embedded = revision.harness.mode === "embedded";
     if (
@@ -3065,8 +3088,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       repositoryConsumer?.role !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
-    const admittedNativeConfiguration =
-      this.kubernetesGatewayConfigurationDocument(nativeConfiguration);
+    const admittedNativeConfiguration = this.gatewaySandboxConfiguration(
+      revision,
+      this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+    );
     const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
     if (this.options.runtime === undefined) {
       return;
@@ -3611,7 +3636,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     namespace = this.gatewayNamespace(revision, namespace);
     const name = `gateway-${sha256Hex(revision.agentId, 12)}`;
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    await this.deleteGatewayNodeRoute(name, ownership, namespace, revision.id);
+    await this.deleteGatewayUnauthenticatedRoutes(name, ownership, namespace, revision.id);
     await this.deleteGatewayRoute(name, ownership, namespace, revision.id);
     await this.deleteNamedRuntimeResources(name, ownership, namespace, revision.id);
     await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway");
@@ -3699,7 +3724,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const name = `gateway-${sha256Hex(revision.agentId, 12)}`;
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const gateway = await this.getOwned("Deployment", name, namespace, ownership);
-    await this.deleteGatewayNodeRoute(name, ownership, namespace, revision.id);
+    await this.deleteGatewayUnauthenticatedRoutes(name, ownership, namespace, revision.id);
     if (gateway === undefined) {
       // A missing Deployment can mean stop or external loss. Preserve shared Agent resources
       // whenever surviving route or Service evidence belongs to a newer revision.
@@ -3887,18 +3912,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.deleteGatewayRoutingResource("HTTPRoute", name, ownership, namespace, revisionId);
   }
 
-  private async deleteGatewayNodeRoute(
+  private async deleteGatewayUnauthenticatedRoutes(
     gatewayName: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
     revisionId: string,
   ): Promise<void> {
     // Remove the endpoint before deleting its route-specific authentication policy.
-    const name = `${gatewayName}-node`;
-    await this.deleteGatewayRoutingResource("HTTPRoute", name, ownership, namespace, revisionId);
+    for (const suffix of ["node", "sandbox"]) {
+      const name = `${gatewayName}-${suffix}`;
+      await this.deleteGatewayRoutingResource("HTTPRoute", name, ownership, namespace, revisionId);
+      await this.deleteGatewayRoutingResource(
+        "SecurityPolicy",
+        name,
+        ownership,
+        namespace,
+        revisionId,
+      );
+    }
     await this.deleteGatewayRoutingResource(
-      "SecurityPolicy",
-      name,
+      "NetworkPolicy",
+      `${gatewayName}-sandbox`,
       ownership,
       namespace,
       revisionId,
@@ -3906,7 +3940,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   private async deleteGatewayRoutingResource(
-    kind: "HTTPRoute" | "SecurityPolicy",
+    kind: "HTTPRoute" | "SecurityPolicy" | "NetworkPolicy",
     name: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
@@ -3935,8 +3969,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       () =>
         clients.objects.delete(
           {
-            apiVersion:
-              kind === "HTTPRoute" ? GATEWAY_API_VERSION : GATEWAY_SECURITY_POLICY_API_VERSION,
+            apiVersion: {
+              HTTPRoute: GATEWAY_API_VERSION,
+              SecurityPolicy: GATEWAY_SECURITY_POLICY_API_VERSION,
+              NetworkPolicy: "networking.k8s.io/v1",
+            }[kind],
             kind,
             metadata: { name, namespace: namespace.name },
           },
@@ -6403,6 +6440,54 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
+  private gatewaySandboxOrigin(revision: AgentRevision): string | undefined {
+    const sandbox = this.options.gatewayRouting?.sandbox;
+    if (sandbox === undefined || revision.harness.mode !== "dedicated") {
+      return undefined;
+    }
+    const host = `agent-${sha256Hex(`${revision.namespaceId}/${revision.agentId}`, 32)}.${sandbox.domain}`;
+    const port = sandbox.publicPort ?? 443;
+    return `https://${host}${port === 443 ? "" : `:${port}`}`;
+  }
+
+  private gatewaySandboxConfiguration(
+    revision: AgentRevision,
+    configuration: OpenClawConfigurationDocument,
+  ): OpenClawConfigurationDocument {
+    const origin = this.gatewaySandboxOrigin(revision);
+    if (origin === undefined) {
+      return configuration;
+    }
+    const mcp = asRecord(configuration.mcp);
+    const apps = asRecord(mcp?.apps);
+    if (
+      (configuration.mcp !== undefined && mcp === undefined) ||
+      (mcp?.apps !== undefined && apps === undefined)
+    ) {
+      throw new ConfigurationFailure("Native MCP Apps configuration must be an object.");
+    }
+    const port = this.options.network.gatewayPort + 1;
+    if (
+      (apps?.sandboxOrigin !== undefined && apps.sandboxOrigin !== origin) ||
+      (apps?.sandboxPort !== undefined && apps.sandboxPort !== port)
+    ) {
+      throw new ConfigurationFailure(
+        "Native sandbox origin and port must match the Compute-owned sandbox route.",
+      );
+    }
+    return {
+      ...configuration,
+      mcp: {
+        ...(mcp as Record<string, OpenClawConfigurationValue> | undefined),
+        apps: {
+          ...(apps as Record<string, OpenClawConfigurationValue> | undefined),
+          sandboxOrigin: origin,
+          sandboxPort: port,
+        },
+      },
+    };
+  }
+
   private kubernetesGatewayConfigurationDocument(
     configuration: OpenClawConfigurationDocument,
   ): OpenClawConfigurationDocument {
@@ -6765,13 +6850,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
     service: ManagedKubernetesObject<"Service">,
-    access: "operator" | "node" = "operator",
+    access: "operator" | "node" | "sandbox" = "operator",
   ): ManagedKubernetesObject<"HTTPRoute"> | undefined {
     const routing = this.options.gatewayRouting;
     if (routing === undefined) {
       return undefined;
     }
-    const name = `${this.gatewayRouteName(revision.agentId)}${access === "node" ? "-node" : ""}`;
+    const sandboxOrigin = this.gatewaySandboxOrigin(revision);
+    if (access === "sandbox" && sandboxOrigin === undefined) {
+      return undefined;
+    }
+    const name = `${this.gatewayRouteName(revision.agentId)}${access === "operator" ? "" : `-${access}`}`;
     const route = this.manifest(GATEWAY_API_VERSION, "HTTPRoute", name, ownership, namespace);
     return {
       ...route,
@@ -6798,55 +6887,85 @@ export class KubernetesComputeDriver implements ComputeDriver {
             }),
       },
       spec: {
-        hostnames: [this.gatewayRoutingHostname(routing)],
+        hostnames: [
+          access === "sandbox"
+            ? new URL(sandboxOrigin!).hostname
+            : this.gatewayRoutingHostname(routing),
+        ],
         parentRefs: [
           {
             group: "gateway.networking.k8s.io",
             kind: "Gateway",
             namespace: routing.gatewayNamespace,
             name: routing.gatewayName,
-            sectionName: GATEWAY_LISTENER_SECTION,
+            sectionName: access === "sandbox" ? "sandbox" : GATEWAY_LISTENER_SECTION,
           },
         ],
-        rules: [
-          {
-            matches: [
-              {
-                path: {
-                  type: "Exact",
-                  value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
-                },
-              },
-            ],
-            filters: [
-              {
-                type: "URLRewrite",
-                urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
-              },
-              this.gatewayRouteHeaderFilter(access),
-            ],
-            backendRefs: [this.gatewayRouteBackendRef(service)],
-          },
-          ...(access === "operator"
+        rules:
+          access === "sandbox"
             ? [
                 {
+                  // This origin serves only upstream's public shell/renderer listener.
+                  // It must never fall through to the administrative Gateway backend.
+                  matches: ["GET", "HEAD"].map((method) => ({
+                    method,
+                    path: { type: "PathPrefix", value: "/" },
+                  })),
+                  filters: [this.gatewayRouteHeaderFilter("node")],
+                  backendRefs: [
+                    {
+                      group: "",
+                      kind: "Service",
+                      name: service.metadata.name,
+                      port: this.options.network.gatewayPort + 1,
+                    },
+                  ],
+                },
+              ]
+            : [
+                {
                   matches: [
-                    { path: { type: "PathPrefix", value: `${this.gatewayRoutePath(revision)}/` } },
+                    {
+                      path: {
+                        type: "Exact",
+                        value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : ""}`,
+                      },
+                    },
                   ],
                   filters: [
                     {
                       type: "URLRewrite",
-                      urlRewrite: {
-                        path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
-                      },
+                      urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
                     },
                     this.gatewayRouteHeaderFilter(access),
                   ],
                   backendRefs: [this.gatewayRouteBackendRef(service)],
                 },
-              ]
-            : []),
-        ],
+                ...(access === "operator"
+                  ? [
+                      {
+                        matches: [
+                          {
+                            path: {
+                              type: "PathPrefix",
+                              value: `${this.gatewayRoutePath(revision)}/`,
+                            },
+                          },
+                        ],
+                        filters: [
+                          {
+                            type: "URLRewrite",
+                            urlRewrite: {
+                              path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+                            },
+                          },
+                          this.gatewayRouteHeaderFilter(access),
+                        ],
+                        backendRefs: [this.gatewayRouteBackendRef(service)],
+                      },
+                    ]
+                  : []),
+              ],
       },
     };
   }
@@ -6886,34 +7005,73 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!Number.isSafeInteger(gatewayRevision) || gatewayRevision < 1) {
       throw new OwnershipFailure("The serving Gateway has an invalid revision.");
     }
-    const nodeRoute = this.gatewayRoute(revision, ownership, namespace, service, "node");
-    if (nodeRoute === undefined) {
-      return;
-    }
-    nodeRoute.metadata.annotations = {
-      ...nodeRoute.metadata.annotations,
-      [AGENT_REVISION_ID_ANNOTATION]: gatewayRevisionId,
-      [AGENT_REVISION_ANNOTATION]: String(gatewayRevision),
-    };
-    // Envoy Gateway v1.6.7 replaces the entire inherited SecurityPolicy at a
-    // more specific route scope. Native device credentials authenticate this
-    // route; the Harness never receives the shared administrative API key.
-    const policy: ManagedKubernetesObject<"SecurityPolicy"> = {
-      apiVersion: GATEWAY_SECURITY_POLICY_API_VERSION,
-      kind: "SecurityPolicy",
-      metadata: { ...nodeRoute.metadata },
-      spec: {
-        targetRefs: [
+    for (const access of ["node", "sandbox"] as const) {
+      const publicRoute = this.gatewayRoute(revision, ownership, namespace, service, access);
+      if (publicRoute === undefined) {
+        continue;
+      }
+      publicRoute.metadata.annotations = {
+        ...publicRoute.metadata.annotations,
+        [AGENT_REVISION_ID_ANNOTATION]: gatewayRevisionId,
+        [AGENT_REVISION_ANNOTATION]: String(gatewayRevision),
+      };
+      // Envoy Gateway v1.6.7 replaces the entire inherited SecurityPolicy at a
+      // more specific route scope. Nodes authenticate with native device credentials;
+      // sandbox routes serve only public shell assets on a separate listener.
+      const policy: ManagedKubernetesObject<"SecurityPolicy"> = {
+        apiVersion: GATEWAY_SECURITY_POLICY_API_VERSION,
+        kind: "SecurityPolicy",
+        metadata: { ...publicRoute.metadata },
+        spec: {
+          targetRefs: [
+            {
+              group: "gateway.networking.k8s.io",
+              kind: "HTTPRoute",
+              name: publicRoute.metadata.name,
+            },
+          ],
+        },
+      };
+      if (access === "sandbox") {
+        const routing = this.options.gatewayRouting;
+        // Preview access belongs to the Agent lifecycle, including enabling it
+        // after the tenant namespace has already been provisioned.
+        await this.reconcile(
           {
-            group: "gateway.networking.k8s.io",
-            kind: "HTTPRoute",
-            name: nodeRoute.metadata.name,
+            apiVersion: "networking.k8s.io/v1",
+            kind: "NetworkPolicy",
+            metadata: { ...publicRoute.metadata },
+            spec: {
+              podSelector: {
+                matchLabels: {
+                  "openclaw.dev/agent": revision.agentId,
+                  "openclaw.dev/workload-role": "gateway",
+                },
+              },
+              policyTypes: ["Ingress"],
+              ingress: [
+                {
+                  from: [
+                    this.peer({
+                      namespace: routing.envoyNamespace,
+                      podLabels: {
+                        "gateway.envoyproxy.io/owning-gateway-namespace": routing.gatewayNamespace,
+                        "gateway.envoyproxy.io/owning-gateway-name": routing.gatewayName,
+                      },
+                    }),
+                  ],
+                  ports: [{ protocol: "TCP", port: this.options.network.gatewayPort + 1 }],
+                },
+              ],
+            },
           },
-        ],
-      },
-    };
-    await this.reconcile(policy, ownership, namespace);
-    await this.reconcile(nodeRoute, ownership, namespace);
+          ownership,
+          namespace,
+        );
+      }
+      await this.reconcile(policy, ownership, namespace);
+      await this.reconcile(publicRoute, ownership, namespace);
+    }
   }
 
   private codexRepositoryBrokerNetworkPolicy(
@@ -8649,6 +8807,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 ...(variables.length === 0 ? {} : { env: variables }),
                 ports: [
                   { containerPort: port, name: role === "agent" && runtime ? "websocket" : "http" },
+                  ...(role === "gateway" && this.options.gatewayRouting?.sandbox !== undefined
+                    ? [{ containerPort: this.options.network.gatewayPort + 1, name: "sandbox" }]
+                    : []),
                   ...(needsPrivateStatus
                     ? [{ containerPort: PLUGIN_RUNTIME_STATUS_PORT, name: "plugin-status" }]
                     : []),
@@ -8733,6 +8894,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   name: "plugin-status",
                   port: PLUGIN_RUNTIME_STATUS_PORT,
                   targetPort: PLUGIN_RUNTIME_STATUS_PORT,
+                },
+              ]
+            : []),
+          ...(!runtimeAgentService && this.options.gatewayRouting?.sandbox !== undefined
+            ? [
+                {
+                  name: "sandbox",
+                  port: this.options.network.gatewayPort + 1,
+                  targetPort: this.options.network.gatewayPort + 1,
                 },
               ]
             : []),
