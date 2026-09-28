@@ -10,7 +10,8 @@ COPY packages/iam/package.json packages/iam/package.json
 COPY packages/occ/package.json packages/occ/package.json
 COPY packages/utils/package.json packages/utils/package.json
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
-    corepack pnpm install --frozen-lockfile --ignore-scripts
+    corepack pnpm install --frozen-lockfile --ignore-scripts --store-dir=/tmp/pnpm-store \
+    && rm -rf /tmp/pnpm-store
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages packages
 COPY apps/controller apps/controller
@@ -35,12 +36,14 @@ RUN --mount=type=secret,id=build-ca,required=false \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 FROM openclaw-source AS openclaw-build
+# Keep package-store downloads out of retained layers; installed files remain.
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store; \
+    rm -rf /tmp/pnpm-store
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
 # separate when a plugin and core require different versions.
 RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
@@ -54,11 +57,12 @@ RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
-    pnpm install --frozen-lockfile --prod \
+    pnpm install --frozen-lockfile --prod --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
       --config.supportedArchitectures.libc=glibc; \
-    node scripts/docker/verify-fs-safe-native.mjs --package-root /source --mode require
+    node scripts/docker/verify-fs-safe-native.mjs --package-root /source --mode require; \
+    rm -rf /tmp/pnpm-store
 
 FROM openclaw-build AS openclaw-build-output
 RUN rm -rf node_modules ui/node_modules \
@@ -135,16 +139,6 @@ RUN --mount=type=secret,id=build-ca,required=false \
     /usr/bin/git --version; \
     /usr/local/bin/gh --version | grep '^gh version 2.100.0 '
 
-COPY --from=repository-client-build /build/.build/repository-credentials/client/package.json /opt/oce/repository-credentials/package.json
-COPY --from=repository-client-build /build/.build/repository-credentials/client/dist /opt/oce/repository-credentials/dist
-COPY deploy/runtime/bin /opt/oce/repository-credentials/bin
-RUN chmod -R a+rX /opt/oce/repository-credentials \
-    && chmod 0555 /opt/oce/repository-credentials/bin/gh \
-    && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js \
-    && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js \
-    && test -x /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks/pre-push \
-    && /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
-
 COPY --from=openclaw-runtime-assets /out/provenance.json /opt/oce/runtime/provenance.json
 # Driver entrypoints resolve ws from /app; reuse the pinned OpenClaw dependency.
 RUN --mount=type=bind,from=openclaw-runtime-assets,source=/out,target=/runtime-package \
@@ -183,5 +177,15 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && test "$(codex --version)" = "codex-cli ${OPENAI_CODEX_VERSION}" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json
+
+COPY --from=repository-client-build /build/.build/repository-credentials/client/package.json /opt/oce/repository-credentials/package.json
+COPY --from=repository-client-build /build/.build/repository-credentials/client/dist /opt/oce/repository-credentials/dist
+COPY deploy/runtime/bin /opt/oce/repository-credentials/bin
+RUN chmod -R a+rX /opt/oce/repository-credentials \
+    && chmod 0555 /opt/oce/repository-credentials/bin/gh \
+    && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js \
+    && test -f /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js \
+    && test -x /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/hooks/pre-push \
+    && /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 
 USER node

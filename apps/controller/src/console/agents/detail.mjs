@@ -266,7 +266,6 @@ export async function renderAgentDetail(context) {
     header,
     identity,
     ...deploymentStatus,
-    stop,
     renderNativeAdminAccess(context, path),
     selector,
     tabs,
@@ -1056,7 +1055,7 @@ export async function renderAgentDetail(context) {
     return container;
   }
 
-  view.append(deletion);
+  view.append(stop, deletion);
   context.setTabNavigation((next) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const nextTab = tabsForSelection.includes(next.searchParams.get("tab"))

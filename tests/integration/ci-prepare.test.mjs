@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   codexBwrapAdditionalSyscalls,
   deriveCodexBwrapProfile,
@@ -572,6 +573,22 @@ test("repository platform preparation binds runtime clients, an owned gateway an
   const commands = await fixtureImageCommands(t, "success", "repository-credentials-platform");
   const prepared = commands.prepare();
   assert.equal(prepared.status, 0, prepared.stderr);
+  for (const phase of [
+    "postgres-start",
+    "k3d-create",
+    "runtime-image-build",
+    "platform-fixture-build",
+    "image-archive-save",
+    "image-archive-import",
+    "platform-image-import",
+  ]) {
+    assert.match(
+      prepared.stderr,
+      new RegExp(
+        `\\[ci-timing\\] lane=repository-credentials-platform phase=${phase} duration_ms=\\d+`,
+      ),
+    );
+  }
   const state = JSON.parse(await readFile(commands.statePath, "utf8"));
   const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
   assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM, "1");
@@ -676,9 +693,7 @@ test("installed repository preparation requires explicit authorization and prote
 });
 
 test("ordinary CI groups require platform proof and exclude installed live repository writes", async () => {
-  const manifest = JSON.parse(
-    await readFile(join(repositoryRoot, "scripts/ci/test-suites.json"), "utf8"),
-  );
+  const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
   for (const name of ["ci", "full"]) {
     assert.ok(manifest.groups[name].includes("repository-credentials-platform"));
     assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));

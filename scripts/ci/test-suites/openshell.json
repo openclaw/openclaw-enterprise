@@ -1,0 +1,39 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_OPENSHELL_SECRET_PROJECTION",
+    "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+    "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+    "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+    "OCC_TEST_OPENSHELL_HELM",
+    "OCC_TEST_OPENSHELL_HELM_CHART",
+    "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+  ],
+  "env": {
+    "OCC_TEST_OPENSHELL_K3D_REAL": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "requiresPreparedStateForFile": true,
+    "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+    "immutableOptionalEnvImages": [
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+      "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+      "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE"
+    ]
+  },
+  "files": [
+    {
+      "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      "expectedTests": ["OpenShell enforces the selected Secret projection contract"]
+    }
+  ]
+}

@@ -336,22 +336,6 @@ export function installFixture(scenario, evidence) {
       if (resource === "presets/pre_00000000-0000-4000-8000-000000000001" && method === "GET") {
         return response(preset);
       }
-      if (resource === "agents/models" && method === "POST") {
-        return response(
-          scenario.emptyModels
-            ? []
-            : [
-                {
-                  id: `${body.authMethod === "codex_pat" ? "codex" : body.provider}-story-model`,
-                  name: `${body.authMethod === "codex_pat" ? "Codex" : body.provider} demo model`,
-                },
-                {
-                  id: `${body.authMethod === "codex_pat" ? "codex" : body.provider}-story-model-small`,
-                  name: `${body.authMethod === "codex_pat" ? "Codex" : body.provider} smaller demo model`,
-                },
-              ],
-        );
-      }
       if (resource === "configurations" && method === "POST") {
         const saved = {
           ...body,

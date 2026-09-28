@@ -1,0 +1,27 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_IMAGE",
+    "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
+  ],
+  "env": {
+    "OCC_TEST_KUBERNETES_CONFIGURATION": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "requiresPreparedStateForFile": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
+      "expectedTests": [
+        "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
+        "real OCC creates concurrent Namespace Agents and durably associates revisions with their owner",
+        "independent PostgreSQL API and worker provision isolated Namespaces, activate admitted revisions, and tombstone deletion",
+        "PostgreSQL API and worker preserve immutable deployments, stable identities, and tenant isolation"
+      ]
+    }
+  ]
+}

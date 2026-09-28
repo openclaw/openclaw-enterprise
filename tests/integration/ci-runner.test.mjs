@@ -64,7 +64,7 @@ async function writePrepare(root) {
   );
 }
 
-test("run uses prepareFile env per file and records real named pass accounting", async (t) => {
+test("run resolves lane documents relative to the manifest and preserves ordered case accounting", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/lane.jsonl");
   const resultsPath = join(root, "results/baseline.json");
@@ -92,32 +92,31 @@ test("run uses prepareFile env per file and records real named pass accounting",
       "",
     ].join("\n"),
   );
-  await writeJson(join(root, "manifest.json"), {
-    version: 1,
-    lanes: {
-      baseline: {
-        files: [
-          {
-            path: "tests/integration/first.test.mjs",
-            expectedTests: ["first file sees scoped env"],
-          },
-          {
-            path: "tests/integration/second.test.mjs",
-            expectedTests: ["second file does not inherit scoped env"],
-          },
-        ],
+  // Lane documents follow the manifest, but test paths still follow --root.
+  await mkdir(join(root, "manifests/lanes"), { recursive: true });
+  await writeJson(join(root, "manifests/lanes/baseline.json"), {
+    files: [
+      {
+        path: "tests/integration/first.test.mjs",
+        expectedTests: ["first file sees scoped env"],
       },
-    },
-    groups: {
-      ci: ["baseline"],
-    },
+      {
+        path: "tests/integration/second.test.mjs",
+        expectedTests: ["second file does not inherit scoped env"],
+      },
+    ],
+  });
+  await writeJson(join(root, "manifests/suites.json"), {
+    version: 1,
+    lanes: { baseline: "./lanes/baseline.json" },
+    groups: { ci: ["baseline"] },
   });
 
   const result = run(root, [
     "run",
     "baseline",
     "--manifest",
-    "manifest.json",
+    "manifests/suites.json",
     "--root",
     root,
     "--state",
@@ -132,7 +131,16 @@ test("run uses prepareFile env per file and records real named pass accounting",
   assert.equal(summary.status, "passed");
   assert.equal(summary.counts.passed, 2);
   assert.equal(summary.counts.skipped, 0);
+  assert.deepEqual(
+    summary.files.map((file) => file.path),
+    ["tests/integration/first.test.mjs", "tests/integration/second.test.mjs"],
+  );
   assert.equal(summary.files[0].cleanup.status, "passed");
+  assert.ok(
+    summary.files.every(
+      (file) => Number.isInteger(file.wallDurationMs) && file.wallDurationMs >= 0,
+    ),
+  );
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
 });
 
@@ -1012,6 +1020,20 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     assert.equal(rejected.status, "failed");
     assert.equal(rejected.error.diagnostic, undefined);
   }
+});
+
+test("audit fails when a referenced lane cannot be loaded", async (t) => {
+  const root = await fixture(t);
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { missing: "./missing-lane.json" },
+    groups: { ci: ["missing"] },
+  });
+
+  const missing = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /ENOENT.*missing-lane\.json/);
+  assert.equal(missing.stdout, "");
 });
 
 test("audit rejects obsolete manifest selectors", async (t) => {

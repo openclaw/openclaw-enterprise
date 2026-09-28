@@ -42,21 +42,16 @@ does not make that link available.
    Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
    workspace, open **Service accounts**, and create a token with Codex scope.
    The fields show `sk-…` and `at-…` hints; prefixes do not select the method.
-   Enter the credential to show model controls. **Load models** queries the
-   selected provider and lets you choose the gateway's default model; no model
-   is preselected. Choose a text-generation model compatible with your runtime.
-   If the list is empty or unavailable, retry or select **Enter model ID manually**.
+   Choose a model from the starter list or select **Enter model ID manually**.
+   The list appears before credential entry, with no preselected model.
+   It is intentionally hardcoded pending a future discovery iteration; confirm
+   your credential and runtime support your choice.
    The form writes the corresponding native model configuration. Credentials
    remain separate from Configuration JSON.
-4. Review the generated Configuration JSON. Changing selections updates model and
-   runtime entries while preserving unrelated edits; **Reset template** replaces
-   your edits. Confirm your Installation
-   has access to the chosen model. Primary and fallback models must use the same
-   supported provider and Harness.
-   Starter templates omit gateway authentication; Kubernetes Compute renders
-   trusted-proxy settings from the Installation's
-   [operator-managed proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
-   Native admin UI still needs its [explicit opt-in configuration](../../guides/deploy/native-admin.md).
+4. Confirm your Installation has access to the chosen model. Primary and fallback
+   models must use the same supported provider and Harness. For custom settings,
+   open **Advanced settings**. Selection changes preserve unrelated JSON edits;
+   **Reset template** replaces them.
 5. Optional: under **Repository access**, select up to 16 repositories approved
    for this Namespace. Select one authorization level shared by every chosen
    repository. Kubernetes supports Codex (Dedicated) or OpenClaw (Embedded),
@@ -66,32 +61,28 @@ does not make that link available.
 
 6. If you need Slack, use OpenAI with the **Codex** harness and use its channel card. Each token
    menu lets you select a readable Namespace Secret or **Create new Secret...**.
-   The modal prefills the binding key and masks the value you enter. Creating a
-   Secret stores it immediately, even if you later cancel Agent creation.
+   Creating a Secret stores it immediately, even if you later cancel Agent creation.
    **Apply channel settings** stages settings and bindings into the form;
    cancelling the drawer discards its selections.
    Channel settings, plugin entries, and selected Secret bindings are saved with
    the Configuration when you select **Create Agent**. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
-7. Review **Workspace files**. Each field contains its rendered OpenClaw default.
+7. Optionally open **Advanced settings** to review Configuration JSON, Secret bindings,
+   plugin selections, and **Workspace files**. Each field contains its rendered OpenClaw default.
    Edit any of the four files, keep the text to submit that default, or clear a
    field to create an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
-8. Select **Create Agent**. For supported Dedicated runtimes, the provisioning
-   request contains inline Configuration, saved Secret references, Agent inputs
-   repository selections and workspace files. Console follows the returned job while the worker
-   creates the Configuration and Agent, provisions runtime credentials and
-   submits the first deployment. It waits for deployment activation and opens Workspace files for the returned revision. For
+8. Select **Create Agent**. For supported Dedicated runtimes, Console follows provisioning as the worker
+   saves the selected settings, creates the Agent and runtime credentials, and
+   submits deployment. After activation it opens that revision's Workspace files. For
    ordinary create paths, the Console saves the Configuration first and opens a
    draft Agent on **New revision** with no workload yet. After deployment, use
    the [live workspace editor](../console.md#edit-workspace-files). Pending
    inputs have no update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
 Credentials are masked and stored as Namespace Secrets, never Configuration JSON,
-Agent responses, or browser storage. Provisioning receives references; its worker
-creates the Configuration, Agent, exact Secret grants, runtime credentials, and
-first revision. Ordinary draft creation uses separate browser requests and requires
-IAM administration permission.
+Agent responses, or browser storage. Ordinary draft creation requires IAM
+administration permission to grant access to those Secrets.
 
 Presets retain their authentication binding. API-key and Service Accounts Presets
 fix the provider, including JSON edits; saved service account tokens also fix Codex.
@@ -143,10 +134,16 @@ save response requires checking existing Namespace Secrets before starting again
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
 Repository discovery is independent of model authentication. The Console submits
-opaque references and never requests GitHub App or token configuration. **Reader**
-allows reads, **Contributor** adds pushes and PR work, and **Collaborator** adds
-issue management; their configuration values are `git-read`, `git-write`, and
-`git-full`. Writable choices warn that token-bounded GraphQL permits merges and
+opaque references and never requests GitHub App or token configuration. Choose
+**Read-only** (`git-read`) or **Contributor** (`git-full`), which includes pushes,
+pull requests, and issue creation and management. **Customize access** lets you
+turn off issue management (`git-write`) when that profile is approved. Push and
+pull request permissions are bundled together. The control is disabled when the
+selected repositories do not share both writable profiles; its explanation states
+whether issue management is required or unavailable. The selected permissions
+remain visible when the pane is closed. Changing repositories never silently
+upgrades a customized grant; an unavailable selection must be chosen again.
+The pane also explains that token-bounded GraphQL permits merges and
 ref changes; native push allowlists do not constrain API writes. Repository
 administration and workflow permissions remain excluded. See
 [access levels](../repository-credentials/access-levels.md) for exact permissions.

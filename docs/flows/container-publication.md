@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-09-24
-last_updated_session: codex/01a0d171-59c4-7b42-95ab-4050d18eab79
+last_updated_session: public-pr/348
 ---
 
 # Container publication flow
@@ -53,8 +53,8 @@ also checks the main-only environment branch policy. No-push preparation has no 
 permission or protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` runs once per image. It
-registers ARM64 QEMU support and asks Buildx for `linux/amd64,linux/arm64`, with
-provenance disabled, in a single OCI archive. The approved Node base index must
+registers ARM64 QEMU support and builds `linux/amd64` and `linux/arm64`
+separately with provenance disabled, then assembles a single OCI archive. The approved Node base index must
 provide both platforms. The controller and runtime use their existing recipes.
 `deploy/runtime/Dockerfile:openclaw-source` downloads the pinned public OpenClaw
 source archive, rejects a SHA-256 mismatch, installs its frozen dependency graph,
@@ -68,17 +68,33 @@ Matching bundled plugins replace
 independently installed plugin packages; the Dedicated Codex executable remains
 separately pinned. See the [runtime recipe](../../deploy/runtime/README.md) for
 source identity and installed-image checks.
-Before starting the runtime build,
-`scripts/ci/repository-platform-headroom.mjs:main` verifies it is running on the
-Ubuntu 24 GitHub-hosted runner and removes fixed, unused Android, language SDK,
-and non-Node tool-cache directories. The helper rejects symlinks, mounts, and
-unexpected paths, then requires 36 GiB free and logs capacity before and after
-cleanup. This makes room for both source-build dependency graphs before OCI
-export; local and self-hosted runners are rejected. Controller preparation does
-not use this cleanup.
+Runtime preparation uses the existing `blacksmith-8vcpu-ubuntu-2404` runner,
+also used by repository-platform CI, for the disk capacity needed by both
+architectures' source-build layers and the OCI export. The standard GitHub runner
+exhausted disk even after unused toolchains were removed. Controller preparation
+uses `ubuntu-24.04`. The repository must retain access to the Blacksmith runner
+label; container preparation does not delete preinstalled SDKs. The hosted-runner
+cleanup helper remains available to its existing CI callers and is not used on
+this runner.
 
-After OCI export, the job prunes only its dedicated Buildx builder's cache so
-the cache and unpacked smoke images do not exhaust the runner's disk together.
+Before installing QEMU, the job mounts `binfmt_misc` on the host so emulator
+registrations survive the installer container. It then runs ARM64 Node from the
+pinned base image and asserts its architecture before starting the build. BuildKit
+can emulate builds itself, so a successful cross-build alone does not establish
+that Docker can execute the resulting ARM64 image.
+
+BuildKit runs one build step at a time to avoid overlapping dependency-install
+peaks. Each runtime dependency-install stage removes its temporary pnpm store
+in the same layer; installed dependencies and frozen lockfiles remain unchanged.
+
+Each image job exports amd64 to an OCI directory, prunes only its dedicated
+Buildx builder's cache, then repeats for arm64. This keeps one architecture's
+build snapshots on disk at a time, alongside the earlier compressed export.
+`scripts/ci/container-release.mjs:assemble` checks each action's output digest,
+blob sizes and hashes, and platform configuration before linking both sets of
+blobs into one OCI layout. It writes one multi-platform index and archive, then
+removes the temporary layouts. The existing smoke and seal steps consume that
+archive and its new index digest. No registry is involved in assembly.
 
 ### 2. Verify and execute both platform variants
 
@@ -89,11 +105,12 @@ config must agree with the index's platform; missing, duplicate, unsupported, or
 corrupt entries stop preparation.
 
 `scripts/ci/container-release.mjs:smoke` binds the archive's root digest to the
-Buildx output, then uses Skopeo's explicit platform selection to load one variant
+assembly output, then uses Skopeo's explicit platform selection to load one variant
 at a time. Docker's loaded config ID must match the selected index entry before
 the existing controller or runtime startup suite runs against that ID. AMD64 runs
-natively and ARM64 under QEMU. The ARM64 invocation scales smoke command and
-probe deadlines by six; native deadlines and all outcome assertions stay unchanged.
+natively and ARM64 under QEMU. The ARM64 invocation selects an emulation timeout
+multiplier of six for timeout-aware commands; explicit unscaled test limits retain
+their own deadlines. Native deadlines and all outcome assertions stay unchanged.
 Both must pass, and the archive hash must remain
 unchanged. A failure prevents sealing and artifact upload for that image.
 After each successful platform smoke, the loaded image tag is removed before
@@ -151,7 +168,15 @@ not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
 
 ## Changelog
 
+- 2026-09-24 04:45: Keep host emulator registrations mounted and execute an ARM64 container before building. (public-pr/348 - 467bcc83)
+- 2026-09-24 03:50: Use the existing Blacksmith runner for runtime preparation after GitHub-hosted builds exhausted disk; keep both platforms and all smoke checks. (public-pr/348 - ee6a5a3d)
+- 2026-09-24 05:30: Retain the updated main source and manual-only publication gate while applying sequential platform assembly. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - b3469cc4)
+
 - 2026-09-24 04:30: Return Enterprise container builds to reviewed manual dispatch and update the runtime source to OpenClaw `2765f7a3341b8be4835afacbff3d04c6e3c3c79b` with its verified archive checksum. (codex/01a0d171-59c4-7b42-95ab-4050d18eab79 - 0224b638)
+
+- 2026-09-24 04:03: Export architectures sequentially, release build snapshots between them, and assemble validated OCI blobs before startup checks. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - bac4602c)
+
+- 2026-09-24 03:01: Limit concurrent BuildKit steps and remove temporary pnpm stores before committing dependency layers. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 1a126137)
 
 - 2026-09-24 00:30: Reclaim unused hosted Android SDK space before the runtime source build, retaining both platforms and all startup checks. (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - ae96345b)
 

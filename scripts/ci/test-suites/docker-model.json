@@ -1,0 +1,29 @@
+{
+  "requiredEnv": [
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_DOCKER_RUNTIME_IMAGE",
+    "NODE_BASE_IMAGE",
+    "OCC_TEST_OTEL_LOGS_JSONL"
+  ],
+  "env": {
+    "OCC_TEST_DOCKER_COMPUTE_REAL": "1",
+    "OCC_TEST_OTEL_LOGS": "1"
+  },
+  "prepare": {
+    "requiresPreparedStateForFile": true,
+    "requireEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL", "NODE_BASE_IMAGE"],
+    "nodeBaseImage": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/docker-compute-real.test.mjs",
+      "expectedTests": [
+        "Docker Compose cleanup preserves the selected engine and removes volumes only when requested",
+        "Docker Compose development drives Docker Compute networks, containers, auth, cleanup, and real model turns",
+        "Docker embedded workspace setup guards first runtime and preserves files across container replacement",
+        "Docker dedicated workspace setup guards first runtime and preserves files across container replacement"
+      ]
+    }
+  ]
+}

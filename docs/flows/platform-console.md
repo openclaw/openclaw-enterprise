@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-23
-last_updated_session: 01a0d150-104a-71a3-9e56-6c5e3ee510ea
+updated: 2026-09-24
+last_updated_session: public-pr/348
 ---
 
 # Platform console request flow
@@ -158,17 +158,17 @@ writes. Saved service account tokens lock Codex; operator-managed credentials
 lock OpenClaw across provider changes. Installation Provider discovery is hidden. The [creation reference](../reference/console/create-and-deploy.md)
 owns permissions and partial-save recovery.
 
-The form starts with native JSON, optional plugins, and no model.
-`POST /namespaces/:namespaceId/agents/models` reaches
-`OpenClawController.discoverAgentModels`, which authorizes Namespace Agent creation
-and calls Compute outside a state transaction. `compute/model-discovery.ts` uses
-fixed provider URLs, bounded responses and pagination, and returns IDs/labels.
-`authMethod` selects API-key or service-account discovery; OpenAI API-key results
-exclude valid `shutdown_date` values on or before today (UTC). Discovery writes
-nothing. Empty/error results allow manual entry; credential/provider/method
-changes invalidate pending results. Model and key edits preserve provider transport
-and Codex plugin settings. Provider or Harness changes regenerate those entries
-while preserving unrelated JSON; reset restores the selected starter.
+Advanced settings holds JSON and plugins; no model is selected initially.
+Binding edits refresh channel settings, preserving unrelated bindings when applying
+Slack. Invalid binding JSON blocks channel editing.
+`create.mjs:MODEL_CHOICES` supplies hardcoded provider choices before credential
+entry, without discovery or account-access verification. Manual entry remains available;
+Presets retain their model and authentication. Credential edits
+preserve model selection. Provider or authentication-method changes reset it.
+Model edits preserve provider transport and Codex plugin settings. Provider or
+Harness changes regenerate those entries while preserving unrelated JSON;
+reset restores the selected starter. The adjacent TODO tracks
+catalog refresh and credential-aware discovery.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication from Installation trust; Presets replace
@@ -181,14 +181,14 @@ discards selections but retains Secrets already created in the Namespace.
 Pending grants accumulate across drawer applications.
 
 `GET /namespaces/:namespaceId/agents/repository-options` discovers approved choices.
-The Console submits opaque references and an explicit common profile. Only
+Read-only and Contributor submit approved profiles; customization disables issues. Only
 `503 REPOSITORY_OPTIONS_UNAVAILABLE` permits a fresh draft without bindings;
 it never enables provisioning. Other failures block submission until retry succeeds.
 
 For supported Dedicated runtimes with successful repository discovery, submission
 sends the inline Configuration, selected repository bindings and ordinary Secret references to the [provisioning API](agent-provisioning.md).
-Console polls the accepted job before an Agent exists, then opens the returned
-Agent revision. The worker creates resources and exact Secret grants before
+Console polls the job, then opens the returned revision.
+The worker creates resources and exact Secret grants before
 admitting deployment; Console does not duplicate those grants.
 
 Ordinary draft creation posts `{kind: "agent", values, secretBindings}` to
@@ -315,6 +315,8 @@ uncertain response disables replay until refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-24 06:19: Replace Console model discovery with an intentional static starter list and preserve manual entry. (01a0d20c-dc1b-7d22-a965-60b9c244b29d - 24ecb94b)
 
 - 2026-09-23 21:41: Preserve edited Codex plugin settings across model and key changes. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - b8f23be17de4a4b077dab8d6b90b4add1f9146cb)
 

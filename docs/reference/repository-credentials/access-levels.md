@@ -3,37 +3,39 @@
 Choose the least access the Agent needs. Each binding selects one level for one
 repository; Namespace policy determines which levels are available.
 
-| Level        | Configuration value | Contents | Pull requests | Issues | Intended work                                       |
-| ------------ | ------------------- | -------- | ------------- | ------ | --------------------------------------------------- |
-| Reader       | `git-read`          | Read     | Read          | Read   | Clone/fetch code; inspect issues, PRs and checks    |
-| Contributor  | `git-write`         | Write    | Write         | Read   | Reader work, plus pushes and PR creation/discussion |
-| Collaborator | `git-full`          | Write    | Write         | Write  | Contributor work, plus ordinary issue management    |
+| Console choice          | Configuration value | Contents | Pull requests | Issues | Intended work                                          |
+| ----------------------- | ------------------- | -------- | ------------- | ------ | ------------------------------------------------------ |
+| Read-only               | `git-read`          | Read     | Read          | Read   | Clone/fetch code; inspect issues, PRs and checks       |
+| Contributor, issues off | `git-write`         | Write    | Write         | Read   | Read-only work, plus pushes and PR creation/discussion |
+| Contributor             | `git-full`          | Write    | Write         | Write  | Pushes, PR work, and ordinary issue management         |
 
 Every level also requests `metadata: read`, `checks: read` and `statuses: read`.
 These columns and shared permissions form the complete token permission map;
 OCE requests one numeric repository ID and rejects a different returned grant.
 App permissions must be approved on the installation before use.
 
-In Agent bindings, omitting `profile` selects **Contributor**. This includes PR and read API
+In Agent bindings, omitting `profile` selects **`git-write`** (Contributor with issue management off). This includes PR and read API
 permissions; it is not the former Git-only write grant. Existing profile values
 are unchanged, but the immutable grant fingerprint includes the permission
 contract. A revision admitted under a different contract cannot silently acquire
-the new authority. The Console requires an explicit choice.
+the new authority. The Console requires an explicit choice. Its Contributor choice defaults to
+`git-full` when approved. **Customize access** can select `git-write`; only
+profiles shared by all selected repositories are available.
 
 ## API and branch boundaries
 
-Reader admits selected REST reads and GraphQL with a read-only installation
-token. It refuses Git push and REST writes. Contributor adds supported PR writes;
-Collaborator adds ordinary issue writes. GitHub shares some PR/issue comment
+Read-only admits selected REST reads and GraphQL with a read-only installation
+token. It refuses Git push and REST writes. `git-write` adds supported PR writes;
+`git-full` adds ordinary issue writes. GitHub shares some PR/issue comment
 endpoints, so comment authorization also depends on the provider's token check.
 
 All three levels admit unfiltered GraphQL. GitHub enforces the token's repository
 and permission grant; OCE does not inspect fields, mutations or node IDs.
 GraphQL can also return independently public information. Every GraphQL POST
-retains possible-write accounting, including Reader requests, and uncertain
+retains possible-write accounting, including Read-only requests, and uncertain
 mutations are never automatically replayed.
 
-**Contributor and Collaborator are not “open PRs but never merge” roles.**
+**Contributor access, with or without issues, can permit merges.**
 Contents write plus GraphQL can permit merges and ref changes subject to
 GitHub's repository rules. Use enforced rulesets or branch protection for
 protected destinations, without granting the App a bypass. The optional

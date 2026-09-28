@@ -1,20 +1,20 @@
 export const repositoryProfiles = Object.freeze([
   Object.freeze({
     id: "git-read",
-    label: "Reader",
+    label: "Read-only",
     help: "Read code, issues, pull requests, and checks. No writes.",
     writes: false,
   }),
   Object.freeze({
     id: "git-write",
-    label: "Contributor",
+    label: "Contributor · no issue management",
     help: "Read, push code, create pull requests, and join PR discussions. Does not grant ordinary issue management.",
     writes: true,
   }),
   Object.freeze({
     id: "git-full",
-    label: "Collaborator",
-    help: "Contributor access, plus creating and managing issues.",
+    label: "Contributor",
+    help: "Read, push code, work with pull requests, and manage issues by default.",
     writes: true,
   }),
 ]);

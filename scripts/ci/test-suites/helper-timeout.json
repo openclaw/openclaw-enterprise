@@ -1,0 +1,14 @@
+{
+  "files": [
+    {
+      "path": "tests/integration/dev-up-timeout.test.mjs",
+      "expectedTests": [
+        "dev-up waits the full helper deadline before failing a running but unready worker"
+      ]
+    }
+  ],
+  "env": {
+    "OCC_TEST_DEV_UP_REAL_TIMEOUT": "1"
+  },
+  "prepare": {}
+}

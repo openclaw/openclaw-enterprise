@@ -427,7 +427,7 @@ select {
   margin: 20px 0;
 }
 .agent-form {
-  max-width: 760px;
+  max-width: 960px;
 }
 .form-field {
   margin: 20px 0;
@@ -486,6 +486,7 @@ select {
 }
 .repository-option input,
 .repository-profile input {
+  accent-color: var(--accent);
   flex: 0 0 auto;
   width: auto;
   margin: 3px 0 0;
@@ -550,11 +551,14 @@ select {
 }
 .agent-tabs {
   display: flex;
+  overflow-x: auto;
+  max-width: 100%;
   gap: 16px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 20px;
 }
 .agent-tabs button {
+  flex: 0 0 auto;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -685,7 +689,7 @@ summary:focus-visible {
 }
 
 .runtime-credentials {
-  max-width: 760px;
+  max-width: 960px;
 }
 .credential-status-list {
   display: grid;
@@ -718,4 +722,110 @@ summary:focus-visible {
 }
 .credential-form {
   margin-top: 12px;
+}
+
+/* Progressive disclosure keeps the launch form focused on everyday choices. */
+.launch-intro {
+  margin: 20px 0;
+  padding: 28px;
+}
+.launch-intro h2 {
+  font-size: 26px;
+  margin-bottom: 10px;
+}
+.launch-preset {
+  margin-top: 20px;
+}
+.launch-preset fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.launch-preset legend {
+  display: none;
+}
+.launch-preset select {
+  width: 100%;
+  margin: 8px 0;
+}
+.launch-advanced,
+.launch-runtime,
+.repository-customize {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 20px;
+}
+.launch-advanced > summary,
+.launch-runtime > summary,
+.repository-customize > summary {
+  cursor: pointer;
+  font-weight: 550;
+  padding: 6px 0;
+}
+.repository-profiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.repository-option > span,
+.repository-profile > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.repository-option:focus-within,
+.repository-profile:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.launch-advanced[open] > .form-field:first-of-type {
+  margin-top: 20px;
+}
+@media (max-width: 640px) {
+  .repository-profiles {
+    grid-template-columns: 1fr;
+  }
+  .repository-selection {
+    padding: 16px;
+  }
+  .agent-tabs {
+    gap: 4px;
+  }
+}
+
+.harness-auth-fields {
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 20px 0 0;
+  margin: 28px 0 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 20px;
+}
+.harness-auth-fields > legend {
+  font-size: 18px;
+  font-weight: 600;
+  padding-right: 12px;
+}
+.harness-auth-fields > .form-field {
+  margin: 0 0 16px;
+}
+.harness-auth-fields > :not(.form-field),
+.harness-auth-fields > .form-field:has(#provider-api-key) {
+  grid-column: 1 / -1;
+}
+.harness-auth-fields .model-selection .form-field {
+  margin-bottom: 0;
+}
+.launch-intro,
+.launch-preset,
+#create-agent-form ~ .create-channels,
+#create-agent-form ~ .form-actions {
+  max-width: 960px;
+}
+.repository-customize .repository-option {
+  margin-top: 16px;
+}
+@media (max-width: 640px) {
+  .harness-auth-fields {
+    grid-template-columns: 1fr;
+  }
 }

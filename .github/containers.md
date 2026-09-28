@@ -33,12 +33,15 @@ to run it; repository writers can dispatch it too. There is no second-person
 approval or approval-comment requirement. Complete these prerequisites first.
 
 - Protect `main`, require the real `CI Required` check, and review workflow changes.
+- Retain repository access to `blacksmith-8vcpu-ubuntu-2404`. Runtime preparation
+  uses the same runner as repository-platform CI for build and export capacity.
 - Create a dedicated `container-publish` environment with no required reviewers or
   wait timer, administrator bypass disabled, and one deployment branch policy:
   branch `main`. Do not reuse the integration environments.
 - Set repository or organization variable `CONTAINER_NODE_BASE_IMAGE` to the
-  approved Node 24 digest used by `scripts/ci/test-suites.json` and the runtime
-  Dockerfile. All three must agree. This is an explicit approval, not a default.
+  approved Node 24 digest used by `scripts/ci/test-suites/images-packaging.json`
+  and the runtime Dockerfile. All three must agree. This is an explicit approval,
+  not a default.
 - Bootstrap two **private**, pre-existing GHCR container packages,
   link each to `openclaw/openclaw-enterprise`, and grant this repository Actions
   access. GHCR packages are first created by pushing an image; the Enterprise

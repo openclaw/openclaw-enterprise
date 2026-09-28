@@ -10,13 +10,31 @@ separate migrator-role connection for test-only table contention. The
 `logging-collector` lane also runs real Prometheus/Grafana collection and
 dashboard provisioning. See [metrics testing](metrics.md) for local setup.
 
-The [suite map](../../scripts/ci/test-suites.json) assigns each active test file to exactly one lane, with its required inputs and preparation resources. Check its coverage after adding or renaming tests:
+The [suite index](../../scripts/ci/test-suites.json) holds ordered lane references
+and coverage groups. Each `scripts/ci/test-suites/<lane>.json` owns that lane's
+test files, required inputs, environment, and preparation resources. Edit the
+owning lane file when adding or renaming tests; update the index when adding a
+lane or changing a group. The shared
+[loader](../../scripts/ci/test-suites.mjs) assembles these definitions for the
+runner and preparation tools. Check that every active test file has exactly one
+lane owner:
 
 ```sh
 node scripts/ci/run-tests.mjs audit
 ```
 
 Both workflows reuse the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, tests and cleanup; each job retains its own environment and credentials.
+
+The lane result artifact records `wallDurationMs` for each selected test file,
+including file-specific setup and cleanup. Preparation logs emit `[ci-timing]`
+lines with named phases for image-heavy and k3d lanes. Compare those values with
+the Actions step timestamps to separate preparation, tests, and runner overhead.
+The timing fields are diagnostic; lane pass/fail and required-test accounting
+remain authoritative.
+
+Image transport records `image-archive-save` for Docker archive creation and
+`image-archive-import` for loading that archive into k3d. When an enclosing image
+preparation phase is timed, its duration already includes these operations.
 
 The `checks-baseline` lane runs `pnpm docs:check`: pages above 1,500 visible words
 are flagged for review and pages above 2,500 fail, except the approved single-page

@@ -7,6 +7,38 @@ import { createPresetFields } from "./presets.mjs";
 import { renderChannels } from "../channels.mjs";
 import { link, message, namespacePath } from "./list.mjs";
 
+// TODO: This starter list is intentionally hardcoded for the initial Console release.
+// Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
+const MODEL_CHOICES = {
+  openai: [
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+  ],
+  // Non-retired models as of 2026-09-24, including earlier and access-restricted releases.
+  // Source: https://platform.claude.com/docs/en/about-claude/model-deprecations
+  anthropic: [
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+    "claude-opus-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-opus-4-5-20251101",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5-20250929",
+    "claude-mythos-preview",
+  ],
+};
+
 function field(label, input, hint) {
   return element(
     "div",
@@ -187,8 +219,28 @@ export function renderCreateAgent(context) {
   context.setTitle("Create Agent");
   context.view.replaceChildren(
     link("← Agents", "agents", context),
-    createPresetFields(context, (rendered) => renderAgentForm(context, rendered)),
-    button("Start without Preset", () => renderAgentForm(context, {})),
+    element(
+      "section",
+      { className: "launch-intro agent-card" },
+      element("h2", {}, "Your next teammate"),
+      element(
+        "p",
+        { className: "muted" },
+        "Choose a model, connect repositories, and give your Agent a place to work.",
+      ),
+      button("Start without Preset", () => renderAgentForm(context, {}), { className: "primary" }),
+    ),
+    element(
+      "section",
+      { className: "agent-card launch-preset" },
+      element("h2", {}, "Use a saved setup"),
+      element(
+        "p",
+        { className: "muted" },
+        "Start from a Preset to reuse your team's configuration.",
+      ),
+      createPresetFields(context, (rendered) => renderAgentForm(context, rendered)),
+    ),
   );
 }
 
@@ -276,10 +328,10 @@ function renderAgentForm(context, rendered) {
     element("option", { value: "anthropic" }, "Anthropic"),
   );
   nativeProvider.value = initialModel?.startsWith("anthropic/") ? "anthropic" : "openai";
-  const discoverModels = !binding && typeof initialModel !== "string";
+  const useModelChoices = !binding && typeof initialModel !== "string";
   const model = element("input", {
-    id: discoverModels ? "agent-model-manual" : "agent-model",
-    required: !discoverModels,
+    id: useModelChoices ? "agent-model-manual" : "agent-model",
+    required: !useModelChoices,
     autocomplete: "off",
     pattern: "\\S+",
   });
@@ -306,19 +358,15 @@ function renderAgentForm(context, rendered) {
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
-  let discoveryGeneration = 0;
-  let modelsLoading = false;
-  let modelOptions = [];
-  let manualModel = !discoverModels;
+  let manualModel = !useModelChoices;
   let pendingModelSettings;
   let pendingProviderModel;
   const modelChoice = element(
     "select",
     { id: "agent-model" },
-    element("option", { value: "" }, "Load models to choose one"),
+    element("option", { value: "" }, "Choose a model"),
+    ...MODEL_CHOICES[nativeProvider.value].map((id) => element("option", { value: id }, id)),
   );
-  const modelStatus = element("p", { className: "hint", role: "status" });
-  const loadModels = button("Load models", () => void loadModelChoices());
   const enterModel = button("Enter model ID manually", () => {
     manualModel = true;
     model.value = "";
@@ -328,84 +376,28 @@ function renderAgentForm(context, rendered) {
     model.focus();
   });
   const modelField = field("Model ID", model, "Enter a model ID available to this credential.");
-  const choiceField = field("Model", modelChoice);
+  const choiceField = field(
+    "Model",
+    modelChoice,
+    "Choose a model your credential can access, or enter another model ID manually.",
+  );
   const modelSection = element(
     "section",
-    { className: "model-selection", hidden: discoverModels },
-    ...(discoverModels ? [loadModels, choiceField, enterModel, modelStatus] : []),
+    { className: "model-selection" },
+    ...(useModelChoices ? [choiceField, enterModel] : []),
     modelField,
   );
-  async function loadModelChoices() {
-    if (!discoverModels || !apiKey.value.trim() || savedSecret || pending || modelsLoading) {
-      return;
-    }
-    const generation = ++discoveryGeneration;
-    modelsLoading = true;
-    modelStatus.textContent = "Loading available models…";
-    updateControls();
-    try {
-      const choices = await request(`${namespacePath(namespaceId)}/agents/models`, {
-        method: "POST",
-        body: {
-          provider: nativeProvider.value,
-          authMethod: authMethod.value,
-          apiKey: apiKey.value,
-        },
-      });
-      if (!context.isCurrent() || generation !== discoveryGeneration) {
-        return;
-      }
-      modelOptions = choices;
-      modelChoice.replaceChildren(
-        element("option", { value: "" }, "Choose a model"),
-        ...choices.map((item) => element("option", { value: item.id }, item.name)),
-      );
-      manualModel = choices.length === 0;
-      model.value = "";
-      updateModelConfiguration();
-      modelStatus.textContent = choices.length
-        ? "Choose a text-generation model for this Agent."
-        : `No models were returned. Enter a model ID enabled for this ${authMethod.value === "codex_pat" ? "service account token" : "API key"}, or retry loading.`;
-    } catch (error) {
-      if (!context.isCurrent() || generation !== discoveryGeneration) {
-        return;
-      }
-      if (error.status === 401) {
-        context.onExpired();
-        return;
-      }
-      modelOptions = [];
-      manualModel = true;
-      const reason = {
-        MODEL_DISCOVERY_CREDENTIALS_REJECTED: `The provider rejected this ${authMethod.value === "codex_pat" ? "service account token" : "API key"} or its permission to list models.`,
-        MODEL_DISCOVERY_RATE_LIMITED: "The provider rate limit was reached. Try again later.",
-        MODEL_DISCOVERY_UNAVAILABLE:
-          "The provider could not be reached or is unavailable. Check the server's provider access.",
-        MODEL_DISCOVERY_INVALID_RESPONSE:
-          "The provider returned an unsupported model-list response.",
-      }[error.code];
-      modelStatus.textContent = `${reason ?? "Models could not be loaded. Check the credential and retry."} You can enter a model ID manually.${error.requestId ? ` Request: ${error.requestId}` : ""}`;
-    } finally {
-      if (context.isCurrent() && generation === discoveryGeneration) {
-        modelsLoading = false;
-        updateControls();
-      }
-    }
-  }
   function resetModelChoices(resetTransport = false) {
-    discoveryGeneration += 1;
-    modelsLoading = false;
-    modelOptions = [];
-    manualModel = !discoverModels;
+    manualModel = !useModelChoices;
     model.value = "";
-    modelChoice.replaceChildren(element("option", { value: "" }, "Load models to choose one"));
-    modelStatus.textContent = "";
+    modelChoice.replaceChildren(
+      element("option", { value: "" }, "Choose a model"),
+      ...MODEL_CHOICES[nativeProvider.value].map((id) => element("option", { value: id }, id)),
+    );
     updateModelConfiguration(resetTransport);
     updateControls();
   }
-  if (discoverModels) {
-    apiKey.addEventListener("input", () => resetModelChoices());
-    apiKey.addEventListener("change", () => void loadModelChoices());
+  if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
       manualModel = false;
       model.value = modelChoice.value;
@@ -512,7 +504,7 @@ function renderAgentForm(context, rendered) {
       typeof previousModel === "string"
         ? previousModel.slice(previousModel.indexOf("/") + 1)
         : pendingProviderModel;
-    // Keep transport and model metadata while a key edit temporarily clears the selected model.
+    // Keep transport and model metadata while switching to manual entry clears the model.
     pendingProviderModel = selectedModel || resetTransport ? undefined : previousId;
     if (resetTransport) {
       delete providers.openai;
@@ -611,7 +603,6 @@ function renderAgentForm(context, rendered) {
         if (selectedProvider !== nativeProvider.value && !binding) {
           apiKey.value = "";
           authMethod.value = "api_key";
-          modelOptions = [];
         }
         nativeProvider.value = selectedProvider;
         if (selectedProvider === "anthropic") {
@@ -620,9 +611,7 @@ function renderAgentForm(context, rendered) {
         }
       }
       model.value = ref.slice(ref.indexOf("/") + 1);
-      if (discoverModels) {
-        discoveryGeneration += 1;
-        modelsLoading = false;
+      if (useModelChoices) {
         manualModel = true;
         modelChoice.value = "";
       }
@@ -638,6 +627,10 @@ function renderAgentForm(context, rendered) {
     spellcheck: "false",
   });
   secretBindings.value = JSON.stringify(rendered.configuration?.secretBindings ?? {}, null, 2);
+  secretBindings.addEventListener("input", () => {
+    secretBindings.setCustomValidity("");
+    renderChannelEditor();
+  });
   const workspaceInputs = Object.entries(WORKSPACE_DEFAULTS).map(([filename, content]) => {
     const input = element("textarea", {
       id: `workspace-${filename.replace(".", "-")}`,
@@ -781,10 +774,15 @@ function renderAgentForm(context, rendered) {
     authSection,
     capabilityStatus,
     retryCapabilityDiscovery,
-    field(
-      "Execution mode",
-      mode,
-      "Set by the harness: Codex uses Dedicated execution; OpenClaw uses Embedded execution. Slack requires Codex.",
+    element(
+      "details",
+      { className: "launch-runtime" },
+      element("summary", {}, "Runtime details"),
+      field(
+        "Execution mode",
+        mode,
+        "Codex uses Dedicated execution; OpenClaw uses Embedded execution. Slack requires Codex.",
+      ),
     ),
     (repositories = createRepositoryFields(context, (changed) => {
       if (changed) {
@@ -793,23 +791,39 @@ function renderAgentForm(context, rendered) {
       feedback.textContent = "";
       updateControls();
     })).section,
-    field(
-      "Configuration JSON",
-      configuration,
-      "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
-    ),
-    reset,
     element(
-      "div",
-      { hidden: true },
+      "details",
+      { className: "launch-advanced" },
+      element("summary", {}, "Advanced settings"),
+      element(
+        "p",
+        { className: "hint" },
+        "Defaults are ready to use. Customize configuration, Secret bindings, plugins, or initial workspace files when needed.",
+      ),
+      field(
+        "Configuration JSON",
+        configuration,
+        "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
+      ),
+      reset,
       field(
         "Secret bindings JSON",
         secretBindings,
         "Map environment names to existing Secret references in this Namespace. Do not enter credentials.",
       ),
+      field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
+      workspaceSection,
     ),
-    field("Plugin selections JSON", plugins, "Desired plugin selections and policies."),
-    workspaceSection,
+  );
+  form.addEventListener(
+    "invalid",
+    (event) => {
+      const details = event.target.closest("details");
+      if (details) {
+        details.open = true;
+      }
+    },
+    true,
   );
   form.addEventListener("input", (event) => {
     edited = true;
@@ -827,6 +841,10 @@ function renderAgentForm(context, rendered) {
       return values;
     } catch {
       if (reportInvalid) {
+        const details = input.closest("details");
+        if (details) {
+          details.open = true;
+        }
         input.setCustomValidity("Enter a valid JSON object.");
         input.reportValidity();
       }
@@ -874,7 +892,8 @@ function renderAgentForm(context, rendered) {
   }
   function renderChannelEditor() {
     const values = parseObject(configuration);
-    if (values === undefined) {
+    const parsedSecretBindings = parseObject(secretBindings);
+    if (values === undefined || parsedSecretBindings === undefined) {
       channelEditor.replaceChildren(
         element(
           "section",
@@ -883,13 +902,14 @@ function renderAgentForm(context, rendered) {
           element(
             "p",
             { className: "error" },
-            "Enter a valid Configuration JSON object before configuring channels.",
+            values === undefined
+              ? "Enter a valid Configuration JSON object before configuring channels."
+              : "Enter a valid Secret bindings JSON object before configuring channels.",
           ),
         ),
       );
       return;
     }
-    const parsedSecretBindings = parseObject(secretBindings) ?? {};
     const channels = renderChannels({
       values,
       executionMode: mode.value,
@@ -1026,16 +1046,12 @@ function renderAgentForm(context, rendered) {
     }
     apiKey.disabled ||= Boolean(savedSecret);
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
-    if (discoverModels) {
-      modelSection.hidden = !apiKey.value.trim() && !savedSecret;
+    if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
-      model.required = manualModel && !modelSection.hidden;
-      modelChoice.required = !manualModel && !modelSection.hidden && modelOptions.length > 0;
-      model.disabled ||= modelsLoading;
-      modelChoice.disabled ||= modelsLoading || modelOptions.length === 0;
-      loadModels.disabled ||= modelsLoading || Boolean(savedSecret) || !apiKey.value.trim();
-      enterModel.disabled ||= modelsLoading || Boolean(savedConfiguration);
+      model.required = manualModel;
+      modelChoice.required = !manualModel;
+      enterModel.disabled ||= Boolean(savedConfiguration);
     }
     reloadRepositories.disabled = pending || outcomeUnknown;
     startNewDraft.disabled = pending || outcomeUnknown;
@@ -1054,7 +1070,6 @@ function renderAgentForm(context, rendered) {
           repositories.blocksCreate())) ||
       pending ||
       outcomeUnknown ||
-      modelsLoading ||
       !capabilityDiscoveryDone ||
       Boolean(provisioningAttempt);
     retryProvisioning.hidden = !provisioningAttempt;
@@ -1373,7 +1388,7 @@ function renderAgentForm(context, rendered) {
     element(
       "p",
       { className: "muted" },
-      "Create an Agent in this Namespace. Supported Dedicated runtimes provision and deploy automatically; Embedded and unsupported runtimes save a draft for later deployment.",
+      "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
     ),
     form,
     channelEditor,

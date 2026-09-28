@@ -131,10 +131,12 @@ Writes reauthorize and re-resolve choices.
 
 ### Profiles
 
-Choose **Reader** (`git-read`) for code and issue/PR reads, **Contributor**
-(`git-write`, the API default) for pushes and PR work, or **Collaborator**
-(`git-full`) for issue management too. The configuration values remain unchanged;
-Reader and Contributor now include API access, not just Git.
+The Console offers **Read-only** (`git-read`) and **Contributor** (`git-full`).
+Contributor includes pushes, PR work, and issue management by default. Open
+**Customize access** to turn off issue management (`git-write`) when approved for
+all selected repositories. Push and PR access remain bundled; this UI does not
+create new permission profiles. The API default remains `git-write`.
+All three enforced profiles include GitHub API access.
 
 The [access-level reference](repository-credentials/access-levels.md) defines the
 exact permissions, supported commands and GraphQL boundary. Every session selects

@@ -154,7 +154,7 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 
 ## Changelog
 
-- 2026-09-23 23:34: Scope authentication egress to each candidate revision and remove it after workload termination. (01a0cf72-6985-7712-ba92-d8cc32470f24 - f1d8e1e1f1e738902cbf98a0482d0872f7899ccc)
+- 2026-09-23 23:34: Scope authentication egress to each candidate revision and remove it after workload termination.
 
 - 2026-09-23 11:31: Separate dedicated Gateway scheduling and lifecycle placement from the Harness target. (01a0cf72-6985-7712-ba92-d8cc32470f24 - b141ba1157c2f28276717d35c8c63028f209a479)
 

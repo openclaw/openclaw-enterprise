@@ -438,6 +438,7 @@ export class SshComputeDriver implements ComputeDriver {
     if (auth?.method !== "runtime" || Object.keys(auth).length !== 1) {
       throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
     }
+    // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
     if (harness.id !== "openclaw" || harness.mode !== "embedded") {
       throw new ConfigurationFailure(
         "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
@@ -450,29 +451,7 @@ export class SshComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
     this.lifecycleStarted = true;
-    this.validateRevision(revision);
-    sshGatewayConfigurationDocument(revision.configuration);
-    // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
-    if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
-      throw new ConfigurationFailure(
-        "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
-      );
-    }
-    if (
-      (context?.secretEnvironment.length ?? 0) > 0 ||
-      Object.keys(revision.secretBindings ?? {}).length > 0
-    ) {
-      throw new ConfigurationFailure(
-        "SSH OCC Secret delivery is not implemented; provision credentials in the operator-owned <agentDir>/env file.",
-      );
-    }
-    if (revision.sandboxDriverId !== undefined) {
-      throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
-    }
-    if (hasPluginSelections(revision)) {
-      throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
-    }
-    admittedLoggingLevel(revision.configuration);
+    this.validateWorkloadRevision(revision, context);
     const result = await this.revisionOperation("prepare-revision", revision, undefined, context);
     return {
       namespaceId: revision.namespaceId,
@@ -484,28 +463,7 @@ export class SshComputeDriver implements ComputeDriver {
 
   async activateRevision(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void> {
     this.lifecycleStarted = true;
-    this.validateRevision(revision);
-    sshGatewayConfigurationDocument(revision.configuration);
-    if (revision.harness.id !== "openclaw" || revision.harness.mode !== "embedded") {
-      throw new ConfigurationFailure(
-        "SSH Compute supports only embedded OpenClaw; dedicated Codex is not implemented.",
-      );
-    }
-    if (
-      (context?.secretEnvironment.length ?? 0) > 0 ||
-      Object.keys(revision.secretBindings ?? {}).length > 0
-    ) {
-      throw new ConfigurationFailure(
-        "SSH OCC Secret delivery is not implemented; provision credentials in the operator-owned <agentDir>/env file.",
-      );
-    }
-    if (revision.sandboxDriverId !== undefined) {
-      throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
-    }
-    if (hasPluginSelections(revision)) {
-      throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
-    }
-    admittedLoggingLevel(revision.configuration);
+    this.validateWorkloadRevision(revision, context);
 
     let launch: Readonly<WorkloadLaunchContext> | undefined;
     try {
@@ -544,6 +502,30 @@ export class SshComputeDriver implements ComputeDriver {
     this.validateRevision(revision);
     await this.lifecycle.beforeWorkloadStop(revision);
     await this.revisionOperation("retire-revision", revision);
+  }
+
+  // Keep workload restrictions separate from the ownership checks used during teardown.
+  private validateWorkloadRevision(
+    revision: AgentRevision,
+    context?: ComputeRevisionContext,
+  ): void {
+    this.validateRevision(revision);
+    sshGatewayConfigurationDocument(revision.configuration);
+    if (
+      (context?.secretEnvironment.length ?? 0) > 0 ||
+      Object.keys(revision.secretBindings ?? {}).length > 0
+    ) {
+      throw new ConfigurationFailure(
+        "SSH OCC Secret delivery is not implemented; provision credentials in the operator-owned <agentDir>/env file.",
+      );
+    }
+    if (revision.sandboxDriverId !== undefined) {
+      throw new ConfigurationFailure("SSH Compute does not support SandboxDriver composition.");
+    }
+    if (hasPluginSelections(revision)) {
+      throw new ConfigurationFailure("SSH Compute does not support PluginDriver installation.");
+    }
+    admittedLoggingLevel(revision.configuration);
   }
 
   private host(namespace: Namespace): SshComputeHost {
