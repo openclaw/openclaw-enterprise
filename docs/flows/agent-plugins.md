@@ -1,17 +1,16 @@
 ---
 created: 2026-09-08
 updated: 2026-09-28
-last_updated_session: 01a0d4f7-8085-70e0-9d0c-69a465a81fe3
+last_updated_session: 01a0d755-b86e-7d33-bddc-c21ba03a3276
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-An authorized caller saves plugin selections, then deploys. OCC validates and
-snapshots policy, selections, and Driver. Startup resolves metadata, translates
-policy, and prepares the revision. Revision selection may precede cutover; the
-Harness owns tools and approvals.
+OCC snapshots validated plugin policy on deployment. Startup prepares native
+capabilities; the Harness owns tools and approvals. Revision selection may precede
+cutover.
 
 ## Entry Points
 
@@ -158,17 +157,17 @@ recorded integrity, and the runtime source's containment in the install path.
 Verification failure prevents gateway readiness. Confirmed install rejection
 disables the optional selection and removes its managed tool allowance before startup.
 
-For nonempty selections, dedicated Codex enables apps, plugins, and remote plugins
-in isolated `CODEX_HOME`; Compute configures its OpenClaw bridge with
-`codexPlugins.enabled:true`, `allow_all_plugins:false`, and an entry per selection.
-`apps._default.enabled:false` always applies. Disabled selections cannot execute
-hosted app tools.
+Dedicated Codex bootstraps isolated `CODEX_HOME` with
+`apps._default.enabled:false` and `plugins._default.enabled:false`.
+Nonempty selections enable apps, plugins, and remote plugins. The bridge sets
+`codexPlugins.enabled:true`, `allow_all_plugins:false`, and per-selection entries;
+disabled entries cannot execute.
 
 `plugin/list` discovers the marketplace; `plugin/read` resolves selections.
 `codexRuntimeArtifact` uses concrete `detail.apps`, excluding `appTemplates`.
 `codexInstallPlan` validates policy and [component support](../reference/drivers/plugin-bundled.md)
-before `plugin/install`. Codex loads bundled skills. Account-wide skill
-restrictions require native default enablement and OCE integration.
+before `plugin/install`. Codex loads bundled skills; selected-only activation
+requires the compatible runtime described below.
 Install rejections or missing app authentication warn. Explicit tool policies
 require `mcpServerStatus/list`'s `codex_apps` inventory; `codexAppToolSettings`
 binds catalog action IDs through `_meta._codex_apps.resource_uri`. Native IDs
@@ -181,22 +180,24 @@ require owned IDs. `driverPolicy.destructiveEnabled`
 maps to `destructive_enabled` independently. `toolDefaults.reviewer` maps
 `human`/`auto` to app `approvals_reviewer` values `user`/`auto_review`;
 omission inherits the Harness reviewer. Unsupported scopes fail at save.
-`config/batchWrite` replaces managed app subtrees, clearing stale tool/link
-settings; installation readback checks identity, version, and app mapping.
-Failed-only bindings disable apps; disabled selections skip installation/status.
-`config/read` loads workspace layers. Before readiness,
-`verifyCodexAppConfiguration` rejects app/tool/account conflicts and unselected
-enabled apps. Disabled failed apps may retain inherited fields. Category defaults
+Startup rechecks catalog identity, version, apps, and reported components before
+activation; `plugin/read` cannot inspect bundles.
+`writeCodexPluginConfiguration` replaces both owned tables, enabling successful
+enabled selections and disabling failed/disabled selections. Failed-only apps are
+disabled; disabled selections skip installation/status. Readback verifies source
+enablement and workspace policy. `verifyCodexPluginConfiguration` rejects
+app/tool/account conflicts and unselected apps/plugins unless explicitly disabled.
+Disabled failed apps may retain inherited fields. Category defaults
 resolve app → global → native `true`; equivalent values and nulls pass. Tool
 enablement stays strict because it bypasses categories; omitted reviewers inherit.
 
-`runtime-entrypoints.ts:verifyCodexReviewerConfiguration` checks explicit app/link
-reviewers and `configRequirements/read`, rejecting forbidden reviewers, incompatible
-automatic-review settings, or conflicting model requirements. Startup checks do not
-cover later workspace/session/model changes or strict review. Codex 0.156 readback
-omits managed app/tool requirements applied during execution; native effective-policy
-introspection remains required. See [remaining proof](../testing/plugins.md#current-proof-notes).
-Codex owns cache integrity and health.
+`verifyCodexReviewerConfiguration` rejects app/link reviewers and automatic-review
+settings conflicting with managed reviewer/model requirements. Startup checks
+exclude later workspace/session/model changes and strict review. Codex 0.156
+readback omits managed app/tool execution requirements; native policy introspection
+remains necessary. See [remaining proof](../testing/plugins.md#current-proof-notes).
+Codex owns cache integrity and health. Older binaries may ignore echoed plugin
+defaults; see [runtime prerequisites](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
 
 For Compute-owned Kubernetes workloads, a selected OpenClaw install command's
 normal nonzero exit, a matching Codex `plugin/install` error response, or a
@@ -299,6 +300,8 @@ completed deployment attempt rather than ongoing runtime health.
 - 2026-09-27 23:40: Catalog prefetch and loading feedback. (01a0e53a-f2be-7bd1-a9c1-36e827b2ee47 - b38554ac)
 
 - 2026-09-27 22:17: Document native Codex bundled skill support and pending account-plugin activation restriction. (01a0d4f7-8085-70e0-9d0c-69a465a81fe3 - 19f72841c3aed621137bd438ae91fa016c39b292)
+
+- 2026-09-27 15:10: Added plugin defaults and skills. (codex/01a0d755-b86e-7d33-bddc-c21ba03a3276 - ab9527bb)
 
 - 2026-09-27 21:52: Debounced catalog searches and canceled obsolete requests. (01a0e4d2-4f51-7780-b0fc-2352cb99078f - a599db7e)
 

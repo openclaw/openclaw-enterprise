@@ -22,6 +22,9 @@ remote_plugin = false
 
 [apps._default]
 enabled = false
+
+[plugins._default]
+enabled = false
 `;
 const CODEX_SELECTED_PLUGIN_CONFIG_TOML = `[features]
 apps = true
@@ -29,6 +32,9 @@ plugins = true
 remote_plugin = true
 
 [apps._default]
+enabled = false
+
+[plugins._default]
 enabled = false
 `;
 
