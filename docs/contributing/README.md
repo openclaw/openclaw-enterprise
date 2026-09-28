@@ -29,6 +29,8 @@ To use or administer an installation, start with [Getting Started](../README.md)
   and Agent deployment in the source.
 - [Documentation](documentation.md) explains where pages belong, how to name them,
   and how to build and check the site.
+- [Documentation hosting](documentation-hosting.md) covers private publication,
+  the custom domain, and the approval required to enable public access.
 
 Read the [contribution policy](../../CONTRIBUTING.md) before opening a pull
 request. It covers repository access, verification, review, and private security

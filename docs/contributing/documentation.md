@@ -4,6 +4,9 @@ Use this guide to add or update OpenClaw Enterprise documentation. Start with th
 reader's task and verify commands, permissions, defaults, and limits against the
 current source before describing them as supported.
 
+For private deployment, the custom domain, and the separate public-launch step,
+see [Documentation hosting](documentation-hosting.md).
+
 ## Choose one home
 
 The menu bar selects a sidebar. Put each page in one section and link to it from

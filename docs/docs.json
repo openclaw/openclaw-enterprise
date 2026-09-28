@@ -772,6 +772,10 @@
                     "label": "Preview and Validate"
                   },
                   {
+                    "page": "contributing/documentation-hosting",
+                    "label": "Hosting and Launch"
+                  },
+                  {
                     "page": "base-driver-docs-template",
                     "label": "Driver Docs"
                   },
