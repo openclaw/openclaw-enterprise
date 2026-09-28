@@ -90,6 +90,12 @@ architectures. Admission by the generator is not runtime proof. Inspect the
 delta and repeat live verification for your selected runtime and node versions.
 Do not substitute an arbitrary profile or `Unconfined` policy.
 
+For a selected Codex `0.158.0` runtime, pass `--codex-version 0.158.0`.
+Its reviewed default sandbox uses the same syscall rules; the optional inherited
+PID namespace mode is outside this profile's scope. The repository's pinned
+runtime and automatic preparation defaults remain `0.156.0` until upgraded
+together. Version admission does not select or upgrade the deployed image.
+
 ## Install on eligible nodes
 
 Use your existing node provisioning mechanism to install the approved artifact
