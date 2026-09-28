@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-09-28
-last_updated_session: 01a0e441-02f9-70b2-ad45-0a1a5049954a
+last_updated_session: 01a0e514-0519-7282-ba5e-63b2764c2d6e
 ---
 
 # Compose development startup
@@ -62,9 +62,8 @@ plane; explicitly select `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` for
 The Docker Compute path first probes a running Docker Engine and the JSON
 configuration capability required from Docker Compose. If that probe fails, it
 selects `podman` directly; a `docker` compatibility alias is neither required
-nor treated as Docker merely because of its name. Podman requires the standalone
-`podman-compose` provider and `yq` v4; the helper pins that provider so status
-and stopped one-shot container behavior stay consistent.
+nor treated as Docker merely because of its name. Podman requires standalone `podman-compose` and `yq` v4; the pinned provider
+keeps status and stopped one-shot behavior consistent.
 
 Docker Compose supplies resolved JSON directly. Podman Compose supplies YAML,
 which `dev-up` converts to JSON inside its private temporary directory before
@@ -81,9 +80,8 @@ target once per service, `dev-up` builds it once through the migration service
 and starts the stack with `--no-build`. Docker keeps its native `up --build`
 path. Expanded configuration and credentials are never printed.
 
-On macOS, run `podman` as your normal host user, without `sudo`. The k3d
-workflow requires a rootful Podman machine; rootful describes the VM, not
-running `podman` as root on the host.
+On macOS, run `podman` without `sudo`. k3d requires a rootful Podman machine;
+rootful describes the VM, not the host user.
 
 If neither a shared runtime image nor separate gateway/Agent images are set,
 the helper selects `openclaw-enterprise-runtime:quickstart` for this invocation.
@@ -199,16 +197,15 @@ does not mount the configuration volume.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-The Kubernetes-only profile creates its owned k3d cluster in K3s legacy
-iptables mode, imports matching OCE images, and runs PostgreSQL, migration,
-bootstrap, API, and
-worker inside Kubernetes. An explicitly selected IPv4 resolver replaces k3d's
-node DNS rewriting; the host resolver is unchanged.
+The Kubernetes-only profile creates one k3d server with legacy iptables and
+loopback port mappings. It imports matching OCE images and runs PostgreSQL,
+migration, bootstrap, API, and worker in Kubernetes. A selected IPv4 resolver
+replaces k3d node DNS rewriting without changing the host resolver.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
-manifests. It waits for the k3s-owned Gateway API CRDs to be created and
-established before installing Envoy, and prints k3s add-on status before rollback
-if that wait fails. Before configuring gateway proxy trust,
+manifests. It waits for their CRDs to report Established, and for k3s-owned
+Gateway API CRDs before installing Envoy. It prints k3s add-on status before
+rollback if that wait fails. Before configuring gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
 checks allowed and denied direct Pod traffic with credential-free Pods and a
 temporary policy. After bootstrap creates the initial Gateway Namespace, it
@@ -230,11 +227,16 @@ Startup waits for the Gateway, certificate, and proxy Pods before reporting
 success. Envoy source addresses must fall inside the selected node's Pod CIDR;
 the tenant ingress policy must still admit only the Gateway's exact proxy peer.
 
-The loopback development proxy also terminates browser HTTPS using a private
-per-installation CA and a leaf limited to that installation's console and Agent
-hosts. The API and browser NodePorts are published only to host loopback. The
-bootstrap administrator password, service key, and CA private key remain in the
-private state directory. Browser CA trust is an explicit operator action.
+By default the loopback development proxy terminates browser HTTPS using a
+private per-installation CA and a leaf limited to that installation's console
+and Agent hosts. With `OCC_DEVELOPMENT_BROWSER_SCHEME=http`, startup instead
+passes the explicit local HTTP flag through Helm to bootstrap and the API and
+forwards browser HTTP to the API. Its API session readiness request uses the
+configured Console host, as required by the HTTP authentication boundary. The
+API and browser NodePorts are published
+only to host loopback. The bootstrap administrator password, service key, and any
+CA private key remain in the private state directory. Browser CA trust is needed
+only for HTTPS.
 
 If repository inputs are selected, startup creates the scoped broker after the
 actual initial Namespace exists and waits for authenticated repository-option
@@ -273,14 +275,11 @@ Without OpenShell, the Installation selects the bundled Presets and curated
 Codex Plugin Driver. Startup copies the generated administrator password and
 service key into the private state directory.
 
-When repository inputs are selected, `internal/occdev/repository_k3d.go` first
-validates their private directory, explicit Namespace placeholder, profiles, App
-key, and approved egress IPv4 `/32` endpoints. After authenticated bootstrap and Namespace
-readiness, it substitutes the server-assigned Namespace ID into the immutable
-registry, generates a CA and exact-host certificate, creates separate Kubernetes
-inputs, and upgrades Helm with the selected Repo Driver and worker sidecar.
-Startup compares authenticated repository discovery with the approved references
-and profiles. It does not perform Git operations; see the
+For repository inputs, `internal/occdev/repository_k3d.go` validates the private
+directory, Namespace placeholder, profiles, App key, and approved egress IPv4
+`/32` endpoints. After Namespace readiness it substitutes the ID, creates the
+exact-host TLS and Kubernetes inputs, upgrades Helm, and verifies authenticated
+discovery. It does not perform Git operations; see the
 [local repository procedure](../../guides/deploy/local-repository-credentials.md).
 
 The default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` continues through the
@@ -373,6 +372,7 @@ external key if a later OpenShell readiness step fails.
 ## Changelog
 
 - 2026-09-28 00:34: Restored Compose defaults and explicit Kubernetes-only startup. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 201f31d511464133f06e0526bb5545ed1cb27e25)
+- 2026-09-27 23:19: Traced the optional local HTTP browser path and its Helm flag. (01a0e514-0519-7282-ba5e-63b2764c2d6e - aa64fbc0e96d739cb2a54b315a71bc403ff6ea10)
 
 - 2026-09-27 21:52: Waited for k3s Gateway API CRD creation and establishment before Envoy setup and preserved add-on diagnostics on failure. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
 - 2026-09-27 20:39: Added node-local legacy firewall selection, optional DNS configuration, and startup network-policy enforcement probes. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 181b0472f9a5a9d422035edf5121d3a15c200cb5)

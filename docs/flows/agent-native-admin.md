@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-09-21"
-last_updated_session: "01a0c750-0c10-7492-97eb-f4124cded820"
+updated: "2026-09-27"
+last_updated_session: "01a0e514-0519-7282-ba5e-63b2764c2d6e"
 ---
 
 # Agent Native Admin UI Flow
@@ -98,7 +98,10 @@ session cookie at that configured shared cookie parent domain. The controller
 validates that the console host and Agent host suffix fit that parent on
 DNS-label boundaries and rejects public suffixes, malformed domains, or values
 outside the parent. It does not infer a broader parent domain from the console
-or Agent hostname. When native admin is disabled, leftover shared-cookie-domain
+or Agent hostname. The optional local k3d HTTP mode validates the exact
+installation-specific localhost Console and Agent suffix, emits an HttpOnly,
+SameSite=Lax shared cookie without `Secure`, and requires the exact Console host
+on authentication endpoints. Production shared cookies retain HTTPS and `Secure`. When native admin is disabled, leftover shared-cookie-domain
 configuration is ignored and the console keeps the legacy host-only
 `openclaw_occ` cookie prefix and scope.
 
@@ -166,6 +169,8 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 23:19: Traced local HTTP shared-cookie and host validation. (01a0e514-0519-7282-ba5e-63b2764c2d6e - aa64fbc0e96d739cb2a54b315a71bc403ff6ea10)
 
 - 2026-09-21 21:20: Distinguished authorized stopped Agents with no active revision from unavailable running deployments. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-21 21:17: Clarified the console's active-revision dependency message and its independence from the viewed configuration snapshot. (01a0c750-0c10-7492-97eb-f4124cded820 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)

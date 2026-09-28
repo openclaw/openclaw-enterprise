@@ -1,10 +1,12 @@
 package occdev
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +55,25 @@ func TestDevelopmentBrowserCertificateLimitsInstallationAndAgentHosts(t *testing
 		if err != nil || info.Mode().Perm() != 0600 {
 			t.Fatalf("browser key %s is not private", name)
 		}
+	}
+}
+
+func TestBrowserHTTPRejectsUnsupportedProfilesBeforeProvisioning(t *testing.T) {
+	for _, scenario := range []struct {
+		name, scheme, controlPlane, sandbox string
+	}{
+		{"invalid scheme", "ftp", "kubernetes", "none"},
+		{"compose", "http", "compose", "none"},
+		{"openshell", "http", "kubernetes", "openshell"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Setenv("OCC_DEVELOPMENT_BROWSER_SCHEME", scenario.scheme)
+			t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", scenario.controlPlane)
+			t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", scenario.sandbox)
+			err := Up(context.Background(), Options{Repository: t.TempDir()})
+			if err == nil || !strings.Contains(err.Error(), "OCC_DEVELOPMENT_BROWSER_SCHEME") {
+				t.Fatalf("unsupported browser mode was not rejected: %v", err)
+			}
+		})
 	}
 }

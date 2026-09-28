@@ -1,6 +1,9 @@
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createPostgresControllerAuth } from "../apps/controller/src/auth/index.ts";
+import {
+  createPostgresControllerAuth,
+  localDevelopmentCookieDomain,
+} from "../apps/controller/src/auth/index.ts";
 import {
   bootstrapOutputPath,
   writeProtectedBootstrapFile,
@@ -57,7 +60,7 @@ function normalizeEmail(raw, name) {
   return email;
 }
 
-function authBaseURL(raw, mode) {
+function authBaseURL(raw, mode, localDevelopmentHttp) {
   let parsed;
   try {
     parsed = new URL(raw);
@@ -65,7 +68,14 @@ function authBaseURL(raw, mode) {
     throw new Error("OCC_AUTH_BASE_URL must contain an absolute URL.");
   }
   if (
+    localDevelopmentHttp &&
+    (mode !== "production" || localDevelopmentCookieDomain(raw) === undefined)
+  ) {
+    throw new Error("OCC_LOCAL_DEVELOPMENT_HTTP requires a local development HTTP Console origin.");
+  }
+  if (
     mode === "production" &&
+    !localDevelopmentHttp &&
     parsed.protocol !== "https:" &&
     parsed.hostname !== "127.0.0.1" &&
     parsed.hostname !== "localhost"
@@ -124,6 +134,10 @@ function bootstrapFailureCode(error) {
 }
 
 function modeConfig(mode) {
+  const localDevelopmentHttp = process.env.OCC_LOCAL_DEVELOPMENT_HTTP;
+  if (localDevelopmentHttp !== undefined && !["true", "false"].includes(localDevelopmentHttp)) {
+    throw new Error("OCC_LOCAL_DEVELOPMENT_HTTP must be true or false.");
+  }
   const authConfig = {
     secret: optional(
       "OCC_AUTH_SECRET",
@@ -135,6 +149,7 @@ function modeConfig(mode) {
         mode === "development" ? DEFAULT_BETTER_AUTH_BASE_URL : undefined,
       ),
       mode,
+      localDevelopmentHttp === "true",
     ),
   };
   if (authConfig.secret.length < 32) {

@@ -67,6 +67,16 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./bin/occ dev up
 ```
 
+To open the local Console without installing a browser CA, keep the exports
+above and replace the last command with this HTTP selection for a fresh start:
+
+```bash
+OCC_DEVELOPMENT_BROWSER_SCHEME=http ./bin/occ dev up
+```
+
+Use this mode only on the machine running the isolated k3d installation; browser
+traffic and its session cookie are not encrypted. HTTPS remains the default.
+
 The first start builds and imports both images unless a verified pair was selected.
 This can take several minutes. Wait for `OpenClaw Enterprise development stack is ready.` The
 command prints the API URL, Installation ID, local service-key file, kubeconfig,
@@ -78,11 +88,11 @@ The stock local-path StorageClass supports the Harness-only RWO claim; no provis
 
 ## Open the platform console
 
-Import the printed browser CA certificate into your browser's trusted CA store
-using your browser's own certificate settings, then open the printed HTTPS
-browser console URL. Only import the public `browser-ca.crt`; keep its private
-key and the entire state directory private. Remove the CA from your browser's
-trust store when you discard this installation.
+Open the printed browser console URL. For the default HTTPS mode, first import
+the printed browser CA into your browser's trusted CA store. Only import the
+public `browser-ca.crt`; keep its private key and the entire state directory
+private. Remove the CA from your browser's trust store when you discard this
+installation. The optional local HTTP mode needs no browser CA.
 
 Sign in as `admin@development.openclaw.invalid` using the generated password in
 the administrator password file printed by startup. That file and the service

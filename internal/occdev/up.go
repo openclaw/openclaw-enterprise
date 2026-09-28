@@ -32,6 +32,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
+	browserScheme := r.setting("OCC_DEVELOPMENT_BROWSER_SCHEME", "https")
+	if browserScheme != "https" && browserScheme != "http" {
+		return fmt.Errorf("OCC_DEVELOPMENT_BROWSER_SCHEME must be https or http")
+	}
+	if browserScheme == "http" && (controlPlane != "kubernetes" || sandboxDriver != "none") {
+		return fmt.Errorf("OCC_DEVELOPMENT_BROWSER_SCHEME=http requires the Kubernetes-only profile without OpenShell")
+	}
 	if controlPlane == "kubernetes" {
 		return upK3d(ctx, opts, sandboxDriver)
 	}

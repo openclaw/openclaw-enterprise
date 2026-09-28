@@ -43,6 +43,8 @@ installation:
 
 auth:
   baseUrl: ""
+  # Reserved for the isolated local k3d launcher; do not enable for production.
+  localDevelopmentHttp: false
   secretName: occ-auth
   secretKey: secret
 

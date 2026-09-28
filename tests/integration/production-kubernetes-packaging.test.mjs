@@ -445,6 +445,41 @@ test(
       [{ name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "false" }],
     );
     assert.ok(!disabledApiEnvironment.some(({ name }) => name === "OCC_AUTH_COOKIE_DOMAIN"));
+    assert.ok(!apiEnvironment.some(({ name }) => name === "OCC_LOCAL_DEVELOPMENT_HTTP"));
+    assert.ok(!disabledApiEnvironment.some(({ name }) => name === "OCC_LOCAL_DEVELOPMENT_HTTP"));
+
+    const localObjects = await resources(
+      (
+        await render({
+          ...agentNativeAdminValues,
+          "auth.baseUrl": "http://console.occ-dev-test.oce.localhost:8443",
+          "auth.localDevelopmentHttp": "true",
+          "agentNativeAdmin.domain": "agents.occ-dev-test.oce.localhost",
+          "agentNativeAdmin.sharedCookieDomain": "occ-dev-test.oce.localhost",
+        })
+      ).stdout,
+    );
+    const localApi = localObjects.find(
+      ({ kind, metadata }) =>
+        kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === "api",
+    );
+    const bootstrap = localObjects.find(
+      ({ kind, metadata }) => kind === "Job" && metadata.name.endsWith("-initialization"),
+    );
+    assert.ok(
+      localApi.spec.template.spec.containers[0].env.some(
+        ({ name, value }) => name === "OCC_LOCAL_DEVELOPMENT_HTTP" && value === "true",
+      ),
+    );
+    assert.ok(
+      bootstrap.spec.template.spec.containers[0].env.some(
+        ({ name, value }) => name === "OCC_LOCAL_DEVELOPMENT_HTTP" && value === "true",
+      ),
+    );
+    await assert.rejects(
+      render({ "auth.localDevelopmentHttp": "true" }),
+      /requires agentNativeAdmin/,
+    );
   },
 );
 

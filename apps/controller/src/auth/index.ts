@@ -46,6 +46,7 @@ export interface ControllerAuthOptions {
   readonly database?: BetterAuthOptions["database"];
   readonly memoryDatabase?: MemoryDB;
   readonly secureCookies?: boolean;
+  readonly localDevelopmentHttp?: boolean;
   readonly sharedCookieDomain?: string;
 }
 
@@ -80,6 +81,7 @@ export interface ControllerAuth {
   readonly auth: ControllerBetterAuth;
   readonly issuer: string;
   readonly sessionCookieName: string;
+  readonly localDevelopmentHttpOrigin?: string;
   readonly sharedCookieDomain?: string;
   readonly admissionVerifier: ControllerAdmissionVerifier;
   createAccount(input: ProvisionAuthAccountInput): Promise<AuthenticatedAccount>;
@@ -112,6 +114,31 @@ function validHttpBaseURL(value: string): boolean {
     );
   } catch {
     return false;
+  }
+}
+
+// This explicit mode is reserved for the k3d launcher’s isolated browser hosts.
+export function localDevelopmentCookieDomain(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    const match = /^console\.(occ-dev-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.oce\.localhost$/.exec(
+      url.hostname,
+    );
+    if (
+      url.protocol !== "http:" ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash ||
+      match === null ||
+      match[1]!.length > 63
+    ) {
+      return undefined;
+    }
+    return `${match[1]}.oce.localhost`;
+  } catch {
+    return undefined;
   }
 }
 
@@ -527,7 +554,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   ) {
     throw new Error("OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host.");
   }
-  if (
+  if (options.localDevelopmentHttp === true) {
+    const localCookieDomain = localDevelopmentCookieDomain(options.baseURL);
+    if (
+      localCookieDomain === undefined ||
+      sharedCookieDomain !== localCookieDomain ||
+      options.secureCookies === true
+    ) {
+      throw new Error(
+        "Local development HTTP requires the exact localhost Console and cookie domain.",
+      );
+    }
+  } else if (
     sharedCookieDomain !== undefined &&
     (new URL(options.baseURL).protocol !== "https:" || options.secureCookies === false)
   ) {
@@ -591,12 +629,22 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         path: "/",
         sameSite: "lax",
         secure:
-          sharedCookieDomain !== undefined ||
-          (options.secureCookies ?? options.mode === "production"),
+          options.localDevelopmentHttp !== true &&
+          (sharedCookieDomain !== undefined ||
+            (options.secureCookies ?? options.mode === "production")),
       },
     },
   });
   const api = auth.api;
+
+  function requireLocalConsoleHost(request: FastifyRequest): void {
+    if (
+      options.localDevelopmentHttp === true &&
+      request.headers.host?.toLowerCase() !== new URL(expectedBrowserOrigin).host
+    ) {
+      throw new AdmissionFailure(403, "FORBIDDEN", "The browser host is not trusted.");
+    }
+  }
 
   async function createAccount(input: ProvisionAuthAccountInput): Promise<AuthenticatedAccount> {
     const email = input.email.trim().toLowerCase();
@@ -669,6 +717,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       reply,
       () => {
         // Better Auth server API calls skip origin middleware without a Request context.
+        requireLocalConsoleHost(request);
         requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
         const body = ensureEmailPassword(authBody(request));
         return api.signInEmail({
@@ -691,6 +740,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       reply,
       () => {
         // Better Auth server API calls skip origin middleware without a Request context.
+        requireLocalConsoleHost(request);
         requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
         return api.signOut({
           headers: sessionHeaders(request.headers, sessionCookieName),
@@ -709,14 +759,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     await sendAuthEndpoint(
       request,
       reply,
-      () =>
-        api.getSession({
+      () => {
+        requireLocalConsoleHost(request);
+        return api.getSession({
           headers: sessionHeaders(request.headers, sessionCookieName),
           query: { disableCookieCache: true, disableRefresh: true },
           asResponse: false,
           returnHeaders: true,
           returnStatus: true,
-        }),
+        });
+      },
       safeSessionResponse,
       "The controller session could not be resolved.",
     );
@@ -739,6 +791,9 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     auth,
     issuer,
     sessionCookieName,
+    ...(options.localDevelopmentHttp === true
+      ? { localDevelopmentHttpOrigin: expectedBrowserOrigin }
+      : {}),
     ...(sharedCookieDomain === undefined ? {} : { sharedCookieDomain }),
     admissionVerifier: new ControllerAdmissionVerifier(
       auth,

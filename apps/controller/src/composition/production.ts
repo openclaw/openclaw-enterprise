@@ -37,6 +37,7 @@ export interface ProductionConfig {
   readonly databaseUrl: string;
   readonly authSecret: string;
   readonly authBaseURL: string;
+  readonly localDevelopmentHttp?: boolean;
   readonly poolMax?: number;
   readonly drivers: InstallationRuntimeDrivers;
   readonly logger?: OccLogger;
@@ -87,6 +88,7 @@ export async function composeProduction(config: ProductionConfig) {
       installationId: persistedInstallation.id,
       secret: config.authSecret,
       baseURL: config.authBaseURL,
+      ...(config.localDevelopmentHttp === true ? { localDevelopmentHttp: true } : {}),
       ...(config.nativeAdmin?.enabled === true
         ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
         : {}),

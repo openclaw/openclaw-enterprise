@@ -77,12 +77,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		PlatformNamespace: r.setting("OCC_DEVELOPMENT_KUBERNETES_NAMESPACE", "oce-system"),
 		APIPort:           apiPort,
 		BrowserPort:       browserPort,
+		BrowserHTTP:       r.setting("OCC_DEVELOPMENT_BROWSER_SCHEME", "https") == "http",
 		Cluster:           r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])),
 		KeyPath:           opts.KeyOutput,
 		KeyOwned:          opts.KeyOutput == "",
 		directory:         directory,
 	}
-	if !clusterName.MatchString(state.Cluster) || len(state.Cluster) > 63 || !namespaceName.MatchString(state.PlatformNamespace) {
+	if !clusterName.MatchString(state.Cluster) || len(state.Cluster) > 63 || strings.HasSuffix(state.Cluster, "-") || !namespaceName.MatchString(state.PlatformNamespace) {
 		return fmt.Errorf("invalid Kubernetes cluster or platform Namespace name")
 	}
 	if state.KeyOwned {
@@ -168,10 +169,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	clusterArgs := []string{
 		"cluster", "create", state.Cluster,
 		"--image", openShellK3sImage,
-		"--servers", "1", "--agents", "0",
+		"--servers", "1", "--agents", "0", "--no-lb",
 		"--api-port", fmt.Sprintf("127.0.0.1:%d", kubernetesPort),
-		"--port", fmt.Sprintf("127.0.0.1:%d:%d@loadbalancer", apiPort, developmentAPINodePort),
-		"--k3s-arg", "--tls-san=k3d-" + state.Cluster + "-serverlb@server:*",
+		"--port", fmt.Sprintf("127.0.0.1:%d:%d@server:0:direct", apiPort, developmentAPINodePort),
 		"--env", "IPTABLES_MODE=legacy@server:0",
 		"--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold),
 		"--kubeconfig-update-default=false", "--kubeconfig-switch-context=false",
@@ -182,7 +182,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	}
 	clusterArgs = append(clusterArgs, resolverArgs...)
 	if browserPort != 0 {
-		clusterArgs = append(clusterArgs, "--port", fmt.Sprintf("127.0.0.1:%d:30081@loadbalancer", browserPort))
+		clusterArgs = append(clusterArgs, "--port", fmt.Sprintf("127.0.0.1:%d:30081@server:0:direct", browserPort))
 	}
 	if sandboxDriver == "openshell" {
 		admissionPath, err := prepareOpenShellAdmission(directory)
@@ -293,7 +293,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		}
 	}
 	apiURL := fmt.Sprintf("http://127.0.0.1:%d", apiPort)
-	if err := r.waitKubernetesAPI(ctx, apiURL, timeout); err != nil {
+	if err := r.waitKubernetesAPI(ctx, state, apiURL, timeout); err != nil {
 		return err
 	}
 	installation, client, err := r.copyAndVerifyKubernetesKey(ctx, state, controllerImage, apiURL, timeout)
@@ -326,7 +326,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	}
 	if state.BrowserPort != 0 {
 		consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
-		fmt.Fprintf(r.opts.Out, "Browser console: https://%s:%d/console/\nBrowser CA certificate: %s\n", consoleHost, state.BrowserPort, filepath.Join(directory, "browser-ca.crt"))
+		if state.BrowserHTTP {
+			fmt.Fprintf(r.opts.Out, "Browser console: http://%s:%d/console/\n", consoleHost, state.BrowserPort)
+		} else {
+			fmt.Fprintf(r.opts.Out, "Browser console: https://%s:%d/console/\nBrowser CA certificate: %s\n", consoleHost, state.BrowserPort, filepath.Join(directory, "browser-ca.crt"))
+		}
 	}
 	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nCompute Driver: Kubernetes\nSandbox Driver: %s\nDeployment: Kubernetes only\nPlatform Namespace: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nAdministrator: admin@development.openclaw.invalid\nAdministrator password file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=%s OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, sandboxDriver, state.PlatformNamespace, apiURL, installation, state.KeyPath, filepath.Join(directory, "initial-admin-password"), filepath.Join(directory, "kubeconfig"), state.Cluster, sandboxDriver, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
 	return nil
@@ -572,22 +576,26 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 			return err
 		}
 		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-			return err
+		if state.BrowserHTTP {
+			values["auth"] = map[string]any{"baseUrl": fmt.Sprintf("http://%s:%d", consoleHost, state.BrowserPort), "localDevelopmentHttp": true}
+		} else {
+			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+				return err
+			}
+			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+			if err != nil {
+				return err
+			}
+			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+			if err != nil {
+				return err
+			}
+			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+				return err
+			}
+			values["auth"] = map[string]string{"baseUrl": fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)}
 		}
-		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-		if err != nil {
-			return err
-		}
-		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-		if err != nil {
-			return err
-		}
-		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-			return err
-		}
-		values["auth"] = map[string]string{"baseUrl": fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)}
 		values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 	}
@@ -652,7 +660,7 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 			}},
 		},
 	}
-	if state.BrowserPort != 0 {
+	if state.BrowserPort != 0 && !state.BrowserHTTP {
 		podSpec := proxy["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 		podSpec["securityContext"].(map[string]any)["fsGroup"] = 1000
 		container := podSpec["containers"].([]any)[0].(map[string]any)
@@ -670,7 +678,11 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 	}
 	if state.BrowserPort != 0 {
 		spec := service["spec"].(map[string]any)
-		spec["ports"] = append(spec["ports"].([]any), map[string]any{"name": "https", "port": 8443, "targetPort": "https", "nodePort": 30081})
+		if state.BrowserHTTP {
+			spec["ports"] = append(spec["ports"].([]any), map[string]any{"name": "browser-http", "port": 8081, "targetPort": "http", "nodePort": 30081})
+		} else {
+			spec["ports"] = append(spec["ports"].([]any), map[string]any{"name": "https", "port": 8443, "targetPort": "https", "nodePort": 30081})
+		}
 	}
 	if err := r.writeAndApply(ctx, state, "api-proxy-service", service); err != nil {
 		return err
@@ -769,12 +781,19 @@ func developmentClusterRoleBinding(name, role, namespace, account string, labels
 	}
 }
 
-func (r *runner) waitKubernetesAPI(ctx context.Context, url string, timeout time.Duration) error {
+func (r *runner) waitKubernetesAPI(ctx context.Context, state *developmentState, url string, timeout time.Duration) error {
 	client := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return poll(ctx, timeout, func(ctx context.Context) (bool, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/api/auth/session", nil)
 		if err != nil {
 			return false, err
+		}
+		if state.BrowserHTTP {
+			consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
+			request.Host = consoleHost
+			if state.BrowserPort != 80 {
+				request.Host = fmt.Sprintf("%s:%d", consoleHost, state.BrowserPort)
+			}
 		}
 		response, err := client.Do(request)
 		if err != nil {

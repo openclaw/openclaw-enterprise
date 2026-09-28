@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
@@ -172,6 +173,8 @@ async function createNativeAdminFixture(t, options = {}) {
     authBaseURL: options.authBaseURL ?? authBaseURL,
     authCookieDomain: options.cookieDomain ?? cookieDomain,
     authSecureCookies: options.authSecureCookies ?? true,
+    authMode: options.authMode,
+    authLocalDevelopmentHttp: options.authLocalDevelopmentHttp,
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: options.nativeDomain ?? nativeDomain,
@@ -456,6 +459,7 @@ test("native admin shared session configuration validates cookie scope and rejec
   assert.match(cookie, /Domain=oce\.example\.test/i);
   assert.match(cookie, /HttpOnly/i);
   assert.match(cookie, /SameSite=Lax/i);
+  assert.match(cookie, /(?:^|;)\s*Secure(?:;|$)/im);
   assert.doesNotMatch(cookie, /__Host-occ_native_admin=/);
 
   const serviceKey = await issueServiceKeyForNativeAgent(context);
@@ -506,6 +510,95 @@ test("native admin shared session configuration validates cookie scope and rejec
       `${invalid.label} must fail closed at startup`,
     );
   }
+});
+
+test("local HTTP auth fails closed for production and nonlocal hosts", () => {
+  const base = {
+    mode: "production",
+    installationId: "ins-local-http-test",
+    secret: "local-http-integration-secret-at-least-32-bytes",
+    baseURL: "http://console.occ-dev-test.oce.localhost:8443",
+    sharedCookieDomain: "occ-dev-test.oce.localhost",
+  };
+  // Production shared cookies require HTTPS unless the explicit local mode is selected.
+  assert.throws(() => createControllerAuth(base), /requires secure HTTPS/);
+  for (const invalid of [
+    { baseURL: "http://console.example.com:8443", sharedCookieDomain: "example.com" },
+    { baseURL: "https://console.occ-dev-test.oce.localhost:8443" },
+    { baseURL: "http://console.occ-dev-test.oce.localhost:8443/path" },
+    { sharedCookieDomain: "other.oce.localhost" },
+    { secureCookies: true },
+  ]) {
+    assert.throws(
+      () => createControllerAuth({ ...base, localDevelopmentHttp: true, ...invalid }),
+      /local development http|cookie.domain/i,
+    );
+  }
+});
+
+test("local HTTP shared session reaches only the exact authorized Agent origin", async (t) => {
+  const domain = "occ-dev-integration.oce.localhost";
+  // HTTP port 443 must not be normalized as the default HTTPS port.
+  const consoleOrigin = `http://console.${domain}:443`;
+  const context = await createNativeAdminFixture(t, {
+    publicOrigin: consoleOrigin,
+    authBaseURL: consoleOrigin,
+    cookieDomain: domain,
+    nativeDomain: `agents.${domain}`,
+    authSecureCookies: false,
+    authMode: "production",
+    authLocalDevelopmentHttp: true,
+  });
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const status = await nativeStatus(context);
+  assert.equal(status.status, 200);
+  assert.match(
+    status.data.origin,
+    /^http:\/\/agent-[a-f0-9]{32}\.agents\.occ-dev-integration\.oce\.localhost:443$/,
+  );
+  // Cleanup headers can clear old Secure cookies; inspect the newly issued cookie.
+  const cookie = context.session.setCookie.find((value) =>
+    value.includes("Domain=occ-dev-integration.oce.localhost"),
+  );
+  assert.ok(cookie);
+  assert.match(cookie, /HttpOnly/i);
+  assert.match(cookie, /SameSite=Lax/i);
+  assert.doesNotMatch(cookie, /(?:^|;)\s*Secure(?:;|$)/i);
+
+  const headers = {
+    host: nativeAuthority(status.data),
+    origin: status.data.origin,
+    cookie: context.session.cookie,
+  };
+  // The actual Fastify route admits the session and forwards to the existing
+  // HTTPS gateway fixture; the fixture does not establish real runtime proof.
+  const allowed = await injectJson(context.fixture, "GET", "/", { headers });
+  assert.equal(allowed.statusCode, 200, allowed.body);
+  const noSession = await injectJson(context.fixture, "GET", "/", {
+    headers: { ...headers, cookie: "" },
+  });
+  assert.equal(noSession.statusCode, 403);
+  const wrongOrigin = await injectJson(context.fixture, "GET", "/", {
+    headers: { ...headers, origin: "http://wrong.oce.localhost:8443" },
+  });
+  assert.equal(wrongOrigin.statusCode, 403);
+  assert.equal(context.upstream.requests.length, 1);
+
+  const wrongHost = await injectJson(context.fixture, "GET", "/api/auth/session", {
+    headers: { host: "untrusted.example:8443", cookie: context.session.cookie },
+  });
+  assert.equal(wrongHost.statusCode, 403);
+
+  const logout = await injectJson(context.fixture, "POST", "/api/auth/sign-out", {
+    headers: {
+      host: new URL(consoleOrigin).host,
+      origin: consoleOrigin,
+      cookie: context.session.cookie,
+    },
+  });
+  assert.equal(logout.statusCode, 200, logout.body);
+  const revoked = await injectJson(context.fixture, "GET", "/", { headers });
+  assert.equal(revoked.statusCode, 403);
 });
 
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {

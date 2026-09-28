@@ -129,9 +129,45 @@ func (r *runner) waitDevelopmentGatewayAPICRDs(ctx context.Context, timeout time
 		if err != nil {
 			return fmt.Errorf("wait for k3s Gateway API CRD %s to be created: %w", crd, err)
 		}
-		if err := r.run(ctx, "kubectl", "wait", "--for=condition=Established", "crd/"+crd, "--timeout", timeout.String()); err != nil {
+		if err := r.waitDevelopmentCondition(ctx, "", "crd", crd, "Established", timeout); err != nil {
 			return fmt.Errorf("wait for k3s Gateway API CRD %s to be established: %w", crd, err)
 		}
+	}
+	return nil
+}
+
+// Newly applied resources can briefly have no conditions. Poll their actual
+// status instead of treating that initial state as an error.
+func (r *runner) waitDevelopmentCondition(ctx context.Context, namespace, kind, name, conditionType string, timeout time.Duration) error {
+	err := poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		args := []string{"get", kind, name, "-o", "json"}
+		if namespace != "" {
+			args = append([]string{"-n", namespace}, args...)
+		}
+		data, err := r.output(ctx, "kubectl", args...)
+		if err != nil {
+			return false, err
+		}
+		var resource struct {
+			Status struct {
+				Conditions []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				} `json:"conditions"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(data, &resource); err != nil {
+			return false, fmt.Errorf("invalid %s status for %s: %w", kind, name, err)
+		}
+		for _, condition := range resource.Status.Conditions {
+			if condition.Type == conditionType && condition.Status == "True" {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf("wait for %s %s condition %s: %w", kind, name, conditionType, err)
 	}
 	return nil
 }
@@ -171,7 +207,7 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 			deployments = []string{"envoy-gateway"}
 		}
 		for _, crd := range crds {
-			if err := r.run(ctx, "kubectl", "wait", "--for=condition=Established", "crd/"+crd, "--timeout", timeout.String()); err != nil {
+			if err := r.waitDevelopmentCondition(ctx, "", "crd", crd, "Established", timeout); err != nil {
 				return "", err
 			}
 		}
@@ -185,7 +221,7 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 	if err := r.writeAndApply(ctx, state, "development-gateway-class", class); err != nil {
 		return "", err
 	}
-	if err := r.run(ctx, "kubectl", "wait", "--for=condition=Accepted", "gatewayclass/eg", "--timeout", timeout.String()); err != nil {
+	if err := r.waitDevelopmentCondition(ctx, "", "gatewayclass", "eg", "Accepted", timeout); err != nil {
 		return "", err
 	}
 	nodeData, err := r.output(ctx, "kubectl", "get", "node", "k3d-"+state.Cluster+"-server-0", "-o", "json")
@@ -246,10 +282,10 @@ func configureDevelopmentRouting(state *developmentState, podCIDR string) error 
 }
 
 func (r *runner) waitDevelopmentRouting(ctx context.Context, state *developmentState, podCIDR string, timeout time.Duration) error {
-	if err := r.run(ctx, "kubectl", "-n", state.PlatformNamespace, "wait", "--for=condition=Ready", "certificate/openclaw-enterprise-agent-gateways-tls", "--timeout", timeout.String()); err != nil {
+	if err := r.waitDevelopmentCondition(ctx, state.PlatformNamespace, "certificate", "openclaw-enterprise-agent-gateways-tls", "Ready", timeout); err != nil {
 		return err
 	}
-	if err := r.run(ctx, "kubectl", "-n", state.PlatformNamespace, "wait", "--for=condition=Programmed", "gateway/openclaw-enterprise-agent-gateways", "--timeout", timeout.String()); err != nil {
+	if err := r.waitDevelopmentCondition(ctx, state.PlatformNamespace, "gateway", "openclaw-enterprise-agent-gateways", "Programmed", timeout); err != nil {
 		return err
 	}
 	selector := "app.kubernetes.io/component=proxy,app.kubernetes.io/managed-by=envoy-gateway,gateway.envoyproxy.io/owning-gateway-namespace=" + state.PlatformNamespace + ",gateway.envoyproxy.io/owning-gateway-name=openclaw-enterprise-agent-gateways"

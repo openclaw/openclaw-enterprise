@@ -32,6 +32,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_ENABLED` — Enables the Agent native admin pilot; default: `false`.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
+- `OCC_LOCAL_DEVELOPMENT_HTTP` — Local k3d launcher flag for HTTP shared sessions; do not use in production.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup; set by Helm `api.channelDirectoryProxyUrl`.
 - `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC or gateway CA; read at process startup.
@@ -87,7 +88,8 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
-- `OCC_DEVELOPMENT_BROWSER_PORT` — Published HTTPS browser port on host loopback; default: `8443`.
+- `OCC_DEVELOPMENT_BROWSER_PORT` — Published browser port on host loopback; default: `8443`.
+- `OCC_DEVELOPMENT_BROWSER_SCHEME` — `https` (default) or local `http`; see [development settings](../settings/development.md#required-development-controller-environment).
 - `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` — Compose bridge allowed to reach the development API.
 - `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR` — Single private forwarding IP; supplied automatically for rootful macOS Podman.
 - `OCC_DEVELOPMENT_CONFIGURATION_ROOT` — Absolute path to the development filesystem Configuration Driver's root.

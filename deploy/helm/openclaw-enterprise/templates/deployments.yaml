@@ -208,6 +208,10 @@ spec:
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
             {{- end }}
+            {{- if $.Values.auth.localDevelopmentHttp }}
+            - name: OCC_LOCAL_DEVELOPMENT_HTTP
+              value: "true"
+            {{- end }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             {{- if $.Values.agentNativeAdmin.enabled }}

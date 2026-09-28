@@ -937,8 +937,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (publicOrigin === undefined) {
       throw new Error("Native admin UI access requires OCC public origin configuration.");
     }
-    if (new URL(publicOrigin).protocol !== "https:") {
-      throw new Error("Native admin UI access requires an HTTPS public origin.");
+    if (options.auth.localDevelopmentHttpOrigin === undefined) {
+      if (new URL(publicOrigin).protocol !== "https:") {
+        throw new Error("Native admin UI access requires an HTTPS public origin.");
+      }
+    } else if (
+      publicOrigin !== options.auth.localDevelopmentHttpOrigin ||
+      nativeAdminDomain !== `agents.${options.auth.sharedCookieDomain}`
+    ) {
+      throw new Error("Local development HTTP requires the exact localhost Agent domain.");
     }
     if (nativeAdminDomain === undefined) {
       throw new Error("Native admin UI access requires an Agent domain.");
@@ -959,6 +966,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (options.nativeAdminGatewayApiKey === undefined) {
       throw new Error("Native admin UI access requires a private gateway API key.");
     }
+  }
+  if (
+    options.auth.localDevelopmentHttpOrigin !== undefined &&
+    options.nativeAdmin?.enabled !== true
+  ) {
+    throw new Error("Local development HTTP requires native admin UI access.");
   }
   validateTrustedDevelopmentCidrs(development);
 
@@ -1367,7 +1380,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return undefined;
     }
     try {
-      const parsed = new URL(`https://${trimmed}`);
+      const protocol = options.auth.localDevelopmentHttpOrigin === undefined ? "https:" : "http:";
+      const parsed = new URL(`${protocol}//${trimmed}`);
       if (parsed.username.length > 0 || parsed.password.length > 0 || parsed.pathname !== "/") {
         return undefined;
       }
@@ -1384,7 +1398,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (authority === undefined) {
       return undefined;
     }
-    return new URL(`https://${authority}`).hostname.toLowerCase();
+    const protocol = options.auth.localDevelopmentHttpOrigin === undefined ? "https:" : "http:";
+    return new URL(`${protocol}//${authority}`).hostname.toLowerCase();
   }
 
   function publicOriginHostname(): string | undefined {

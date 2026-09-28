@@ -173,6 +173,10 @@ function configuration() {
     }
   }
 
+  const localDevelopmentHttp = optionalBooleanEnvironment("OCC_LOCAL_DEVELOPMENT_HTTP");
+  if (localDevelopmentHttp && mode !== "production") {
+    throw new Error("OCC_LOCAL_DEVELOPMENT_HTTP requires the Kubernetes production composition.");
+  }
   const nativeAdminEnabled = optionalBooleanEnvironment("OCC_AGENT_NATIVE_ADMIN_ENABLED");
   const nativeAdminDomain = process.env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
   const authCookieDomain = process.env.OCC_AUTH_COOKIE_DOMAIN;
@@ -204,6 +208,7 @@ function configuration() {
       ...settings,
       authSecret: requiredEnvironment("OCC_AUTH_SECRET"),
       authBaseURL,
+      ...(localDevelopmentHttp ? { localDevelopmentHttp: true } : {}),
       ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
       ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),

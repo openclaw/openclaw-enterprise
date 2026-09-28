@@ -175,12 +175,21 @@ Verify directory search and gateway Socket Mode using the
 ## Verify the local boundary
 
 Startup prints the API URL, kubeconfig, Kubernetes context, and service-key file.
-With Sandbox Driver `none`, it also prints an HTTPS browser console URL and a
-public browser CA. Import that CA as described in
-[Local Setup](../quickstart.md#open-the-platform-console). The browser session
-cookie uses a per-installation parent domain; its matching subdomains are part of
-the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
+With Sandbox Driver `none`, it also prints a browser console URL. The default
+HTTPS mode prints a public browser CA; import it as described in
+[Local Setup](../quickstart.md#open-the-platform-console). Set
+`OCC_DEVELOPMENT_BROWSER_SCHEME=http` before a fresh start to use loopback HTTP
+without a browser CA. This option requires the Kubernetes-only profile without
+OpenShell. Its unencrypted browser session is for an isolated local host, not a
+remotely exposed installation. The session cookie uses a per-installation parent
+domain; its matching subdomains are part of the
+[shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
 The OpenShell profile does not configure that browser endpoint.
+
+Changing the scheme changes every Agent origin. Update each selected Agent's
+exact `allowedOrigins` through the [native admin configuration and revision
+procedure](native-admin.md#configure-each-agent), preserving its other values,
+and deploy the new revision before opening the Agent UI.
 
 Use the printed paths with other tools without changing the default kubeconfig or
 context:

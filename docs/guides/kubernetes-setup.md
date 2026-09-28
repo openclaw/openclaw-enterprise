@@ -1,6 +1,6 @@
 # Set up OpenClaw Enterprise on Kubernetes
 
-Install the OpenClaw Control Plane (OCC) in a Kubernetes cluster you already operate. This guide takes you from checking the cluster to authenticating to the installed API, with private routing for Console workspace access enabled as part of setup. If you want to try OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md); that profile runs OCC in Compose and Agent workloads in k3d.
+Install the OpenClaw Control Plane (OCC) in a Kubernetes cluster you already operate. This guide takes you from checking the cluster to authenticating to the installed API, with private routing for Console workspace access enabled as part of setup. If you want to try OpenClaw Enterprise on your machine, use [Local Setup](quickstart.md); that profile runs OCC and Agent workloads in k3d.
 
 ## Before you start
 

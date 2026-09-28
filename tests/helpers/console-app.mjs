@@ -95,6 +95,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     baseURL: authBaseURL,
     secret: `console-test-secret-${randomUUID()}-${randomUUID()}`,
     memoryDatabase,
+    ...(options.authLocalDevelopmentHttp === true ? { localDevelopmentHttp: true } : {}),
     ...(options.authCookieDomain === undefined
       ? {}
       : { sharedCookieDomain: options.authCookieDomain }),
@@ -327,9 +328,32 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   async function signIn(overrides = {}) {
+    const dispatcher =
+      options.authLocalDevelopmentHttp === true
+        ? async (request) => {
+            const url = new URL(request.url);
+            const response = await app.inject({
+              method: request.method,
+              url: `${url.pathname}${url.search}`,
+              headers: { ...Object.fromEntries(request.headers), host: url.host },
+              ...(request.body === null
+                ? {}
+                : { payload: Buffer.from(await request.arrayBuffer()) }),
+            });
+            const headers = new Headers();
+            for (const [name, values] of Object.entries(response.headers)) {
+              for (const value of Array.isArray(values) ? values : [values]) {
+                if (value !== undefined) {
+                  headers.append(name, String(value));
+                }
+              }
+            }
+            return new Response(response.rawPayload, { status: response.statusCode, headers });
+          }
+        : fetchThroughLoopback;
     return signInWithEmailPassword({
-      origin,
-      fetch: fetchThroughLoopback,
+      origin: options.authLocalDevelopmentHttp === true ? authBaseURL : origin,
+      fetch: dispatcher,
       ...credentials,
       ...overrides,
     });

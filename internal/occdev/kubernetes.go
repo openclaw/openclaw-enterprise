@@ -46,6 +46,9 @@ func (r *runner) writeKubeconfigs(ctx context.Context, s *developmentState) erro
 	if _, err := r.output(ctx, "kubectl", "--kubeconfig", host, "--context", contextName, "get", "--raw=/version"); err != nil {
 		return err
 	}
+	if s.DeploymentMode == "k3d" {
+		return nil
+	}
 	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("invalid k3d kubeconfig: %w", err)

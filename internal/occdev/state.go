@@ -24,6 +24,7 @@ type developmentState struct {
 	PlatformNamespace string `json:"platformNamespace,omitempty"`
 	APIPort           int    `json:"apiPort,omitzero"`
 	BrowserPort       int    `json:"browserPort,omitzero"`
+	BrowserHTTP       bool   `json:"browserHttp,omitzero"`
 	ContainerEngine   string `json:"containerEngine"`
 	ComposeProject    string `json:"composeProject"`
 	Cluster           string `json:"cluster"`
