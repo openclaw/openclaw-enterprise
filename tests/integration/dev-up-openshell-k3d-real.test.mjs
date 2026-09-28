@@ -225,6 +225,7 @@ test(
       ...process.env,
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
       OCC_DEVELOPMENT_SANDBOX_DRIVER: "openshell",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
       OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-09
-updated: 2026-09-27
+updated: 2026-09-28
 last_updated_session: 01a0e441-02f9-70b2-ad45-0a1a5049954a
 ---
 
@@ -13,8 +13,8 @@ Trace host preflight, database initialization, and API/worker startup. See the [
 `scripts/dev-up` selects Docker or Kubernetes Compute and starts the requested
 development topology from a checkout. Docker Compute and Compose-backed
 Kubernetes profiles run PostgreSQL, migration, bootstrap, the API, and the
-worker in Compose. The default Kubernetes-only profile runs those services in
-the owned k3d cluster. This flow ends after authenticated Installation and
+worker in Compose. The explicitly selected Kubernetes-only profile runs those
+services in the owned k3d cluster. This flow ends after authenticated Installation and
 bootstrap Namespace readiness; OpenShell also requires Workspace readiness.
 
 ## Entry Points
@@ -54,10 +54,10 @@ graph TD
 
 The helper requires the checkout-local `bin/occ` from `pnpm cli:build`, accepts
 `--key-output`, and forwards arguments after `--` to Compose. This section traces
-`OCC_DEVELOPMENT_COMPUTE_DRIVER=docker`; the default is
-[local Kubernetes development](../../guides/deploy/local-kubernetes-development.md).
-OpenShell requires Kubernetes Compute. `OCC_DEVELOPMENT_CONTROL_PLANE=compose`
-selects the Compose-backed Kubernetes path below.
+the default `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker`. OpenShell requires
+Kubernetes Compute. Kubernetes Compute also defaults to the Compose control
+plane; explicitly select `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` for
+[local Kubernetes-only development](../../guides/deploy/local-kubernetes-development.md).
 
 The Docker Compute path first probes a running Docker Engine and the JSON
 configuration capability required from Docker Compose. If that probe fails, it
@@ -191,14 +191,17 @@ Every claimed operation reauthorizes the original actor before calling Compute.
 The worker is the only Compose service with Docker-compatible engine access. It
 does not mount the configuration volume.
 
-### Default Kubernetes-only startup
+<span id="default-kubernetes-only-startup"></span>
+
+### Kubernetes-only startup
 
 `internal/occdev/openshell_k3d.go:upK3d`,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-The default profile creates its owned k3d cluster in K3s legacy iptables mode,
-imports matching OCE images, and runs PostgreSQL, migration, bootstrap, API, and
+The Kubernetes-only profile creates its owned k3d cluster in K3s legacy
+iptables mode, imports matching OCE images, and runs PostgreSQL, migration,
+bootstrap, API, and
 worker inside Kubernetes. An explicitly selected IPv4 resolver replaces k3d's
 node DNS rewriting; the host resolver is unchanged.
 
@@ -262,7 +265,8 @@ operator overrides the subnet. Startup and
 cleanup both use that snapshot, so later `.env` edits cannot change the saved
 project configuration.
 
-Kubernetes Compute defaults to branching before Compose rendering into
+With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
+before Compose rendering into
 `internal/occdev/openshell_k3d.go:upK3d`. That profile uses the engine
 only for k3d and image operations, and adds OpenShell only when selected.
 Without OpenShell, the Installation selects the bundled Presets and curated
@@ -279,10 +283,9 @@ Startup compares authenticated repository discovery with the approved references
 and profiles. It does not perform Git operations; see the
 [local repository procedure](../../guides/deploy/local-repository-credentials.md).
 
-Selecting
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` continues through the Compose snapshot
-and startup sequence. Any other control-plane value fails before resource
-creation. The
+The default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` continues through the
+Compose snapshot and startup sequence. An unsupported control-plane value fails
+before resource creation. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns both OpenShell control-plane sequences.
 
@@ -368,6 +371,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 00:34: Restored Compose defaults and explicit Kubernetes-only startup. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 201f31d511464133f06e0526bb5545ed1cb27e25)
 
 - 2026-09-27 21:52: Waited for k3s Gateway API CRD creation and establishment before Envoy setup and preserved add-on diagnostics on failure. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
 - 2026-09-27 20:39: Added node-local legacy firewall selection, optional DNS configuration, and startup network-policy enforcement probes. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 181b0472f9a5a9d422035edf5121d3a15c200cb5)

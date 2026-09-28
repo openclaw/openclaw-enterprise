@@ -82,9 +82,9 @@ These settings belong to the checkout's development stack. See
 [development settings](../settings/development.md#required-development-controller-environment)
 for supported engines, images, and security restrictions.
 
-- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `kubernetes` (default) or `docker`; only the Kubernetes quickstart can deploy Agents.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
-- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` or `kubernetes`; defaults to `kubernetes`. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
+- `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
 - `OCC_DEVELOPMENT_BROWSER_PORT` — Published HTTPS browser port on host loopback; default: `8443`.

@@ -12,8 +12,15 @@ Choose [Local Setup](docs/guides/quickstart.md) to run OCC on your machine, or [
 
 ```bash
 pnpm cli:build
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
+export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./bin/occ dev up
 ```
+
+This selects the Kubernetes-only profile for Agent deployment. With no profile
+selection, `occ dev up` starts a Compose control-plane preview that cannot deploy
+Agents.
 
 You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 

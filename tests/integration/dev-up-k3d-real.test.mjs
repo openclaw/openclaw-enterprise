@@ -139,6 +139,8 @@ process.exit(result.status ?? 1);
       PATH: `${root}${delimiter}${process.env.PATH}`,
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
+      OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
       OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
       OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
@@ -148,8 +150,6 @@ process.exit(result.status ?? 1);
       OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "90",
     };
     for (const key of [
-      "OCC_DEVELOPMENT_COMPUTE_DRIVER",
-      "OCC_DEVELOPMENT_CONTROL_PLANE",
       "OCC_DEVELOPMENT_SANDBOX_DRIVER",
       "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY",
       "OPENAI_API_KEY",
@@ -206,7 +206,7 @@ process.exit(result.status ?? 1);
 );
 
 test(
-  "dev-up installs the default Kubernetes control plane and cleans up its owned cluster",
+  "dev-up installs the selected Kubernetes control plane and cleans up its owned cluster",
   {
     skip: selected ? false : "Set OCC_TEST_DEV_UP_K3D_REAL=1 to run the real development profile.",
     timeout: 1_200_000,
@@ -228,6 +228,8 @@ test(
       ...process.env,
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
+      OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
       OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
       OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
@@ -236,8 +238,6 @@ test(
         process.env.OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT ?? "1",
       OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "600",
     };
-    delete environment.OCC_DEVELOPMENT_COMPUTE_DRIVER;
-    delete environment.OCC_DEVELOPMENT_CONTROL_PLANE;
     delete environment.OCC_DEVELOPMENT_SANDBOX_DRIVER;
     // Cleanup uses the recorded engine and cluster; failed cleanup preserves recovery state.
     t.after(async () => {

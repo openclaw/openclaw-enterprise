@@ -5,8 +5,10 @@
 Start an OpenClaw Enterprise installation that can deploy Agents on your
 machine. The OpenClaw Control Plane (OCC), PostgreSQL, and Agent workloads run
 in a local Kubernetes cluster created with k3d. This setup is for development
-and uses loopback addresses. To install OCC itself in a cluster you already
-operate, use [Kubernetes Setup](kubernetes-setup.md).
+and uses loopback addresses. This guide explicitly selects the Kubernetes-only
+profile; without a selection, startup uses a Compose control-plane preview that
+cannot deploy Agents. To install OCC itself in a cluster you already operate,
+use [Kubernetes Setup](kubernetes-setup.md).
 
 ## Workspace access
 
@@ -59,6 +61,9 @@ To build both from source instead, unset both variables before startup.
 
 ```bash
 pnpm cli:build
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
+export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./bin/occ dev up
 ```
 
@@ -154,7 +159,7 @@ to create your own Agent and send it a prompt.
 ## Clean up and stop
 
 When you are finished, run the cleanup command printed by startup. With the
-defaults:
+profile exports above still set:
 
 ```bash
 ./bin/occ dev down

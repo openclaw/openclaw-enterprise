@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: "2026-09-26"
-last_updated_session: "claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY"
+updated: 2026-09-28
+last_updated_session: 01a0e441-02f9-70b2-ad45-0a1a5049954a
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -94,11 +94,10 @@ credential source's provider profile supplies it.
 
 The environment selects Kubernetes Compute and OpenShell. `scripts/dev-up`
 validates that combination and delegates lifecycle ownership to `occ dev up`.
-OpenShell defaults to the Kubernetes-only control plane;
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` selects the hybrid profile. Both verify
-the `v0.1.0` source archive before packaging
-its Gateway and Workspace charts, and imports the matching digest-pinned
-Gateway, Sandbox, and supervisor images. The launcher supplies v0.1.0's separate
+The control plane defaults to Compose; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`
+selects the Kubernetes-only profile. Both verify the `v0.1.0` source archive
+before packaging its Gateway and Workspace charts, and import the matching
+digest-pinned Gateway, Sandbox, and supervisor images. The launcher supplies v0.1.0's separate
 image registry, repository, and digest values for each component and omits the
 NetworkPolicy acknowledgement removed from that chart.
 The CLI records the exact engine endpoint, cluster,
@@ -252,14 +251,14 @@ Kubernetes Compute delete the Kubernetes namespace.
 
 ## Debugging and Verification
 
-- `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell ./scripts/dev-up`
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell ./scripts/dev-up`
   creates the reusable Kubernetes-only development environment: PostgreSQL, the
   Helm-installed OCE control plane, and the central Gateway share `oce-system`;
   tenant resources remain in OCC-owned Namespaces. `scripts/dev-down` removes
   only the recorded cluster and private state.
-- Add `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL and OCC in
-  Compose while retaining the same k3d Compute, operator Workspace, and
-  fail-closed Agent boundaries.
+- Use the default `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to keep PostgreSQL
+  and OCC in Compose while retaining the same k3d Compute, operator Workspace,
+  and fail-closed Agent boundaries.
 - `node --test tests/integration/ci-openshell.test.mjs` checks bootstrap safety
   and immutable Helm image value rendering without selecting a real cluster.
 - `node --test tests/integration/sandbox-driver-startup.test.mjs` checks Driver
@@ -306,6 +305,8 @@ Kubernetes Compute delete the Kubernetes namespace.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 00:34: Restored Compose defaults and explicit Kubernetes-only startup. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 201f31d511464133f06e0526bb5545ed1cb27e25)
 
 - 2026-09-26 14:29: Documented the shared `openshell` Backend, credential-source attachments in Sandbox creation, attachment readiness before activation, and the app-server token as the first remaining stock blocker. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 849b2b24111fe237b12da5be1d4b411d3146cefb)
 - 2026-09-25 12:23: Documented the selectable Compose control plane while preserving the operator Workspace lifecycle and Kubernetes-only default. (authoring-run/a81f3e71-1c8e-4692-8e2e-d462ddacc10b - 64ab72aed5c4926e4a2080ade91d785e531801a2)

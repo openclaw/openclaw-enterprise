@@ -214,8 +214,9 @@ bootstrap, API, and worker. `occ dev up` starts the supported development
 profile; the checkout-local `scripts/dev-up` entry point uses the same path.
 Startup validates Compose configuration, waits for services, copies
 the bootstrap service-key response to a private file, and proves authenticated
-access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or the
-Compose-hosted [local Kubernetes profile](../../guides/deploy/local-kubernetes-development.md).
+access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
+Compute. Kubernetes Compute can use a Compose control plane or the
+[Kubernetes-only profile](../../guides/deploy/local-kubernetes-development.md).
 The helper prefers a usable Docker Engine and otherwise selects Podman directly,
 even when no `docker` compatibility alias exists. Podman requires the standalone
 `podman-compose` provider; Docker Compute also requires `yq` v4. The helper

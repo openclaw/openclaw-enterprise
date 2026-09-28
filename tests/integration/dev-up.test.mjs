@@ -603,15 +603,43 @@ test("dev-up routes Kubernetes Compute through the unified entry point", async (
   assert.match(result.stdout, /occ dev up/);
 });
 
-test("dev-up defaults to the Kubernetes-only control plane", async (t) => {
+test("development entry points default to the Compose profile", async (t) => {
   const fixture = await createFixture(t);
   const env = { ...fixture.env };
   delete env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
   delete env.OCC_DEVELOPMENT_CONTROL_PLANE;
-  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "default-state");
+  delete env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
 
-  // The default must reject Compose arguments before creating state or invoking
-  // a container engine, so accidental legacy overrides cannot start Compose.
+  // Both entry points must start the same Compose profile when no selector is set.
+  const options = composeOptions(fixture);
+  const script = runDevUp(
+    ["--key-output", join(fixture.directory, "script-key.json"), "--", ...options],
+    env,
+  );
+  const cli = spawnSync(
+    fixture.cli,
+    ["dev", "up", "--key-output", join(fixture.directory, "cli-key.json"), "--", ...options],
+    { cwd: fixture.fixtureRepository, encoding: "utf8", env },
+  );
+  for (const result of [script, cli]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /OpenClaw Enterprise development stack is ready/);
+    assert.match(result.stdout, /Container engine: Docker/);
+  }
+  const starts = (await readJsonLines(fixture.dockerLog)).filter(
+    (entry) => entry.args[0] === "compose" && entry.args.includes("up"),
+  );
+  assert.equal(starts.length, 2);
+});
+
+test("explicit Kubernetes-only profile rejects Compose options before mutation", async (t) => {
+  const fixture = await createFixture(t);
+  const env = { ...fixture.env };
+  env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
+  env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "kubernetes-state");
+
+  // Compose options cannot redirect the explicitly selected Kubernetes-only profile.
   for (const result of [
     runDevUp(["--", "--env-file", fixture.emptyEnv], env),
     spawnSync(fixture.cli, ["dev", "up", "--", "--env-file", fixture.emptyEnv], {
@@ -625,6 +653,45 @@ test("dev-up defaults to the Kubernetes-only control plane", async (t) => {
   }
   await assert.rejects(stat(env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
   assert.equal((await readJsonLines(fixture.dockerLog)).length, 0);
+});
+
+test("development cleanup defaults to the Compose profile", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  delete fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER;
+
+  // Cleanup without selectors must target Compose, not a Kubernetes state directory.
+  const result = runDevDown(fixture.env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Stopped Docker-compatible development stack/);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.ok(commands.some((entry) => entry.command === "docker" && entry.args.includes("down")));
+  assert.equal(
+    commands.some((entry) => entry.command === "k3d"),
+    false,
+  );
+});
+
+test("development cleanup rejects a Kubernetes control plane without Kubernetes Compute", async (t) => {
+  const fixture = await createFixture(t);
+  await prepareLifecycleCommands(fixture);
+  delete fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER;
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+
+  // A mismatched selector must not stop an unrelated default Compose stack.
+  const result = runDevDown(fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes requires Kubernetes Compute/,
+  );
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  assert.equal(
+    commands.some((entry) => entry.args.includes("down")),
+    false,
+  );
 });
 
 // Serve the existing Installation HTTP contract in a child process so the real
@@ -773,6 +840,18 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   assert.match(repeated.stderr, /no such file or directory/);
 });
 
+test("Kubernetes Compute defaults to the Compose control plane", async (t) => {
+  const fixture = await kubernetesFixture(t);
+  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+
+  // Kubernetes Compute remains available while the control plane defaults to Compose.
+  const result = fixture.start();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Control plane: Compose/);
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+});
+
 test("Kubernetes dev-up forwards an explicit K3s image to k3d", async (t) => {
   const fixture = await kubernetesFixture(t);
   fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
@@ -793,7 +872,7 @@ test("Kubernetes dev-up forwards an explicit K3s image to k3d", async (t) => {
 
 test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before reporting readiness", async (t) => {
   const fixture = await kubernetesFixture(t);
-  delete fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE;
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
   fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
   fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
   fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";

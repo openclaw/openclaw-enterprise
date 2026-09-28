@@ -28,7 +28,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if sandboxDriver != "none" && sandboxDriver != "openshell" {
 		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
 	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "kubernetes")
+	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}

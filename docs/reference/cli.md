@@ -111,13 +111,13 @@ local setup for deploying an Agent; follow [Local Setup](../guides/quickstart.md
 
 | Command                        | What it does                                                                                                                                                                   |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `occ dev up`                   | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `kubernetes` (default) or `docker`. Docker is a control-plane preview and cannot deploy Agents.               |
+| `occ dev up`                   | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
 | `occ dev up --key-output PATH` | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
 | `occ dev down`                 | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
 | `occ dev down --volumes`       | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
 
 Compose global options, when needed, must follow `--`. Keep the cleanup command
 printed by startup so it selects the same profile and state directory.
-The default Kubernetes-only profile rejects Compose options. Use
+The explicitly selected Kubernetes-only profile rejects Compose options. Use
 `scripts/dev-up` and `scripts/dev-down` as the common entry points for every
 profile; the Compute and Sandbox Driver settings select the implementation.

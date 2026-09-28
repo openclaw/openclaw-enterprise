@@ -15,6 +15,8 @@ Build the CLI and start the Kubernetes profile:
 
 ```bash
 pnpm cli:build
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
+export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
@@ -46,6 +48,8 @@ For an OpenShell environment, use the owned launcher:
 
 ```bash
 pnpm cli:build
+export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
+export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
@@ -80,8 +84,10 @@ export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman
 ./scripts/dev-up
 ```
 
-Use `docker` instead for Docker Engine. The default profile does not require
-Docker Compose or `podman-compose` and rejects Compose arguments.
+Use `docker` instead for Docker Engine. The Kubernetes-only profile does not
+require Docker Compose or `podman-compose` and rejects Compose arguments. Keep
+the profile exports for startup and cleanup. Without profile selections,
+startup uses the Compose control-plane preview with Docker Compute.
 
 State and credentials are written to the private
 `/tmp/openclaw-development` directory by default. Set the absolute

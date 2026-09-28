@@ -169,8 +169,10 @@ must equal its pre-provisioned Kubernetes namespace, so OCC uses a stable
 19-character Workspace limit.
 
 The Kubernetes development profile acts as the operator for its disposable
-cluster. `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell` installs one pinned Gateway
-beside the OCE control plane in `oce-system`, with workspace resources disabled.
+cluster. With Kubernetes Compute, `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`
+installs one pinned Gateway with workspace resources disabled. The explicitly
+selected Kubernetes-only control plane places it in `oce-system`; the default
+Compose control plane places it in `openshell-system`.
 The upstream Agent Sandbox controller remains in `agent-sandbox-system`. The helper renders the
 pinned `openshell-workspace` chart once and stores its namespace-agnostic
 resources in the trusted Installation configuration. For every OCC Namespace,
@@ -178,8 +180,9 @@ the Driver applies those resources before creating its Workspace through the
 Gateway API. There is no per-Namespace Helm release.
 
 The disposable profile enables OpenShell's unauthenticated development mode.
-Its Gateway ingress policy admits only the OCE API and worker in `oce-system` and
-OpenShell supervisor Pods from OCE-owned tenant Namespaces. The per-tenant
+In the Kubernetes-only profile, its Gateway ingress policy admits only the OCE
+API and worker in `oce-system` and OpenShell supervisor Pods from OCE-owned
+tenant Namespaces. The per-tenant
 callback egress policy selects only Pods labeled as OpenShell-managed
 supervisors. Other tenant Pods cannot reach the Gateway administrative API.
 

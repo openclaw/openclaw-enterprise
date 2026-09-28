@@ -12,7 +12,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
 cd "$repo_root"
 
-development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-kubernetes}"
+development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
 development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"
 development_control_plane="${OCC_DEVELOPMENT_CONTROL_PLANE:-}"
 case "$development_sandbox_driver" in

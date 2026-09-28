@@ -41,9 +41,9 @@ func developmentCommand() *cobra.Command {
 					return occdev.Down(cmd.Context(), options)
 				}
 				switch os.Getenv("OCC_DEVELOPMENT_COMPUTE_DRIVER") {
-				case "", "kubernetes":
+				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
-				case "docker":
+				case "", "docker":
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
 					arguments := []string{filepath.Join(repository, "scripts", "dev-up")}
