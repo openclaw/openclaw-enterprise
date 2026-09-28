@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/1495f489-e298-44e9-b75d-6a49445d35e3"
 ## Overview
 
 `scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
-Agent runtimes, or both. A controller-only release ends after the OCC API and
+Agent runtimes, or both. The controller-only command ends after the OCC API and
 worker recover; it does not request Agent deployments. A runtime release deploys
 a new revision for every Agent that was running when the command began and ends
 after the selected Pods are ready and each replacement gateway passes read-only
@@ -34,8 +34,8 @@ graph TD
     B -->|No| C["Render controller candidate"]
     C --> D["Run Helm with new controller image"]
     D --> E{"API and worker ready?"}
-    E -->|No| F["Stop with Agent fleet unchanged"]
-    E -->|Yes| G["Finish controller release"]
+    E -->|No| F["Stop after OCC rollout failure"]
+    E -->|Yes| G["Return controller rollout result"]
     B -->|Yes| H{"Complete fleet inventory available?"}
     H -->|No| I["Stop before mutation"]
     H -->|Yes| J["Freeze running Agent baseline"]
@@ -100,8 +100,11 @@ the migration role. Bootstrap runs only after migration succeeds, and the API
 and worker roll out only after both hooks succeed.
 
 The script verifies both OCC Deployments and authenticated OCC recovery. It does
-not request deployment inventory or invoke `occ agent deploy`. Existing gateway
-Pods continue using their current revisions and runtime images.
+not request deployment inventory or invoke `occ agent deploy`, and it does not
+change the selected runtime image. If a worker restart loses delivered broker
+sessions, affected revisions can fail and queue runtime retirement. The operator
+must inspect retained cleanup and deploy authorized replacements as described in
+the [production upgrade guide](../guides/deploy/production-upgrade.md).
 
 ### 4. Freeze the fleet for a runtime release
 
@@ -191,8 +194,9 @@ delivery, workspace continuity, native access, and required restore behavior.
   `status/*.json` before retrying anything. Doctor failures are recorded in
   `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
-  workload changes. Controller-only proof should retain Agent revision IDs;
-  runtime proof should show the intended replacements.
+  workload changes. The controller-only helper requests no Agent deployments;
+  separately check repository-bound revisions affected by broker restart.
+  Runtime proof should show the intended replacements.
 - Use the credentialed production Kubernetes integration with distinct baseline
   and candidate images for end-to-end proof. Mocked commands prove only script
   control flow.
