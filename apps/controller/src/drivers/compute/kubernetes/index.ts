@@ -2357,7 +2357,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               .find((item) => item?.name === container.name);
             const imageId = isNonEmptyString(observed?.imageID) ? observed.imageID : null;
             images.push({
-              workload: `${targetNamespace}/${metadata.name}`,
+              workload: `${targetNamespace.name}/${metadata.name}`,
               container: container.name,
               image: container.image,
               imageId,

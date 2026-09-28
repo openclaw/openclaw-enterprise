@@ -8326,6 +8326,13 @@ test("runtime image provenance survives missing metadata but never crosses Pod o
   });
   const images = await driver.getRuntimeImages(revision);
   assert.equal(images.length, 6);
+  assert.deepEqual(
+    new Set(images.map((image) => image.workload)),
+    new Set([
+      `${kubernetesGatewayNamespaceName(revision.namespaceId)}/gateway-pod`,
+      `${kubernetesNamespaceName(revision.namespaceId)}/agent-pod`,
+    ]),
+  );
   assert.equal(images.filter((image) => image.commit === commit).length, 4);
   assert.equal(images.filter((image) => image.openclawCommit === "b".repeat(40)).length, 4);
   assert.ok(
