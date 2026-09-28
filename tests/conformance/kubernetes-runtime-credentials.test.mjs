@@ -207,7 +207,7 @@ function runtimeSecret(driver, namespaceName, prefix, data, overrides = {}) {
         namespaceId: namespace.id,
         agentId: agent.id,
       },
-      kubernetesGatewayNamespaceName(namespace.id),
+      { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
     ),
     type: "Opaque",
     data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encode(value)])),
@@ -266,14 +266,16 @@ for (const runtime of [true, false]) {
     const first = credentialFixture();
     const ownership = { namespaceId: namespace.id, agentId: agent.id };
     const owned = [
-      first.driver.harnessWorkspaceClaim(agent.id, ownership, first.namespaceName),
+      first.driver.harnessWorkspaceClaim(agent.id, ownership, {
+        name: first.namespaceName,
+        plane: "execution",
+      }),
       ...(runtime
         ? [
-            first.driver.gatewayPrivateStateClaim(
-              agent.id,
-              ownership,
-              kubernetesGatewayNamespaceName(namespace.id),
-            ),
+            first.driver.gatewayPrivateStateClaim(agent.id, ownership, {
+              name: kubernetesGatewayNamespaceName(namespace.id),
+              plane: "control",
+            }),
           ]
         : []),
     ];
@@ -474,7 +476,7 @@ test("embedded Gateway retains its existing transport Secret password reference"
     const gateway = driver.deployment(
       `gateway-${suffix}`,
       { namespaceId: namespace.id, agentId },
-      namespaceName,
+      { name: namespaceName, plane: "execution" },
       "openclaw-enterprise/gateway-fixture:local",
       `agent-${suffix}`,
       "gateway",
@@ -492,7 +494,7 @@ test("embedded Gateway retains its existing transport Secret password reference"
             backendRef: { namespaceName, name: "occ-secret-model", key: "value", uid: "model-uid" },
           },
         },
-        namespaceName,
+        { name: namespaceName, plane: "execution" },
       ),
     );
     return Object.fromEntries(
@@ -587,7 +589,7 @@ test("mocked Kubernetes client refuses initial provisioning after Agent deployme
         namespaceId: namespace.id,
         agentId: agent.id,
       },
-      first.namespaceName,
+      { name: first.namespaceName, plane: "execution" },
     ),
     spec: { replicas: 1 },
   };
@@ -671,7 +673,7 @@ test("credential provisioning cannot replace transport while only the control-pl
     "Deployment",
     "gateway-existing",
     { namespaceId: namespace.id, agentId: agent.id },
-    kubernetesGatewayNamespaceName(namespace.id),
+    { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
   );
   const fixture = credentialFixture({ deployments: [gateway] });
   await assert.rejects(
@@ -686,7 +688,7 @@ test("Agent deletion removes private Gateway storage after the data namespace di
   const claim = initial.driver.gatewayPrivateStateClaim(
     agent.id,
     { namespaceId: namespace.id, agentId: agent.id },
-    kubernetesGatewayNamespaceName(namespace.id),
+    { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
   );
   claim.metadata.uid = "retained-gateway-claim";
   const claims = { [claim.metadata.name]: claim };
@@ -703,7 +705,10 @@ for (const executionMode of ["embedded", "dedicated"]) {
     const claims = {};
     const secrets = {};
     for (const target of targets) {
-      const claim = initial.driver.gatewayPrivateStateClaim(agent.id, ownership, target);
+      const claim = initial.driver.gatewayPrivateStateClaim(agent.id, ownership, {
+        name: target,
+        plane: "execution",
+      });
       claim.metadata.uid = `${target}-claim-uid`;
       claims[target] = claim;
       const secret = initial.driver.manifest(
@@ -711,7 +716,7 @@ for (const executionMode of ["embedded", "dedicated"]) {
         "Secret",
         `transport-${digest(agent.id)}`,
         ownership,
-        target,
+        { name: target, plane: "execution" },
       );
       secret.metadata.uid = `${target}-transport-uid`;
       secrets[target] = secret;

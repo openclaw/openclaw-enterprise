@@ -159,6 +159,40 @@ function chartAllowsIngress(objects, destination, source, port, protocol = "TCP"
 }
 
 test(
+  "two-cluster packaging separates remote API identities without optional services",
+  tooling,
+  async () => {
+    const execution = {
+      "executionCluster.enabled": "true",
+      "executionCluster.apiKubeconfigSecretName": "execution-api",
+      "executionCluster.workerKubeconfigSecretName": "execution-worker",
+      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    };
+    // This guard must apply even when the unrelated repository service is disabled.
+    await assert.rejects(render({ "executionCluster.enabled": "true" }), /separate API and worker/);
+    await assert.rejects(
+      render({ ...execution, "executionCluster.workerKubeconfigSecretName": "execution-api" }),
+      /separate API and worker/,
+    );
+    await assert.rejects(
+      render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
+      /dedicated Secrets/,
+    );
+    const objects = await resources((await render(execution)).stdout);
+    for (const component of ["api", "worker"]) {
+      const pod = objects.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      ).spec.template.spec;
+      assert.equal(
+        pod.volumes.find((volume) => volume.name === "execution-kubeconfig").secret.secretName,
+        `execution-${component}`,
+      );
+    }
+  },
+);
+
+test(
   "metrics chart requires exact scraper selectors and isolates the extra Pod ports",
   tooling,
   async () => {
@@ -299,6 +333,15 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   });
   assert.equal(drivers.installation.occ.cluster, "production-west");
   assert.deepEqual(drivers.installation.backend, []);
+  assert.equal(drivers.installation.presets.includeDefaults, true);
+  assert.deepEqual(drivers.defaultPresets.map(({ name }) => name).sort(), [
+    "Standard Codex",
+    "Standard OpenClaw",
+  ]);
+  assert.equal(drivers.pluginDriver.id, "codex-plugin");
+  assert.equal(drivers.pluginDriver.discoveryCredential, "none");
+  const catalog = await drivers.pluginDriver.discoverCatalog({ q: "Linear" });
+  assert.ok(catalog.plugins.some(({ name }) => name === "Linear"));
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;
   assert.equal(compute.network.gatewayClients, undefined);
@@ -365,6 +408,63 @@ test("production Helm values example renders the backendless default chart", too
   );
   assert.equal(objects.filter(({ kind }) => kind === "Secret").length, 0);
   assert.ok(!objects.some(({ metadata }) => metadata.name.endsWith("-api-chatgpt-egress")));
+});
+
+test("production settings coexist in fresh and upgrade chart renders", tooling, async () => {
+  const settings = {
+    ...agentNativeAdminValues,
+    ...repositoryCredentialValues,
+    "repositoryCredentials.serviceName": "git",
+    "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
+  };
+  // An image upgrade must still render the operator's broker, routing and proxy
+  // settings together; testing each feature separately would miss conflicts.
+  for (const isUpgrade of [false, true]) {
+    const controllerImage = isUpgrade
+      ? `registry.example.invalid/controller@sha256:${"c".repeat(64)}`
+      : values["images.controller"];
+    const objects = await resources(
+      (await render({ ...settings, "images.controller": controllerImage }, { isUpgrade })).stdout,
+    );
+    const deployment = (component) =>
+      objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels["app.kubernetes.io/component"] === component,
+      );
+    const api = deployment("api").spec.template.spec.containers[0];
+    assert.equal(api.image, controllerImage);
+    assert.deepEqual(
+      api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
+      { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: "http://198.51.100.25:3128" },
+    );
+    assert.deepEqual(
+      api.env.find(({ name }) => name === "OCC_AGENT_NATIVE_ADMIN_ENABLED"),
+      { name: "OCC_AGENT_NATIVE_ADMIN_ENABLED", value: "true" },
+    );
+    const broker = deployment("worker").spec.template.spec.containers.find(
+      ({ name }) => name === "repository-credentials",
+    );
+    assert.deepEqual(broker.args, [
+      "--public-origin",
+      "https://git.openclaw-system.svc.cluster.local",
+      "--backend-id",
+      "github-primary",
+    ]);
+    const proxyPolicy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" &&
+        metadata.name === "openclaw-enterprise-api-channel-directory-egress",
+    );
+    assert.deepEqual(proxyPolicy.spec.egress, [
+      {
+        to: [{ ipBlock: { cidr: "198.51.100.25/32" } }],
+        ports: [{ protocol: "TCP", port: 3128 }],
+      },
+    ]);
+    assert.ok(objects.some(({ kind }) => kind === "Gateway"));
+    assert.ok(objects.some(({ kind }) => kind === "EnvoyProxy"));
+    assert.ok(objects.some(({ kind, metadata }) => kind === "Service" && metadata.name === "git"));
+  }
 });
 
 test("control-plane node selectors are optional unless configured", tooling, async () => {

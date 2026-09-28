@@ -1242,6 +1242,15 @@ test(
     await fixture.work(candidate, "succeeded");
     await fixture.stop();
     assert.equal(initial.length, 2);
+    const initialAttempts = await repositoryAttempts(fixture, candidate);
+    for (const binding of initial) {
+      const attempt = initialAttempts.find(
+        (entry) =>
+          entry.repositoryRef === binding.repositoryRef && entry.sessionId === binding.sessionId,
+      );
+      assert.ok(attempt);
+      assert.equal(binding.admissionId, attempt.admissionId);
+    }
 
     // Successful activation already owns a queued observation with its original
     // actor. Advancing this owned work's due time models a restart at that time.
@@ -1288,11 +1297,17 @@ test(
     );
     assert.equal(observed.length, 2, "one missing observation permits one bounded repair");
     assert.deepEqual(
-      observed[0].map(({ kind, repositoryRef, sessionId }) => ({ kind, repositoryRef, sessionId })),
-      initial.map(({ repositoryRef, sessionId }) => ({
+      observed[0].map(({ kind, repositoryRef, sessionId, admissionId }) => ({
+        kind,
+        repositoryRef,
+        sessionId,
+        admissionId,
+      })),
+      initial.map(({ repositoryRef, sessionId, admissionId }) => ({
         kind: "retained",
         repositoryRef,
         sessionId,
+        admissionId,
       })),
     );
     const repaired = observed[1].find(
@@ -1303,7 +1318,14 @@ test(
     );
     assert.equal(repaired.kind, "new");
     assert.notEqual(repaired.sessionId, initial[0].sessionId);
+    assert.notEqual(repaired.admissionId, initial[0].admissionId);
     assert.deepEqual(retained, observed[0][1]);
+    const repairedAttempts = await repositoryAttempts(fixture, candidate);
+    const repairedAttempt = repairedAttempts.find(
+      (entry) => entry.sessionId === repaired.sessionId,
+    );
+    assert.ok(repairedAttempt);
+    assert.equal(repaired.admissionId, repairedAttempt.admissionId);
     const recoveryCalls = repository.calls.slice(callsBeforeRestart);
     assert.deepEqual(
       recoveryCalls

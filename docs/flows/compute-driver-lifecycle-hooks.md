@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-26
-last_updated_session: authoring-run/2f86d216-c9e9-4160-b47d-ae17e8c58fcd
+updated: 2026-09-27 20:59
+last_updated_session: authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -101,6 +101,9 @@ gateway Deployment and Service, then checks gateway readiness.
 namespace. The Pod-level selector also schedules the Gateway's private-state initializer there.
 Compute owns both targets through the same revision lifecycle; teardown selects each resource's
 physical namespace and preserves newer revisions and durable Agent claims.
+Dedicated replacement stops earlier Harnesses before preparing the successor.
+The Agent-owned authentication NetworkPolicy selects only the successor revision;
+superseded reconciliation cannot move that grant back to a predecessor.
 
 SSH stages embedded snapshots without starting the candidate gateway. After the
 worker commits the active revision, `SshComputeDriver.activateRevision` invokes
@@ -154,6 +157,8 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 20:59: Align two-cluster authentication policy with exclusive Harness replacement. (authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4 - bbb02cd9bad2c9ae0497d0340271730bdc647b55)
 
 - 2026-09-26 10:36: Document dedicated Codex runtime NetworkPolicy staging before workspace-node enrollment. (authoring-run/2f86d216-c9e9-4160-b47d-ae17e8c58fcd - caf123193961444ad99d6ebddbdbd49f040d1922)
 

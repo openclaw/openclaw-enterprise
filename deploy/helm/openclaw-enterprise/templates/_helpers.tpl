@@ -73,6 +73,20 @@
 {{- if eq .Values.database.secretName .Values.auth.secretName -}}
 {{- fail "Better Auth signing material must use a dedicated Secret" -}}
 {{- end -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- $execution := .Values.executionCluster -}}
+{{- if or (not $execution.apiKubeconfigSecretName) (not $execution.workerKubeconfigSecretName) (eq $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName) -}}
+{{- fail "executionCluster requires separate API and worker kubeconfig Secrets" -}}
+{{- end -}}
+{{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
+{{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
+{{- end -}}
+{{- range $name := list $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName -}}
+{{- if has $name (list $.Values.installation.secretName $.Values.database.secretName $.Values.auth.secretName $.Values.gatewayRouting.apiKeySecretName) -}}
+{{- fail "executionCluster kubeconfigs require dedicated Secrets distinct from platform credentials" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
 {{- $credentials := .Values.repositoryCredentials -}}
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$" $credentials.image) -}}
@@ -113,6 +127,10 @@
 {{- end -}}
 {{- $secrets := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $_ := set $secrets "chatgpt" .Values.backend.chatgpt.secretName -}}{{- end -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- $_ := set $secrets "executionApi" .Values.executionCluster.apiKubeconfigSecretName -}}
+{{- $_ := set $secrets "executionWorker" .Values.executionCluster.workerKubeconfigSecretName -}}
+{{- end -}}
 {{- if .Values.gatewayRouting.enabled -}}
 {{- $_ := set $secrets "gatewayApiKey" .Values.gatewayRouting.apiKeySecretName -}}
 {{- $_ := set $secrets "gatewayTls" (include "openclaw.gatewayRouting.tlsSecretName" .) -}}

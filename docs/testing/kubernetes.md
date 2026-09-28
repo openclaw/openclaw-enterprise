@@ -20,6 +20,8 @@ and checks workspace-write and outside-write behavior inside its real sandbox.
 It does not run a model or prove Codex WebSocket tool execution. If cleanup fails, it preserves the recorded state directory for
 recovery with `occ dev down`.
 
+See [two-cluster validation](two-cluster-local.md).
+
 ## Kubernetes HTTP fixture
 
 Requires Docker, k3d, `kubectl`, and the migrated `openclaw_k8s_local` database

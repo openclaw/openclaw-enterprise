@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readClientConfiguration } from "./config.ts";
+import { readClientConfiguration, requireGhMaterial } from "./config.ts";
 import { parseGhInvocation, prepareGhCommand, type ClientCommand } from "./commands.ts";
 import { createClientEnvironment } from "./environment.ts";
 import { singleSessionGitConfiguration } from "./native-git.ts";
@@ -60,6 +60,10 @@ export async function launchClient(
       process.env,
     );
   }
+  if (configuration.deadlineWallMs <= Date.now()) {
+    throw new Error("repository-session-expired");
+  }
+  await requireGhMaterial(configuration, sessionDirectory);
   if (configuration.deadlineWallMs <= Date.now()) {
     throw new Error("repository-session-expired");
   }

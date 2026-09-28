@@ -258,13 +258,19 @@ export function repositoryMaterialSpec(
   const materialBindings = bindings
     .map((binding): RepositoryMaterialBinding => {
       const input = record(binding);
+      const hasAdmissionId = Object.hasOwn(input, "admissionId");
       const expectedKeys =
         binding.kind === "new"
           ? ["kind", "repositoryRef", "sessionId", "deadlineWallMs", "files"]
           : ["kind", "repositoryRef", "sessionId", "deadlineWallMs"];
+      if (hasAdmissionId) {
+        expectedKeys.push("admissionId");
+      }
       if (
         Object.keys(input).length !== expectedKeys.length ||
         expectedKeys.some((key) => !Object.hasOwn(input, key)) ||
+        (hasAdmissionId &&
+          (typeof binding.admissionId !== "string" || !refPattern.test(binding.admissionId))) ||
         typeof binding.repositoryRef !== "string" ||
         !refPattern.test(binding.repositoryRef) ||
         !references.delete(binding.repositoryRef) ||

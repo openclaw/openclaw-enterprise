@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-09-23"
-last_updated_session: "authoring-run/0dffba8f-d16f-4f90-8fe2-893368f6926a"
+updated: "2026-09-28"
+last_updated_session: "authoring-run/6e1aa273-a96b-4b17-9514-d6d7064decea"
 ---
 
 # Repository credential service flow
@@ -144,6 +144,10 @@ clears its buffer after use, and leaves material unchanged for store/erase.
 handles only gh. It validates the supported API/explicit-head PR invocation,
 selects a binding from its explicit target, inherited pin or native Git remotes,
 and propagates the exact generation/reference/session pin to children.
+Before launching gh, the router and single-session launcher compare the private
+bearer and generated host configuration and check the deadline again after
+reading them. A mismatch or unsafe file refuses the launch. This preflight
+detects inconsistent material; it is not an atomic snapshot or authorization.
 `apps/controller/src/drivers/repo/github/credentials/client/environment.ts:createClientEnvironment`
 keeps gh token/config isolation while preserving normal HOME and system Git
 configuration. `apps/controller/src/drivers/repo/github/credentials/client/commands.ts:prepareGhCommand`
@@ -315,6 +319,8 @@ A helper failure reports a fixed category without credentials. Diagnose the
 configured HTTPS host/path and private file ownership first. API failures also
 require checking that the session uses `git-full`, then the pinned CLI, canonical
 host, gateway DNS/SAN and port 443.
+For a local gh launch refusal, inspect the selected private session files and
+their ownership without exposing credential contents.
 The [test guide](../testing/repository-credentials.md) owns controlled upstream,
 client and alternate-adapter checks. Detached service/client artifacts prove
 module closure. Separate-container isolation and live-provider behavior require their own selected qualification.
@@ -331,6 +337,8 @@ module closure. Separate-container isolation and live-provider behavior require 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 04:48: Receive the gh material consistency preflight and its limits. (authoring-run/6e1aa273-a96b-4b17-9514-d6d7064decea - ae31581574744bea2745066f189eea6e826fe823)
 
 - 2026-09-23 06:18: Trace accompanying profile-aligned REST permissions, token-bounded GraphQL and bounded raw replies. (authoring-run/0dffba8f-d16f-4f90-8fe2-893368f6926a - a2e94cf8ac2d94306f0701cee5457d1a9797e50a)
 

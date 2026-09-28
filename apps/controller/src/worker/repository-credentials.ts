@@ -185,6 +185,7 @@ export class RepositoryCredentialLifecycle {
               repositoryRef: binding.repositoryRef,
               sessionId: status.sessionId,
               deadlineWallMs: status.deadlineWallMs,
+              admissionId: existing.admissionId,
             });
             continue;
           }
@@ -476,6 +477,7 @@ export class RepositoryCredentialLifecycle {
       repositoryRef: binding.repositoryRef,
       sessionId: opened.session.sessionId,
       deadlineWallMs: opened.session.deadlineWallMs,
+      admissionId: attempt.admissionId,
       files: opened.files,
     };
   }

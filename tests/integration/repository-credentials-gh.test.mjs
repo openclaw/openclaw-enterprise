@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,7 +8,7 @@ import {
   createNativeClientMaterial,
   runPinnedClients,
 } from "../fixtures/repository-credentials/clients.mjs";
-import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
+import { appRoot, appExtension, appModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
 import {
   startCredentialServiceFixture,
@@ -20,6 +22,8 @@ test("pinned gh uses canonical GitHub identity for repository, issue and pull-re
     return;
   }
   const fixture = await startCredentialServiceFixture(t);
+  const singleHostsPath = join(fixture.clientDirectory, "gh", "hosts.yml");
+  const originalSingleHosts = await readFile(singleHostsPath);
   const { client, checkout } = await exerciseGit(t, fixture);
   await client.git(["push", "origin", "HEAD:refs/heads/native-feature"], { cwd: checkout });
   const { issue } = await exerciseGh(t, fixture, client);
@@ -79,6 +83,46 @@ test("pinned gh uses canonical GitHub identity for repository, issue and pull-re
     [{ opened: fixture.opened, repositoryRef: "fixture" }],
     { root: materialRoot, ca: fixture.tls.ca },
   );
+  const hostsPath = join(material.manifest.bindings[0].directory, "gh", "hosts.yml");
+  const originalHosts = await readFile(hostsPath, "utf8");
+  const mismatchedHosts = originalHosts.replace(fixture.opened.bearer, "x".repeat(48));
+  assert.ok(mismatchedHosts !== originalHosts, "fixture bearer must appear in gh material");
+  const { routeRepositoryClient } = await appModule(
+    "drivers/repo/github/credentials/client/router",
+  );
+  const spawn = childProcess.spawn;
+  const spawnSync = childProcess.spawnSync;
+  const now = Date.now;
+  let attempts = 0;
+  try {
+    childProcess.spawn = childProcess.spawnSync = () => {
+      attempts += 1;
+      throw new Error("unexpected-client-child");
+    };
+    syncBuiltinESMExports();
+    await writeFile(hostsPath, mismatchedHosts);
+    await assert.rejects(
+      routeRepositoryClient("gh", ["api", "repos/fixture/repository"]),
+      /invalid-client-gh-material/,
+    );
+    assert.equal(attempts, 0);
+    await writeFile(hostsPath, originalHosts);
+    const deadline = material.manifest.bindings[0].deadlineWallMs;
+    let checks = 0;
+    Date.now = () => (checks++ === 0 ? deadline - 1 : deadline);
+    await assert.rejects(
+      routeRepositoryClient("gh", ["api", "repos/fixture/repository"]),
+      /repository-session-expired/,
+    );
+    assert.equal(checks, 2);
+    assert.equal(attempts, 0);
+  } finally {
+    Date.now = now;
+    childProcess.spawn = spawn;
+    childProcess.spawnSync = spawnSync;
+    syncBuiltinESMExports();
+    await writeFile(hostsPath, originalHosts);
+  }
   const trace = join(client.directory, "native-child-git.jsonl");
   await writeFile(
     join(client.directory, ".gitconfig"),
@@ -235,6 +279,14 @@ test("pinned gh uses canonical GitHub identity for repository, issue and pull-re
     assert.ok(denied.status >= 400);
   }
   assert.equal(fixture.github.trace.length, before);
+  assert.ok(
+    (await readFile(singleHostsPath)).equals(originalSingleHosts),
+    "repeated single-session gh operations must retain the generated material",
+  );
+  assert.ok(
+    (await readFile(hostsPath)).equals(Buffer.from(originalHosts)),
+    "repeated routed gh operations must retain the generated material",
+  );
 });
 
 // The host case runs this entire file in the container, including this fault case.

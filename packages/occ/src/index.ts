@@ -398,6 +398,16 @@ export interface DeployAgentInput {
   readonly agentId: string;
 }
 
+export interface DeployAgentAuthorization {
+  readonly request: Readonly<AuthorizationRequest>;
+  readonly decision: Readonly<AuthorizationDecision>;
+}
+
+export interface AuthorizedAgentDeployment {
+  readonly revision: Readonly<AgentRevision>;
+  readonly authorization: Readonly<DeployAgentAuthorization>;
+}
+
 export interface ActiveAgentRevisionSelection {
   readonly agent: Readonly<Agent>;
   readonly revision: Readonly<AgentRevision>;
@@ -2700,6 +2710,7 @@ export class OpenClawController {
     input: CreateCredentialSourceInput,
     audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+    this.assertCredentialSourceTransactionBoundary();
     if (!validName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
@@ -2900,6 +2911,7 @@ export class OpenClawController {
     credentialSourceId: string,
     audit?: () => AuditEvent,
   ): Promise<void> {
+    this.assertCredentialSourceTransactionBoundary();
     const { namespace, source } = await this.mutate(async (state) => {
       const locked = await this.lockNamespace(state, namespaceId);
       await this.authorize(principalId, "delete", {
@@ -3976,6 +3988,14 @@ export class OpenClawController {
     input: DeployAgentInput,
     resolveHarness: HarnessResolver,
   ): Promise<Readonly<AgentRevision>> {
+    return (await this.deployAgentWithAuthorization(principalId, input, resolveHarness)).revision;
+  }
+
+  async deployAgentWithAuthorization(
+    principalId: string,
+    input: DeployAgentInput,
+    resolveHarness: HarnessResolver,
+  ): Promise<Readonly<AuthorizedAgentDeployment>> {
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
@@ -3987,7 +4007,7 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      await this.authorize(principalId, "deploy", {
+      const authorization = await this.authorize(principalId, "deploy", {
         kind: "agent",
         id: agent.id,
         namespaceId: namespace.id,
@@ -4231,7 +4251,7 @@ export class OpenClawController {
         resourceId: revision.id,
         actorId: principalId,
       });
-      return revision;
+      return Object.freeze({ revision, authorization });
     });
   }
 
@@ -4656,19 +4676,22 @@ export class OpenClawController {
     principalId: string,
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
-  ): Promise<void> {
-    const decision = await this.authorizationDecision(principalId, action, resource);
-    if (!decision.allowed) {
+  ): Promise<Readonly<DeployAgentAuthorization>> {
+    const authorization = await this.authorizationDecision(principalId, action, resource);
+    if (!authorization.decision.allowed) {
       throw new AuthorizationDeniedError(
-        isNonEmptyString(decision.reason) ? decision.reason : "The exact operation was denied.",
-        decision.evidence,
+        isNonEmptyString(authorization.decision.reason)
+          ? authorization.decision.reason
+          : "The exact operation was denied.",
+        authorization.decision.evidence,
         { action, resource },
       );
     }
+    return authorization;
   }
 
   private async canRead(principalId: string, resource: ResourceRef): Promise<boolean> {
-    return (await this.authorizationDecision(principalId, "read", resource)).allowed;
+    return (await this.authorizationDecision(principalId, "read", resource)).decision.allowed;
   }
 
   private authorizationAuthority(principalId: string): IAMDriver {
@@ -4686,7 +4709,7 @@ export class OpenClawController {
     principalId: string,
     action: AuthorizationRequest["action"],
     resource: ResourceRef,
-  ): Promise<AuthorizationDecision> {
+  ): Promise<Readonly<DeployAgentAuthorization>> {
     const selected = this.authorizationAuthority(principalId);
     const request = Object.freeze({
       principalId,
@@ -4703,29 +4726,63 @@ export class OpenClawController {
         "The selected authorization Driver could not verify the operation.",
       );
     }
+    const snapshotIds = (entries: unknown): readonly string[] | undefined => {
+      if (!Array.isArray(entries)) {
+        return undefined;
+      }
+      const result: string[] = [];
+      const length = entries.length;
+      for (let index = 0; index < length; index += 1) {
+        if (!Object.prototype.hasOwnProperty.call(entries, index)) {
+          return undefined;
+        }
+        const id: unknown = entries[index];
+        if (!isNonEmptyString(id)) {
+          return undefined;
+        }
+        result.push(id);
+      }
+      return Object.freeze(result);
+    };
+    const allowed = decision?.allowed;
+    const reason = decision?.reason;
+    const driverId = decision?.driverId;
+    const evidence = decision?.evidence;
+    const identityId = evidence?.identityId;
+    const groupIds = snapshotIds(evidence?.groupIds);
+    const bindingIds = snapshotIds(evidence?.bindingIds);
+    const roleIds = snapshotIds(evidence?.roleIds);
+    const restrictionIds = snapshotIds(evidence?.restrictionIds);
     if (
-      !decision ||
-      typeof decision.allowed !== "boolean" ||
-      !isNonEmptyString(decision.driverId) ||
-      !decision.evidence ||
-      (decision.evidence.identityId !== undefined &&
-        !isNonEmptyString(decision.evidence.identityId)) ||
-      !["groupIds", "bindingIds", "roleIds", "restrictionIds"].every((key) => {
-        const entries = decision.evidence[key as keyof typeof decision.evidence];
-        return Array.isArray(entries) && entries.every(isNonEmptyString);
-      })
+      typeof allowed !== "boolean" ||
+      !isNonEmptyString(driverId) ||
+      !evidence ||
+      (identityId !== undefined && !isNonEmptyString(identityId)) ||
+      !groupIds ||
+      !bindingIds ||
+      !roleIds ||
+      !restrictionIds
     ) {
       throw new DependencyUnavailableError(
         "The selected authorization Driver returned an invalid decision.",
       );
     }
-    if (
-      decision.driverId !== selected.id ||
-      this.authorizationAuthority(principalId) !== selected
-    ) {
+    if (driverId !== selected.id || this.authorizationAuthority(principalId) !== selected) {
       throw new DependencyUnavailableError("The authorization decision belongs to another Driver.");
     }
-    return decision;
+    const snapshot = Object.freeze({
+      allowed,
+      reason,
+      driverId,
+      evidence: Object.freeze({
+        ...(identityId === undefined ? {} : { identityId }),
+        groupIds,
+        bindingIds,
+        roleIds,
+        restrictionIds,
+      }),
+    });
+    return Object.freeze({ request, decision: snapshot });
   }
 
   private async exactNamespace(
@@ -6632,6 +6689,15 @@ export class OpenClawController {
   private async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
     const active = this.transactionContext.getStore();
     return active ? work(active) : this.state.read(work);
+  }
+
+  private assertCredentialSourceTransactionBoundary(): void {
+    // Async descendants can retain the borrowed unit after its transaction has ended.
+    if (this.transactionContext.getStore() !== undefined) {
+      throw new ResourceConflictError(
+        "Credential source registration and deletion cannot run in a controller transaction.",
+      );
+    }
   }
 
   private async mutate<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {

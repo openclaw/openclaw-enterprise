@@ -7,6 +7,11 @@ entrypoints:
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated Codex app-server: `codex app-server`.
 
+The image sets `NPM_CONFIG_UPDATE_NOTIFIER=false` so local npm commands do not
+start npm's background version check. This avoids unrelated network approval
+requests during commands such as `npm test`; package installation and explicit
+network requests still use the configured network policy.
+
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
 The reviewed `stock-codex-0.156.0-dependency-pin.patch` updates only Codex dependency

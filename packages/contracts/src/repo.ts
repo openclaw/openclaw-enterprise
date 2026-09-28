@@ -105,6 +105,8 @@ export interface RepositoryCredentialMaterialRef {
 
 export type RepositoryCredentialRuntimeBinding = RepositoryCredentialMaterialRef & {
   readonly deadlineWallMs: number;
+  /** Original persisted attempt identity for correlation; it is not an authority proof. */
+  readonly admissionId?: string;
 } & (
     | { readonly kind: "new"; readonly files: RepositoryCredentialSessionFiles }
     | { readonly kind: "retained" }

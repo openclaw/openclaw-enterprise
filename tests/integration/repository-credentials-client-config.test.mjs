@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import { spawnSync } from "node:child_process";
 import {
   chmod,
@@ -13,6 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { createServer } from "node:https";
 import { createServer as createHttpServer } from "node:http";
@@ -21,7 +23,10 @@ import { connect } from "node:net";
 import {
   writeClientConfiguration,
   encodeRepositoryCredentialSessionFiles,
+  readClientConfiguration,
+  requireGhMaterial,
 } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { launchClient } from "../../apps/controller/src/drivers/repo/github/credentials/client/launch.ts";
 import {
   prepareNativeGitConfiguration,
   renderNativeGitConfiguration,
@@ -63,6 +68,108 @@ const gitEnvironment = (root, extra = {}) => {
 };
 const git = (root, args, input, extra) =>
   run("/usr/bin/git", args, { env: gitEnvironment(root, extra), input, allowFailure: true });
+
+test("gh refuses mixed and unsafe session files before starting a child", async (t) => {
+  const parent = await temporaryDirectory(t);
+  const session = join(parent, "session");
+  await writeClientConfiguration(opened, session, undefined);
+  const configuration = await readClientConfiguration(session);
+  const bearer = join(session, "bearer");
+  const hosts = join(session, "gh", "hosts.yml");
+  const originalHosts = await readFile(hosts, "utf8");
+  await requireGhMaterial(configuration, session);
+
+  const spawned = [];
+  t.mock.method(childProcess, "spawn", () => {
+    spawned.push("spawn");
+    throw new Error("unexpected-child");
+  });
+  t.mock.method(childProcess, "spawnSync", () => {
+    spawned.push("spawnSync");
+    throw new Error("unexpected-child");
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const refuses = async (reason) => {
+    await assert.rejects(launchClient(session, "gh", ["api", "repos/example/project"]), (error) => {
+      assert.match(error.message, reason);
+      assert.equal(error.message.includes(opened.bearer), false);
+      return true;
+    });
+    assert.deepEqual(spawned, []);
+  };
+
+  const otherBearer = "another_valid_gateway_bearer_00000000000000";
+  await writeFile(hosts, originalHosts.replace(opened.bearer, otherBearer));
+  await refuses(/invalid-client-gh-material/);
+  await writeFile(hosts, originalHosts.replace("credentials.example.test", "other.example.test"));
+  await refuses(/invalid-client-gh-material/);
+  await writeFile(hosts, originalHosts.replace("github.com", "other.example.test"));
+  await refuses(/invalid-client-gh-material/);
+  await writeFile(hosts, originalHosts);
+  await writeFile(bearer, otherBearer);
+  await refuses(/invalid-client-gh-material/);
+  await writeFile(bearer, "invalid bearer");
+  await refuses(/invalid-client-gh-material/);
+  await writeFile(bearer, opened.bearer);
+  await chmod(hosts, 0o644);
+  await refuses(/unsafe-client-file/);
+  await chmod(hosts, 0o600);
+  await rm(hosts);
+  await refuses(/ENOENT/);
+  await writeFile(hosts, "x".repeat(16 * 1024 + 1), { mode: 0o600 });
+  await refuses(/unsafe-client-file/);
+  await rm(hosts);
+  const saved = join(session, "gh", "hosts.saved");
+  await writeFile(saved, originalHosts, { mode: 0o600 });
+  await symlink(saved, hosts);
+  await refuses(/ELOOP/);
+  await rm(hosts);
+  await link(saved, hosts);
+  await refuses(/unsafe-client-file/);
+  await rm(hosts);
+  await rename(saved, hosts);
+  const savedBearer = join(session, "bearer.saved");
+  await rename(bearer, savedBearer);
+  await symlink(savedBearer, bearer);
+  await refuses(/ELOOP/);
+  await rm(bearer);
+  await link(savedBearer, bearer);
+  await refuses(/unsafe-client-file/);
+});
+
+test("gh rechecks expiry after reading private session files", async (t) => {
+  const parent = await temporaryDirectory(t);
+  const session = join(parent, "session");
+  await writeClientConfiguration(opened, session, undefined);
+  const spawned = [];
+  t.mock.method(childProcess, "spawn", () => {
+    spawned.push("spawn");
+    throw new Error("unexpected-child");
+  });
+  t.mock.method(childProcess, "spawnSync", () => {
+    spawned.push("spawnSync");
+    throw new Error("unexpected-child");
+  });
+  let checks = 0;
+  t.mock.method(Date, "now", () =>
+    checks++ === 0 ? opened.session.deadlineWallMs - 1 : opened.session.deadlineWallMs,
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  await assert.rejects(
+    launchClient(session, "gh", ["api", "repos/example/project"]),
+    /repository-session-expired/,
+  );
+  assert.equal(checks, 2);
+  assert.deepEqual(spawned, []);
+});
 
 test("push-ref policies use the existing complete client metadata size limit", () => {
   const encode = (rules) =>

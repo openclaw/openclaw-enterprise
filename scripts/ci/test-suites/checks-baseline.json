@@ -387,6 +387,12 @@
       "path": "tests/integration/repository-runtime-materialization.test.mjs"
     },
     {
+      "path": "tests/integration/kubernetes-peer-status.test.mjs",
+      "expectedTests": [
+        "real peer-status HTTPS transport authenticates its revision and verifies server trust"
+      ]
+    },
+    {
       "path": "tests/integration/runtime-assets.test.mjs"
     },
     {

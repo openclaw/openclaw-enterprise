@@ -40,9 +40,9 @@ The default builds the controller and runtime from this checkout. To use
 published images, verify their publication record and select the immutable
 controller and runtime digests built from this same checkout revision. The
 CLI checks their revision labels for consistency; those labels do not prove
-publication provenance. The older images listed in the
+publication provenance. The images listed in the
 [production installation guide](deploy/production-installation.md#use-published-images)
-predate repository credentials and native admin and cannot supply this setup.
+target an earlier source revision and do not match this checkout.
 
 Pull your verified pair, then keep both exports in the shell used for `dev up`:
 

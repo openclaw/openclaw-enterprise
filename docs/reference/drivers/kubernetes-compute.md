@@ -4,6 +4,9 @@ The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
 or adopts a data-plane namespace for each tenant and creates an OpenClaw gateway
 for each deployed Agent. Dedicated Gateways run in a separate managed control-plane
 runtime namespace; embedded OpenClaw remains in the data plane.
+The experimental `executionCluster` configuration selects a second Kubernetes
+API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/two-cluster-local.md)
+before using it; cloud deployment and complete runtime acceptance remain pending.
 Kubernetes supports a managed model API key for both modes and a managed
 ChatGPT service-account credential for dedicated Codex only.
 

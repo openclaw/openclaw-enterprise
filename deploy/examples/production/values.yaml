@@ -29,6 +29,9 @@ database:
     - 10.45.0.13/32
 
 api:
+  # For Slack directory lookup, set the approved proxy independently of the
+  # gateway proxy in installation.yaml. See docs/guides/integrations/slack.md.
+  # channelDirectoryProxyUrl: http://198.51.100.25:3128
   # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
   modelDiscoveryCidrs: []
   clients:

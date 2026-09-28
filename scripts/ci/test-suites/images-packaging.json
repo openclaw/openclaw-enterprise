@@ -39,6 +39,7 @@
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
       "expectedTests": [
+        "two-cluster packaging separates remote API identities without optional services",
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart renders private least-privilege runtime and ordered bootstrap",

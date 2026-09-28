@@ -25,18 +25,19 @@ GitHub permissions, or hosted publication. Without the selector the test skips.
 ### Check published images
 
 On a `linux/amd64` or `linux/arm64` host, follow [Use published images](../guides/deploy/production-installation.md#use-published-images)
-to authenticate to private GHCR and export `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`.
-Docker pulls the variant matching the host. These commands check that variant;
+to authenticate to private GHCR and export `HISTORICAL_CONTROLLER_IMAGE` and
+`HISTORICAL_RUNTIME_IMAGE`. To check a different pair, set these variables to
+its digests. Docker pulls the variant matching the host. These commands check that variant;
 they do not test both architectures in one invocation. Run from the repository
 root with the [local test prerequisites](local.md).
 To reproduce the published release's checks, use its recorded source revision;
 when validating source changes, build images from that checkout instead.
 
 ```bash
-docker pull "$CONTROLLER_IMAGE"
-docker pull "$RUNTIME_IMAGE"
-OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" \
-OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+docker pull "$HISTORICAL_CONTROLLER_IMAGE"
+docker pull "$HISTORICAL_RUNTIME_IMAGE"
+OCC_TEST_PRODUCTION_IMAGE="$HISTORICAL_CONTROLLER_IMAGE" \
+OCC_TEST_RUNTIME_IMAGE="$HISTORICAL_RUNTIME_IMAGE" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
@@ -204,6 +205,40 @@ To select a Helm executable outside `PATH`:
 OCC_HELM_BIN=/absolute/path/to/helm \
   node --test tests/integration/production-kubernetes-packaging.test.mjs
 ```
+
+## Verify installation image selections
+
+For a registry-backed installation, compare the edited YAML with the retained
+image selections before provisioning. The controller and each distinct runtime
+image must pass the [image checks](#check-published-images) on a native host for
+each architecture where it will run; one architecture does not prove another.
+If a digest changes, check the new digest, update the retained selection, and
+repeat the comparisons before continuing.
+
+If the controller and runtimes target different architectures, run the controller
+startup suite separately on each controller architecture and both runtime suites
+on each runtime architecture, using the respective digest selectors. All suites
+must pass without skips.
+
+In the installation shell, retain `CONTROLLER_IMAGE` as the checked controller
+digest. For a shared runtime, retain `RUNTIME_IMAGE` as its checked digest. If
+checks ran in another shell or host, set these exports to the checked digests here.
+For separately checked gateway and Agent runtimes, set `GATEWAY_IMAGE` and
+`AGENT_IMAGE` to their respective digests; otherwise they default to
+`RUNTIME_IMAGE`. Do not select the historical pair for the current installation.
+Both comparisons must print `true`; stop on a mismatch or command failure.
+
+```bash
+: "${CONTROLLER_IMAGE:?Set the checked controller digest reference}"
+export GATEWAY_IMAGE="${GATEWAY_IMAGE:-${RUNTIME_IMAGE:?Set the checked gateway digest reference}}"
+export AGENT_IMAGE="${AGENT_IMAGE:-${RUNTIME_IMAGE:?Set the checked Agent digest reference}}"
+yq e -e '.images.controller == strenv(CONTROLLER_IMAGE)' "$OCC_INPUT_DIRECTORY/values.yaml" && \
+  yq e -e '.drivers.compute.configuration.images.gateway == strenv(GATEWAY_IMAGE) and .drivers.compute.configuration.images.agent == strenv(AGENT_IMAGE)' "$OCC_INPUT_DIRECTORY/installation.yaml"
+```
+
+Continue with the remaining installation checks only after both comparisons
+pass. The local Kubernetes import path uses its generated YAML and skips this
+registry-backed comparison.
 
 ## Related
 

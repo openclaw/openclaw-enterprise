@@ -836,6 +836,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/two-cluster-local",
               "testing/gateway-routing",
               "testing/production-tui",
               "testing/slack",

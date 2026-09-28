@@ -488,13 +488,10 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     );
   const enroll = (selected) => {
     const name = driver.workspaceNodeName(selected);
-    const secret = driver.manifest(
-      "v1",
-      "Secret",
-      name,
-      driver.pluginRuntimeOwnership(selected),
-      namespace,
-    );
+    const secret = driver.manifest("v1", "Secret", name, driver.pluginRuntimeOwnership(selected), {
+      name: namespace,
+      plane: "execution",
+    });
     save({
       ...secret,
       metadata: {
@@ -755,6 +752,41 @@ test("Dedicated credential refresh preserves its enrolled workspace node", async
     nodeSecret,
   );
   assert.equal(f.secrets().filter((secret) => secret.immutable).length, 1);
+});
+
+test("Kubernetes keeps original admission correlation out of runtime resources", async () => {
+  const f = await fixture("dedicated");
+  const admissionId = "1720000000000-12345678-1234-4234-8234-123456789abc";
+  const binding = { ...runtimeBinding(), admissionId };
+  // The Worker may carry its original attempt identity internally; it is not
+  // a credential and must not be exposed in the Agent's material resources.
+  await f.driver.prepareRevision(f.revision, f.context([binding]));
+  assert.equal(JSON.stringify([...f.objects.values()]).includes(admissionId), false);
+  await f.driver.prepareRevision(
+    f.revision,
+    f.context([
+      {
+        kind: "retained",
+        repositoryRef: binding.repositoryRef,
+        sessionId: binding.sessionId,
+        deadlineWallMs: binding.deadlineWallMs,
+        admissionId,
+      },
+    ]),
+  );
+  assert.equal(f.secrets().length, 1);
+
+  for (const invalid of ["", "bad\ncorrelation", "x".repeat(129), null]) {
+    const other = await fixture("dedicated");
+    await assert.rejects(
+      other.driver.prepareRevision(
+        other.revision,
+        other.context([{ ...binding, admissionId: invalid }]),
+      ),
+      { message: "Repository credential material is invalid." },
+    );
+    assert.deepEqual(other.apiCalls, []);
+  }
 });
 
 for (const mode of ["embedded", "dedicated"]) {

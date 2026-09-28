@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-09-26"
-last_updated_session: "claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY"
+updated: "2026-09-28"
+last_updated_session: "authoring-run/5da74b2e-b249-44da-87e4-ca85f018c832"
 ---
 
 # Credential source lifecycle Flow
@@ -54,6 +54,12 @@ graph TD
 ```
 
 ## Execution Trace
+
+Registration and deletion must start outside a transaction borrowed from the
+same controller instance. OCC rejects an active or inherited stale context with
+`ResourceConflictError` before validation or effects. Each operation uses an
+initial transaction for the intermediate State record; after that transaction
+commits, OCC calls `registerSource` or `removeSource`.
 
 ### 1. Admit the registration request
 
@@ -194,4 +200,5 @@ audited; if the append fails, the record stays `deleting` for a retry. Namespace
 
 ## Changelog
 
+- 2026-09-28 05:13: Documented the controller transaction boundary for credential source writes. (authoring-run/5da74b2e-b249-44da-87e4-ca85f018c832 - 646b067220f6b7f8f3059eaa0710db2654b61499)
 - 2026-09-26 14:29: Documented credential source registration, Agent binding, admission, dispatch resolution, and retried deletion for the uncommitted Credential Gateway change. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 849b2b24111fe237b12da5be1d4b411d3146cefb)

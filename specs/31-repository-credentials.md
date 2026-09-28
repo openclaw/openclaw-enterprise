@@ -3,6 +3,16 @@
 **Status:** Selected interface and ownership refinement. Source behavior, historical qualification and final-artifact acceptance are distinguished below.
 **Owners:** Repository Driver/service, OCC/State, worker and Compute maintainers.
 
+**Historical scope (2026-09-28):** The consumer boundary, `git-full` PR
+requirement and profile table below, and T5 in the
+[qualification companion](31-repository-credentials/qualification.md#t5--profiles),
+record the September 19 implementation. Later changes expanded consumer support
+and profile access. For current runtime scope, see the [reference][reference];
+for current permissions and REST and GraphQL boundaries, see
+[GitHub access levels](../docs/reference/repository-credentials/access-levels.md).
+Use the [testing guide](../docs/testing/repository-credentials.md) to qualify
+current source.
+
 ## Decision
 
 An API-created ordinary Agent clones or fetches an approved repository, edits and tests, commits, pushes a branch, and creates a same-repository PR when explicitly assigned `git-full`. A separate credential process authenticates upstream requests. The Agent receives private gateway-bearer/client files and public trust material; GitHub App keys, JWTs, installation tokens and provider renewal secrets stay outside its workload.

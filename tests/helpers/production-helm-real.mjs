@@ -16,6 +16,7 @@ export async function installProductionHelmControlPlane({
   apiClients,
   repositoryCredentials,
   gatewayRouting,
+  executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
   run,
@@ -193,6 +194,9 @@ export async function installProductionHelmControlPlane({
   }
   if (gatewayRouting !== undefined) {
     values.gatewayRouting = gatewayRouting;
+  }
+  if (executionCluster !== undefined) {
+    values.executionCluster = executionCluster;
   }
   if (metrics !== undefined) {
     values.metrics = metrics;

@@ -386,6 +386,106 @@ async function auditActions(controller) {
     .filter((action) => action.startsWith("openclaw.credential_sources."));
 }
 
+test("credential source writes refuse active and stale borrowed transactions before effects", async () => {
+  const {
+    controller,
+    gateway,
+    makeReady,
+    modelSecret,
+    namespace,
+    passRegistrationFence,
+    secretDriver,
+  } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const input = {
+    namespaceId: namespace.id,
+    name: "nested-openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  };
+  // A top-level create is also the ready record that a nested delete must leave alone.
+  const source = await controller.createCredentialSource(administrator, {
+    ...input,
+    name: "top-level-openai",
+  });
+  let catalogCalls = 0;
+  const listSourceTypes = gateway.listSourceTypes.bind(gateway);
+  gateway.listSourceTypes = async (...args) => {
+    catalogCalls += 1;
+    return listSourceTypes(...args);
+  };
+  let auditCallbacks = 0;
+  const createAudit = (created) => {
+    auditCallbacks += 1;
+    return auditEvent(namespace.id, created.id, "openclaw.credential_sources.create");
+  };
+  const deleteAudit = () => {
+    auditCallbacks += 1;
+    return auditEvent(namespace.id, source.id, "openclaw.credential_sources.delete");
+  };
+  const snapshot = async (unit) =>
+    structuredClone({
+      sources: await unit.credentialSources.listCredentialSources(namespace.id),
+      audit: await unit.audit.list(),
+    });
+  const before = await controller.transact(snapshot);
+  const gatewayCalls = gateway.calls.length;
+  const secretReads = secretDriver.calls.filter(
+    ({ operation }) => operation === "withValue",
+  ).length;
+  const stored = structuredClone(gateway.stored);
+  const assertRefused = async (operation) =>
+    assert.rejects(operation, (error) => {
+      assert.ok(error instanceof ResourceConflictError);
+      assert.match(error.message, /cannot run in a controller transaction/);
+      return true;
+    });
+  const attemptBoth = async () => {
+    await assertRefused(controller.createCredentialSource(administrator, input, createAudit));
+    await assertRefused(
+      controller.deleteCredentialSource(administrator, namespace.id, source.id, deleteAudit),
+    );
+  };
+
+  await controller.transact(async (unit) => {
+    await attemptBoth();
+    assert.deepEqual(await snapshot(unit), before);
+  });
+
+  // The async task inherits the unit of work, but is released only after its owner commits.
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let staleAttempt;
+  await controller.transact(async () => {
+    staleAttempt = (async () => {
+      await gate;
+      await attemptBoth();
+    })();
+  });
+  release();
+  await staleAttempt;
+  assert.deepEqual(await controller.transact(snapshot), before);
+  assert.equal(
+    secretDriver.calls.filter(({ operation }) => operation === "withValue").length,
+    secretReads,
+  );
+  assert.equal(catalogCalls, 0);
+  assert.equal(gateway.calls.length, gatewayCalls);
+  assert.deepEqual(gateway.stored, stored);
+  assert.equal(auditCallbacks, 0);
+
+  // The boundary check must not prevent ordinary independent create and delete phases.
+  const second = await controller.createCredentialSource(administrator, input);
+  assert.equal(second.state, "ready");
+  passRegistrationFence();
+  await controller.deleteCredentialSource(administrator, namespace.id, source.id);
+  await controller.deleteCredentialSource(administrator, namespace.id, second.id);
+  assert.deepEqual(await controller.listCredentialSources(administrator, namespace.id), []);
+});
+
 test("a definitive registration failure removes the gateway copy and the record", async () => {
   const { controller, gateway, makeReady, modelSecret, namespace } = await fixture({
     gateway: { registerStatus: { state: "failed", reason: "rejected" } },

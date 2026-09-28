@@ -236,3 +236,30 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
+
+{{- if .Values.executionCluster.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-execution-api-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, worker]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.executionCluster.apiCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.executionCluster.apiPort }}
+{{- end }}

@@ -39,7 +39,8 @@ Use these sections in order:
   never embed personal checkout paths.
 - **Manual Notes:** Preserve the heading and complete user-owned body exactly.
 - **Changelog:** Prepend local `YYYY-MM-DD HH:MM`, description, actual current
-  session/run ID, and current Git SHA in the template's format.
+  session/run ID or recorded public authoring-run ID, and current Git SHA in the
+  template's format.
 
 Keep entry assumptions, internal freeze points, exit state, and downstream
 handoff explicit for a scoped flow. Name the next owner and link its flow;
@@ -55,9 +56,10 @@ inference and gaps. Update affected current documentation in the same change.
 Set `created`, `updated`, and `last_updated_session` in frontmatter. Preserve
 `created` on revisions. Obtain the current session/run ID from the agent host's
 provided task metadata; no personal lookup tool is required. If the host exposes
-no ID, create and report an authoring-run ID with
-`python3 -c 'import uuid; print(uuid.uuid4())'` and label it `authoring-run/<id>`;
-do not present it as a host session ID. Obtain provenance with `date '+%Y-%m-%d %H:%M'` and `git rev-parse HEAD`. The SHA records the inspected
+no ID, or its ID must remain private, create and report an authoring-run ID with
+`python3 -c 'import uuid; print(uuid.uuid4())'` and label it `authoring-run/<id>`.
+Record the authoring operation and any host mapping privately; do not present
+the public authoring-run ID as a host session ID. Obtain provenance with `date '+%Y-%m-%d %H:%M'` and `git rev-parse HEAD`. The SHA records the inspected
 revision; the changelog description identifies accompanying uncommitted changes.
 
 Only when explicitly producing a PR-scoped document, use `# PR <number>:

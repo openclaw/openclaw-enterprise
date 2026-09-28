@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-09-27
-last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-09-28
+last_updated_session: authoring-run/c43b309b-ac83-4ece-ba43-85dc673d5342
 ---
 
 # Controller Worker Flow
@@ -21,17 +21,17 @@ Agent stop/deletion, and AgentRevision work. The
 - Source: `apps/controller/src/worker.mjs:configuration`,
   `apps/controller/src/worker.ts:ControllerWorker.start`, and
   `packages/occ/src/state/postgres-state.ts:operations.append`.
-- Assumptions: The database is initialized and contains the singleton
-  Installation; the API and worker use the same application-role database and
-  selected Driver identities. Production supplies trusted Installation YAML.
-  Each work record carries its original actor and exact resource ownership.
+- Assumptions: The initialized database contains the singleton Installation; the
+  API and worker share its application role and selected Drivers. Production
+  supplies trusted Installation YAML. Work records carry the original actor and
+  exact resource ownership.
 
 ## Flow
 
 ```mermaid
 graph TD
     subgraph Admission["HTTP API and PostgreSQL"]
-        A["Authenticate and authorize the mutation"] --> B["Commit resource state, audit, and queued work"]
+        A["Authenticate and authorize the mutation"] --> B["Commit state, audit, and work together"]
     end
     subgraph Worker["Independent controller worker"]
         C["Validate startup and attach lifecycle Drivers"] --> D["Recover expired claims and claim eligible work"]
@@ -66,14 +66,15 @@ application-role pool. Development without `OCC_CONFIG_PATH` preflights Docker;
 production requires explicit configuration.
 
 `start()` loads the bootstrapped Installation, validates native IAM, and attaches
-selected Configuration, Sandbox, and IAM hooks to Compute. Selected hooks require
+selected Configuration, Sandbox, and IAM hooks to Compute. Shared composition
+supplies Kubernetes Compute's optional Sandbox Driver. Selected hooks require
 `setLifecycleDrivers`; unsupported capabilities stop startup. Production runs
 Compute preflight before emitting `worker.started` and entering `run()`.
 
-The private metrics listener uses one read-only connection; scrapes share
+Metrics scrapes share one read-only connection and
 `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
-for persisted lifecycle, backlog depth and oldest age, distinguishing stopped
-from draft Agents without runtime probes. See the [metrics contract](../reference/metrics.md).
+for lifecycle and backlog observations without runtime probes. Metrics follow
+finalization independently of logging; see the [metrics contract](../reference/metrics.md).
 
 ### 2. Commit API admission and the durable work record
 
@@ -81,16 +82,24 @@ from draft Agents without runtime probes. See the [metrics contract](../referenc
 `packages/occ/src/index.ts:OpenClawController`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
-After caller authentication and authorization, controller operations call
+After authentication and authorization, controller operations call
 `operations.append`, which verifies exact ownership and invokes
 `PostgresWorkQueue.enqueue`. State, admission audit and work commit or roll back
 together.
+
+Agent deployment keeps the validated `deploy` authorization request and decision
+with the admitted revision until the API appends its audit event. The event uses
+that decision's IAM Driver, principal, exact Agent target and evidence even if
+Driver selection changes before the append. The API does not reauthorize the deploy decision to construct the event or
+relabel it from current selection. Audit failure rolls the revision,
+desired runtime state and queued work back with the transaction. An unknown
+PostgreSQL commit outcome remains unknown and is not retried.
 
 The queue freezes actor, Namespace owner, lifecycle target, and exact Agent and
 immutable AgentRevision for revision work. Agent lifecycle work identifies its
 Agent and `stopped` or `deleted` target without a revision. Reusing an idempotency
 key with a different actor, owner, or target is rejected. The API returns accepted
-state without waiting for Compute; the worker takes over.
+state before Compute; the worker takes over.
 
 For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
 work unchanged. The initiating actor can retry terminal failure after correcting
@@ -112,10 +121,9 @@ and lease deadline, and increments the attempt count. Another live claim for
 the same Agent, or the Namespace for Namespace work, prevents concurrent
 ownership of that target.
 
-An empty queue causes a bounded idle delay. After processing or while idle,
-`health()` queries pending work, calls `onHealthy`, and emits `worker.health`.
-Readiness requires both query and callback success. Health updates are serialized;
-failures emit `HEALTH_UNAVAILABLE` without consuming work retries.
+An empty queue waits within a bound. After work or idle, `health()` queries
+work, calls `onHealthy`, and emits `worker.health`. Both must succeed for readiness. Serialized failures emit `HEALTH_UNAVAILABLE` without
+consuming retries.
 
 ### 4. Reload ownership and reauthorize before infrastructure effects
 
@@ -130,23 +138,21 @@ original actor. Provisioning also checks restrictions on the exact Namespace;
 placement into an existing Kubernetes namespace requires Installation
 administration permission again.
 
-Revision work reloads its Namespace, Agent, admitted revision, and current active
-revision. `processRevision()` rejects mismatched owners, an unready Namespace,
-an invalid Agent Principal, a changed Harness descriptor, or a different Compute
-Driver identity. `authorizeRevision()` checks current `deploy` permission and,
-when a ServiceAccount snapshot is present, current `read` permission for that
-exact ServiceAccount. Admission-time permission does not substitute for these
-checks. The worker then resolves the revision's frozen Backend metadata and
-rechecks any managed credential's exact Backend, Driver, workspace, and issued
-account binding before Compute effects. It uses a read-only projection and has
-no Backend client or admin key. The
+Revision work reloads its Namespace, Agent, admitted revision, and active revision.
+`processRevision()` rejects mismatched owners, an unready Namespace, an invalid
+Agent Principal, a changed Harness descriptor, or a different Compute Driver.
+`authorizeRevision()` rechecks current `deploy` and, for a ServiceAccount
+snapshot, `read` on that exact ServiceAccount. Admission-time permission is
+insufficient. Before Compute effects, the worker resolves frozen Backend metadata
+and rechecks each managed credential's exact Backend, Driver, workspace, and issued
+account binding. This read-only path has no Backend client or admin key. The
 [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md) owns these checks.
 
 Revocation and denial fail permanently before runtime creation. Older revisions
-complete as superseded; already-active revisions enter finalization or maintenance.
-A newer admitted revision for which Compute requires stopped predecessors also
-supersedes older active maintenance before any Compute effects. This remains
-true after candidate failure; recovery uses a new revision.
+complete as superseded; active revisions enter finalization or maintenance.
+When Compute requires stopped predecessors, a newer admission supersedes older
+active maintenance before Compute effects, even after candidate failure.
+Recovery uses a new revision.
 
 Agent-stop work rechecks current exact-Agent `operate`. Superseded desired state
 completes without shutdown. An absent active pointer does not prove candidates
@@ -164,56 +170,52 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 
 Namespace dispatch calls `ensureNamespace` or `deleteNamespace`. Revision
 dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
-immutable snapshot. The worker validates the returned observation's owner and
-shape before treating it as ready. A pending observation defers convergence;
-an invalid observation fails permanently.
+immutable snapshot. A wrong owner or invalid observation fails permanently;
+a pending observation defers convergence.
 
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` checks Compute's
-`requiresStoppedPredecessors` capability. When selected, it loads all earlier
+`requiresStoppedPredecessors` capability. When selected, it loads earlier
 snapshots, closes their credential sessions, and calls `stopRevision` under the
 claim heartbeat before preparing the candidate. This includes failed candidates;
-a release failure prevents new preparation. The per-Agent queue serializes these
-operations, and the earlier dispatch guard prevents maintenance from recreating
-a predecessor between readiness observations. Durable storage remains Driver-owned.
-This replacement path accepts downtime and recovers through a new higher revision.
+a release failure prevents preparation. The per-Agent queue serializes the work,
+and the dispatch guard prevents maintenance from recreating a predecessor between
+observations. Durable storage remains Driver-owned. This path accepts downtime
+and recovers through a new higher revision.
 
 The worker validates Compute's startup plugin warning codes and selection keys
-against the immutable revision. Warnings permit deployment only after Compute
-verifies failed selections are disabled; missing or malformed startup evidence
-cannot establish success.
+against the immutable revision. Compute must verify failed selections are disabled
+before warnings permit deployment; missing or malformed evidence cannot establish
+success.
 
-Agent-stop dispatch captures the Agent's revisions owned by the current Compute
-and validates their exact owner. It calls `stopRevision` for the active revision
-first, then the remaining captured revisions, including terminal candidates and
-predecessors whose retirement failed. Historical revisions pinned to another
-Compute are excluded; an active revision pinned elsewhere still fails closed.
+Agent-stop dispatch captures and validates the Agent's revisions owned by the
+current Compute. It stops the active revision first, then the rest, including
+terminal candidates and predecessors whose retirement failed. Historical
+revisions pinned to another Compute are excluded; an active revision pinned
+elsewhere fails closed.
 Before each shutdown, the worker rechecks the Agent owner and stopped desired
 state. Later admissions are not added to this cleanup set. Partial failure retries
 the idempotent shutdowns without clearing the active pointer or deleting retained
 workspace data.
 
-Before shutdown, the worker binds the server-owned Namespace and Agent. Stopped
-revision recovery also binds before shutdown and retirement. IAM and exact
-resource checks precede binding.
-Revision preparation and maintenance recheck `desiredRuntimeState`; a candidate
-that overlaps stop is shut down instead of activated.
+Before shutdown or retirement, including stopped-revision recovery, the worker
+binds the server-owned Namespace and Agent after IAM and exact-resource checks.
+Preparation and maintenance recheck `desiredRuntimeState`; a candidate that
+overlaps stop is shut down instead of activated.
 
-Agent-deletion dispatch binds the server-owned Namespace and Agent before calling
-`retireRevision` for every owned revision, then invokes the optional Agent
-credential-deletion capability. This rebuilds Driver-local ownership after a
-worker restart. A Driver that can provision runtime credentials but cannot delete
-them fails permanently before binding or retirement. Compute retirement owns
-workload termination and Sandbox cleanup; the worker does not invoke either
-independently.
+Agent-deletion dispatch binds the server-owned Namespace and Agent, retires every
+owned revision, then invokes the optional Agent credential-deletion capability.
+This rebuilds Driver-local ownership after restart. A Driver that can provision
+runtime credentials but cannot delete them fails permanently before binding or
+retirement. Compute retirement owns workload termination and Sandbox cleanup;
+the worker invokes neither independently.
 
 `withClaimHeartbeat()` renews before each effect and every third of the lease
 duration, protecting sequences of short effects too. Lease loss, heartbeat failure,
 or shutdown aborts Compute and raises `WorkClaimLostError`. Expired or replaced
 claim tokens cannot publish results.
 
-Successful renewals request throttled health updates without delaying effects
-or renewal. Health failure does not imply lease loss; heartbeat failure aborts
-Compute.
+Successful renewals request throttled health updates without delaying effects or
+renewal. Health failure does not imply lease loss; heartbeat failure aborts Compute.
 
 Compute owns infrastructure and Sandbox dispatch. See the
 [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
@@ -236,24 +238,23 @@ and production after the claim-protected compare-and-set of `Agent.activeRevisio
 the first dedicated revision stays inactive until commit. A changed pointer causes
 `ACTIVE_REVISION_CHANGED` and retry.
 
-After the pointer commit, the worker finishes required activation and retires
-the predecessor. `completeActivatedRevision()` then rechecks the exact active
-revision and claim, appends activation evidence, and completes work in a second
-transaction. Infrastructure effects and database state are not atomic. Retried
-finalization rechecks the already-active candidate before activation and
-retirement, so a retained plugin failure cannot become success after claim loss.
+After the pointer commit, the worker finishes activation and retires the
+predecessor. In a second transaction, `completeActivatedRevision()` rechecks the
+active revision and claim, appends evidence, and completes work. Infrastructure
+effects and database state are not atomic. Retried finalization rechecks the
+active candidate before effects, so a retained plugin failure cannot become
+success after claim loss.
 
 Stop finalization rechecks the live claim, Agent owner, and stopped desired state.
-After all captured cleanup succeeds, it clears `activeRevisionId` only when
-it still equals the revision Compute stopped. A later deployment supersedes the
-stop even if it retains that active pointer while preparing. It appends lifecycle-stop
-evidence and completes the same work item. Revision rows and persistent runtime
-state are not deleted.
+After captured cleanup, it clears `activeRevisionId` only if it still identifies
+the stopped revision. A later deployment supersedes the stop even if it retains
+that pointer while preparing. Finalization appends lifecycle-stop evidence and
+completes the work item without deleting revision rows or persistent runtime state.
 
 After commit, `completeActivatedRevision()` and `finalizeAgentStop()` record
 admission-to-completion duration through `apps/controller/src/metrics/index.ts:createOccMetrics`.
-Queue waits and retries count; maintenance and superseded work do not.
-Process death before observation can lose a sample.
+Queue waits and retries count; maintenance and superseded work do not. Process
+death before observation can lose a sample.
 
 Deletion finalization uses a restricted database function rather than the
 generic queue completion path. In one transaction it validates the live claim,
@@ -278,14 +279,14 @@ exhausted attempts, and the convergence deadline terminate work. See the
 and the [settings reference](../reference/settings/operations.md#controller-worker-environment)
 for their timing controls.
 
-Terminal work rows store the overall `reason_code` and one optional `result_data`
-object for success or failure details. Successful revision work stores
+Terminal rows store the overall `reason_code` and optional `result_data` for
+success or failure details. Successful revision work stores
 `{ warnings: [...] }`; a convergence deadline failure stores required
 `timeoutMs` and optional `runtimeFailure` from the exact candidate runtime.
 Compute observes cached startup results through its private status path,
-including unready Harnesses without plugins, and verifies the Pod/container
-incarnation after collection. It does not repeat the model probe. Missing or
-invalidated evidence leaves the cause unspecified.
+including unready Harnesses without plugins, and verifies the Pod or container
+incarnation. It does not repeat the model probe. Missing or invalidated evidence
+leaves the cause unspecified.
 
 `packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
 and writes; the PostgreSQL constraint enforces the matching persisted shape.
@@ -295,18 +296,18 @@ live claim; deployment status derives `error` and `warnings` from that result.
 Completion needs no runtime receipt acknowledgment or post-commit cleanup.
 Maintenance cannot rewrite the completed deployment's historical startup warnings.
 
-Deployment GET requires exact revision `read` access and reads only durable
-state, surviving Pod deletion and controller restart. Queued, running, and
-successful deployments have no failure error. See [deployment status](../reference/agents.md#deployment-status).
+Deployment GET requires exact revision `read` and uses durable state that survives
+Pod deletion and controller restart. Queued, running, and successful deployments
+have no failure error. See [deployment status](../reference/agents.md#deployment-status).
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`. Their
 `result_data` remains `NULL`; pending rows have no terminal outcome.
 
-If Compute declares a maintenance interval, successful activation schedules
-another exact-revision observation. An incomplete active-runtime observation or
-Compute binding closes the bounded item and schedules another so that a provider
-outage does not abandon reconciliation of an authorized active runtime.
+If Compute declares a maintenance interval, activation schedules another
+exact-revision observation. An incomplete observation or Compute binding closes
+the bounded item and schedules another, so a provider outage does not abandon
+reconciliation of an authorized active runtime.
 Each new claim reauthorizes its original actor. The next maintenance key uses a
 strictly later time bucket than the current claim, preventing clock skew from
 colliding with completed work and silently dropping its successor.
@@ -323,23 +324,23 @@ final-attempt crashes from stranding provisioning.
 
 ## Debugging and Verification
 
-- `worker.started` identifies the selected `computeDriverId` and optional
-  `sandboxDriverId`. `worker.health` with `status: ready` reports a successful
-  pending-work query. Neither event proves an Agent model turn.
-- `worker.startup-error` precedes processing when the mode, database,
-  Installation, Driver selection, or preflight is invalid. The worker has no
-  HTTP health endpoint; packaged probes inspect the private readiness marker.
-- When accepted operations stay queued, compare the API and worker database and
-  Installation configuration, then inspect `worker.completed` outcomes and
-  `worker.error`. `ACTOR_REVOKED` and `AUTHORIZATION_DENIED` require checking
-  current IAM state; `DEPENDENCY_UNAVAILABLE` identifies retryable dispatch
-  failure; `CLAIM_LOST` means the worker no longer owns publication.
+- `worker.started` names `computeDriverId` and optional `sandboxDriverId`.
+  Ready `worker.health` confirms a pending-work query; neither proves a model turn.
+- `worker.startup-error` reports invalid mode, database, Installation, Driver
+  selection, or preflight before processing. Probes inspect a private readiness
+  marker; the worker has no HTTP endpoint.
+- For queued operations, compare API and worker database and Installation
+  configuration, then inspect `worker.completed` and `worker.error`. Check current
+  IAM state for `ACTOR_REVOKED` or `AUTHORIZATION_DENIED`; `DEPENDENCY_UNAVAILABLE`
+  is retryable; `CLAIM_LOST` ends publication ownership.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
   require PostgreSQL; neither proves real model execution.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) tests
-  verify composition; [k3d integration](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
-  verifies real infrastructure.
+- [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
+  and append-failure rollback on the authenticated route after changing IAM Drivers.
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) verifies
+  composition; [k3d integration](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
+  verifies infrastructure.
 
 ## Related docs
 
@@ -361,6 +362,8 @@ final-attempt crashes from stranding provisioning.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 12:53: Document deployment audit attribution and its transaction boundary. (authoring-run/c43b309b-ac83-4ece-ba43-85dc673d5342 - da62a0368fa4f3ab0a2fa6cca40d9952bf93cdb2)
 
 - 2026-09-27 22:05: Allow the initiating caller to requeue failed Agent teardown through repeated DELETE, retaining active claims and prior audit. (01a0cf72-6985-7712-ba92-d8cc32470f24 - ae31581574744bea2745066f189eea6e826fe823)
 

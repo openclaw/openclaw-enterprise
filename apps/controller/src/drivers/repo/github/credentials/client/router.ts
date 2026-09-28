@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseGhInvocation, prepareGhCommand } from "./commands.ts";
+import { requireGhMaterial } from "./config.ts";
 import { createClientEnvironment } from "./environment.ts";
 import { executeClientCommand } from "./launch.ts";
 import {
@@ -24,6 +25,8 @@ export async function routeRepositoryClient(command: string, args: string[]): Pr
   const binding = gh.target
     ? selectGhRepository(manifest, gh.target.value, pinned)
     : (pinned ?? selectImplicitGhRepository(manifest, process.env));
+  requireCurrentBinding(binding);
+  await requireGhMaterial(binding.configuration, binding.directory);
   requireCurrentBinding(binding);
   const normalizedArgs = [...gh.args];
   if (gh.target?.kind === "repository") {

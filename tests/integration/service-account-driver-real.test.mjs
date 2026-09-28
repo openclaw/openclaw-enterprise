@@ -646,7 +646,9 @@ test(
           await kubectl("get", "networkpolicies", "--namespace", tenantNamespace, "-o", "json"),
         );
         return response.items.find(
-          ({ metadata }) => metadata.name === `allow-agent-auth-${hash(agent.data.id)}`,
+          ({ metadata }) =>
+            metadata.name ===
+            `allow-agent-auth-${hash(agent.data.id)}-rev-${hash(revision.data.id)}`,
         );
       },
     );

@@ -2723,6 +2723,18 @@ test("administrator-created auth accounts sign in and receive only provisioned I
 
   const email = `operator-${randomUUID()}@example.com`;
   const password = `generated-password-${randomUUID()}`;
+  const originalAuthorize = selectedIAMDriver.authorize;
+  selectedIAMDriver.authorize = async (...args) => {
+    const decision = await originalAuthorize.apply(selectedIAMDriver, args);
+    if (args[0].action !== "administer") {
+      return decision;
+    }
+    const groupIds = ["original-admin-evidence"];
+    groupIds[Symbol.iterator] = () => {
+      throw new Error("the audit event must not use the supplied iterator");
+    };
+    return { ...decision, evidence: { ...decision.evidence, groupIds } };
+  };
   const auditCount = fixture.auditSink.events.length;
   const created = await injectedRequest(fixture.app, "POST", "/api/auth/accounts", {
     body: { email, password, name: "Read Only Operator", roleId: readOnlyRole.id },
@@ -2741,6 +2753,7 @@ test("administrator-created auth accounts sign in and receive only provisioned I
   assert.equal(accountEvents.length, 1);
   assert.equal(accountEvents[0].kind, "mutation");
   assert.equal(accountEvents[0].action, "openclaw.auth.accounts.create");
+  assert.deepEqual(accountEvents[0].details?.iamEvidence?.groupIds, ["original-admin-evidence"]);
   assert.deepEqual(accountEvents[0].resource, {
     kind: "installation",
     id: fixture.installationId,
@@ -3751,6 +3764,174 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   const recorded = JSON.stringify(fixture.auditSink.events);
   assert.equal(recorded.includes(fixture.session.cookie), false);
   assert.equal(recorded.includes("never-log-this-request-body"), false);
+});
+
+test("authorization accepts getter-backed decisions and unrelated function properties", async () => {
+  for (const kind of ["getters", "function"]) {
+    const fixture = await createInjectedFixture();
+    const controller = {
+      request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+    };
+    await bootstrap(controller, "Decision compatibility");
+    const originalAuthorize = fixture.iamDriver.authorize;
+    fixture.iamDriver.authorize = async (...args) => {
+      const decision = await originalAuthorize.apply(fixture.iamDriver, args);
+      if (kind === "function") {
+        return { ...decision, extra: () => {} };
+      }
+      return new (class {
+        get allowed() {
+          return decision.allowed;
+        }
+        get reason() {
+          return decision.reason;
+        }
+        get driverId() {
+          return decision.driverId;
+        }
+        get evidence() {
+          return decision.evidence;
+        }
+      })();
+    };
+    const namespace = await createNamespace(controller, `decision-compatibility-${kind}`);
+    assert.ok(namespace.id);
+  }
+});
+
+test("authorization rejects sparse decision evidence", async () => {
+  const fixture = await createInjectedFixture();
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller, "Sparse decision evidence");
+  const originalAuthorize = fixture.iamDriver.authorize;
+  fixture.iamDriver.authorize = async (...args) => {
+    const decision = await originalAuthorize.apply(fixture.iamDriver, args);
+    if (args[0].action !== "create") {
+      return decision;
+    }
+    return { ...decision, evidence: { ...decision.evidence, groupIds: Array(1) } };
+  };
+  const response = await controller.request("POST", "/namespaces", {
+    body: { name: "sparse-evidence" },
+  });
+  assert.equal(response.status, 503);
+  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
+});
+
+test("deploy audit preserves its authorization decision and rolls back with append failure", async () => {
+  let fixture;
+  let laterIAMDriver;
+  const sharedEvidence = ["matching-restriction"];
+  sharedEvidence[Symbol.iterator] = function* () {
+    yield "forged-iterator-value";
+  };
+  const computeDriver = createProvisioningCapableComputeDriver();
+  computeDriver.validateHarnessAuth = () => {
+    if (fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
+      return;
+    }
+    sharedEvidence.push("mutated-after-authorization");
+    fixture.controller.registerDriver(laterIAMDriver);
+    fixture.controller.selectDriver("iam", laterIAMDriver.id);
+  };
+  fixture = await createInjectedFixture({ computeDriver, recordOperations: true });
+  laterIAMDriver = new NativeIAMDriver(
+    { loadNativeIAMState: async () => fixture.state },
+    { id: "iam-selected-after-deploy-decision" },
+  );
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller, "Deploy audit provenance");
+  const namespace = await createNamespace(controller, "deploy-audit-provenance");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const agent = await createAgent(controller, namespace.id, "decision-bound-agent");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const authorizingDriverId = fixture.iamDriver.id;
+  const originalAuthorize = fixture.iamDriver.authorize;
+  fixture.iamDriver.authorize = async (...args) => {
+    const decision = await originalAuthorize.apply(fixture.iamDriver, args);
+    if (args[0].action !== "deploy") {
+      return decision;
+    }
+    return {
+      ...decision,
+      evidence: { ...decision.evidence, groupIds: sharedEvidence, restrictionIds: sharedEvidence },
+    };
+  };
+  const auditCount = fixture.auditSink.events.length;
+
+  // Harness validation runs after OCC has checked deploy authorization. Changing
+  // Driver selection here proves the audit uses that completed decision.
+  const deployed = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.equal(sharedEvidence.length, 2);
+  assert.equal(sharedEvidence[0], "matching-restriction");
+  assert.equal(sharedEvidence[1], "mutated-after-authorization");
+  assert.equal(fixture.controller.selectedDriver("iam").id, laterIAMDriver.id);
+  const deployEvents = fixture.auditSink.events
+    .slice(auditCount)
+    .filter(
+      (event) => event.resource.kind === "agent_revision" && event.resource.id === deployed.data.id,
+    );
+  assert.equal(deployEvents.length, 1);
+  assert.equal(deployEvents[0].iamDriverId, authorizingDriverId);
+  assert.equal(deployEvents[0].outcome, "success");
+  assert.equal(deployEvents[0].decisionReason, undefined);
+  assert.deepEqual(deployEvents[0].authorization, {
+    principalId: fixture.principal.id,
+    action: "deploy",
+    resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+  });
+  assert.deepEqual(deployEvents[0].details?.iamEvidence, {
+    identityId: fixture.principal.id,
+    groupIds: ["matching-restriction"],
+    bindingIds: ["binding-admin"],
+    roleIds: [fixture.state.roles[0].id],
+    restrictionIds: ["matching-restriction"],
+  });
+
+  const failedAgent = await createAgent(controller, namespace.id, "audit-failure-agent");
+  await bindHarnessKey(fixture, namespace.id, failedAgent);
+  const revisionsBefore = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${failedAgent.id}/revisions`,
+  );
+  assert.deepEqual(revisionsBefore.data, []);
+  const workCount = fixture.controller.pendingOperations().length;
+  const failureAuditCount = fixture.auditSink.events.length;
+  const originalAppend = fixture.auditSink.append;
+  fixture.auditSink.append = async () => {
+    throw new Error("deploy audit unavailable");
+  };
+  let failedDeploy;
+  try {
+    failedDeploy = await controller.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${failedAgent.id}/deploy`,
+    );
+  } finally {
+    fixture.auditSink.append = originalAppend;
+  }
+  assert.equal(failedDeploy.status, 503);
+  assert.equal(failedDeploy.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const unchangedRevisions = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${failedAgent.id}/revisions`,
+  );
+  assert.deepEqual(unchangedRevisions.data, []);
+  const unchangedAgent = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${failedAgent.id}`,
+  );
+  assert.equal(unchangedAgent.data.desiredRuntimeState, "stopped");
+  assert.equal(fixture.controller.pendingOperations().length, workCount);
+  assert.equal(fixture.auditSink.events.length, failureAuditCount);
 });
 
 test("IAM and audit dependency failures fail closed without orphaned state", async () => {
