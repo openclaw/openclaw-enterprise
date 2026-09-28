@@ -5206,6 +5206,12 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
       name: kubernetesNamespaceName(tenant.id),
       plane: "execution",
     }),
+    false,
+    undefined,
+    undefined,
+    [],
+    [],
+    driver.pluginRuntimeSnapshot(revision),
   );
   gateway.metadata.generation = 1;
   gateway.status = { observedGeneration: 1, readyReplicas: 1 };
