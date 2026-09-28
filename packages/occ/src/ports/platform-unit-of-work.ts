@@ -125,6 +125,11 @@ export function bindPlatformUnitOfWork(
       "retryByWorkId",
     ]),
     audit: bindRepository(repositories.audit, lifetime, ["append", "list"]),
-    operations: bindRepository(repositories.operations, lifetime, ["append", "list", "findWork"]),
+    operations: bindRepository(repositories.operations, lifetime, [
+      "append",
+      "list",
+      "findWork",
+      "retryFailedAgentDeletion",
+    ]),
   });
 }

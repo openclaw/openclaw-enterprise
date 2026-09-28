@@ -133,8 +133,9 @@ revision history and persistent state.
 Run `occ agent delete '<agent-id>'` only when you intend to remove the Agent,
 its revision history, and its runtime credentials. Kubernetes also removes
 Agent-owned workspace data; Namespace-owned Configurations and Secrets survive.
-Deletion runs asynchronously. See [Agent deletion](../reference/agents.md#deletion)
-for the full cleanup behavior.
+Deletion runs asynchronously. If cleanup exhausts its retries, correct the
+reported cause, then repeat the command as the original caller with current
+delete permission. See [Agent deletion](../reference/agents.md#deletion).
 
 ## Provision integration Secrets
 

@@ -307,24 +307,24 @@ you cannot restart an old revision directly.
 
 ## Deletion
 
-An authorized bodyless `DELETE /namespaces/:namespaceId/agents/:agentId`
-sets `status` to `deleting`, sets desired runtime state to `stopped`, queues
-teardown, and returns `202`. A deleting Agent remains readable while work is in
-flight, but update, deployment, runtime-credential provisioning, and workspace
-writes return `409`. Repeating deletion while the Agent exists converges on the
-same queued operation.
+A bodyless `DELETE /namespaces/:namespaceId/agents/:agentId` requires exact-Agent
+`delete`, sets `status: deleting` and desired state `stopped`, queues teardown,
+and returns `202`. Reads remain available; updates, deployment, credential
+provisioning, and workspace writes return `409`. Repeated DELETE leaves queued
+or running work unchanged.
 
-The worker reauthorizes the original caller, binds the persisted Agent identity
-into Compute, retires every revision, and removes the Agent's runtime credentials
-before atomically deleting the Agent, its
-revision history, service principal, service-principal API keys, and exact IAM
-bindings and restrictions. Kubernetes revision retirement waits for exact
-workload Pods and removes Agent-owned compute artifacts, including workspace
-data. Namespace-owned Configurations and Secrets survive. After success,
-the Agent disappears from reads and its name can be reused. Retryable cleanup
-failures leave the Agent in `deleting` while bounded queue retries continue.
-Permanent failures fail closed in `failed_permanent`; the Agent remains
-`deleting`, and the current API has no requeue or operator recovery path.
+The worker reauthorizes the original caller, binds the persisted identity into
+Compute, retires all revisions, and removes runtime credentials. It then
+atomically deletes the Agent, revisions, service principal, its API keys, and
+exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
+and removes owned artifacts, including workspace data. Namespace Configurations
+and Secrets survive. Successful deletion releases the Agent's name.
+
+Cleanup retries are bounded. After permanent failure or exhaustion, the Agent
+stays `deleting`. Once the cause is corrected, the initiating caller can repeat
+DELETE to replenish the attempt budget. OCC and the worker recheck permission;
+another actor cannot take over. Work identity and prior failure audits remain,
+and the retry adds an audit event. This recovery covers Agent deletion only.
 
 ## Editable configuration
 

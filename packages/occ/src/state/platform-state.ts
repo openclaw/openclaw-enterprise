@@ -593,6 +593,7 @@ export interface PlatformOperationReadRepository {
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
   append(operation: PlatformOperation): Promise<void>;
+  retryFailedAgentDeletion(namespaceId: string, agentId: string, actorId: string): Promise<boolean>;
 }
 
 export type { AgentProvisioningRecord } from "./agent-provisioning.ts";
@@ -2221,6 +2222,8 @@ function repositories(snapshot: PlatformSnapshot): PlatformUnitOfWork {
       },
       list: async () =>
         Object.freeze(snapshot.operations.map((operation) => immutableCopy(operation))),
+      // The in-memory operation log has no executing or terminal work records.
+      retryFailedAgentDeletion: async () => false,
       findWork: async (idempotencyKey) => {
         const operation = snapshot.operations.find(
           (candidate) => operationIdempotencyKey(candidate) === idempotencyKey,

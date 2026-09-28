@@ -1065,7 +1065,7 @@ export const occApiRoutes = [
     iamAction: "delete",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Begin deletion of an exact Namespace-owned Agent and its AgentRevisions",
+    summary: "Begin or retry deletion of an exact Namespace-owned Agent and its AgentRevisions",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

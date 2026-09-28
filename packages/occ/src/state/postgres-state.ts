@@ -3748,6 +3748,27 @@ export class PostgresPlatformState implements PlatformStateStore {
             }),
           );
         },
+        retryFailedAgentDeletion: async (namespaceId, agentId, actorId) => {
+          await this.requireInitialized(context);
+          const retried = await client.query(
+            `UPDATE occ.controller_work AS work
+             SET state = 'queued', attempt_count = 0,
+                 available_at = clock_timestamp(), claim_token = NULL,
+                 lease_expires_at = NULL, completed_at = NULL,
+                 reason_code = NULL, result_data = NULL, updated_at = clock_timestamp()
+             FROM occ.agents AS agent
+             WHERE work.idempotency_key = $1
+               AND work.work_kind = 'lifecycle'
+               AND work.namespace_id = $2 AND work.agent_id = $3 AND work.actor_id = $4
+               AND work.revision_id IS NULL AND work.namespace_target IS NULL
+               AND work.agent_target = 'deleted' AND work.state = 'failed_permanent'
+               AND agent.namespace_id = work.namespace_id AND agent.id = work.agent_id
+               AND agent.status = 'deleting' AND agent.desired_runtime_state = 'stopped'
+             RETURNING work.idempotency_key`,
+            [`agent:${agentId}:reconcile:deleted`, namespaceId, agentId, actorId],
+          );
+          return retried.rowCount === 1;
+        },
         findWork: async (idempotencyKey) => {
           await this.requireInitialized(context);
           return queue.findWork(idempotencyKey);

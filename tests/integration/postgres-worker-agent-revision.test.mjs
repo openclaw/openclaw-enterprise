@@ -24,7 +24,14 @@ import {
 
 async function setup(
   context,
-  { leaseDurationMs = 30_000, onHealthy, metrics, repoDriver, secretAuthMethod = "api_key" } = {},
+  {
+    leaseDurationMs = 30_000,
+    maxAttempts = 5,
+    onHealthy,
+    metrics,
+    repoDriver,
+    secretAuthMethod = "api_key",
+  } = {},
 ) {
   const [
     { Pool },
@@ -288,7 +295,7 @@ async function setup(
       pool,
       pollIntervalMs: 15,
       leaseDurationMs,
-      maxAttempts: 5,
+      maxAttempts,
       onHealthy,
       ...(drivers === undefined ? { computeDriver } : { drivers }),
       ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
@@ -2678,6 +2685,146 @@ test(
     assert.deepEqual(audit.rows, [
       { outcome: "success", reason_code: "AGENT_DELETED", attempt_count: 2 },
     ]);
+  },
+);
+
+test(
+  "repeating Agent deletion recovers exhausted teardown without resetting an active claim",
+  requiresPostgres,
+  async (context) => {
+    const retirement = Promise.withResolvers();
+    context.after(() => retirement.resolve());
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const owner = await fixture.agent("delete-exhausted");
+    const sibling = await fixture.agent("delete-retry-sibling");
+    const revision = await fixture.revision(owner, 1);
+    const siblingRevision = await fixture.revision(sibling, 1);
+    let unavailable = true;
+    let retirementAttempts = 0;
+    await fixture.start({
+      ...fixture.compute,
+      async retireRevision(target) {
+        assert.equal(target.id, revision.id);
+        retirementAttempts += 1;
+        if (unavailable) {
+          throw new Error("Compute temporarily unavailable during teardown");
+        }
+        await retirement.promise;
+      },
+    });
+    await Promise.all([
+      fixture.work(revision, "succeeded"),
+      fixture.work(siblingRevision, "succeeded"),
+    ]);
+    const deletion = await fixture.requestDeletion(owner);
+    await fixture.work(deletion, "failed_permanent");
+    const observe = () =>
+      fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
+    const exhausted = await observe();
+    assert.equal(exhausted.attemptCount, 1);
+    assert.equal(exhausted.reasonCode, "DEPENDENCY_UNAVAILABLE");
+
+    // A rejected caller cannot replenish the worker's attempt budget.
+    await assert.rejects(
+      fixture.controller.deleteAgent(
+        `unprivileged-${randomUUID()}`,
+        fixture.namespace.id,
+        owner.id,
+      ),
+    );
+    assert.deepEqual(await observe(), exhausted);
+
+    const otherActor = `delete-operator-${randomUUID()}`;
+    await fixture.observerPool.query(
+      `INSERT INTO occ.iam_identities (id, kind, issuer, subject)
+       SELECT $1, kind, issuer, $1 FROM occ.iam_identities WHERE id = $2`,
+      [otherActor, fixture.actor.id],
+    );
+    await fixture.observerPool.query(
+      `INSERT INTO occ.iam_access_bindings
+         (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+       SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
+              resource_kind, resource_id
+       FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+      [otherActor, fixture.actor.id],
+    );
+    await assert.rejects(
+      fixture.controller.deleteAgent(otherActor, fixture.namespace.id, owner.id),
+      { message: "Only the initiating actor can retry deletion." },
+    );
+    assert.deepEqual(await observe(), exhausted);
+
+    unavailable = false;
+    await fixture.requestDeletion(owner);
+    const retried = await observe();
+    assert.ok(
+      ["queued", "claimed"].includes(retried.state),
+      "authorized repeated DELETE must requeue the exhausted teardown",
+    );
+    assert.equal(retried.idempotencyKey, exhausted.idempotencyKey);
+    assert.equal(retried.actorId, exhausted.actorId);
+    assert.equal(retried.createdAt.getTime(), exhausted.createdAt.getTime());
+    assert.equal(retried.reasonCode, undefined);
+    await waitFor("retried teardown to hold a live claim", async () => {
+      const work = await observe();
+      return work.state === "claimed" && retirementAttempts === 2 ? work : undefined;
+    });
+    const claimed = await observe();
+    await Promise.all([fixture.requestDeletion(owner), fixture.requestDeletion(owner)]);
+    const repeated = await observe();
+    assert.equal(repeated.state, "claimed");
+    assert.equal(repeated.claimToken, claimed.claimToken);
+    assert.equal(repeated.attemptCount, claimed.attemptCount);
+
+    retirement.resolve();
+    await waitFor("retried deletion to remove its Agent", async () =>
+      (await fixture.state.read((view) =>
+        view.agents.findAgent(fixture.namespace.id, owner.id),
+      )) === undefined
+        ? true
+        : undefined,
+    );
+    assert.equal(retirementAttempts, 2);
+    assert.equal(await observe(), undefined);
+    const surviving = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, sibling.id),
+    );
+    assert.equal(surviving.activeRevisionId, siblingRevision.id);
+    const { rows: ownedAudit } = await fixture.observerPool.query(
+      `SELECT action, actor_id AS "actorId", outcome, details FROM occ.audit_events
+       WHERE namespace_id = $1 AND resource_id = $2`,
+      [fixture.namespace.id, owner.id],
+    );
+    assert.equal(
+      ownedAudit.filter((event) => event.action === "reconcile" && event.outcome === "failure")
+        .length,
+      1,
+      "retry must retain the original failure evidence",
+    );
+    assert.deepEqual(
+      ownedAudit
+        .filter((event) => event.action === "openclaw.agents.delete.retry")
+        .map((event) => ({
+          actorId: event.actorId,
+          outcome: event.outcome,
+          details: {
+            workId: event.details.workId,
+            previousAttemptCount: event.details.previousAttemptCount,
+            previousReasonCode: event.details.previousReasonCode,
+          },
+        })),
+      [
+        {
+          actorId: fixture.actor.id,
+          outcome: "success",
+          details: {
+            workId: deletion.idempotencyKey,
+            previousAttemptCount: 1,
+            previousReasonCode: "DEPENDENCY_UNAVAILABLE",
+          },
+        },
+      ],
+    );
   },
 );
 

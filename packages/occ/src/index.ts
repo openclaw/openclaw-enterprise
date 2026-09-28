@@ -4353,7 +4353,7 @@ export class OpenClawController {
   }
 
   /**
-   * Begin deletion of an exact Agent. Teardown of its revisions and owned
+   * Begin or retry deletion of an exact Agent. Teardown of its revisions and owned
    * runtime resources is asynchronous, so this transitions the Agent to
    * `deleting` and queues the work rather than removing anything here. The
    * Agent row and its revisions are removed only once teardown succeeds.
@@ -4391,10 +4391,38 @@ export class OpenClawController {
       });
       // Deletion ends delivery ownership immediately, including never-deployed Agents.
       await state.workspaceSetups.delete(namespace.id, agent.id);
-      // A repeated request converges on the in-flight teardown instead of
-      // conflicting, matching deleteNamespace. The queued work item is
-      // idempotent, so it is not appended twice.
+      // Keep in-flight teardown idempotent. The original caller can explicitly
+      // retry terminal work after repairing the dependency or permission failure.
       if (agent.status === "deleting") {
+        const workId = `agent:${agent.id}:reconcile:deleted`;
+        const work = await state.operations.findWork(workId);
+        if (work?.state === "failed_permanent") {
+          if (work.actorId !== principalId) {
+            throw new AuthorizationDeniedError("Only the initiating actor can retry deletion.");
+          }
+          if (
+            !(await state.operations.retryFailedAgentDeletion(namespace.id, agent.id, principalId))
+          ) {
+            throw new ResourceConflictError("The Agent deletion work changed during retry.");
+          }
+          await state.audit.append({
+            id: `aud_${crypto.randomUUID()}`,
+            installationId: this.installation.id,
+            namespaceId: namespace.id,
+            occurredAt: this.timestamp(),
+            kind: "mutation",
+            actorId: principalId,
+            source: "occ",
+            action: "openclaw.agents.delete.retry",
+            resource: { kind: "agent", namespaceId: namespace.id, id: agent.id },
+            outcome: "success",
+            details: {
+              workId,
+              previousAttemptCount: work.attemptCount,
+              previousReasonCode: work.reasonCode,
+            },
+          });
+        }
         return agent;
       }
       const stopped = await state.agents.transitionAgentDesiredRuntimeState(

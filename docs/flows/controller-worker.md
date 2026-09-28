@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: 2026-09-24
+updated: 2026-09-27
 last_updated_session: 01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
@@ -49,6 +49,7 @@ graph TD
         I -->|invalid or exhausted| H
         K --> D
         L --> D
+        H -->|"Initiating caller repeats Agent DELETE"| A
     end
 ```
 
@@ -59,26 +60,20 @@ graph TD
 `apps/controller/src/worker.mjs:configuration`,
 `apps/controller/src/worker.ts:ControllerWorker.start`
 
-The [entrypoint](../../apps/controller/src/worker.mjs) validates mode, PostgreSQL
-URL and positive timing values, removes old readiness, loads trusted configuration,
-and constructs `ControllerWorker` with its own application-role pool.
-Development without `OCC_CONFIG_PATH` selects and preflights the Docker Compute
-Driver. Production requires explicit startup configuration.
+The [entrypoint](../../apps/controller/src/worker.mjs) validates configuration,
+removes stale readiness, and constructs `ControllerWorker` with an
+application-role pool. Development without `OCC_CONFIG_PATH` preflights Docker;
+production requires explicit configuration.
 
-`start()` loads the already-bootstrapped Installation, validates persisted native
-IAM state, and attaches selected Configuration, Sandbox, and IAM lifecycle hooks
-to Compute. Shared startup composition supplies the optional Sandbox Driver to
-the bundled Kubernetes Compute Driver. A selected hook requires Compute to
-support `setLifecycleDrivers`; invalid or unavailable selected capabilities stop
-startup. Production then runs Compute preflight before emitting `worker.started`
-and starting `run()`.
+`start()` loads the bootstrapped Installation, validates native IAM, and attaches
+selected Configuration, Sandbox, and IAM hooks to Compute. Selected hooks require
+`setLifecycleDrivers`; unsupported capabilities stop startup. Production runs
+Compute preflight before emitting `worker.started` and entering `run()`.
 
-The worker has no resource API. Its private metrics listener uses one read-only
-connection; concurrent scrapes share
+The private metrics listener uses one read-only connection; scrapes share
 `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
 for persisted lifecycle, backlog depth and oldest age, distinguishing stopped
-from draft Agents without runtime probes. Pass metrics follow finalization
-independently of logging; see the [metrics contract](../reference/metrics.md).
+from draft Agents without runtime probes. See the [metrics contract](../reference/metrics.md).
 
 ### 2. Commit API admission and the durable work record
 
@@ -96,6 +91,14 @@ immutable AgentRevision for revision work. Agent lifecycle work identifies its
 Agent and `stopped` or `deleted` target without a revision. Reusing an idempotency
 key with a different actor, owner, or target is rejected. The API returns accepted
 state without waiting for Compute; the worker takes over.
+
+For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
+work unchanged. The initiating actor can retry terminal failure after correcting
+its cause. OCC checks current delete permission, then calls
+`operations.retryFailedAgentDeletion` and appends the retry audit atomically.
+Only the exact stopped, deleting Agent's terminal work is reset; identity and
+prior audits remain. The worker reauthorizes normally. Namespace deletion is
+outside this recovery path.
 
 ### 3. Recover expired claims and claim one eligible operation
 
@@ -296,12 +299,9 @@ Deployment GET requires exact revision `read` access and reads only durable
 state, surviving Pod deletion and controller restart. Queued, running, and
 successful deployments have no failure error. See [deployment status](../reference/agents.md#deployment-status).
 
-Legacy terminal rows derive `reason_code` from audit evidence: `REVISION_ACTIVATED`
-requires matching activation evidence between creation and completion. Otherwise,
-backfill uses the terminal `reconcile` reason matching resource, actor, attempt,
-outcome and completion window, or `LEGACY_OUTCOME_UNKNOWN` without evidence.
-Historical `result_data` stays `NULL` because structured timeout/warning data was
-not stored; pending rows retain no terminal outcome.
+Legacy terminal rows derive `reason_code` from matching activation or terminal
+reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`. Their
+`result_data` remains `NULL`; pending rows have no terminal outcome.
 
 If Compute declares a maintenance interval, successful activation schedules
 another exact-revision observation. An incomplete active-runtime observation or
@@ -361,6 +361,8 @@ final-attempt crashes from stranding provisioning.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-27 22:05: Allow the initiating caller to requeue failed Agent teardown through repeated DELETE, retaining active claims and prior audit. (01a0cf72-6985-7712-ba92-d8cc32470f24 - ae31581574744bea2745066f189eea6e826fe823)
 
 - 2026-09-24 11:28: Document exclusive dedicated preparation and durable RWO workspaces in the accompanying change. (01a0cf72-6985-7712-ba92-d8cc32470f24 - 14a4508baad876d3eea4e6fe6388f8d8a91559b7)
 
