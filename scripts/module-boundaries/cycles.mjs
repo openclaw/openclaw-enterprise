@@ -71,6 +71,8 @@ export function classifyCycles(files, edges) {
 }
 
 export function cycleDiagnostic(members, edges, typeOnly) {
+  // Cycle exceptions use these exact JSON bytes. Reuse each serialized edge for
+  // locale-aware sorting and the final array instead of serializing per comparison.
   const cycleEdges = edges
     .filter(
       (edge) =>
@@ -80,17 +82,19 @@ export function cycleDiagnostic(members, edges, typeOnly) {
         members.includes(edge.to),
     )
     .map(({ from, to, kind, specifier, bindings, typeOnly: edgeTypeOnly }) =>
-      typeOnly
-        ? [from, to, kind, specifier, bindings, edgeTypeOnly]
-        : [from, to, kind, specifier, bindings],
+      JSON.stringify(
+        typeOnly
+          ? [from, to, kind, specifier, bindings, edgeTypeOnly]
+          : [from, to, kind, specifier, bindings],
+      ),
     )
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    .sort((a, b) => a.localeCompare(b));
   return Object.freeze({
     category: "policy",
     rule: typeOnly ? "type-only-cycle" : "runtime-cycle",
     from: members[0],
     to: members.join(" -> "),
-    specifier: JSON.stringify(cycleEdges),
+    specifier: `[${cycleEdges.join(",")}]`,
     kind: "cycle",
     typeOnly,
     bindings: Object.freeze([]),

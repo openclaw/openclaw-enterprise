@@ -148,6 +148,8 @@ ARG TARGETARCH
 ENV OPENAI_CODEX_VERSION=0.156.0
 
 ENV NODE_ENV=production
+# Keep local npm commands from issuing unrelated background update requests.
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 ENV PATH=/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /app

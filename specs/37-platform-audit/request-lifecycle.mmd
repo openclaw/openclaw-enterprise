@@ -1,0 +1,64 @@
+---
+config:
+  theme: base
+  themeVariables:
+    fontSize: 16px
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    signalColor: "#475467"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+  sequence:
+    mirrorActors: true
+    useMaxWidth: false
+    actorMargin: 30
+    messageMargin: 24
+---
+sequenceDiagram
+  actor Human as Human / browser
+  box Existing OCC API process
+    participant API as HTTP / Audit
+    participant Authority as Authentication / IAM
+    participant State as Original State
+  end
+  participant DB as PostgreSQL
+  Note over Human,DB: 1. Proposed admission: actual human and exact Installation grant
+  Human->>API: GET /audit-events with session and bounded query or cursor
+  API->>Authority: Recognize actual request and current human Principal
+  Authority-->>API: Genuine account, method and session authority or refusal
+  API->>State: Bind read intent and server-owned singleton
+  State->>DB: BEGIN original-client write transaction
+  Note over Authority,DB: 2. Original-owner guard order and currentness after waits
+  State->>DB: Installation authority, sorted account/method/session guards
+  State->>DB: Selected policy barrier and head
+  State->>Authority: Check genuine current account/method/session and exact IAM grant
+  Authority-->>State: Current read authority or refusal
+  Note over Authority,DB: Every enabled account/credential/logout writer interlocks<br/>Recheck after waits through settlement, including clock-based expiry
+  alt Current human, grant and bounded cursor are valid
+    Note over API,DB: 3. Bounded query and closed projection
+    State->>DB: Positive tuples, fixed window and exact keyset before LIMIT + 1
+    DB-->>State: Actual row envelopes with exact timestamp precision
+    State->>API: Validate closed events and page, reject malformed supported rows
+    API-->>State: Safe bounded page or refusal
+    Note over API,DB: 4. Mandatory disclosure for empty and nonempty pages
+    State->>Authority: Reauthorize current account/method/session and selected IAM
+    Authority-->>State: Current authority or refusal
+    State->>DB: Append safe disclosure on the same client
+    State->>DB: COMMIT under mandatory through-settlement currentness
+    alt Acknowledged COMMIT and currentness contract holds
+      DB-->>State: COMMIT acknowledged
+      State-->>API: Authorized page and bounded continuation
+      API-->>Human: Cache-Control no-store page
+    else Append failed or caught, authority lost, rollback or COMMIT unknown
+      DB-->>State: Failure, rollback or unknown settlement
+      State-->>API: No page or cursor
+      API-->>Human: Sanitized refusal, no protected bytes
+      Note over State,DB: Uncertain disclosure may persist, but proves no browser receipt<br/>A retry cannot relabel the earlier outcome
+    end
+  else Admission, permission, cursor or dependency fails
+    State-->>API: No page, preserve mandatory safe denial
+    API-->>Human: Sanitized refusal, no protected bytes
+  end
+  Note over Human,DB: 5. Independent refresh repeats authorization<br/>Late/backdated rows may appear, prior uncertainty remains unknown
+  Human->>API: New independently authorized request if still permitted
