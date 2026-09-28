@@ -23,7 +23,11 @@ test(
     assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname));
     assert.ok(["http:", "https:"].includes(origin.protocol));
     assert.equal(origin.username + origin.password + origin.search + origin.hash, "");
-    assert.ok(process.env.OPENAI_API_KEY, "The selected real-runtime case requires a model key.");
+    const authMethod = configuration.harnessAuthMethod ?? "api_key";
+    assert.ok(["api_key", "codex_pat"].includes(authMethod), "Unsupported harnessAuthMethod.");
+    const modelEnvironment = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+    const modelCredential = process.env[modelEnvironment];
+    assert.ok(modelCredential, `The selected real-runtime case requires ${modelEnvironment}.`);
     const key = JSON.parse(await readFile(configuration.serviceKeyFile, "utf8")).data.key;
     assert.equal(typeof key, "string");
     const planes = {};
@@ -150,14 +154,14 @@ test(
 
     const secret = await api("POST", `${base}/secrets`, {
       name: "Model",
-      value: process.env.OPENAI_API_KEY,
+      value: modelCredential,
     });
     const native = await api("POST", `${base}/configurations`, configuration.agentConfiguration);
     const agent = await api("POST", `${base}/agents`, {
       name: "two-cluster-lifecycle",
       configurationId: native.id,
       executionMode: "dedicated",
-      harnessAuth: { method: "api_key", source: secret.ref },
+      harnessAuth: { method: authMethod, source: secret.ref },
     });
     const agentPath = `${base}/agents/${agent.id}`;
     const role = await api("POST", `${base}/iam/roles`, {
@@ -229,7 +233,7 @@ test(
     const delivered = secrets.filter(
       (item) => item.metadata.labels?.["openclaw.dev/agent"] === agent.id,
     );
-    assert.ok(delivered.some((item) => Object.hasOwn(item.data ?? {}, "OPENAI_API_KEY")));
+    assert.ok(delivered.some((item) => Object.hasOwn(item.data ?? {}, modelEnvironment)));
     assert.ok(delivered.every((item) => !Object.hasOwn(item.data ?? {}, "gateway-password")));
     assert.ok(delivered.every((item) => !Object.hasOwn(item.data ?? {}, "kubeconfig")));
 
@@ -274,7 +278,7 @@ test(
     assert.equal((await api("GET", workspace)).content, content);
     const modelDigest = async (pod) => {
       const environment = pod.spec.containers.find((container) => container.name === "agent").env;
-      const ref = environment.find((item) => item.name === "OPENAI_API_KEY").valueFrom.secretKeyRef;
+      const ref = environment.find((item) => item.name === modelEnvironment).valueFrom.secretKeyRef;
       const delivery = await dp.resource("secret", ref.name, namespaces.execution);
       return createHash("sha256")
         .update(Buffer.from(delivery.data[ref.key], "base64"))
@@ -284,14 +288,19 @@ test(
     const liveHarness = (await pods("execution", "agent")).find(
       (pod) => !pod.metadata.deletionTimestamp,
     );
-    assert.equal(await modelDigest(liveHarness), digest(process.env.OPENAI_API_KEY));
+    assert.equal(await modelDigest(liveHarness), digest(modelCredential));
     // A deliberately invalid key proves source updates do not silently mutate
     // the active revision, while an attempted redeploy receives the new material
-    // and fails native model authentication before deployment can succeed.
-    const invalidKey = `test-only-invalid-${randomUUID()}`;
+    // and fails native authentication before deployment can succeed. PAT login
+    // rejects an invalid token before the API-key path's model probe runs.
+    const invalidKey = `${authMethod === "codex_pat" ? "at-" : ""}test-only-invalid-${randomUUID()}`;
     await api("PATCH", `${base}/secrets/${secret.id}`, { value: invalidKey });
-    assert.equal(await modelDigest(liveHarness), digest(process.env.OPENAI_API_KEY));
+    assert.equal(await modelDigest(liveHarness), digest(modelCredential));
     const rejected = await api("POST", `${agentPath}/deploy`);
+    const expectedFailure =
+      authMethod === "codex_pat"
+        ? { check: "login", code: "LOGIN_FAILED" }
+        : { check: "model-probe", code: "MODEL_PROBE_FAILED" };
     const rejectedHarness = await dp.waitFor(
       "replacement credential failure evidence",
       async () => {
@@ -312,8 +321,8 @@ test(
           );
           return status.revisionId === rejected.id &&
             status.podUid === pod.metadata.uid &&
-            status.runtimeFailure?.check === "model-probe" &&
-            status.runtimeFailure?.code === "MODEL_PROBE_FAILED"
+            status.runtimeFailure?.check === expectedFailure.check &&
+            status.runtimeFailure?.code === expectedFailure.code
             ? pod
             : false;
         } catch {
@@ -328,8 +337,9 @@ test(
       "succeeded",
     );
     assert.equal(await modelDigest(rejectedHarness), digest(invalidKey));
-    assert.equal((await api("GET", workspace)).content, content);
-    await api("PATCH", `${base}/secrets/${secret.id}`, { value: process.env.OPENAI_API_KEY });
+    // Exclusive RWO replacement stops the predecessor. Workspace access can be
+    // unavailable until valid credentials start its successor; verify retention below.
+    await api("PATCH", `${base}/secrets/${secret.id}`, { value: modelCredential });
     const successor = await api("POST", `${agentPath}/deploy`);
     // Exclusive RWO replacement must stop the rejected workload before the
     // Agent-owned policy selects the corrected successor.

@@ -182,7 +182,11 @@ The real integration accepts a private JSON fixture file containing `apiUrl`
 context), `agentConfiguration` (the dedicated native
 Configuration create body), and `control`/`execution` objects. Each object has
 `kubeconfigPath`, `kubernetesContext`, `release`, and `systemNamespace`.
-With an authorized model key already in the environment, run:
+Set `harnessAuthMethod` in the fixture to `api_key` (the default) or `codex_pat`.
+Provide its authorized credential through `OPENAI_API_KEY` or `CODEX_ACCESS_TOKEN`,
+respectively; do not put credential values in the fixture. The selected path
+checks delivery, invalid-credential rejection, recovery, and a real model turn.
+A pass covers that authentication method only. Run:
 
 ```sh
 OCC_TEST_TWO_CLUSTER_CONFIG=/private/path/two-cluster.json \
