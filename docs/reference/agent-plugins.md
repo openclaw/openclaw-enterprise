@@ -247,11 +247,11 @@ executable definitions.
 ### Slack approver users
 
 `pluginApprovers` is the Agent-wide default for Slack plugin approvals. Each
-entry has `{ "channel": "slack", "id": "team:T123:user:U456" }`; Slack user
-IDs may start with `U` or `W`. A plugin's `approvers` array replaces the Agent
-default, and a tool's `approvers` array replaces the plugin list. Omission
-inherits; an explicit empty array denies Slack approval. Tool keys use the
-plugin catalog's exact composite tool ID.
+entry keeps `channel: "slack"`; `id` accepts `team:T123:user:U456` or raw
+`U456`/`W456`, interpreted within the selected Slack account. A plugin's
+`approvers` array replaces the Agent default, and a tool's `approvers` array
+replaces the plugin list. Omission inherits; an explicit empty array denies
+Slack approval. Tool keys use the plugin catalog's exact composite tool ID.
 
 Without this policy, OpenClaw uses account-level Slack destinations (`allowFrom`
 and `defaultTo`), never an implicit OCE-owner mapping. Console defaults remain
@@ -261,8 +261,9 @@ review prompts and leaves exec approvals unchanged.
 
 The Console resolves display names with the selected same-Namespace bot Secret
 and stores IDs. Lookup requires Agent edit and Secret `operate` permission.
-Workspace display, scopes, and pagination are described in the
-[Slack Channel Driver](drivers/slack-channel.md). The Secret stays on the server.
+Operators can paste user IDs without lookup. The
+[Slack Channel Driver](drivers/slack-channel.md) describes workspace display,
+scopes, and pagination. The Secret stays on the server.
 
 | `approval`         | Requested behavior                                                                               |
 | ------------------ | ------------------------------------------------------------------------------------------------ |

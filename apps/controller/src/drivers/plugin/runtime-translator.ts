@@ -213,9 +213,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         Object.keys(entry).length !== 2 ||
         entry.channel !== "slack" ||
         typeof entry.id !== "string" ||
-        !/^team:T[A-Z0-9]+:user:[UW][A-Z0-9]+$/i.test(entry.id)
+        !/^(?:[UW][A-Z0-9]+|team:T[A-Z0-9]+:user:[UW][A-Z0-9]+)$/i.test(entry.id)
       ) {
-        throw new Error("Plugin approver must identify a Slack user in one workspace.");
+        throw new Error("Plugin approver must identify a Slack user.");
       }
       return entry.id;
     });

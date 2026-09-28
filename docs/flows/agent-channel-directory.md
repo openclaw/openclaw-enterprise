@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-09-27
-last_updated_session: 01a0e4d2-4f51-7780-b0fc-2352cb99078f
+updated: 2026-09-28
+last_updated_session: 01a0e579-79b9-7a22-b707-d5bc1e024e31
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -89,11 +89,14 @@ cancels the queued search and its browser request; generation checks also discar
 obsolete responses. Browser cancellation does not guarantee cancellation of
 provider work already started by the API.
 
-Selecting a result or confirming pasted IDs adds removable chips to the field; search text remains separate from committed IDs. Arrow keys
-and Enter select results, and Escape closes the list. It resolves saved IDs again
-when the editor opens or the selected Secret changes. A denied or failed lookup leaves manual
-exact-ID entry available; no directory result changes the saved Configuration
-until the operator saves the channel edit.
+Selecting a result or confirming pasted IDs adds removable chips to the field;
+search text remains separate from committed IDs. Plugin approver fields accept
+raw Slack user IDs when lookup is unavailable; directory-selected approvers
+remain workspace-qualified. Arrow keys and Enter select results, and Escape
+closes the list. It resolves saved IDs again when the editor opens or the
+selected Secret changes. A denied or failed lookup leaves manual exact-ID entry
+available; no directory result changes the saved Configuration until the
+operator saves the channel edit.
 
 When Agent detail performs a browser-refocus access check, it keeps the mounted
 view. The picker keeps its open query and results while controls are temporarily
@@ -132,6 +135,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 01:19: Document raw Slack user ID entry for plugin approver fields. (01a0e579-79b9-7a22-b707-d5bc1e024e31 - f90ca58bf4085a6075faa1c46e75ee96d2fbdafb)
 
 - 2026-09-27 23:35: Put credentials first and prevent result dismissal from moving form controls during a click. (01a0e4d2-4f51-7780-b0fc-2352cb99078f - bb11b3974bc7ec80db1dd4cfab4e1a166e386de3)
 

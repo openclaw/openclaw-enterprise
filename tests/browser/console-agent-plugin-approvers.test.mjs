@@ -51,12 +51,24 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const directoryBodies = [];
+  let directoryAvailable = true;
   // The browser test owns Console selection and saved API state; only provider directory data is simulated.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
       const body = route.request().postDataJSON();
       directoryBodies.push(body);
+      if (!directoryAvailable) {
+        await route.fulfill({
+          status: 501,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "NOT_IMPLEMENTED", message: "Directory unavailable" },
+            meta: { requestId: "req_test_slack_directory_unavailable" },
+          }),
+        });
+        return;
+      }
       const candidates =
         body.kind === "users"
           ? [{ id: "UTEST123", name: "alex", displayName: "Alex" }]
@@ -182,11 +194,16 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace.")
     .waitFor();
-  await people.fill("team:TTEST123:user:UTEST999");
+  directoryAvailable = false;
+  await people.fill("UTEST999");
+  await picker.getByText("Slack directory lookup is unavailable.").waitFor();
   await people.press("Enter");
   await picker
-    .getByRole("button", { name: "Remove team:TTEST123:user:UTEST999", exact: true })
-    .click();
+    .locator('.slack-directory-chip[data-value="UTEST999"]')
+    .getByText("UTEST999")
+    .waitFor();
+  await picker.getByRole("button", { name: "Remove UTEST999", exact: true }).click();
+  directoryAvailable = true;
   await people.fill("Alex");
   await picker.getByRole("option", { name: /Alex.*UTEST123/ }).click();
   assert.equal(
@@ -200,12 +217,14 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const toolRow = pluginDialog.locator(`details.plugin-tool-row[data-tool="${toolId}"]`);
   await toolRow.locator("summary").click();
   await toolRow.getByLabel(`${toolId} tool approvers mode`).selectOption("chosen");
-  await toolRow
-    .getByRole("combobox", { name: `${toolId} tool approvers people`, exact: true })
-    .fill("team:TTEST123:user:UTEST123");
-  await toolRow
-    .getByRole("combobox", { name: `${toolId} tool approvers people`, exact: true })
-    .press("Enter");
+  const toolPeople = toolRow.getByRole("combobox", {
+    name: `${toolId} tool approvers people`,
+    exact: true,
+  });
+  directoryAvailable = false;
+  await toolPeople.fill("UTEST123");
+  await toolRow.getByText("Slack directory lookup is unavailable.").waitFor();
+  await toolPeople.press("Enter");
   await pluginDialog.getByRole("button", { name: "Done", exact: true }).click();
   const savedApprovers = page.waitForResponse(
     (response) =>
@@ -228,7 +247,10 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   let savedAgent = (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
     .data;
   assert.deepEqual(savedAgent.plugins[pluginId].approvers, []);
-  assert.deepEqual(savedAgent.plugins[pluginId].tools[toolId].approvers, approvers);
+  assert.deepEqual(savedAgent.plugins[pluginId].tools[toolId].approvers, [
+    { channel: "slack", id: "UTEST123" },
+  ]);
+  directoryAvailable = true;
   assert.deepEqual(directoryBodies[0], {
     secretId: botSecret.id,
     kind: "users",

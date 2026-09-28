@@ -184,7 +184,7 @@ test("OpenClaw plugin startup translation renders native install and enablement"
 
 test("Plugin approver translation keeps Agent, plugin, and exact scoped tool overrides", () => {
   const first = { channel: "slack", id: "team:T123:user:U123" };
-  const second = { channel: "slack", id: "team:T123:user:U456" };
+  const second = { channel: "slack", id: "U456" };
   const toolId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/repos%2Fread";
   const codex = codexOpenClawConfiguration(
     codexSelection(linearPluginId, {
@@ -226,6 +226,7 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
   assert.throws(() =>
     validatePolicies("openclaw", {}, [{ channel: "slack", id: "team:X123:user:Y456" }]),
   );
+  assert.throws(() => validatePolicies("openclaw", {}, [{ channel: "slack", id: "C123" }]));
 });
 
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {

@@ -270,7 +270,7 @@ export function createSlackDirectoryField({
       .filter(Boolean);
   const validManual = (id) =>
     qualifyUsers
-      ? /^team:T[A-Z0-9]{1,31}:user:[UW][A-Z0-9]{1,31}$/.test(id)
+      ? /^(?:[UW][A-Z0-9]{1,31}|team:T[A-Z0-9]{1,31}:user:[UW][A-Z0-9]{1,31})$/.test(id)
       : isSlackConfigTarget(id, kind);
   const current = (active, secretId) =>
     !panel.hidden && context.isCurrent() && active === generation && getSecretId() === secretId;
@@ -391,7 +391,7 @@ export function createSlackDirectoryField({
     const ids = manualValues();
     if (!ids.length || !ids.every(validManual)) {
       errorText.textContent = qualifyUsers
-        ? "Enter full Slack selectors such as team:T123:user:U456."
+        ? "Enter Slack user IDs such as U123 or full selectors such as team:T123:user:U456."
         : "Choose a search result or paste exact Slack IDs, separated by commas or spaces.";
       return;
     }
@@ -399,7 +399,10 @@ export function createSlackDirectoryField({
       qualifyUsers &&
       boundSecretId === getSecretId() &&
       workspaceIdentity &&
-      ids.some((id) => directoryTarget(id, kind)?.teamId !== workspaceIdentity)
+      ids.some((id) => {
+        const teamId = directoryTarget(id, kind)?.teamId;
+        return teamId && teamId !== workspaceIdentity;
+      })
     ) {
       errorText.textContent = `This bot belongs to workspace ${workspaceIdentity}. Enter a user in that workspace.`;
       return;

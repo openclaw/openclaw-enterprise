@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-09-27
-last_updated_session: 01a0df20-f340-7810-bb59-b1df6c0bbbd3
+updated: 2026-09-28
+last_updated_session: 01a0e579-79b9-7a22-b707-d5bc1e024e31
 ---
 
 # Agent Plugin Approvals Flow
@@ -9,10 +9,10 @@ last_updated_session: 01a0df20-f340-7810-bb59-b1df6c0bbbd3
 ## Overview
 
 An operator selects Slack users for an Agent's plugin approvals. OpenClaw
-Control Plane (OCC) stores workspace-qualified IDs, freezes the policy in a
-deployment revision, and passes it to the selected PluginDriver. OpenClaw
-owns authorization of each later plugin approval request. The optional
-name lookup is described in the [channel directory flow](agent-channel-directory.md).
+Control Plane (OCC) stores exact Slack user identities, freezes the policy in a
+deployment revision, and passes it to the selected PluginDriver. OpenClaw owns
+authorization of each later plugin approval request. The optional name lookup
+is described in the [channel directory flow](agent-channel-directory.md).
 
 ## Entry Points
 
@@ -28,7 +28,7 @@ name lookup is described in the [channel directory flow](agent-channel-directory
 
 ```mermaid
 graph TD
-  A["Operator selects workspace-qualified Slack IDs"] --> B["OCC validates approvers with PluginDriver"]
+  A["Operator selects Slack user IDs"] --> B["OCC validates approvers with PluginDriver"]
   B -->|unsupported or invalid| X["Reject Agent save"]
   B -->|valid| C["Agent stores default, plugin, and tool approvers"]
   C --> D["Deployment freezes Agent policy in revision"]
@@ -55,7 +55,7 @@ default and return to omitted-policy behavior.
 
 `apps/controller/src/drivers/plugin/runtime-translator.ts:pluginApprovalOverlay`
 
-The PluginDriver renders workspace-qualified Slack selectors into the
+The PluginDriver renders raw or workspace-qualified Slack user IDs into the
 OpenClaw plugin approval configuration. It preserves unrelated approval
 settings and rejects native lists that conflict with an inherited managed list.
 An omitted Agent default leaves the runtime's legacy Slack account
@@ -71,6 +71,8 @@ prove that an older runtime image understands the policy.
   AgentRevision. A successful save does not prove the running gateway applies
   the new policy; check deployment status and use a real plugin approval request
   to verify the runtime image.
+- Raw Slack user IDs can be pasted when directory lookup is unavailable. Directory
+  selection still stores workspace-qualified IDs.
 - The channel directory flow describes Secret permissions and lookup failures.
   Approval enforcement needs a compatible runtime and an authorized test bot.
 
@@ -85,5 +87,7 @@ prove that an older runtime image understands the policy.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-28 01:19: Document raw Slack user IDs for plugin approvers. (01a0e579-79b9-7a22-b707-d5bc1e024e31 - f90ca58bf4085a6075faa1c46e75ee96d2fbdafb)
 
 - 2026-09-27 02:03: Describe Agent plugin approval handoff. (01a0df20-f340-7810-bb59-b1df6c0bbbd3 - b2de165412191a4c9d124acf59fa1efb25cc29d6)
