@@ -492,20 +492,28 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[apps\._default\]\nenabled = false/m);
 });
 
-test("plugin-free revisions apply an explicit empty Slack approver default and keep unrelated approvals", () => {
-  for (const candidate of [
-    revision({ pluginApprovers: [] }),
-    revision({
-      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-      pluginApprovers: [],
-    }),
+test("plugin-free revisions apply explicit Slack approvers and keep unrelated approvals", () => {
+  const rawSlackApprovers = [
+    { channel: "slack", id: "U456" },
+    { channel: "slack", id: "W789" },
+  ];
+  for (const [candidate, expectedApprovers] of [
+    [revision({ pluginApprovers: [] }), []],
+    [revision({ pluginApprovers: rawSlackApprovers }), ["U456", "W789"]],
+    [
+      revision({
+        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        pluginApprovers: rawSlackApprovers,
+      }),
+      ["U456", "W789"],
+    ],
   ]) {
     const runtime = pluginRuntimeSpecForRevision(candidate);
-    assert.deepEqual(runtime.pluginApprovers, []);
+    assert.deepEqual(runtime.pluginApprovers, candidate.pluginApprovers);
     assert.deepEqual(JSON.parse(pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_MANIFEST]), {
       kind: runtime.kind,
       selections: {},
-      pluginApprovers: [],
+      pluginApprovers: candidate.pluginApprovers,
     });
     const { files } = runOpenClawRuntimeHelper({ manifest: runtime }, [], {
       baseConfig: {
@@ -517,7 +525,7 @@ test("plugin-free revisions apply an explicit empty Slack approver default and k
     const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
     assert.deepEqual(config.approvals, {
       exec: { security: "full" },
-      plugin: { slack: { approvers: [] } },
+      plugin: { slack: { approvers: expectedApprovers } },
     });
   }
 });
@@ -1904,10 +1912,15 @@ function enrolledNodeSecret(driver, candidate, namespace) {
 
 test("embedded plugin preparation applies runtime egress before gateway readiness", async () => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
+  const rawSlackApprovers = [
+    { channel: "slack", id: "U456" },
+    { channel: "slack", id: "W789" },
+  ];
   const embedded = revision({
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
     plugins: openClawPluginState(),
+    pluginApprovers: rawSlackApprovers,
   });
   const namespace = kubernetesNamespaceName(tenant.id);
   const tenantOwnership = { namespaceId: tenant.id };
@@ -1992,6 +2005,14 @@ test("embedded plugin preparation applies runtime egress before gateway readines
     revisionId: embedded.id,
     ready: false,
   });
+  const pluginRuntimeConfigMap = reconciled.find(
+    ({ kind, metadata }) => kind === "ConfigMap" && metadata.name.startsWith("plugin-runtime-"),
+  );
+  assert.ok(pluginRuntimeConfigMap, "Kubernetes Compute must generate plugin runtime ConfigMap");
+  assert.deepEqual(
+    JSON.parse(pluginRuntimeConfigMap.data[PLUGIN_RUNTIME_MANIFEST]).pluginApprovers,
+    rawSlackApprovers,
+  );
 
   const runtimePolicyIndex = reconciled.findIndex(
     ({ kind, metadata }) =>

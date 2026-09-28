@@ -1278,13 +1278,19 @@ test(
     const [
       { Pool },
       { OCCPluginDriver },
+      { createControllerWorker },
+      { createDevelopmentComputeDriver },
       { PostgresPlatformState },
       { createTestConfigurationDriver },
+      { createBackendWorkerDrivers },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/drivers/plugin/index.ts"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../helpers/development.mjs"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../helpers/configuration-driver.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
     context.after(() => pool.end());
@@ -1500,17 +1506,19 @@ test(
         tools: { diffs: { approval: "none" } },
       },
     };
+    const rawSlackApprovers = [
+      { channel: "slack", id: "U456" },
+      { channel: "slack", id: "W789" },
+    ];
     const replacedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
       agentId: agent.id,
       configurationId: replacementConfiguration.id,
       plugins: replacementPlugins,
-      pluginApprovers: [{ channel: "slack", id: "team:T123:user:U456" }],
+      pluginApprovers: rawSlackApprovers,
     });
     assert.deepEqual(replacedPlugins.plugins, replacementPlugins);
-    assert.deepEqual(replacedPlugins.pluginApprovers, [
-      { channel: "slack", id: "team:T123:user:U456" },
-    ]);
+    assert.deepEqual(replacedPlugins.pluginApprovers, rawSlackApprovers);
     const clearedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
       agentId: agent.id,
@@ -1518,18 +1526,14 @@ test(
       plugins: {},
     });
     assert.deepEqual(clearedPlugins.plugins, {});
-    assert.deepEqual(clearedPlugins.pluginApprovers, [
-      { channel: "slack", id: "team:T123:user:U456" },
-    ]);
+    assert.deepEqual(clearedPlugins.pluginApprovers, rawSlackApprovers);
 
     const [reloadedAgent, reloadedRevision] = await state.read(async (view) => [
       await view.agents.findAgent(namespace.id, agent.id),
       await view.revisions.findRevision(namespace.id, agent.id, revision.id),
     ]);
     assert.deepEqual(reloadedAgent.plugins, {});
-    assert.deepEqual(reloadedAgent.pluginApprovers, [
-      { channel: "slack", id: "team:T123:user:U456" },
-    ]);
+    assert.deepEqual(reloadedAgent.pluginApprovers, rawSlackApprovers);
     assert.deepEqual(reloadedRevision.plugins.plugins, initialPlugins);
     assert.deepEqual(reloadedRevision.pluginApprovers, []);
 
@@ -1539,6 +1543,72 @@ test(
     );
     assert.deepEqual(durableRevision.rows[0].admitted_spec.plugins, revision.plugins);
     assert.deepEqual(durableRevision.rows[0].admitted_spec.plugin_approvers, []);
+
+    const pluginFreeRevision = await controller.deployAgent(
+      principalId,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveHarness,
+    );
+    assert.equal(Object.hasOwn(pluginFreeRevision, "plugins"), false);
+    assert.deepEqual(pluginFreeRevision.pluginApprovers, rawSlackApprovers);
+
+    const durablePluginFreeRevision = await pool.query(
+      "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
+      [pluginFreeRevision.id],
+    );
+    assert.deepEqual(
+      durablePluginFreeRevision.rows[0].admitted_spec.plugin_approvers,
+      rawSlackApprovers,
+    );
+
+    const workerPool = new Pool({ connectionString: databaseUrl, max: 1 });
+    let worker;
+    let workerPoolClosed = false;
+    context.after(async () => {
+      if (workerPoolClosed) {
+        return;
+      }
+      if (worker === undefined) {
+        await workerPool.end();
+      } else {
+        await worker.stop();
+      }
+    });
+    const developmentCompute = createDevelopmentComputeDriver();
+    const observedRawApproverHandoffs = [];
+    const workerDrivers = createBackendWorkerDrivers(
+      {
+        ...developmentCompute,
+        async prepareRevision(candidate, deploymentContext) {
+          if (candidate.id === pluginFreeRevision.id) {
+            assert.deepEqual(candidate.pluginApprovers, rawSlackApprovers);
+            observedRawApproverHandoffs.push(candidate.pluginApprovers);
+          }
+          return developmentCompute.prepareRevision(candidate, deploymentContext);
+        },
+      },
+      [],
+      { secretDriver: harnessSecretDriver },
+    );
+    worker = createControllerWorker({
+      pool: workerPool,
+      pollIntervalMs: 20,
+      drivers: { ...workerDrivers, pluginDriver },
+      emit() {},
+    });
+    await worker.start();
+    await pollUntil("raw Slack approver AgentRevision deployment to reach Compute", async () => {
+      const work = await pool.query(
+        "SELECT state FROM occ.controller_work WHERE revision_id = $1",
+        [pluginFreeRevision.id],
+      );
+      assert.equal(work.rowCount, 1);
+      return work.rows[0].state === "succeeded" ? work.rows[0] : undefined;
+    });
+    await worker.stop();
+    workerPoolClosed = true;
+    worker = undefined;
+    assert.deepEqual(observedRawApproverHandoffs, [rawSlackApprovers]);
 
     const clearedApprovers = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
