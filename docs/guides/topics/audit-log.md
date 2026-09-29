@@ -15,6 +15,12 @@ revocation record the administrator and the non-secret key and principal IDs,
 not the credential. The audit event contract does not represent a general log of
 all successful reads, Agent prompts, or model responses.
 
+New rows also have a database receipt time and allocation sequence, with retained
+resource ownership where the database can establish it. The sequence does not
+establish commit order or prove that Agent execution occurred. Earlier records
+keep unknown receipt and historical ownership; the system does not reconstruct
+missing initiation or execution facts. This metadata does not capture transcripts.
+
 ## Access and limitations
 
 OCC does not currently provide a console view or public HTTP API to browse or

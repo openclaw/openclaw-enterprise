@@ -1036,14 +1036,15 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
-      ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
-      ["occ.validate_access_binding_scope()", false],
-      ["occ.validate_group_membership()", false],
-      ["occ.validate_restriction_scope()", false],
-    ].map(([identity, app_execute]) => ({
+      ["occ.finalize_agent_deletion(text,text,text,uuid)", true, "pg_catalog, occ, pg_temp"],
+      ["occ.stamp_audit_ledger_metadata()", false, "pg_catalog, pg_temp"],
+      ["occ.validate_access_binding_scope()", false, "pg_catalog, occ, pg_temp"],
+      ["occ.validate_group_membership()", false, "pg_catalog, occ, pg_temp"],
+      ["occ.validate_restriction_scope()", false, "pg_catalog, occ, pg_temp"],
+    ].map(([identity, app_execute, searchPath]) => ({
       identity,
       owner: "occ_migrator",
-      proconfig: ["search_path=pg_catalog, occ, pg_temp"],
+      proconfig: [`search_path=${searchPath}`],
       app_execute,
     })),
   );
@@ -1331,17 +1332,54 @@ async function canonicalData(db) {
         ? ["repository_bindings", "harness_auth_credential_source_id", "plugin_approvers"]
         : table === "controller_work"
           ? ["work_kind"]
-          : [];
+          : table === "audit_events"
+            ? [
+                "ledger_sequence",
+                "received_at",
+                "history_fact",
+                "retained_installation_id",
+                "retained_namespace_id",
+                "retained_agent_id",
+                "retained_revision_id",
+              ]
+            : [];
     result[table] = (
       await db.app.query(
         // New migration-owned compatibility columns may be defaulted onto
         // existing rows; every previously stored field must remain identical.
-        `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ.${table} t ORDER BY to_jsonb(t)::pg_catalog.text`,
+        `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ.${table} t ORDER BY (to_jsonb(t) - $1::pg_catalog.text[])::pg_catalog.text`,
         [ignoredColumns],
       )
     ).rows;
   }
   return result;
+}
+
+async function assertLegacyAuditMetadata(db, before) {
+  const ids = before.audit_events.map(({ value }) => value.id).sort();
+  const { rows } = await db.app.query(
+    `SELECT id, ledger_sequence, received_at, history_fact, retained_installation_id,
+            retained_namespace_id, retained_agent_id, retained_revision_id
+     FROM occ.audit_events WHERE id = ANY($1::text[]) ORDER BY id`,
+    [ids],
+  );
+  assert.deepEqual(
+    rows.map(({ id }) => id),
+    ids,
+  );
+  assert.equal(new Set(rows.map(({ ledger_sequence }) => ledger_sequence)).size, ids.length);
+  for (const { id: _id, ledger_sequence, ...metadata } of rows) {
+    assert.match(ledger_sequence, /^[1-9][0-9]*$/);
+    assert.deepEqual(metadata, {
+      received_at: null,
+      history_fact: null,
+      retained_installation_id: null,
+      retained_namespace_id: null,
+      retained_agent_id: null,
+      retained_revision_id: null,
+    });
+  }
+  return rows;
 }
 
 test(
@@ -1393,6 +1431,7 @@ test(
       [35, "preAgentDeletion"],
       [36, "preDeploymentProgress"],
       [37, "preHumanAuthentication"],
+      [38, "preHistoryStorage"],
     ]) {
       await context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1406,6 +1445,11 @@ test(
         assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
         await assertCompletedHistory(db, receipts);
         assert.deepEqual(await canonicalData(db), before);
+        // Migration allocates keys but must not fabricate historical receipt or
+        // parentage. A repeat runner must preserve those exact stored values.
+        const metadata = await assertLegacyAuditMetadata(db, before);
+        assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
+        assert.deepEqual(await assertLegacyAuditMetadata(db, before), metadata);
         // Main's existing IAM DELETE compatibility grant belongs to its later controlled-writer transition.
         assert.equal(
           (
@@ -1637,6 +1681,7 @@ test(
       [35, "preAgentDeletion"],
       [36, "preDeploymentProgress"],
       [37, "preHumanAuthentication"],
+      [38, "preHistoryStorage"],
     ]) {
       await context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1703,6 +1748,7 @@ test(
       [35, "preAgentDeletion"],
       [36, "preDeploymentProgress"],
       [37, "preHumanAuthentication"],
+      [38, "preHistoryStorage"],
     ]) {
       await context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

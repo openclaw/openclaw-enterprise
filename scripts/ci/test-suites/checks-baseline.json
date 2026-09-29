@@ -220,7 +220,8 @@
       "path": "tests/integration/ci-image-reconciliation.test.mjs"
     },
     {
-      "path": "tests/integration/ci-prepare.test.mjs"
+      "path": "tests/integration/ci-prepare.test.mjs",
+      "expectedTests": ["History PostgreSQL cleanup accepts only its owned database prefix"]
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"

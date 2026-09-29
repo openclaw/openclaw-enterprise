@@ -17,6 +17,98 @@ const { loadYaml } = createRequire(new URL("../../apps/controller/package.json",
   "@kubernetes/client-node",
 );
 
+test("History PostgreSQL cleanup accepts only its owned database prefix", async (t) => {
+  for (const scenario of [
+    { name: "openclaw_history_storage_owned", allowed: true },
+    { name: "openclaw_history_storagex_owned", allowed: false },
+    { name: "foreign_history_storage_owned", allowed: false },
+    { name: "openclaw_history_storage_owned", owner: "foreign-owner", allowed: false },
+  ]) {
+    await t.test(`${scenario.name}:${scenario.owner ?? "owned"}`, async (t) => {
+      const root = await fixture(t);
+      const statePath = join(root, "state.json");
+      const logPath = join(root, "commands.jsonl");
+      const dockerPath = join(root, "docker.mjs");
+      const prefix = "openclaw-ci-history-test";
+      await writeFile(logPath, "");
+      // Replace only the external Docker transport. The real cleanup owner must
+      // validate state and select its command before this recorder is reached.
+      await writeFile(
+        dockerPath,
+        `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nappendFileSync(process.env.CI_HISTORY_CLEANUP_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");\n`,
+        { mode: 0o700 },
+      );
+      await writeState(statePath, {
+        version: 1,
+        repositoryRoot,
+        statePath,
+        lane: "postgres-application",
+        prefix,
+        resources: [
+          {
+            id: "server",
+            kind: "compose-postgres",
+            owner: prefix,
+            status: "ready",
+            name: "openclaw_ci_pg_history_test",
+            port: 45431,
+            composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+          },
+          {
+            id: "history-db",
+            kind: "postgres-database",
+            owner: scenario.owner ?? prefix,
+            status: "ready",
+            name: scenario.name,
+            composeProject: "openclaw_ci_pg_history_test",
+            port: 45431,
+          },
+        ],
+      });
+      const program = `import { cleanupResourceIds } from ${JSON.stringify(new URL("../../scripts/ci/cleanup.mjs", import.meta.url).href)}; await cleanupResourceIds(process.argv[1], ["history-db"]);`;
+      const result = spawnSync(
+        process.execPath,
+        ["--input-type=module", "-e", program, statePath],
+        {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            PATH: root,
+            LANG: "C",
+            OCC_DOCKER_BIN: dockerPath,
+            CI_HISTORY_CLEANUP_LOG: logPath,
+          },
+        },
+      );
+      assert.equal(result.error, undefined);
+      const commands = (await readFile(logPath, "utf8"))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map(JSON.parse);
+      const remaining = JSON.parse(await readFile(statePath, "utf8")).resources;
+      if (scenario.allowed) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(commands.length, 1);
+        assert.equal(commands[0].at(-1), `DROP DATABASE IF EXISTS "${scenario.name}" WITH (FORCE)`);
+        assert.deepEqual(
+          remaining.map(({ id }) => id),
+          ["server"],
+        );
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /Refusing/);
+        assert.deepEqual(commands, []);
+        assert.deepEqual(
+          remaining.map(({ id }) => id),
+          ["server", "history-db"],
+        );
+      }
+    });
+  }
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "ci-prepare-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));

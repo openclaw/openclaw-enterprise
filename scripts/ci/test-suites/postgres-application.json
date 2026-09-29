@@ -318,6 +318,18 @@
       "expectedTests": [
         "sign-in admission keys on the client behind a trusted ingress and ignores other peers' headers"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-history-storage-supplier.test.mjs",
+      "expectedTests": [
+        "History qualification rejects endpoint and role overrides before opening pools",
+        "History storage supplier through the real limited-role writers",
+        "State append stamps new ordinary rows and rollback removes the evidence",
+        "exhausted claimed Namespace recovery requires stamped audit evidence",
+        "exhausted queued Namespace recovery requires stamped audit evidence",
+        "finalization preserves refusal, rollback and evidence after physical deletion",
+        "accepted admission binds authorization to the resolved initiator"
+      ]
     }
   ]
 }

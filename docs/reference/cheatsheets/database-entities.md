@@ -260,6 +260,13 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 
 - `id`
 - `occurred_at`
+- `ledger_sequence`
+- `received_at`
+- `history_fact`
+- `retained_installation_id`
+- `retained_namespace_id`
+- `retained_agent_id`
+- `retained_revision_id`
 - `kind`
 - `actor_id`
 - `action`

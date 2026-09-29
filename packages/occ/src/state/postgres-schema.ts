@@ -920,6 +920,18 @@ export const auditEvents = occSchema.table(
   {
     id: text("id").primaryKey(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    // Allocation order is independent of occurrence and transaction commit order.
+    ledgerSequence: bigint("ledger_sequence", { mode: "bigint" })
+      .generatedAlwaysAsIdentity()
+      .notNull(),
+    // Existing rows have no receipt; the database stamps only new INSERTs.
+    receivedAt: timestamp("received_at", { withTimezone: true }),
+    historyFact: jsonb("history_fact").$type<Record<string, unknown>>(),
+    // Retained evidence must survive deletion of its original live resources.
+    retainedInstallationId: text("retained_installation_id"),
+    retainedNamespaceId: text("retained_namespace_id"),
+    retainedAgentId: text("retained_agent_id"),
+    retainedRevisionId: text("retained_revision_id"),
     kind: text("kind").notNull(),
     actorId: text("actor_id").notNull(),
     action: text("action").notNull(),
@@ -936,6 +948,34 @@ export const auditEvents = occSchema.table(
         sql`${table.kind} = 'mutation' AND ${table.action} = 'reconcile' AND ${table.resourceKind} = 'agent_revision'`,
       ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
+    unique("audit_events_ledger_sequence_unique").on(table.ledgerSequence),
+    index("audit_events_retained_agent_sequence_idx")
+      .on(
+        table.retainedInstallationId,
+        table.retainedNamespaceId,
+        table.retainedAgentId,
+        table.ledgerSequence,
+      )
+      .where(sql`${table.retainedAgentId} IS NOT NULL`),
+    check("audit_events_ledger_sequence_positive", sql`${table.ledgerSequence} > 0`),
+    check(
+      "audit_events_received_at_finite",
+      sql`${table.receivedAt} IS NULL OR isfinite(${table.receivedAt})`,
+    ),
+    // The insert trigger also enforces the closed fact and exact row envelope.
+    check(
+      "audit_events_history_fact_object",
+      sql`${table.historyFact} IS NULL OR jsonb_typeof(${table.historyFact}) = 'object'`,
+    ),
+    check(
+      "audit_events_retained_scope",
+      sql`(${table.retainedNamespaceId} IS NULL OR ${table.retainedInstallationId} IS NOT NULL)
+        AND (${table.retainedAgentId} IS NULL OR ${table.retainedNamespaceId} IS NOT NULL)
+        AND (${table.retainedRevisionId} IS NULL OR ${table.retainedAgentId} IS NOT NULL)
+        AND (${table.historyFact} IS NULL OR (
+          ${table.receivedAt} IS NOT NULL AND ${table.retainedAgentId} IS NOT NULL
+        ))`,
+    ),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
       "audit_events_details_object",

@@ -112,7 +112,11 @@ function assertOwnedK3dImage(resource, state) {
 }
 
 function assertOwnedDatabase(value) {
-  if (!/^(?:openclaw_ci|openclaw_failures|openclaw_k8s)_[a-z0-9_]+$/.test(value ?? "")) {
+  if (
+    !/^(?:openclaw_ci|openclaw_failures|openclaw_k8s|openclaw_history_storage)_[a-z0-9_]+$/.test(
+      value ?? "",
+    )
+  ) {
     throw new Error(`Refusing to drop unowned database: ${value}`);
   }
 }

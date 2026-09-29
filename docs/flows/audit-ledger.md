@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-09-28"
-last_updated_session: "authoring-run/48243369-59ed-41da-bc9e-21f627f7e6a2"
+updated: "2026-09-29"
+last_updated_session: "authoring-run/29a6d668-fd5c-46e1-883f-93f0974393f4"
 ---
 
 # Audit ledger flow
@@ -36,12 +36,13 @@ graph TD
   Append --> Scope{"Installation and<br/>Namespace scopes match?"}
   Scope -->|yes| Encode["Encode metadata<br/>and insert row"]
   Scope -->|no| Reject["Reject append"]
-  Encode --> Pending["Transaction-local row"]
+  Encode --> Stamp["Database receipt, sequence<br/>and retained ownership"]
+  Stamp --> Pending["Transaction-local row"]
   Encode -->|reserved key or insert error| Reject
   Queue["Transition in State unit"] --> QueueSQL["Insert SQL evidence"]
-  QueueSQL --> Pending
+  QueueSQL --> Stamp
   DirectQueue["Pool-backed stale-work recovery"] --> DirectSQL["Run two SQL statements<br/>with transition evidence"]
-  DirectSQL -->|each may commit| Ledger
+  DirectSQL -->|stamp; each may commit| Ledger
   DirectSQL -->|later statement fails| Partial["Earlier statement may<br/>already be committed"]
   Pending --> Commit{"State transaction outcome"}
   Commit -->|COMMIT acknowledged| Ledger[("Committed audit rows<br/>in PostgreSQL")]
@@ -64,7 +65,7 @@ graph TD
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Ledger,Rows storage
-  class Request,Factory,Append,Encode,Queue,QueueSQL,DirectQueue,DirectSQL,Pending,Reader,Decode,Result,Empty,Returned operation
+  class Request,Factory,Append,Encode,Stamp,Queue,QueueSQL,DirectQueue,DirectSQL,Pending,Reader,Decode,Result,Empty,Returned operation
   class Scope,Reject,Commit,RolledBack,Unknown,Cleanup,Installation,Error,Partial gate
 ```
 
@@ -105,6 +106,26 @@ atomic, but a later failure does not undo an earlier committed statement. A queu
 using a caller-supplied client follows that client's transaction boundary. The
 queue's `reasonCode` and `attemptCount` are ordinary details, not reserved metadata.
 
+The registered metadata migration's `occ.stamp_audit_ledger_metadata` trigger
+stamps new inserts with database time and captures immutable Installation,
+Namespace, Agent and revision associations from existing rows. Missing or
+mismatched ordinary targets retain only known scope; a supplied closed fact
+requires the complete matching subject and envelope. Legacy rows receive an
+allocation sequence but keep unknown receipt, fact and retained associations.
+Allocation order is neither event time nor transaction commit order.
+
+`migrations/0038_agent_audit_ledger_metadata.sql:occ.finalize_agent_deletion`
+preserves the current finalizer and moves its audit insert after refusal gates
+and before destructive changes. A later deletion error rolls back the evidence
+with the original transaction. Repository session identity and independent
+cleanup work remain retained after live Agent deletion.
+
+The application role cannot supply trusted metadata or alter stored facts.
+The retained-Agent index supports future exact-scope keyset lookup, but creates
+no reader grant, cursor, retention policy or public API. Installation requires
+the reviewed PostgreSQL catalog digest; the migration loader refuses a missing
+digest before SQL execution. Source availability alone is not qualification.
+
 ### 3. The transaction owner finishes or fails
 
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState` and
@@ -139,7 +160,8 @@ control those effects or establish the outcome of an unobserved transport failur
 List returns an empty frozen array when no Installation exists. Otherwise it
 reads all visible rows ordered by `occurred_at, id`, attaches the current
 server-owned Installation ID, and decodes each row. A list on the same unit can
-include its own uncommitted append. The table has no Installation ID column.
+include its own uncommitted append. The internal envelope still uses the current Installation; retained ownership
+columns are separate storage evidence and do not create disclosure authority.
 The decoder validates resource kind, outcome, kind, timestamp and object-shaped
 JSON; invalid persisted data rejects the list. It removes the reserved metadata
 object from details, copies only the nine recognized metadata keys, and leaves
@@ -174,6 +196,8 @@ copies and array are immutable.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-29 05:15: Describe database-owned audit metadata and retained deletion evidence in the accompanying migration candidate. (authoring-run/29a6d668-fd5c-46e1-883f-93f0974393f4 - 23a6ca45f81414471e6d2103a8475f7c60a6a1d6)
 
 - 2026-09-28 11:15: Document observed client errors in the transaction owner alongside the accompanying source correction. (authoring-run/48243369-59ed-41da-bc9e-21f627f7e6a2 - eb25ab1e4105defd4b6bbb19ef28570863d8df63)
 - 2026-09-26 02:55: Clarify that the initial flow inspection included the uncommitted audit decoder fix from 7966519007124bdf77be78324b3c705cf6980199. (authoring-run/48c2199e-221b-4f32-9f69-2d21e68712ba - a501f64abbd1a5821b6c8f0da7f9466195f7dc6d)
