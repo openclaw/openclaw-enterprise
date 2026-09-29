@@ -1,0 +1,27 @@
+---
+config:
+  htmlLabels: true
+  sequence:
+    actorMargin: 24
+    width: 140
+    height: 34
+    messageMargin: 14
+    mirrorActors: true
+  themeVariables:
+    fontSize: 16px
+---
+sequenceDiagram
+  participant C as Console
+  participant A as Controller / IAM
+  participant S as State fence
+  C->>A: Retain intent and register
+  A->>S: Authorize and reserve at epoch
+  alt Reservation wins
+    S-->>A: Acknowledge slot, block deploy
+    C->>A: Submit or reconcile same identity
+    A->>S: Serialize under fence
+    S-->>A: Applied receipt or prevented tombstone
+  else Deploy or recovery wins first
+    A->>S: Advance epoch under fence
+    S-->>A: Old registration conflicts
+  end
