@@ -1,0 +1,20 @@
+---
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontSize: 16px
+  flowchart:
+    rankSpacing: 18
+    nodeSpacing: 18
+    padding: 8
+---
+flowchart LR
+  A["<b>1 · Caller</b><br/>Deploy request"] --> B["<b>2 · OCC / State</b><br/>Admit revision"]
+  B -.-> C["<b>3 · Worker / Compute</b><br/>Proposed checks"]
+  C -.-> D["<b>4 · State</b><br/>Historical receipt"]
+  C -.-> E["<b>Refuse progress</b><br/>Unknown or stale"]
+  classDef owner fill:#EAF0F7,stroke:#8A9AAF,color:#263445,stroke-width:1px
+  classDef gate fill:#F7F0E3,stroke:#B7A27A,color:#493F2E,stroke-width:1px
+  class A,B,D owner
+  class C,E gate

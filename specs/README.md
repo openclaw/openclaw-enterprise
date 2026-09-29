@@ -51,6 +51,9 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 ## Active specifications
 
+[Kubernetes runtime activation](42-kubernetes-runtime-activation.md) — Proposed;
+coordinates cross-resource cutover with enforcement decisions still open.
+
 [Repository credential recovery](39-repository-credential-recovery.md) — Implementing;
 explore cleanup evidence across broker loss without retaining provider tokens.
 
