@@ -3355,6 +3355,182 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
   }
 });
 
+// On a first dedicated deploy the Gateway starts alongside its Harness, and the
+// agent Service lists the Harness only once it is ready. The Gateway waits for
+// the Harness plugin status without a deadline: it neither exits nor reports
+// ready until the Harness really reports.
+test("Codex gateway supervisor waits for its Harness plugin status without a deadline", async () => {
+  const revisionId = "revision-plugin-compute-1";
+  const runtime = pluginRuntimeSpecForRevision(
+    revision({
+      plugins: codexLinearPluginState({
+        toolDefaults: { approval: "provider_default", reviewer: "auto" },
+      }),
+    }),
+  );
+  const files = new Map([
+    [
+      "/etc/openclaw/openclaw.json",
+      JSON.stringify({
+        gateway: { port: 8080 },
+        plugins: { installs: { keep: { source: "npm" } }, load: { paths: ["existing"] } },
+        tools: { alsoAllow: ["existing-tool"] },
+      }),
+    ],
+  ]);
+  const peerStatus = {
+    revisionId,
+    container: "agent",
+    startupId: "agent-startup-1",
+    podUid: "agent-pod-1",
+    phase: "ready",
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+    failures: [],
+  };
+  // Harness not ready yet: no Service endpoint, then an unready status port,
+  // then a Harness still installing its plugins.
+  const unavailable = [
+    () => Promise.reject(new TypeError("fetch failed")),
+    () => Promise.resolve({ status: 503, json: async () => ({}) }),
+    () =>
+      Promise.resolve({ status: 200, json: async () => ({ ...peerStatus, phase: "starting" }) }),
+  ];
+  let peerReady = false;
+  let fetches = 0;
+  const waits = [];
+  const errors = [];
+  const exits = [];
+  let now = 0;
+  let statusHandler;
+  let child;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  const sandbox = {
+    AbortSignal,
+    Buffer,
+    JSON,
+    URL,
+    Date: FixtureDate,
+    console: { error: (message) => errors.push(message) },
+    fetch(url) {
+      assert.equal(
+        String(url),
+        "http://agent-fixture.harness.svc:18791/openclaw/plugin-runtime/status",
+      );
+      fetches++;
+      if (peerReady) {
+        return Promise.resolve({ status: 200, json: async () => peerStatus });
+      }
+      return unavailable[(fetches - 1) % unavailable.length]();
+    },
+    process: {
+      env: {
+        APP_SERVER_TOKEN: "base-app-server-token",
+        APP_SERVER_URL: "ws://agent-fixture.harness.svc:4500",
+        HOME: "/home/node",
+        OPENCLAW_AGENT_REVISION_ID: revisionId,
+        OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
+        OPENCLAW_GATEWAY_PORT: "8080",
+        OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: runtime }),
+        OPENCLAW_PLUGIN_STATUS_CONTAINER: "gateway",
+        OPENCLAW_PLUGIN_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "gateway-pod-1",
+      },
+      on() {},
+      exit(code) {
+        exits.push(code);
+      },
+    },
+    setInterval() {
+      return { unref() {} };
+    },
+    setTimeout(callback, delay) {
+      if (delay === 250) {
+        waits.push(callback);
+      }
+      return { unref() {} };
+    },
+    clearTimeout() {},
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            statusHandler = handler;
+            return { listen() {} };
+          },
+        };
+      }
+      if (specifier === "node:fs") {
+        return {
+          existsSync(path) {
+            return files.has(path);
+          },
+          mkdirSync() {},
+          readFileSync(path) {
+            if (!files.has(path)) {
+              throw new Error(`Missing mocked file: ${path}`);
+            }
+            return files.get(path);
+          },
+          writeFileSync(path, data) {
+            files.set(path, String(data));
+          },
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn() {
+            child = { kill() {}, on() {} };
+            return child;
+          },
+          spawnSync() {
+            throw new Error("gateway bridge must not run native plugin installers for Codex peers");
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+
+  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  // Twelve failed reads, each ten minutes apart: far beyond the former 60 s deadline
+  // and the controller's own 900 s convergence deadline.
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await waitForCondition("the next peer status retry", () => waits.length > 0);
+    assert.equal(child, undefined, "the Gateway must not start before its Harness reports");
+    assert.equal(readStatusFromHandler(statusHandler).phase, "starting");
+    now += 10 * 60_000;
+    waits.shift()();
+  }
+  await waitForCondition("the next peer status retry", () => waits.length > 0);
+  assert.equal(fetches, 13);
+  assert.deepEqual(exits, [], "a slow Harness must not exit the Gateway supervisor");
+  assert.equal(child, undefined);
+  assert.equal(readStatusFromHandler(statusHandler).phase, "starting");
+  // The wait reports why it is still waiting, never a token or the peer address.
+  assert.ok(errors.length > 0);
+  for (const message of errors) {
+    assert.match(message, /^Waiting for Harness plugin runtime status: /);
+    assert.doesNotMatch(message, /base-app-server-token|agent-fixture/);
+  }
+
+  peerReady = true;
+  waits.shift()();
+  await waitForCondition("gateway supervisor start", () => child);
+  assert.equal(fetches, 14);
+  assert.deepEqual(exits, []);
+  const status = readStatusFromHandler(statusHandler);
+  assert.equal(status.phase, "ready");
+  assert.deepEqual(status.successfulPluginIds, peerStatus.successfulPluginIds);
+  assert.equal(
+    sandbox.process.env.APP_SERVER_TOKEN,
+    pluginAppServerToken("base-app-server-token", revisionId, peerStatus.startupId),
+  );
+});
+
 test("Codex gateway supervisor exits when the peer Agent plugin failure set changes", async () => {
   const peerHttp = await import("node:http");
   const revisionId = "revision-plugin-compute-1";

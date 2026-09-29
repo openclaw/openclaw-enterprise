@@ -15,6 +15,14 @@
   },
   "files": [
     {
+      "path": "tests/integration/container-publication-workflow.test.mjs",
+      "expectedTests": [
+        "publication workflow requires explicit chart opt-in and a successful image job",
+        "chart publication consumes the exact successful image receipt without archives",
+        "publication keeps its lock across jobs and reports image success after chart failure"
+      ]
+    },
+    {
       "path": "tests/integration/docker-compute-token-retry.test.mjs",
       "expectedTests": [
         "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries"
@@ -29,7 +37,9 @@
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
         "runtime image keeps Codex auth writable with a nested generated images mount",
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
-        "runtime image reconnects an ephemeral native worker from an expired replayed setup code"
+        "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
+        "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
+        "runtime image validates the configuration dedicated native OpenClaw renders"
       ]
     },
     {
@@ -46,6 +56,12 @@
         "production image includes the OpenShell gRPC proto asset",
         "production image includes console shell and public assets"
       ]
+    },
+    {
+      "path": "tests/integration/production-image-upgrade-recovery.test.mjs"
+    },
+    {
+      "path": "tests/integration/production-image-qualification.test.mjs"
     },
     {
       "path": "tests/integration/production-kubernetes-packaging.test.mjs",
@@ -70,8 +86,10 @@
       "path": "tests/integration/sign-in-chart-parity.test.mjs",
       "expectedTests": [
         "the API accepts exactly the sign-in settings the chart renders for every proxy preset, with and without GitHub",
+        "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
         "values the chart refuses are settings the API also refuses",
-        "proxy CIDRs without a preset are refused by the chart and default to ingress-nginx in the API"
+        "proxy CIDRs without a preset are refused by the chart and default to ingress-nginx in the API",
+        "the chart refuses Google Secret and egress settings the API cannot observe"
       ]
     },
     {

@@ -157,7 +157,7 @@ startup validation, not live GitHub behavior or platform integration.
 - [Repository credential operator guide](../guides/repository-credentials.md)
 - [Repository credential tests](../testing/repository-credentials.md)
 - [Credential service startup and shutdown](repository-credentials.md)
-- [Current architecture](../ARCHITECTURE.md)
+- [Platform architecture](../design.md)
 
 ## Manual Notes
 

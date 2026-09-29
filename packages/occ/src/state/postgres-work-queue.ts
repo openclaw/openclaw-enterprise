@@ -277,6 +277,81 @@ function transferRepositoryCleanupSql(continuingRevision = "false"): string {
     ),`;
 }
 
+// Recovery counterpart of fail(..., { continuingRevision: true }): an exhausted
+// maintenance item of the active running revision whose worker lost its lease
+// (crash or restart) must not retire that runtime or end its maintenance
+// chain. `candidates` holds locked work keys; `$2` is maxAttempts. Locks follow
+// the cleanup transfer's order (Namespace, then Agent).
+function continuingMaintenanceSql(candidates: string): string {
+  return `
+    continuing_sources AS MATERIALIZED (
+      SELECT work.idempotency_key, work.namespace_id, work.agent_id, work.revision_id
+      FROM occ.controller_work AS work
+      JOIN ${candidates} AS candidate ON candidate.idempotency_key = work.idempotency_key
+      WHERE work.attempt_count >= $2::integer
+        AND work.namespace_target IS NULL AND work.agent_target IS NULL
+        AND work.agent_id IS NOT NULL AND work.revision_id IS NOT NULL
+        AND work.idempotency_key ~
+          ('^agent_revision:' || work.revision_id || ':maintenance:(0|[1-9][0-9]*)$')
+    ), continuing_namespaces AS MATERIALIZED (
+      SELECT namespace.id, namespace.status, namespace.deleted_at
+      FROM occ.namespaces AS namespace
+      WHERE namespace.id IN (SELECT namespace_id FROM continuing_sources)
+      ORDER BY namespace.id
+      FOR UPDATE OF namespace
+    ), continuing_agents AS MATERIALIZED (
+      SELECT agent.namespace_id, agent.id, agent.active_revision_id, agent.desired_runtime_state
+      FROM occ.agents AS agent
+      WHERE (agent.namespace_id, agent.id) IN (
+        SELECT namespace_id, agent_id FROM continuing_sources
+      )
+      ORDER BY agent.namespace_id, agent.id
+      FOR UPDATE OF agent
+    ), continuing_maintenance AS MATERIALIZED (
+      SELECT source.idempotency_key
+      FROM continuing_sources AS source
+      JOIN continuing_agents AS agent
+        ON agent.namespace_id = source.namespace_id AND agent.id = source.agent_id
+        AND agent.active_revision_id = source.revision_id
+      JOIN occ.agent_revisions AS revision
+        ON revision.namespace_id = agent.namespace_id AND revision.agent_id = agent.id
+        AND revision.id = agent.active_revision_id
+      JOIN continuing_namespaces AS namespace ON namespace.id = agent.namespace_id
+      WHERE agent.desired_runtime_state = 'running'
+        AND namespace.status = 'ready' AND namespace.deleted_at IS NULL
+        AND (revision.admitted_spec->'repository_credentials' IS NULL OR
+          (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint >
+            EXTRACT(EPOCH FROM clock_timestamp()) * 1000)
+    ),`;
+}
+
+// Enqueue the next maintenance bucket for each continued item, deferred by the
+// maximum retry backoff (`delayParameter`, in milliseconds). The worker derives
+// later buckets from this key, so the chain stays strictly increasing.
+function continueMaintenanceSql(delayParameter: string): string {
+  return `
+    continued_maintenance AS (
+      INSERT INTO occ.controller_work (
+        idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+        namespace_target, agent_target, state, available_at, attempt_count, created_at, updated_at
+      )
+      SELECT 'agent_revision:' || source.revision_id || ':maintenance:' ||
+          (substring(source.idempotency_key from ':maintenance:([0-9]+)$')::numeric + 1)::text,
+        source.namespace_id, source.agent_id, source.revision_id, source.actor_id,
+        NULL, NULL, 'queued',
+        clock_timestamp() + ${delayParameter}::double precision * interval '1 millisecond',
+        0, clock_timestamp(), clock_timestamp()
+      FROM transitioned AS source
+      WHERE source.state = 'failed_permanent'
+        AND source.idempotency_key IN (SELECT idempotency_key FROM continuing_maintenance)
+      ON CONFLICT (idempotency_key) DO NOTHING
+      RETURNING idempotency_key
+    ),`;
+}
+
+const CONTINUING_MAINTENANCE_SOURCE_SQL =
+  "source.idempotency_key IN (SELECT idempotency_key FROM continuing_maintenance)";
+
 export class WorkClaimLostError extends Error {
   constructor() {
     super("The controller work claim is missing, expired, or owned by another worker.");
@@ -1058,7 +1133,7 @@ export class PostgresWorkQueue {
          ORDER BY lease_expires_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), transitioned AS (
+       ), ${continuingMaintenanceSql("candidates")} transitioned AS (
          UPDATE occ.controller_work AS work
          SET state = CASE
                WHEN ${exhaustedClaim} THEN 'failed_permanent'
@@ -1087,8 +1162,9 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${FAIL_EXHAUSTED_NAMESPACES_SQL},
-       ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL)}
+       ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [
         requestedLimit,
@@ -1112,7 +1188,7 @@ export class PostgresWorkQueue {
          ORDER BY available_at, created_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), transitioned AS (
+       ), ${continuingMaintenanceSql("candidates")} transitioned AS (
          UPDATE occ.controller_work AS work
          SET state = 'failed_permanent',
              completed_at = clock_timestamp(),
@@ -1122,10 +1198,11 @@ export class PostgresWorkQueue {
          FROM candidates
          WHERE work.idempotency_key = candidates.idempotency_key
          RETURNING work.*
-       ), ${FAIL_EXHAUSTED_NAMESPACES_SQL},
-       ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
+       ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL)}
+       ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
-      [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED"],
+      [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],
     );
 
     let requeued = 0;

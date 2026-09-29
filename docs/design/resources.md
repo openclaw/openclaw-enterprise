@@ -1,8 +1,19 @@
 # Resources and tenant boundaries
 
-This page owns the resources and tenant boundaries portion of the authoritative
-[platform target design](../design.md). Read it with the other design chapters;
-the [current architecture](../ARCHITECTURE.md) describes implementation status.
+This chapter defines requirements within the authoritative
+[platform architecture](../design.md). The implementation status below separates
+current behavior from remaining design work.
+
+## Implementation status
+
+The singleton Installation, Namespace lifecycle, Agents, revisions, Presets,
+Secrets, and optional CredentialSources have current implementations. The table
+below also retains planned Harness, Channel, and SandboxPolicy resource contracts;
+it is not an inventory of available APIs. Agent workload identity is implemented
+as an Agent-owned ServicePrincipal, while workload-token authentication to OCC
+remains deferred. Use [Concepts](../guides/concepts.md),
+[authorization](../reference/authorization.md), and the
+[API reference](../reference/api.md) for current resources and operations.
 
 ## Common concepts
 

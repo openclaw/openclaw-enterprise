@@ -356,6 +356,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     element("option", { value: "openclaw" }, "OpenClaw"),
   );
   const harnessHint = element("p", { id: "agent-harness-hint", className: "hint" });
+  const nativeHarnessWarning = element(
+    "p",
+    { className: "notice", role: "status", hidden: true },
+    "Experimental: Dedicated OpenClaw requires a runtime build with native worker-inference support. Released OpenClaw images may not include it yet.",
+  );
   const configuration = element("textarea", {
     id: "configuration-json",
     name: "configuration",
@@ -504,6 +509,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     field("Provider", nativeProvider),
     field("Harness", harness),
     harnessHint,
+    nativeHarnessWarning,
     binding
       ? element("p", {}, `Preset authentication: ${harnessAuthDescription(binding)}`)
       : authMethodField,
@@ -532,7 +538,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   } else if (nativeProvider.value === "anthropic" || binding?.method === "runtime") {
     mode.value = "embedded";
   }
-  harness.value = mode.value === "dedicated" ? "codex" : "openclaw";
+  // A Preset or draft keeps its own harness; execution mode only chooses the default.
+  const configuredHarness =
+    rendered.configuration?.values?.agents?.defaults?.models?.[initialModel]?.agentRuntime?.id;
+  // Service account tokens authenticate Codex only.
+  harness.value =
+    mode.value === "dedicated" &&
+    (authMethod.value === "codex_pat" || configuredHarness !== "openclaw")
+      ? "codex"
+      : "openclaw";
   const currentTemplate = () =>
     JSON.stringify(
       configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
@@ -1230,6 +1244,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       binding?.method === "runtime";
     harness.disabled ||=
       binding?.method === "runtime" || (usesPat && Boolean(binding || savedSecret));
+    nativeHarnessWarning.hidden = harness.value !== "openclaw" || mode.value !== "dedicated";
     const codexOption = harness.querySelector('[value="codex"]');
     codexOption.hidden = nativeProvider.value === "anthropic";
     codexOption.disabled = nativeProvider.value === "anthropic";

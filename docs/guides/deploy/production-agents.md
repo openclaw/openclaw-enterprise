@@ -7,6 +7,12 @@ Kubernetes context. For Secret-backed authentication, you or an Installation
 administrator must [grant the Agent access to the model Secret](#grant-the-agent-access-to-its-model-secret)
 before deployment.
 
+The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24
+or newer for transport provisioning. If Node is unavailable, use the
+[console deployment workflow](../../reference/console/create-and-deploy.md) after
+preparing the Namespace. Its **Deploy new version** action provisions transport
+credentials and deploys the Agent; do not also submit the CLI deployment below.
+
 ## Prepare each Namespace
 
 ### Use a driver-managed Kubernetes namespace
@@ -357,7 +363,7 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
-For a draft Agent, **Deploy new revision** generates missing transport
+For a draft Agent, **Deploy new version** generates missing transport
 credentials before its first revision. API clients may call the endpoint below
 first. Keep `OCC_URL` and
 `OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
@@ -392,8 +398,8 @@ If the request fails after creating a Secret, inspect the Agent's credential
 status before retrying; the API reuses complete, owned credential groups.
 See [initial runtime credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
 for permissions and conflicts. Dedicated Agents keep the canonical transport
-token and Gateway password in separate CP Secrets. Compute projects only the
-app-server token to the Harness. Embedded Agents use their tenant-local bundle.
+token and Gateway password in separate control-plane Kubernetes Secrets. Compute
+projects only the app-server token to the Harness. Embedded Agents use their tenant-local bundle.
 
 Kubernetes gateways use trusted-proxy authentication. For direct operator
 loopback checks, explicitly select the generated Gateway password and native HTTP
@@ -434,22 +440,7 @@ permission; saving also requires `operate`.
 An empty editor after an error is not evidence of an empty workspace. A missing
 file is a separate result: the file API can create or replace a file, but cannot
 delete it. Verify access before creating a missing file. See [workspace-file errors](../../reference/agents.md#workspace-files).
-Do not treat this setup as complete merely because a revision is active or
-credentials are stored. Keep model verification as a separate check below.
-
-## Open Control UI
-
-Complete [native admin setup](native-admin.md#steps) for the Installation, then
-[configure this Agent's origin](native-admin.md#configure-each-agent) using an
-OCE browser session with exact Agent `administer` permission. The first active
-revision makes its stable origin discoverable; copy that origin into
-`gateway.controlUi.allowedOrigins`, save the Configuration, and deploy a new
-revision. Do not use a wildcard, the Console origin, or host-header fallback.
-
-On the Agent detail page, select **Refresh access** in **Native admin UI**.
-Expect **available**, open **Open native admin UI**, and verify the native
-Control UI loads on the returned Agent HTTPS host. Model verification below is
-separate from this browser-access check.
+Next, verify a model response from the same revision.
 
 ## Verify production workloads
 
@@ -463,106 +454,15 @@ TUI](#attach-with-the-openclaw-tui), or [verify rejection of an unauthenticated
 request and a real model response](../operate/model-verification.md) over an
 operator's local Kubernetes connection.
 
-A ready controller or active revision does not prove model access: a Pod
-without the
-[network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
-has none.
+If model access fails, check the Pod's
+[network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles):
+model egress requires an explicit grant. See [what each check establishes](../operate/model-verification.md#what-each-check-establishes).
 
 ## Attach with the OpenClaw TUI
 
-Use the requested `REVISION_ID`. This Bash function waits up to five minutes
-for OCC to select it and for exactly one Ready gateway Pod to mount its
-immutable ConfigMap. A previous revision cannot satisfy both checks:
-
-```bash
-# Embedded stays in the tenant target; dedicated uses the prepared Gateway target.
-GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
-if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
-  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:?}"
-fi
-export GATEWAY_NAMESPACE
-find_gateway_for_revision() {
-  local agent agent_suffix revision_suffix expected_configmap pods pod status attempt
-  if [ "${OCC_NAMESPACE:?}" != "${NAMESPACE_ID:?}" ]; then
-    printf '%s\n' 'OCC_NAMESPACE must match NAMESPACE_ID.' >&2
-    return 1
-  fi
-  agent_suffix="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "${AGENT_ID:?}")" || return 1
-  revision_suffix="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "${REVISION_ID:?}")" || return 1
-  expected_configmap="gateway-$agent_suffix-rev-$revision_suffix"
-  for ((attempt = 1; attempt <= 60; attempt++)); do
-    agent="$(occ agent get "$AGENT_ID" --output json)" || return 1
-    if printf '%s' "$agent" | python3 -c '
-import json, sys
-agent = json.load(sys.stdin)
-if agent.get("activeRevisionId") != sys.argv[1]:
-    sys.exit(3)
-' "$REVISION_ID"; then
-      pods="$(kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
-        -n "${GATEWAY_NAMESPACE:?}" get pods \
-        -l "app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/workload-role=gateway,openclaw.dev/namespace=$NAMESPACE_ID,openclaw.dev/agent=$AGENT_ID,openclaw.dev/revision=$REVISION_ID" \
-        -o json)" || return 1
-      if pod="$(printf '%s' "$pods" | python3 -c '
-import json, sys
-expected = sys.argv[1]
-ready = [
-    pod for pod in json.load(sys.stdin)["items"]
-    if not pod["metadata"].get("deletionTimestamp")
-    and pod.get("status", {}).get("phase") == "Running"
-    and any(c.get("type") == "Ready" and c.get("status") == "True"
-            for c in pod.get("status", {}).get("conditions", []))
-    and any(v.get("configMap", {}).get("name") == expected
-            for v in pod["spec"].get("volumes", []))
-]
-if len(ready) > 1:
-    sys.exit("Multiple Ready Pods match the requested revision; refusing to choose.")
-if not ready:
-    sys.exit(3)
-print(ready[0]["metadata"]["name"])
-' "$expected_configmap")"; then
-        printf '%s\n' "$pod"
-        return 0
-      else
-        status=$?
-        if [ "$status" -ne 3 ]; then return "$status"; fi
-      fi
-    else
-      status=$?
-      if [ "$status" -ne 3 ]; then return "$status"; fi
-    fi
-    if [ "$attempt" -lt 60 ]; then sleep 5; fi
-  done
-  printf '%s\n' 'No unique Ready gateway Pod for the requested active revision.' >&2
-  return 1
-}
-```
-
-Attach only after the lookup succeeds. If it times out, check [deployment
-status](../../reference/agents.md#deployment-status) and retry; do not use a
-previous Pod or the Agent-wide Service.
-
-```bash
-if GATEWAY_POD="$(find_gateway_for_revision)"; then
-  TUI_SESSION="production-tui-$(date +%Y%m%d%H%M%S)" &&
-  NONCE="$(python3 -c 'import secrets; print("OPENCLAW_TUI_" + secrets.token_hex(8))')" &&
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$GATEWAY_NAMESPACE" \
-    exec -it "$GATEWAY_POD" -c gateway -- env -u OPENAI_API_KEY \
-    OPENCLAW_STATE_DIR=/tmp/occ-tui-client node /app/openclaw.mjs tui \
-    --session "$TUI_SESSION" --message "Reply exactly: $NONCE"
-else
-  false
-fi
-```
-
-Confirm the model replies with the exact nonce. The TUI uses the Pod-local
-WebSocket listener and configured gateway password. The extra client process unsets
-`OPENAI_API_KEY`; model access stays in the serving gateway path. Ctrl+D exits
-only the client.
-
-This Pod-local TUI procedure requires the optional password SecretRef shown
-above. Trusted-proxy authentication remains active for routed requests. Use the
-[HTTP password check](../operate/model-verification.md) for a noninteractive
-model response, and the OCC file API for workspace-file administration.
+Follow [TUI verification](production-tui.md) to select exactly one Ready gateway
+Pod for `REVISION_ID`, send a fresh nonce, and verify its reply. Keep the same
+operator environment and return here to clean up temporary credentials.
 
 ## End the operator session
 
@@ -600,6 +500,14 @@ unset SECRET_DIRECTORY
 
 This does not revoke the service key or delete the Kubernetes Secrets. Keep
 the original in protected bootstrap storage; bootstrap will not reissue it.
+
+## Open Control UI
+
+After model verification, optionally [enable native admin access](native-admin.md)
+and [configure this Agent's exact origin](native-admin.md#configure-each-agent).
+You need a browser session with exact-Agent `administer` permission. Add the
+returned origin to `gateway.controlUi.allowedOrigins` and deploy again; then
+open **Native admin UI** and verify the native UI loads.
 
 ## Related
 

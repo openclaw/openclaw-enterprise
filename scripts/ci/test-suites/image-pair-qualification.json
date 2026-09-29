@@ -1,0 +1,31 @@
+{
+  "requiredEnv": [
+    "OCC_PROBE_CONTROLLER_IMAGE",
+    "OCC_PROBE_BROKER_IMAGE",
+    "OCC_PROBE_OLD_CONTROLLER_IMAGE",
+    "OCC_PROBE_OLD_BROKER_IMAGE"
+  ],
+  "prepare": {
+    "requireEnv": [
+      "OCC_PROBE_CONTROLLER_IMAGE",
+      "OCC_PROBE_BROKER_IMAGE",
+      "OCC_PROBE_OLD_CONTROLLER_IMAGE",
+      "OCC_PROBE_OLD_BROKER_IMAGE"
+    ],
+    "immutableEnvImages": [
+      "OCC_PROBE_CONTROLLER_IMAGE",
+      "OCC_PROBE_BROKER_IMAGE",
+      "OCC_PROBE_OLD_CONTROLLER_IMAGE",
+      "OCC_PROBE_OLD_BROKER_IMAGE"
+    ]
+  },
+  "files": [
+    {
+      "path": "tests/integration/production-image-real-qualification.test.mjs",
+      "expectedTests": [
+        "staged controller and broker images qualify through the real Driver and broker",
+        "incompatible old and new staged image pairs are rejected"
+      ]
+    }
+  ]
+}

@@ -39,7 +39,7 @@ and trusted-proxy rows are historical observations, not current storage or
 credential requirements. Use the current contracts above for those behaviors.
 For setup, see [Drivers quickstart](selection.md#choose-a-bundled-driver).
 The [Compute Driver contract](compute.md) owns requirements; the
-[platform design](../../design.md) owns the target architecture.
+[platform architecture](../../design.md) distinguishes implementation from remaining design work.
 
 ## Read the matrix
 

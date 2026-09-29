@@ -12,7 +12,8 @@
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
 {{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
 {{- if and $recoveryUserId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" $recoveryUserId)) -}}{{- fail "auth.recoveryUserId must be the existing local password administrator's user ID" -}}{{- end -}}
-{{- if and $recoveryUserId (not (and $github $github.enabled)) -}}{{- fail "auth.recoveryUserId requires auth.github.enabled: true" -}}{{- end -}}
+{{- $google := .Values.auth.google -}}
+{{- if and $recoveryUserId (not (or (and $github $github.enabled) (and $google $google.enabled))) -}}{{- fail "auth.recoveryUserId requires auth.github.enabled or auth.google.enabled" -}}{{- end -}}
 {{- if and $github $github.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -32,6 +33,33 @@
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
 {{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
 {{- if gt (int $octet) 255 -}}{{- fail "auth.github.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $google $google.enabled -}}
+{{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
+{{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
+{{- if or (eq $google.secretName .Values.installation.secretName) (eq $google.secretName .Values.database.secretName) (eq $google.secretName .Values.auth.secretName) (and .Values.backend.chatgpt.enabled (eq $google.secretName .Values.backend.chatgpt.secretName)) (and .Values.gatewayRouting.enabled (eq $google.secretName .Values.gatewayRouting.apiKeySecretName)) (and $github $github.enabled (eq $google.secretName $github.secretName)) -}}
+{{- fail "auth.google credentials must use a dedicated Secret" -}}
+{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- range $name := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
+{{- if eq $google.secretName (index $.Values.repositoryCredentials $name) -}}{{- fail (printf "auth.google credentials must use a Secret distinct from repositoryCredentials.%s" $name) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" .Values.auth.baseUrl) -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
+{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
+{{- if not (kindIs "slice" (default list $google.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
+{{- range $domain := $google.allowedDomains -}}
+{{- $name := lower (trim (toString $domain)) -}}
+{{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
+{{- end -}}
+{{- if not (kindIs "slice" (default list $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it empty for HTTPS egress to any address" -}}{{- end -}}
+{{- range $cidr := $google.egressCidrs -}}
+{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.google.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
+{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
+{{- if gt (int $octet) 255 -}}{{- fail "auth.google.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

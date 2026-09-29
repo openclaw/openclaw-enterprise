@@ -8,6 +8,7 @@
 {{- end -}}
 {{- $protected := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName "chatgpt" .Values.backend.chatgpt.secretName -}}
 {{- if and .Values.auth.github .Values.auth.github.enabled -}}{{- $_ := set $protected "GitHub sign-in" .Values.auth.github.secretName -}}{{- end -}}
+{{- if and .Values.auth.google .Values.auth.google.enabled -}}{{- $_ := set $protected "Google sign-in" .Values.auth.google.secretName -}}{{- end -}}
 {{- range $name, $secret := $protected -}}
 {{- if and $secret (or (eq $collector.configSecretName $secret) (and $collector.envSecretName (eq $collector.envSecretName $secret))) -}}
 {{- fail (printf "logging.collector Secrets must be dedicated and cannot reuse the %s Secret" $name) -}}

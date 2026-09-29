@@ -663,6 +663,13 @@ function databaseError(error: unknown): Error {
     // A lock timeout is transient contention, retryable like a statement timeout (57014).
     return new DependencyUnavailableError("The platform persistence lock timeout expired.");
   }
+  if (code === "40001" || code === "40P01") {
+    // A serialization failure or deadlock aborts the whole transaction before
+    // COMMIT (see commitOutcomeUnknown), so the caller can safely retry it.
+    return new DependencyUnavailableError(
+      "The platform persistence transaction conflicted with a concurrent transaction.",
+    );
+  }
   if (
     code?.startsWith("08") ||
     code?.startsWith("53") ||
@@ -1385,7 +1392,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     try {
       client = await this.pool.connect();
     } catch (error) {
-      throw databaseError(error);
+      // No statement has run yet, so any checkout failure (DNS, routing, TLS,
+      // credentials or a password callback) is unavailability, not a server verdict.
+      throw error instanceof ScopeViolationError || error instanceof DependencyUnavailableError
+        ? error
+        : new DependencyUnavailableError("The platform persistence repository is unavailable.");
     }
 
     // Checked-out pg clients emit transport errors independently of query rejection.
@@ -1600,6 +1611,25 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return immutableCopy(installation);
       },
+      holdPrincipalAccount: async (principalId) => {
+        const installation = await this.currentInstallation(context);
+        if (installation === undefined) {
+          throw new DependencyUnavailableError(
+            "The platform Installation has not been initialized.",
+          );
+        }
+        // FOR SHARE conflicts with the account UPDATE that disables it.
+        const [account] = rows(
+          (
+            await client.query(
+              `SELECT disabled FROM occ.human_authentication_accounts
+               WHERE principal_id = $1 AND installation_id = $2 FOR SHARE`,
+              [principalId, installation.id],
+            )
+          ).rows,
+        );
+        return account === undefined || account.disabled === false;
+      },
     };
 
     const namespaces: NamespaceRepository = {
@@ -1764,6 +1794,19 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    // Deleting a Namespace resource also removes the AccessBindings that grant
+    // on it (as Agent deletion does), so none outlive their target or keep
+    // blocking deletion of the Role they reference. Resource ids are unique.
+    const deleteResourceAccessBindings = async (
+      resourceKind: "configuration" | "preset" | "secret" | "credential_source" | "service_account",
+      resourceId: string,
+    ): Promise<void> => {
+      await client.query(
+        "DELETE FROM occ.iam_access_bindings WHERE resource_kind = $1 AND resource_id = $2",
+        [resourceKind, resourceId],
+      );
+    };
+
     const findPreset = async (
       namespaceId: string,
       presetId: string,
@@ -1846,7 +1889,11 @@ export class PostgresPlatformState implements PlatformStateStore {
            WHERE p.namespace_id = $1 AND p.id = $2 AND n.id = p.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, presetId],
         );
-        return deleted.rowCount === 1;
+        if (deleted.rowCount !== 1) {
+          return false;
+        }
+        await deleteResourceAccessBindings("preset", presetId);
+        return true;
       },
     };
 
@@ -2016,7 +2063,11 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = c.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, configurationId],
         );
-        return deleted.rowCount === 1;
+        if (deleted.rowCount !== 1) {
+          return false;
+        }
+        await deleteResourceAccessBindings("configuration", configurationId);
+        return true;
       },
     };
 
@@ -2134,7 +2185,11 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = s.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, secretId],
         );
-        return deleted.rowCount === 1;
+        if (deleted.rowCount !== 1) {
+          return false;
+        }
+        await deleteResourceAccessBindings("secret", secretId);
+        return true;
       },
     };
 
@@ -2319,7 +2374,11 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, credentialSourceId],
         );
-        return deleted.rowCount === 1;
+        if (deleted.rowCount !== 1) {
+          return false;
+        }
+        await deleteResourceAccessBindings("credential_source", credentialSourceId);
+        return true;
       },
     };
 
@@ -2449,7 +2508,11 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND n.id = s.namespace_id AND n.deleted_at IS NULL`,
           [namespaceId, serviceAccountId],
         );
-        return deleted.rowCount === 1;
+        if (deleted.rowCount !== 1) {
+          return false;
+        }
+        await deleteResourceAccessBindings("service_account", serviceAccountId);
+        return true;
       },
     };
 
@@ -3947,26 +4010,29 @@ export class PostgresPlatformState implements PlatformStateStore {
             }),
           );
         },
-        retryFailedAgentDeletion: async (namespaceId, agentId, actorId) => {
+        retryFailedAgentDeletion: async (namespaceId, agentId, initiatingActorId, actorId) => {
           await this.requireInitialized(context);
+          // Work actor identity is frozen for the application role; this
+          // definer function is the one path that may hand terminal teardown
+          // to another caller after OCC has verified the takeover.
           const retried = await client.query(
-            `UPDATE occ.controller_work AS work
-             SET state = 'queued', attempt_count = 0,
-                 available_at = clock_timestamp(), claim_token = NULL,
-                 lease_expires_at = NULL, completed_at = NULL,
-                 reason_code = NULL, result_data = NULL, updated_at = clock_timestamp()
-             FROM occ.agents AS agent
-             WHERE work.idempotency_key = $1
-               AND work.work_kind = 'lifecycle'
-               AND work.namespace_id = $2 AND work.agent_id = $3 AND work.actor_id = $4
-               AND work.revision_id IS NULL AND work.namespace_target IS NULL
-               AND work.agent_target = 'deleted' AND work.state = 'failed_permanent'
-               AND agent.namespace_id = work.namespace_id AND agent.id = work.agent_id
-               AND agent.status = 'deleting' AND agent.desired_runtime_state = 'stopped'
-             RETURNING work.idempotency_key`,
-            [`agent:${agentId}:reconcile:deleted`, namespaceId, agentId, actorId],
+            "SELECT occ.retry_failed_agent_deletion($1::text, $2::text, $3::text, $4::text) AS retried",
+            [namespaceId, agentId, initiatingActorId, actorId],
           );
-          return retried.rowCount === 1;
+          return (retried.rows[0] as { retried?: unknown } | undefined)?.retried === true;
+        },
+        retryFailedNamespaceDeletion: async (namespaceId, initiatingActorId, actorId) => {
+          await this.requireInitialized(context);
+          // created_at is immutable, so a retry keeps the original convergence
+          // deadline: the retried pass succeeds only once teardown has finished.
+          // Work actor identity is frozen for the application role; this
+          // definer function is the one path that may hand terminal teardown
+          // to another caller after OCC has verified the takeover.
+          const retried = await client.query(
+            "SELECT occ.retry_failed_namespace_deletion($1::text, $2::text, $3::text) AS retried",
+            [namespaceId, initiatingActorId, actorId],
+          );
+          return (retried.rows[0] as { retried?: unknown } | undefined)?.retried === true;
         },
         findWork: async (idempotencyKey) => {
           await this.requireInitialized(context);

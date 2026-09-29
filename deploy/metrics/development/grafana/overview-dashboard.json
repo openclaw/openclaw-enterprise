@@ -13,7 +13,7 @@
       "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "Choose a view to inspect OCC telemetry.\n\n- [Metrics](/d/occ-development) — API, worker, and Agent lifecycle metrics."
+        "content": "Choose a view to inspect OCC telemetry.\n\n- [Metrics](./d/occ-development) — API, worker, and Agent lifecycle metrics."
       }
     }
   ]

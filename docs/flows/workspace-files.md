@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-28
-last_updated_session: authoring-run/1b67a5da-eea7-4eb4-a91f-38abd1fb5792
+updated: 2026-09-29
+last_updated_session: authoring-run/5e3ebbae-97b8-4709-8c03-6a032657e102
 ---
 
 # Agent Workspace Files Flow
@@ -106,14 +106,14 @@ instead of writing outside the Agent's managed storage. Provider-owned Sandbox
 startup cannot carry this init container and rejects workspace setup rather than
 dropping initialization.
 
-The runner validates identity, paths, OpenClaw `2026.9.7`, and the rendered
-template digest against Console defaults before initialization. Submitted
-defaults identities must match; links and conflicts fail. Without a completion
+The runner validates identity, paths, OpenClaw `2026.9.6`, and the rendered
+template digest against Console defaults.
+Defaults identities must match; links and conflicts fail. Without a completion
 marker, native `setup` initializes the workspace and Git without starting the Gateway.
 The Kubernetes initializer uses the configured Gateway resource budget because it
 loads the native CLI, even when it runs in the dedicated Harness Pod.
-It atomically replaces supplied files, including empty strings, only if the
-existing value is absent, stock, or already submitted. It runs native setup
+It atomically replaces supplied files, including empty strings, when existing
+content is absent, stock, or already submitted. It runs native setup
 again so native `BOOTSTRAP.md` lifecycle sees the submitted profile, verifies
 the results, then atomically writes `.oce-workspace-setup.json`.
 
@@ -190,9 +190,9 @@ ownership and UID, then remove that revision's endpoint before its policy. See t
 `gateway/node-enrollment-client.ts:createGatewayNodeEnrollment` after Gateway
 readiness. An Agent-owned Secret per Harness kind keeps the setup code and
 device ID; preparation renews expired setup codes.
-Reconciliation attaches the node through a `Recreate` Harness deployment.
-Replacing the Harness restarts its Gateway; `prepareRevision` keeps deployment
-pending until that Gateway is ready, then queries enrollment.
+A Codex Harness reads the code from an optional Secret volume, so
+enrollment restarts neither workload ([Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)).
+Other Harnesses are replaced, restarting their Gateway.
 
 - Readiness requires `file.fetch`, `file.stat`, `file.write`, `file.create`,
   `dir.list`, `workspace.memory`, and `workspace.skills`. Gateway admits these
@@ -201,15 +201,15 @@ pending until that Gateway is ready, then queries enrollment.
   (`0700`, nonroot initializer) across revisions until Agent deletion.
 - `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
   Codex and the node under `tini`. It passes admitted bootstrap options, preserves
-  existing edits, and stops on setup failure. Only the node receives its setup
-  code; neither process receives OCC's key. Codex preserves the managed PATH.
-- Activation reads the exact revision's device ID and sets
-  `file-transfer.config.workspaces.main` in runtime configuration before Gateway
-  starts. Candidate preparation preserves the serving binding; losing it fails
-  rather than restoring local reads. The revision ConfigMap remains immutable.
+  existing edits, and stops on setup failure. Codex starts at once with the
+  managed PATH; the node waits for a complete code. Neither gets OCC's key.
+- With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
+  Agent-owned ConfigMap (replacing the Codex plugin runtime); activation awaits
+  OpenClaw's report or fails with its cause. Otherwise the ID is set at Gateway
+  start. Losing it fails.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
   roots. Symlinks are not followed; explicit policies remain authoritative. This
-  enables native previews, browsing, bootstrap, and generated outputs.
+  serves previews, browsing, bootstrap and outputs.
 - Writes remain restricted to owner documents, memory, skills, and staged inbound
   files. `file.create` preserves existing files. Reads above 16 MiB retain caller
   and node limits; command admission does not replace path authorization.
@@ -317,6 +317,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-29 08:09: Align the documented workspace version. (authoring-run/5e3ebbae-97b8-4709-8c03-6a032657e102 - 395c735c3915135e4d5fe533041b3d2c04e995ea)
 
 - 2026-09-28 21:47: Defer enrollment checks until Gateway readiness. (authoring-run/1b67a5da-eea7-4eb4-a91f-38abd1fb5792 - 1365d9b33eec2de2452bd3142f57a1729cccd559)
 

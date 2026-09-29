@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   clientAddressConfiguration,
   githubLoginConfiguration,
+  humanLoginConfiguration,
   resolveClientAddress,
 } from "../../apps/controller/src/auth/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
@@ -22,6 +23,8 @@ import {
   defaultInstallSettings,
   githubUpgradeSettings,
   githubUpgradeValues,
+  googleUpgradeSettings,
+  googleUpgradeValues,
 } from "../helpers/production-sign-in.mjs";
 
 const tooling = await chartTooling();
@@ -30,6 +33,8 @@ const secrets = {
   "occ-auth/secret": "chart-parity-auth-secret-at-least-32-characters",
   "occ-github-login/client-id": "chart-parity-client-id",
   "occ-github-login/client-secret": "chart-parity-client-secret",
+  "occ-google-login/client-id": "chart-parity-google-client-id.apps.googleusercontent.com",
+  "occ-google-login/client-secret": "chart-parity-google-client-secret",
 };
 
 // Each proxy preset the chart offers, as operators set it, and what the API must read.
@@ -193,7 +198,80 @@ test(
   },
 );
 
+test(
+  "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
+  tooling,
+  async (t) => {
+    const directory = await startupDirectory(t);
+    const domains = ["example.com", "corp.example.org"];
+    const google = {
+      clientId: secrets["occ-google-login/client-id"],
+      clientSecret: secrets["occ-google-login/client-secret"],
+      recoveryUserId,
+    };
+    const cases = [
+      {
+        label: "Google only",
+        values: googleUpgradeValues(recoveryUserId),
+        settings: googleUpgradeSettings(recoveryUserId),
+        parsed: { google: { ...google, allowedDomains: [] } },
+        egress: ["google"],
+      },
+      {
+        label: "Google only, hosted domains",
+        values: googleUpgradeValues(recoveryUserId, domains),
+        settings: googleUpgradeSettings(recoveryUserId, domains),
+        parsed: { google: { ...google, allowedDomains: domains } },
+        egress: ["google"],
+      },
+      {
+        label: "GitHub and Google",
+        values: { ...githubUpgradeValues(recoveryUserId), ...googleUpgradeValues(recoveryUserId) },
+        settings: {
+          ...githubUpgradeSettings(recoveryUserId),
+          ...googleUpgradeSettings(recoveryUserId),
+        },
+        parsed: {
+          github: {
+            clientId: secrets["occ-github-login/client-id"],
+            clientSecret: secrets["occ-github-login/client-secret"],
+            recoveryUserId,
+          },
+          google: { ...google, allowedDomains: [] },
+        },
+        egress: ["github", "google"],
+      },
+    ];
+    await Promise.all(
+      cases.map(async ({ label, values, settings, parsed, egress }) => {
+        const objects = await renderChart(values);
+        const rendered = signInSettings(deploymentEnv(objects, "api"));
+        assert.deepEqual(rendered, settings, label);
+        assert.deepEqual(
+          objects
+            .filter(({ kind }) => kind === "NetworkPolicy")
+            .map(({ metadata }) => /-api-(github|google)-login-egress$/.exec(metadata.name)?.[1])
+            .filter(Boolean)
+            .sort(),
+          egress,
+          label,
+        );
+        assert.ok(
+          !deploymentEnv(objects, "worker").some(({ name }) =>
+            /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name),
+          ),
+          label,
+        );
+        const environment = resolveSecrets(rendered);
+        assert.deepEqual(humanLoginConfiguration(environment), parsed, label);
+        assert.equal(await startupCode(directory, environment), "PERSISTENCE_UNAVAILABLE", label);
+      }),
+    );
+  },
+);
+
 const githubOn = { "auth.github.enabled": "true", "auth.recoveryUserId": recoveryUserId };
+const googleOn = { "auth.google.enabled": "true", "auth.recoveryUserId": recoveryUserId };
 const invalid = [
   {
     name: "generic preset without a header",
@@ -278,9 +356,9 @@ const invalid = [
     parser: /requires client ID, client secret and recovery user ID/,
   },
   {
-    name: "a recovery user without GitHub",
+    name: "a recovery user without GitHub or Google",
     values: { "auth.recoveryUserId": recoveryUserId },
-    chart: /auth\.recoveryUserId requires auth\.github\.enabled: true/,
+    chart: /auth\.recoveryUserId requires auth\.github\.enabled or auth\.google\.enabled/,
     env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId },
     parser: /requires client ID, client secret and recovery user ID/,
   },
@@ -296,17 +374,53 @@ const invalid = [
       OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
     },
   },
+  {
+    name: "Google without a recovery user",
+    values: { "auth.google.enabled": "true", "agentNativeAdmin.enabled": "false" },
+    chart: /auth\.google\.enabled requires auth\.recoveryUserId/,
+    google: true,
+    env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: undefined },
+    parser: /Google sign-in requires client ID, client secret and recovery user ID/,
+  },
+  {
+    // As for GitHub, composition refuses the combination before any database work.
+    name: "Google with shared-cookie native administration",
+    values: googleOn,
+    chart: /auth\.google requires agentNativeAdmin\.enabled: false/,
+    google: true,
+    env: {
+      OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
+      OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
+    },
+  },
+  {
+    name: "Google with a hosted domain that is not a DNS name",
+    values: {
+      ...googleOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.google.allowedDomains[0]": "example.com/admin",
+    },
+    chart: /auth\.google\.allowedDomains requires DNS domain names/,
+    google: true,
+    env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "example.com/admin" },
+    parser: /OCC_AUTH_GOOGLE_ALLOWED_DOMAINS must be a comma-separated list of DNS domain names/,
+  },
 ];
 
 test("values the chart refuses are settings the API also refuses", tooling, async (t) => {
   const directory = await startupDirectory(t);
   await Promise.all(
-    invalid.map(async ({ name, values, chart, github, env, parser }) => {
+    invalid.map(async ({ name, values, chart, github, google, env, parser }) => {
       assert.match(await chartRefusal(values), chart, name);
       const environment = Object.fromEntries(
         Object.entries({
           ...resolveSecrets(
-            github ? githubUpgradeSettings(recoveryUserId) : defaultInstallSettings,
+            github
+              ? githubUpgradeSettings(recoveryUserId)
+              : google
+                ? googleUpgradeSettings(recoveryUserId)
+                : defaultInstallSettings,
           ),
           ...env,
         }).filter(([, value]) => value !== undefined),
@@ -314,7 +428,7 @@ test("values the chart refuses are settings the API also refuses", tooling, asyn
       if (parser !== undefined) {
         assert.throws(
           () => {
-            githubLoginConfiguration(environment);
+            humanLoginConfiguration(environment);
             clientAddressConfiguration(environment);
           },
           parser,
@@ -339,5 +453,54 @@ test(
     const parsed = clientAddressConfiguration({ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.42.0.0/16" });
     assert.equal(parsed.preset, "ingress-nginx");
     assert.equal(parsed.header, "x-forwarded-for");
+  },
+);
+
+// Secret placement and egress are chart concerns: the API only ever sees the resolved
+// credentials, so these refusals have no parser counterpart.
+test(
+  "the chart refuses Google Secret and egress settings the API cannot observe",
+  tooling,
+  async () => {
+    const google = { ...googleOn, "agentNativeAdmin.enabled": "false" };
+    for (const [name, values, chart] of [
+      [
+        "the GitHub sign-in Secret",
+        { ...google, ...githubOn, "auth.google.secretName": "occ-github-login" },
+        /auth\.google credentials must use a dedicated Secret/,
+      ],
+      [
+        "the Better Auth Secret",
+        { ...google, "auth.google.secretName": "occ-auth" },
+        /auth\.google credentials must use a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...google, "auth.google.clientSecretKey": "client-id" },
+        /auth\.google client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "a hostname egress",
+        { ...google, "auth.google.egressCidrs[0]": "accounts.google.com" },
+        /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
+      ],
+      [
+        "an invalid egress address",
+        { ...google, "auth.google.egressCidrs[0]": "142.250.300.0/24" },
+        /auth\.google\.egressCidrs contains an invalid IPv4 address/,
+      ],
+      [
+        "a /0 egress entry",
+        { ...google, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
+        /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...google, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.google requires an HTTPS auth\.baseUrl/,
+      ],
+    ]) {
+      assert.match(await chartRefusal(values), chart, name);
+    }
   },
 );

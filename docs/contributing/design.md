@@ -1,9 +1,10 @@
 # Platform design
 
-Start with [current architecture](../ARCHITECTURE.md) to understand how the
-OpenClaw Control Plane works today. The [platform design](../design.md) defines
-the approved target; check its [implementation status](../design.md#implementation-status)
-before treating a planned capability as available.
+Start with [platform architecture](../design.md) to understand the OpenClaw
+Control Plane's components, ownership, and trust boundaries. Its
+[implementation status](../design.md#implementation-status) and
+[remaining design work](../design.md#remaining-design-work) distinguish current
+behavior from approved requirements that are not yet supported.
 
 ## Find the right source
 

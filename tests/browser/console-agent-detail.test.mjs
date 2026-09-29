@@ -2477,6 +2477,42 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
 });
 
+// Agent detail rechecks in place, so a mounted form must not suppress the refocus check.
+for (const variant of ["credentials", "workspace", "sharing"]) {
+  test(`Agent detail refocus clears the ${variant} view after session expiry`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Refocus ${variant}`, { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Refocus ${variant} Agent`,
+      nativeValues(variant),
+    );
+    let revision = "draft";
+    if (variant === "workspace") {
+      revision = (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision.id;
+    }
+    const tab = variant === "sharing" ? "configuration" : variant;
+    const { page } = await newPage(t, fixture);
+    const url = detailUrl(fixture, namespace.id, agent.id, revision, tab);
+    await login(page, fixture, url.pathname + url.search);
+    await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
+    if (variant === "sharing") {
+      const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+      await panel.getByLabel("Existing person’s Principal ID").fill("typed-principal");
+    } else {
+      await page.locator(".content form:not(.agent-access-form)").first().waitFor();
+    }
+    for (const session of fixture.memoryDatabase.session) {
+      session.expiresAt = new Date(Date.now() - 1000);
+    }
+
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await page.getByText("Your session has expired").waitFor();
+    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`));
+  });
+}
+
 test("Agent detail history navigation rechecks session during refocus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

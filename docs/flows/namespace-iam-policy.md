@@ -59,7 +59,12 @@ policy delegation.
 List and read operations call the corresponding `OpenClawController` IAM method
 and return policy metadata. Create and delete operations run inside
 `controller.transact`, append an attributable mutation audit event, and return
-only after the transaction commits.
+only after the transaction commits. The event's authorization records the
+Installation `administer` check. Role events carry the Namespace as resource and
+`roleId` plus `permissions` in details. AccessBinding create and delete events
+carry the bound target as resource (the Namespace for a Namespace binding) and
+`bindingId`, `subjectKind`, `subjectId`, and `roleId` in details. Deletion reads
+the removed Role or AccessBinding in the same transaction to record it.
 
 ### 3. OCC validates policy ownership
 
@@ -101,7 +106,8 @@ State discards the connection without another query. OCC reports dependency
 failure; a caller must not infer rollback or replay the mutation from that
 result. Later authorization requests read the current policy through the IAM
 Driver. Namespace locking serializes grant creation with Namespace deletion;
-exact resource targets retain their existing deletion locks. Identity foreign
+exact resource targets retain their existing deletion locks, and deleting a
+target resource deletes the bindings on it in the same transaction. Identity foreign
 keys protect persisted bindings without expanding application-role privileges.
 Both adapters apply one subject rule on every AccessBinding write: a human
 without a Namespace, a non-Agent ServicePrincipal of the exact Namespace, or the
@@ -143,6 +149,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)
 - 2026-09-27 19:15: Clarify unknown commit handling and the unregistered authority barrier. (codex/01a0b3bf-83a8-7392-ae2d-1a369b54ab3f - 181b0472f9a5a9d422035edf5121d3a15c200cb5)
 - 2026-09-23 22:56: Update source ownership for extracted IAM HTTP handlers; preserve admission and transaction boundaries. (codex/01a0d075-a358-7620-8c16-fd4290acddf1 - 4df9f9800836dc1c2b57afd5f8af4d91f55088d5)

@@ -53,6 +53,9 @@ Each tenant namespace also receives:
 - A temporary Agent-only TCP/443 internet-egress exception that excludes
   private network ranges and cloud metadata addresses. Replace it with an
   approved model egress proxy before treating destination isolation as complete.
+- While a replacement is prepared beside a serving revision of the same Agent,
+  the Agent-scoped transport, model-egress, and plugin-status grants select
+  every revision of that Agent; activation narrows them to the active revision.
 
 These admission labels, quota, and limit policies apply to both driver-owned
 and operator-owned tenant namespaces. The controller namespace is created and

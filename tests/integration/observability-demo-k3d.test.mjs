@@ -163,8 +163,8 @@ test(
       const logsLink = views.getByRole("link", { name: "Operational logs" });
       await metricsLink.waitFor();
       await logsLink.waitFor();
-      assert.match(await metricsLink.getAttribute("href"), /\/d\/occ-development/);
-      assert.match(await logsLink.getAttribute("href"), /\/d\/occ-logs/);
+      assert.match(await metricsLink.getAttribute("href"), /^\.\/d\/occ-development$/);
+      assert.match(await logsLink.getAttribute("href"), /^\.\/d\/occ-logs$/);
       await page.goto(`${url}/d/occ-logs?from=now-5m&to=now&refresh=1h`, {
         waitUntil: "domcontentloaded",
       });

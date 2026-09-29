@@ -302,7 +302,7 @@ the controller's emitted tree into separate service/client artifacts.
 The Dockerfiles under `deploy/runtime/repository-credentials/` consume these
 contexts. `deploy/examples/repository-credentials/compose.yaml` separates service
 inputs/control from client session/workspace mounts. The
-[operator guide](../guides/repository-credentials.md#container-images) covers image
+[operator guide](../guides/repository-credentials/standalone-service.md#container-images) covers image
 builds and entrypoints. The
 [test guide](../testing/repository-credentials.md#record-each-evidence-boundary)
 distinguishes packaging, container, live-provider and platform proof.

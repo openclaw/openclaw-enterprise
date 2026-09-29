@@ -1,8 +1,7 @@
 # Console Storybook
 
-Browse console pages, component states, and Agent workflows without starting OCC
-or a cluster. Previews run production console modules and styles against an
-in-memory fixture; they do not contact services or run workloads. Use only dummy
+Browse production Console pages, components, and Agent workflows against an
+in-memory fixture. Previews contact no services and run no workloads. Use dummy
 credentials.
 
 ## Run locally
@@ -14,9 +13,9 @@ npm run storybook:install
 npm run storybook
 ```
 
-Open `http://127.0.0.1:6006`. **Reset story** discards changes; each selected story
-starts an independent fixture. Installations and browser sessions in other tabs
-are not used.
+Open `http://127.0.0.1:6006`. Each story starts an independent fixture;
+**Reset story** discards its changes. Existing Installations and other tabs'
+sessions are not used.
 
 To build and serve a static copy:
 
@@ -87,24 +86,25 @@ Back/Forward and tab changes. Refresh reloads. **Return access denied** and
 
 ## Agent flows and UI gaps
 
-**Components → Navigation → Namespace switcher**: switch Engineering and
-Research; check the URL, collection, Back, and the selector-free Namespaces
-header. **Mobile Namespace selector** checks chevron truncation and drawer-free
-switching. Other stories cover no-readable, unavailable, loading, and denied
-states.
+In **Components → Navigation → Namespace switcher**, switch Engineering/Research
+and check URL, collection, and Back behavior. Namespaces omits the header selector.
+**Mobile Namespace selector** checks long-name truncation and switching without
+the drawer. No-readable, unavailable, loading, and denied stories cover restrictions.
 
-In **Pages → Namespaces → Unavailable selection**, a readable choice in the
-warning updates the URL and clears it; Back restores it. Variants: mobile, no
-access. Simulated:
+Use **Pages → Namespaces → Unavailable selection** to recover inline. Check the
+URL, dismissed warning, unchanged page, and Back navigation. **Unavailable selection
+mobile** repeats this at 390px; **Unavailable selection without access** shows access
+guidance. Simulated examples:
 [desktop](../assets/console-namespace-recovery/desktop.png),
 [mobile](../assets/console-namespace-recovery/mobile.png),
 [recovered](../assets/console-namespace-recovery/recovered.png),
-[no-access](../assets/console-namespace-recovery/no-access.png),
-[walkthrough](../assets/console-namespace-recovery/walkthrough.webm),
-[selector](../assets/console-namespace-selector/desktop.png),
-[empty](../assets/console-namespace-selector/mobile.png),
-[Namespaces](../assets/console-namespace-selector/namespaces.png), and
-[switching](../assets/console-namespace-selector/namespace-switching.webm).
+[no access](../assets/console-namespace-recovery/no-access.png), and
+[walkthrough](../assets/console-namespace-recovery/walkthrough.webm).
+
+Simulated examples: [desktop selector](../assets/console-namespace-selector/desktop.png),
+[mobile empty collection](../assets/console-namespace-selector/mobile.png),
+[Namespaces page without a selector](../assets/console-namespace-selector/namespaces.png),
+and a [switching walkthrough](../assets/console-namespace-selector/namespace-switching.webm).
 
 ### Create and deploy
 
@@ -138,11 +138,11 @@ remain disabled in the example Installation YAML.
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for presenter actions, expected visible states, and fallbacks.
 
-**Choose provider, harness, and authentication** covers OpenAI Codex,
-OpenClaw, Anthropic, and switching an unsaved service-account token to API-key
-authentication. Console model choices appear before credentials; **Enter another
-model ID** supports manual entry. These choices do not prove model access.
-Execution mode follows the harness; the saved-token Preset fixes it to Codex.
+**Choose provider, harness, and authentication** covers the supported
+combinations. Models appear before credentials; **Enter another model ID**
+supports manual entry but does not prove access. Execution mode follows the
+harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
+the runtime-build warning; Embedded OpenClaw does not.
 
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no dedicated console

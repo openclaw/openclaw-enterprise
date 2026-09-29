@@ -103,6 +103,7 @@ exact dedicated existing namespace selected by `existingNamespace`; see the
 `DELETE /namespaces/:namespaceId` starts deletion of an empty Namespace.
 
 A successful request returns `202` and the Namespace with `status: "deleting"`.
+Repeating the request while teardown is in progress changes nothing.
 After teardown completes, the controller retains a durable internal tombstone;
 the Namespace disappears from list results and direct reads return `404`.
 `deleted` is not a public Namespace status.
@@ -154,6 +155,15 @@ workload is ready.
 - Without an eligible [controller worker](controller.md) against the same
   PostgreSQL database, lifecycle work remains queued and the Namespace can stay
   `provisioning` or `deleting`. Infrastructure readiness is asynchronous.
+- Teardown that fails permanently, exhausts its retries, or misses the worker's
+  convergence deadline leaves the Namespace `deleting`. Correct the cause, for
+  example a stuck Kubernetes finalizer, then have the caller who started
+  deletion repeat `DELETE`. That requeues the teardown and adds an audit event.
+  Another caller receives `403` while the initiator still holds delete
+  permission; once it lost permission (for example, it was offboarded), another
+  permitted caller takes over as the work's actor, audited as `takeover`. The
+  original deadline still applies, so the retried pass succeeds only once the
+  Compute namespace is gone.
 
 ## Related
 
@@ -165,7 +175,7 @@ workload is ready.
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [IAM](authorization.md)
 - [Controller configuration](settings.md)
-- [Implementation architecture](../ARCHITECTURE.md)
+- [Platform architecture](../design.md)
 - [Namespace lifecycle implementation](../../packages/occ/src/index.ts)
 - [Local testing](../testing/local.md)
 

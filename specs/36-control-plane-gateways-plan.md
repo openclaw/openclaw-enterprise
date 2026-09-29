@@ -106,7 +106,7 @@ one namespace. Existing lifecycle and runtime status callers must all select the
 correct target. Runtime fixtures and real model proof must be reported separately.
 
 Current references: [Kubernetes Compute](../docs/reference/drivers/kubernetes-compute.md)
-and [current architecture](../docs/ARCHITECTURE.md). This change does not deploy
+and [platform architecture](../docs/design.md). This change does not deploy
 the implementation or relocate existing runtime volumes.
 
 Local validation: 246 targeted conformance and real Helm-rendering tests passed,

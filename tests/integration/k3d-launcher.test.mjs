@@ -316,6 +316,14 @@ node_args="$*"
   assert.equal(recorded.containerBin, join(bin, engine));
   assert.equal(recorded.composeProvider, engine === "podman" ? join(bin, "podman-compose") : "");
   assert.match(stdout, new RegExp(`\\[k3d:${engine}\\]`));
+  if (selectedHarness === "openclaw") {
+    assert.match(
+      stdout,
+      /WARNING: Dedicated native OpenClaw is experimental\. The current OpenClaw release image does not include native worker-inference support/,
+    );
+  } else {
+    assert.doesNotMatch(stdout, /Dedicated native OpenClaw is experimental/);
+  }
   if (action === "test") {
     assert.match(
       stdout,

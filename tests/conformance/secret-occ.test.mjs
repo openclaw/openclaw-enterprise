@@ -21,6 +21,7 @@ const deployer = "principal-secret-deployer";
 const noSecretOperator = "principal-secret-without-operate";
 const secretConsumer = "principal-secret-consumer";
 const metadataReader = "principal-secret-metadata-reader";
+const zeroGrant = "principal-secret-zero-grant";
 const installation = Object.freeze({
   id: "installation-secret-occ",
   name: "Secret OCC conformance",
@@ -47,14 +48,19 @@ function adminPermissions() {
 
 async function fixture(options = {}) {
   const iamState = {
-    identities: [administrator, deployer, noSecretOperator, secretConsumer, metadataReader].map(
-      (id) => ({
-        kind: "principal",
-        id,
-        issuer: "secret-occ-conformance",
-        subject: id,
-      }),
-    ),
+    identities: [
+      administrator,
+      deployer,
+      noSecretOperator,
+      secretConsumer,
+      metadataReader,
+      zeroGrant,
+    ].map((id) => ({
+      kind: "principal",
+      id,
+      issuer: "secret-occ-conformance",
+      subject: id,
+    })),
     groups: [],
     memberships: [],
     roles: [
@@ -507,6 +513,31 @@ test("Secret material, metadata, and binding permissions stay separate", async (
     }),
     AuthorizationDeniedError,
   );
+});
+
+test("listing Secrets requires Namespace read before filtering each Secret", async () => {
+  const { controller, makeReady, namespace } = await fixture();
+  await makeReady();
+  const secret = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "listing-boundary-key",
+    value: "sk-test-listing",
+  });
+  const missingNamespace = "ns_00000000-0000-4000-8000-000000000000";
+
+  // Without Namespace read, an existing and a missing Namespace are indistinguishable.
+  for (const namespaceId of [namespace.id, missingNamespace]) {
+    for (const principal of [zeroGrant, secretConsumer]) {
+      await assert.rejects(
+        controller.listSecrets(principal, namespaceId),
+        AuthorizationDeniedError,
+      );
+    }
+  }
+  // Namespace read admits the list; each Secret still needs its own read.
+  assert.deepEqual(await controller.listSecrets(noSecretOperator, namespace.id), []);
+  const listed = await controller.listSecrets(metadataReader, namespace.id);
+  assert.ok(listed.some(({ id }) => id === secret.id));
 });
 
 test("deployment admission stamps immutable native logging after sandbox policy", async () => {

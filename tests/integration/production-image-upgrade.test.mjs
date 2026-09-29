@@ -53,10 +53,12 @@ fi
     jq,
     `#!/usr/bin/env bash
 case "$*" in
+  *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
-  '-S '*) cat ;;
+  '-S '*|'-eS '*) cat ;;
   *'.installationId == '*) exit 0 ;;
+  *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
   *'namespaceId: $namespace.id'*) exit 0 ;;
   *'.id'*) printf 'ins_upgrade_test\\n' ;;
@@ -70,7 +72,7 @@ esac
     yq,
     `#!/usr/bin/env bash
 case "$*" in
-  '-o=json '*)
+  *'-o=json '*)
     for path in "$@"; do :; done
     cat "$path"
     ;;
@@ -197,7 +199,7 @@ fi
       cwd: repository,
       env: environment,
     }),
-    /protected Helm values differ from the live release outside the controller image/,
+    /protected Helm values differ from the live release/,
   );
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
 
@@ -240,14 +242,16 @@ fi
   await writeFile(
     jq,
     `#!/usr/bin/env bash
-if [[ "$*" == '-S '* ]]; then
+if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
 case "$*" in
+  *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   *'.installationId == '*) exit 0 ;;
+  *'.spec.template.spec as $pod'*) exit 0 ;;
   *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
   *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
   *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test"}' ;;
@@ -385,9 +389,5 @@ esac
   assert.match(
     await readFile(commandLog, "utf8"),
     /exec gateway-test --container gateway -- node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
-  );
-  assert.equal(
-    (await readFile(join(directory, "ready-evidence", "installation-checksum"), "utf8")).trim(),
-    "e".repeat(64),
   );
 });

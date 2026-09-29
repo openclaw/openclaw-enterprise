@@ -5,16 +5,15 @@ Gateway with dedicated Codex and native OpenClaw Harnesses and the bundled
 [Kubernetes Compute Driver](kubernetes-compute.md). OCC retains ownership of
 Agents, revisions, Namespaces, routing, credentials, and authorization.
 
-**OpenShell is not supported for production Agent deployment.** The stock
-OpenShell version this integration targets,
-[`v0.1.0`](https://github.com/NVIDIA/OpenShell/tree/v0.1.0), cannot accept the
+**The OpenShell integration is a work in progress.** Stock OpenShell
+[`v0.1.0`](https://github.com/NVIDIA/OpenShell/tree/v0.1.0) cannot accept the
 Secret-backed app-server token or projected workload identity a dedicated Agent
 requires. The model API key is no longer a blocker: the paired
-[OpenShell Credential Gateway](openshell-credential-gateway.md) delivers it. The Enterprise Driver rejects deployment rather
-than starting an incorrectly credentialed Harness. The real integration keeps
-that rejection proof and has a separate verification-only compatibility bridge
-for a real in-Sandbox model turn. That bridge is not a supported deployment
-path.
+[OpenShell Credential Gateway](openshell-credential-gateway.md) delivers it. The
+Enterprise Driver rejects deployment rather than starting an incorrectly
+credentialed Harness. The real integration keeps that rejection proof and has a
+separate verification-only compatibility bridge for a real in-Sandbox model
+turn. That bridge is not a supported deployment path.
 
 Embedded OpenClaw also fails when OpenShell is selected; the integration is
 designed only for dedicated Harnesses. Kubernetes Compute requires dedicated
@@ -301,22 +300,23 @@ must allow only gateway, control-plane, callback, and approved provider
 connectivity needed for OpenShell to function. Broad namespace egress or ingress
 allows can bypass the intended boundary.
 
-Compute passes the ordinary network profile to the provider Harness template;
-the provider must retain it on the resulting Pod. The gateway's callers are
+Compute passes the provider-fenced network profile (`provider-fenced-v1`) to the
+provider Harness template; the provider must retain it on the resulting Pod.
+That profile admits Gateway transport ingress but none of Compute's DNS, model
+or authentication egress, so OpenShell's workload fence alone governs egress. The gateway's callers are
 OpenShell supervisor Pods (`openshell.ai/managed-by=openshell`,
 `openshell.ai/boundary-role=supervisor`), which carry no `openclaw.dev` labels,
 so gateway callback policies must select those supervisor labels rather than the
 Harness profile. The separately installed OpenShell gateway needs its own scoped
 DNS/API policies because it does not receive ordinary tenant DNS by omission.
 Existing Sandboxes keep their template: redeploy the Agent revision to apply the
-profile. The Harness profile currently unions Compute's ordinary grants with
-OpenShell's egress fence; see the
+profile. See the
 [network profile reference](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
 
 ## Current upstream preconditions
 
-The current integration cannot run production Agents. Production support would
-require upstream OpenShell to satisfy all of these conditions:
+The following upstream OpenShell capabilities are being worked on to enable
+production Agent deployment:
 
 - OpenShell must create Sandboxes with the per-Agent ServiceAccount that Compute
   creates for the Harness.

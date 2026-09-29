@@ -1,7 +1,7 @@
 # Integrations overview
 
 Use an integration to choose where Agents run, issue ChatGPT service-account
-credentials, or connect an Agent to Slack. Installation operators select Drivers
+credentials, give an Agent repository access, or connect it to Slack. Installation operators select Drivers
 and experimental Backends; people configuring an Agent select its channel and model
 authentication.
 
@@ -11,6 +11,7 @@ authentication.
 | Choose which Drivers an Installation loads                   | [Drivers quickstart](../../reference/drivers/selection.md#choose-a-bundled-driver) |
 | Issue managed ChatGPT credentials for dedicated Codex Agents | [ChatGPT Backend (experimental)](chatgpt.md)                                       |
 | Let people send messages to an Agent in Slack                | [Slack](slack.md)                                                                  |
+| Give an Agent access to GitHub repositories                  | [Repository access](../repository-credentials.md)                                  |
 
 [Backends (experimental)](../../reference/backends.md) lists what an Installation can
 configure. A ChatGPT Backend manages service accounts; it does not route

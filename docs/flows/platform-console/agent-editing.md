@@ -153,7 +153,7 @@ selection; redeployment applies it. See
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` supplies Namespace,
 bindings, and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
-It loads `GET /namespaces/:namespaceId/secrets`; collection read is required.
+It loads `GET /namespaces/:namespaceId/secrets`; Namespace read is required.
 `packages/occ/src/index.ts:listSecrets` filters records by exact Secret read
 without calling the Secret Driver. Shared `agents/secret-picker.mjs:createSecretReferenceField`
 filters names/IDs in a combobox. Arrows navigate, Enter selects, and Escape

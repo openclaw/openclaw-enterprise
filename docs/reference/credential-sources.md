@@ -64,8 +64,8 @@ exact `read`. It returns the record plus live `status` from the gateway:
 gateway cannot answer, `status` is `failed` with a fixed reason; the read still
 succeeds.
 
-`GET /namespaces/:namespaceId/credential-sources` requires `read` on the
-collection and returns only sources on which the caller has exact `read`. Lists
+`GET /namespaces/:namespaceId/credential-sources` requires Namespace `read`
+and returns only sources on which the caller has exact `read`. Lists
 do not call the gateway and omit `status`.
 
 The record's `state` is `registering`, `ready`, or `deleting`. A source left

@@ -1774,3 +1774,100 @@ test("prepareLane rejects mutable Kubernetes image inputs before creating state"
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   }
 });
+
+for (const scenario of [
+  { stage: "database-create", failure: "exit", exitCode: 42, signal: null },
+  { stage: "database-schema", failure: "exit", exitCode: 43, signal: null },
+  { stage: "database-migrate", failure: "exit", exitCode: 44, signal: null },
+  { stage: "database-migrate", failure: "spawn" },
+  { stage: "database-migrate", failure: "signal", exitCode: null, signal: "SIGTERM" },
+]) {
+  test(`PostgreSQL preparation identifies ${scenario.stage} ${scenario.failure}`, async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const commandsPath = join(root, "commands.jsonl");
+    const dockerPath = join(root, "docker.mjs");
+    const corepackPath = join(root, "corepack.mjs");
+    const prefix = "openclaw-ci-diagnostics";
+    await writeState(statePath, {
+      version: 1,
+      repositoryRoot,
+      lane: "postgres-application",
+      prefix,
+      statePath,
+      resources: [
+        {
+          id: "compose-postgres-diagnostics",
+          kind: "compose-postgres",
+          owner: prefix,
+          status: "ready",
+          name: "openclaw_ci_pg_diagnostics",
+          composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+          port: 45431,
+        },
+      ],
+    });
+    const commandSource = `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const stage = args[0] === "pnpm" ? "database-migrate" :
+  args.at(-1).startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
+appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify(stage) + "\\n");
+if (stage === ${JSON.stringify(scenario.stage)}) {
+  process.stdout.write("secret-canary-stdout");
+  process.stderr.write("secret-canary-stderr");
+  ${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${scenario.exitCode ?? 45});`}
+}
+`;
+    await writeFile(dockerPath, commandSource, { mode: 0o700 });
+    if (scenario.failure !== "spawn") {
+      await writeFile(corepackPath, commandSource, { mode: 0o700 });
+    }
+    const program = `
+import assert from "node:assert/strict";
+const { prepareFile } = await import(process.argv[1]);
+await assert.rejects(() => prepareFile({ lane: "postgres-application",
+  file: "tests/integration/postgres-platform-state.test.mjs", statePath: process.argv[2] }),
+  error => {
+    assert.equal(error.code, "CI_PREPARATION_COMMAND_FAILED");
+    assert.equal(error.stage, ${JSON.stringify(scenario.stage)});
+    assert.equal(error.failure, ${JSON.stringify(scenario.failure)});
+    ${scenario.failure === "spawn" ? "" : `assert.equal(error.exitCode, ${JSON.stringify(scenario.exitCode)}); assert.equal(error.signal, ${JSON.stringify(scenario.signal)}); assert.equal(error.timedOut, false);`}
+    return true;
+  });
+`;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        program,
+        new URL("../../scripts/ci/prepare.mjs", import.meta.url).href,
+        statePath,
+      ],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          PATH: root,
+          OCC_DOCKER_BIN: dockerPath,
+          OPENCLAW_CI_COREPACK_BIN: corepackPath,
+          CI_DIAGNOSTIC_COMMANDS: commandsPath,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const commands = (await readFile(commandsPath, "utf8")).trim().split("\n").map(JSON.parse);
+    const expected = ["database-create", "database-schema", "database-migrate"];
+    assert.deepEqual(
+      commands,
+      expected.slice(0, scenario.failure === "spawn" ? 2 : expected.indexOf(scenario.stage) + 1),
+    );
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.notEqual(
+      state.resources.find(({ kind }) => kind === "postgres-database").status,
+      "ready",
+    );
+  });
+}

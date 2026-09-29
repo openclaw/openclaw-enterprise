@@ -10,7 +10,9 @@
         "password authentication preserves the existing pg connection configuration",
         "the password pool authenticates to the selected real PostgreSQL database",
         "the real pg client retains the Azure token callback and verified TLS after URL parsing",
-        "workload authentication rejects password fallback and unverified TLS"
+        "workload authentication rejects password fallback and unverified TLS",
+        "an idle pooled client error is logged instead of crashing the process",
+        "the pool survives PostgreSQL terminating an idle backend"
       ]
     },
     {
@@ -288,9 +290,21 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-github-admin-scope.test.mjs",
+      "expectedTests": [
+        "an exact-scope Installation administrator cannot manage an account with broader grants"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-github-tab-binding.test.mjs",
       "expectedTests": [
         "a GitHub tab keeps its own session: another tab's password sign-in signs it out"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-google-sign-in.test.mjs",
+      "expectedTests": [
+        "PostgreSQL Google sign-in admits only attached identities through the guarded profile"
       ]
     },
     {
@@ -309,6 +323,12 @@
       "path": "tests/integration/postgres-trusted-proxy.test.mjs",
       "expectedTests": [
         "sign-in admission keys on the client behind a trusted ingress and ignores other peers' headers"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-password-sign-in-limit.test.mjs",
+      "expectedTests": [
+        "password-only sign-in limits failures per client and email with a reserved administrator lane"
       ]
     }
   ]

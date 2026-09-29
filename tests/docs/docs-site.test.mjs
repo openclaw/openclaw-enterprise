@@ -59,7 +59,7 @@ test("docs build renders every authored page and preserves repository ownership"
     api,
     /GET \/namespaces\/\{namespaceId\}\/agents\/\{agentId\}\/workspace\/files\/\{name\}/,
   );
-  const architecture = await readFile(join(root, "dist/docs/ARCHITECTURE/index.html"), "utf8");
+  const architecture = await readFile(join(root, "dist/docs/design/index.html"), "utf8");
   assert.match(architecture, /mermaid/);
   const asset = await readFile(join(root, "dist/docs/assets/lobster-mech-transparent.png"));
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");

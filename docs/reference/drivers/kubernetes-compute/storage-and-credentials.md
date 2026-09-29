@@ -112,9 +112,30 @@ from the default StorageClass, mounted only by its Harness:
 | `workspace-node-<agent-hash>-<harness-hash>` | `/home/node/.openclaw-node`          |
 
 This directory keeps node identity across Pod and revision replacement.
-Container restarts replay the node Secret's setup code, which expires ten minutes
-after preparation mints it. A node with a saved device token for the same Gateway
-reconnects with that token; one without saved credentials rejects the expired code.
+The node Secret's setup code expires ten minutes after preparation mints it. A
+node with a saved device token for the same Gateway reconnects with that token;
+one without saved credentials rejects an expired code.
+
+A Deployment-backed Codex Harness renders this wiring from its first start. It
+mounts the node Secret as an optional volume at `/run/openclaw-node-setup` that
+projects only `setupCode`, so the Harness starts before the Secret exists.
+Codex starts at once; the node starts when the file holds a complete code.
+After writing the Secret, preparation annotates the running Harness Pod. That
+Pod update makes the kubelet refresh the volume within about two seconds
+instead of on its periodic resync of about a minute, so enrollment restarts
+neither the Harness nor its Gateway. The worker needs `patch` on Pods in tenant
+namespaces; without it the pass fails.
+
+The file mode is `0440`. Secret volume files are root-owned and the kubelet
+grants the Pod `fsGroup` read access, so `0400` would behave the same. Codex
+runs as the same user and group and can read the code, as it can already read
+the node's command line. Once readiness records the device ID, the controller
+removes `setupCode` from the Secret and annotates the Pod again, so the kubelet
+removes the file within seconds. The node then reconnects with its saved device
+token, and preparation does not mint a new code for it. If the Gateway loses that
+pairing, delete the Agent's node Secret: the next pass mints a code, which the
+node uses when it restarts. Native workers and SandboxDriver Harnesses receive the code in
+their environment, keep it for restarts, and are replaced to attach the node.
 Installations that enrolled one node per revision enroll a new Agent device once,
 at the first replacement; retiring each earlier revision deletes its node Secret.
 Sessions stay on the private Gateway claim. Selected generated-image bytes return
@@ -154,28 +175,6 @@ both claims, including when the gateway has already stopped. Agent deletion
 retires every revision before its final cleanup hook deletes the owned claims
 using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
 for retry; it does not remove the Agent's database identity.
-
-## Workspace-node enrollment
-
-Ordinary Kubernetes-managed dedicated Codex Pods start with an optional,
-read-only mount of their Agent-and-Harness-owned setup Secret. Compute creates that
-Secret only after the Gateway is ready. Kubernetes delivers `setupCode` at
-`/run/openclaw/node-setup/setupCode`; the directory mount has no `subPath`, so
-it receives later projection updates. Delivery is asynchronous.
-
-The supervisor starts Codex after local workspace initialization and starts the
-file node when the code arrives. Enrollment does not recreate the Harness Pod
-or restart Codex. Overall preparation still requires the authenticated node to
-connect; a visible credential file alone is insufficient. Saved node identity
-survives Pod and revision replacement in its private Agent-and-Harness directory.
-A running node ignores projection changes. After a node exit, the supervisor reads
-the current code before retrying, allowing existing setup renewal to take effect
-without restarting Codex. Setup renewal and retirement remain Compute-owned.
-
-This delivery path does not extend Sandbox workload contracts or establish
-isolation between processes sharing the Harness container. See the
-[execution flow](../../../flows/harness-execution-topology.md#2-claim-work-and-realize-the-approved-topology)
-for implementation and verification.
 
 ## Managed native configuration
 

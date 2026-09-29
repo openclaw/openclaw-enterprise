@@ -1,7 +1,7 @@
 # Publish the OCE Helm chart
 
 The protected [Enterprise Containers workflow](workflows/container-publish.yml)
-publishes the OpenClaw Control Plane (OCC) chart to private GHCR at
+optionally publishes the OpenClaw Control Plane (OCC) chart to private GHCR at
 `oci://ghcr.io/openclaw/charts/openclaw-enterprise`. It also gives the controller
 and runtime images a tag matching the chart. The existing `sha-<source-sha>` tags
 remain available. Deploy with the digest references recorded in the chart and
@@ -11,7 +11,8 @@ publication receipt.
 
 Advance the SemVer version in root `package.json` and set both `version` and
 `appVersion` in `deploy/helm/openclaw-enterprise/Chart.yaml` to the same value.
-Do this for an image change or a chart-only correction. OCE is evolving quickly;
+Do this for each chart release, including releases with image changes.
+Image-only publication does not require a new chart version. OCE is evolving quickly;
 one version gives operators a chart and image pair tested from one source revision
 without an independent chart compatibility matrix. The shared tag identifies the
 release, while the recorded digests identify the exact bytes.
@@ -22,16 +23,25 @@ and [bootstrap](containers.md#bootstrap-private-packages) once. Bootstrap create
 a nondeployable chart marker as well as image markers; confirm all three packages
 are private and grant this repository Actions access. Then dispatch **Enterprise
 Containers** on `main` with its full `source_sha`, matching `ci_run_id`, and
-`publish: true`.
+`publish: true` and `publish_chart: true` (the latter defaults to false).
 
-The job publishes verified images first, checks their version tags against their
-digests, then packages and pushes the chart. It rejects a chart version whose
+The image job publishes and verifies images first. A separate chart job consumes
+that run/attempt's image receipt, checks version tags against its digests, then
+packages and pushes the chart. Both jobs use the protected publication environment.
+The workflow holds the shared publication lock across both jobs, including
+preparation, so overlapping runs cannot replace a pending chart job. The chart job rejects an existing version whose
 packaged files differ. Its `chart-publication-<run-id>-<attempt>` artifact
 records the chart manifest digest, source SHA, and both image digests. The older
 `container-publication` receipt retains its image-only format. If a step fails,
-inspect registry digests before rerunning the same source; existing tags with
-different bytes are never replaced. A later source revision requires a new OCE
-version.
+inspect registry digests before starting a new full dispatch for the same source;
+existing tags with different bytes are never replaced. Rerunning only a failed
+chart job is unsupported: its new attempt has no matching image receipt. There
+is no dedicated chart recovery workflow. A later source revision requires a new
+OCE version for chart publication.
+
+A chart failure fails the combined run, while the image job and its verified
+images remain successful. Use the separate job results and final run summary to
+distinguish these outcomes. Image-only publication never calls the chart publisher.
 
 Treat release version tags as single-writer state. Limit package-write access for
 the chart and both images to this repository's reviewed publication workflows

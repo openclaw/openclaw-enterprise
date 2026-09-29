@@ -102,12 +102,13 @@ key with a different actor, owner, or target is rejected. The API returns accept
 state before Compute; the worker takes over.
 
 For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
-work unchanged. The initiating actor can retry terminal failure after correcting
-its cause. OCC checks current delete permission, then calls
-`operations.retryFailedAgentDeletion` and appends the retry audit atomically.
-Only the exact stopped, deleting Agent's terminal work is reset; identity and
-prior audits remain. The worker reauthorizes normally. Namespace deletion is
-outside this recovery path.
+work unchanged. The initiator can retry terminal failure; once it lost
+permission, another permitted caller takes over as the work's actor, audited as
+`takeover`. After checking delete permission, `operations.retryFailedAgentDeletion`
+resets only the stopped, deleting Agent's terminal work, keeping prior audits.
+The worker reauthorizes normally.
+`deleteNamespace` recovers Namespace teardown the same way via
+`retryFailedNamespaceDeletion`, including takeover.
 
 ### 3. Recover expired claims and claim one eligible operation
 
@@ -142,9 +143,8 @@ Revision work reloads its Namespace, Agent, admitted revision, and active revisi
 `processRevision()` rejects mismatched owners, an unready Namespace, an invalid
 Agent Principal, a changed Harness descriptor, or a different Compute Driver.
 `authorizeRevision()` rechecks current `deploy` and, for a ServiceAccount
-snapshot, `read` on that exact ServiceAccount. Admission-time permission is
-insufficient. Before Compute effects, the worker resolves frozen Backend metadata
-and rechecks each managed credential's exact Backend, Driver, workspace, and issued
+snapshot, `read` on that exact ServiceAccount. Before Compute effects, the worker resolves
+frozen Backend metadata and rechecks each managed credential's exact Backend, Driver, workspace, and issued
 account binding. This read-only path has no Backend client or admin key. The
 [Backend-managed credential delivery flow](service-account-driver-credential-delivery.md) owns these checks.
 
@@ -283,22 +283,21 @@ Driver interval, including closing sessions and failed runtime retirement,
 releasing the claim without consuming retries. Obligations survive; lease loss
 aborts the pass.
 
-Terminal rows store `reason_code` and optional `result_data`: `{ warnings: [...] }`
-for success; required `timeoutMs` and optional `runtimeFailure` for convergence
-deadline failure. Compute reads cached startup results from its private status
+Terminal rows store `reason_code` and optional `result_data`: success
+`{ warnings: [...] }`; convergence-deadline failure `timeoutMs` and optional
+`runtimeFailure`. Compute reads cached startup results from its private status
 path, including unready Harnesses without plugins, and verifies runtime incarnation
 without repeating the model probe. Missing or invalid evidence leaves cause unspecified.
 
 `packages/occ/src/state/controller-work.ts:validateFailureData` validates reads
-and writes; the PostgreSQL constraint enforces the matching persisted shape.
-Other failure reasons still reject data.
+and writes; the PostgreSQL constraint enforces the persisted shape.
+Other failure reasons reject data.
 `PostgresWorkQueue.complete` and `PostgresWorkQueue.fail` publish only under the
 live claim; deployment status derives `error` and `warnings` from that result.
-Completion needs no runtime receipt acknowledgment or post-commit cleanup.
-Maintenance cannot rewrite deployment warnings.
+Completion needs no acknowledgment or post-commit cleanup; maintenance
+cannot rewrite deployment warnings.
 
-See [deployment status](../reference/agents.md#deployment-status) for authorization
-and persisted result semantics.
+See [deployment status](../reference/agents.md#deployment-status) for result semantics.
 
 Indexed `workId` scopes progress to work; maintenance and unbound history cannot
 supply it. `getDeploymentStatus` reads
@@ -310,20 +309,18 @@ reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`. Their
 `result_data` remains `NULL`; pending rows have no terminal outcome.
 
 If Compute declares maintenance, activation schedules exact-revision observations.
-Incomplete observations or Compute bindings close the bounded item and schedule
-another, preserving authorized-runtime reconciliation through outages. Each claim
-reauthorizes its original actor. Successor keys use strictly later time buckets
-to prevent clock-skew collisions with completed work.
+Incomplete observations, Compute bindings, and dependency retries or expired claims
+exhausting attempts close the item and schedule another while the revision stays
+active and running within its credential deadline; outages never retire it. Each
+claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
-`worker.completed` reports the target, outcome, and code; polling then continues.
-Lease loss is reported as `worker.error` with `CLAIM_LOST` rather than publishing
-stale lifecycle state. On `SIGTERM` or `SIGINT`, shutdown removes readiness,
-aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
-`worker.stopped`. Later workers recover expired claims.
-Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
+`worker.completed` reports the target, outcome, and code; polling continues.
+Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
+On `SIGTERM` or `SIGINT`, shutdown removes readiness, aborts in-flight work, waits for the loop, closes PostgreSQL, and emits
+`worker.stopped`. Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
 work, failure of a still-provisioning Namespace targeted for `ready`, and audit
-evidence. This covers expired claims and exhausted queued work, preventing
-final-attempt crashes from stranding provisioning.
+evidence for expired claims and exhausted queued work, so final-attempt crashes
+cannot strand provisioning.
 
 ## Debugging and Verification
 
@@ -365,6 +362,10 @@ final-attempt crashes from stranding provisioning.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-29 18:40: Continue maintenance past expired exhausted claims.
+
+- 2026-09-29 12:00: Continue maintenance after dependency exhaustion.
 
 - 2026-09-28 22:10: Expose exact-work pending reconciliation results through deployment status and the Console. (01a0eb85-73a8-7572-92a9-a6a06fbdf0a5 - 0aedecfd)
 

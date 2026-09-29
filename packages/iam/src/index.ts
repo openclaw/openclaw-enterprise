@@ -15,12 +15,14 @@ import {
   type IAMPolicyReadContext,
   type IAMPolicyReadRepository,
   type Identity,
+  type IdentityAccessCoverageRequest,
   type IdentityLookup,
   type JSONSchema,
   type ManagedIAMResourceKind,
   type Permission,
   type PermissionAction,
   type Principal,
+  type ResourceKind,
   type ResourceRef,
   type Restriction,
   type Role,
@@ -855,6 +857,107 @@ function evaluateValidatedAuthorization(
   );
 }
 
+interface EffectiveGrant {
+  readonly namespaceId: string | undefined;
+  readonly resourceKind: ResourceKind | undefined;
+  readonly resourceId: string | undefined;
+  readonly permissions: readonly Permission[];
+}
+
+/** Every binding that can grant `identity` anything, with its combined scope. */
+function effectiveGrants(
+  identity: Identity,
+  state: Readonly<NativeIAMState>,
+  roles: ReadonlyMap<string, Role>,
+): EffectiveGrant[] {
+  const subjects: { groupId?: string; namespaceId?: string | undefined }[] = [{}];
+  if (identity.kind === "principal") {
+    for (const membership of state.memberships) {
+      if (membership.principalId === identity.id) {
+        subjects.push({ groupId: membership.groupId, namespaceId: membership.namespaceId });
+      }
+    }
+  }
+  const grants: EffectiveGrant[] = [];
+  for (const subject of subjects) {
+    for (const binding of state.bindings) {
+      const matches =
+        subject.groupId === undefined
+          ? binding.subjectKind === "identity" && binding.subjectId === identity.id
+          : binding.subjectKind === "group" && binding.subjectId === subject.groupId;
+      const role = roles.get(binding.roleId);
+      if (!matches || role === undefined) {
+        continue;
+      }
+      const namespaces = new Set(
+        [identity.namespaceId, subject.namespaceId, binding.namespaceId, role.namespaceId].filter(
+          (namespaceId) => namespaceId !== undefined,
+        ),
+      );
+      if (namespaces.size > 1) {
+        continue; // Conflicting Namespace scopes can never match a request.
+      }
+      grants.push({
+        namespaceId: [...namespaces][0],
+        resourceKind: binding.resourceKind,
+        resourceId: binding.resourceId,
+        permissions: role.permissions.filter(
+          (permission) =>
+            binding.resourceKind === undefined || permission.resourceKind === binding.resourceKind,
+        ),
+      });
+    }
+  }
+  return grants;
+}
+
+function grantCovers(holder: EffectiveGrant, target: EffectiveGrant, permission: Permission) {
+  return (
+    (holder.namespaceId === undefined || holder.namespaceId === target.namespaceId) &&
+    (holder.resourceKind === undefined ||
+      (holder.resourceKind === target.resourceKind && holder.resourceId === target.resourceId)) &&
+    holder.permissions.some(
+      (candidate) =>
+        candidate.action === permission.action &&
+        candidate.resourceKind === permission.resourceKind,
+    )
+  );
+}
+
+/**
+ * Restrictions apply to every identity alike, so the holder covers the target
+ * when each target grant is matched by a holder grant at the same or a broader scope.
+ */
+function identityAccessCovered(
+  request: IdentityAccessCoverageRequest,
+  state: Readonly<NativeIAMState>,
+  roles: ReadonlyMap<string, Role>,
+): boolean {
+  if (
+    typeof request !== "object" ||
+    request === null ||
+    !isNonEmptyString(request.principalId) ||
+    !isNonEmptyString(request.targetIdentityId)
+  ) {
+    return false;
+  }
+  const exact = (id: string) => {
+    const matches = state.identities.filter((identity) => identity.id === id);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  const holder = exact(request.principalId);
+  const target = exact(request.targetIdentityId);
+  if (holder === undefined || target === undefined) {
+    return false;
+  }
+  const holderGrants = effectiveGrants(holder, state, roles);
+  return effectiveGrants(target, state, roles).every((grant) =>
+    grant.permissions.every((permission) =>
+      holderGrants.some((held) => grantCovers(held, grant, permission)),
+    ),
+  );
+}
+
 export function evaluateAuthorization(
   request: AuthorizationRequest,
   state: NativeIAMState,
@@ -963,6 +1066,17 @@ export class NativeIAMDriver implements IAMDriver {
       return decision(this.id, false, "The native IAM policy is invalid.");
     }
     return evaluateValidatedAuthorization(request, state, roles, this.id);
+  }
+
+  async coversIdentityAccess(request: IdentityAccessCoverageRequest): Promise<boolean> {
+    const state = await this.state.loadNativeIAMState();
+    let roles: ReadonlyMap<string, Role>;
+    try {
+      roles = validateAndIndexNativeIAMState(state);
+    } catch {
+      return false;
+    }
+    return identityAccessCovered(request, state, roles);
   }
 
   async listNamespaceRoles(

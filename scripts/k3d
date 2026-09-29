@@ -220,6 +220,10 @@ for command in node k3d kubectl; do
 done
 select_engine
 
+if [ "$harness" = "openclaw" ] && { [ "$action" = "demo" ] || [ "$action" = "test" ]; }; then
+  info "WARNING: Dedicated native OpenClaw is experimental. The current OpenClaw release image does not include native worker-inference support, so this workflow builds ../openclaw from source."
+fi
+
 k3d_bin="$(command -v k3d)"
 kubectl_bin="$(command -v kubectl)"
 export OCC_DOCKER_BIN="$container_bin"

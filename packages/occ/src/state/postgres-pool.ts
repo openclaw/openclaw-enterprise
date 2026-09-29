@@ -4,13 +4,33 @@ import { parseIntoClientConfig } from "pg-connection-string";
 /** Shared connection authentication for the API, worker, bootstrap, and migrator. */
 export async function createPostgresPool(
   databaseUrl: string,
-  {
-    authMode = process.env.OCC_DATABASE_AUTH ?? "password",
-    ...limits
-  }: Pick<
-    pg.PoolConfig,
-    "max" | "connectionTimeoutMillis" | "statement_timeout" | "query_timeout" | "options"
-  > & { readonly authMode?: string } = {},
+  options: PostgresPoolOptions = {},
+): Promise<pg.Pool> {
+  const pool = await constructPostgresPool(databaseUrl, options);
+  // pg-pool re-emits an idle client's error (failover, pg_terminate_backend,
+  // idle_session_timeout, a proxy reset) on the Pool and discards the client.
+  // Without a listener EventEmitter throws it and the process exits. Log only
+  // the code: messages can carry hosts or other connection details.
+  pool.on("error", (error: Error & { code?: unknown }) => {
+    process.stderr.write(
+      `${JSON.stringify({
+        level: "warn",
+        event: "database.idle-client-error",
+        code: typeof error.code === "string" ? error.code : undefined,
+      })}\n`,
+    );
+  });
+  return pool;
+}
+
+type PostgresPoolOptions = Pick<
+  pg.PoolConfig,
+  "max" | "connectionTimeoutMillis" | "statement_timeout" | "query_timeout" | "options"
+> & { readonly authMode?: string };
+
+async function constructPostgresPool(
+  databaseUrl: string,
+  { authMode = process.env.OCC_DATABASE_AUTH ?? "password", ...limits }: PostgresPoolOptions,
 ): Promise<pg.Pool> {
   if (authMode === "password") {
     return new pg.Pool({ connectionString: databaseUrl, ...limits });

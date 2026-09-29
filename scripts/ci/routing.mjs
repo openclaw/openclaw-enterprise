@@ -166,6 +166,7 @@ async function createPrivateTestCa({ directory, execFile }) {
 
 async function waitForCrds(cluster, execFile, crds) {
   for (const crd of crds) {
+    await kubectl(cluster, execFile, "wait", "--for=create", `crd/${crd}`, "--timeout=180s");
     await kubectl(
       cluster,
       execFile,

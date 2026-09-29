@@ -113,8 +113,8 @@ real key on matching requests.
 
 - **Workspace membership.** Any OpenShell user in a Workspace can attach any
   provider in it. Keep OCC's gateway principal as the only member of OCC
-  Workspaces. OpenShell Platform Admins bypass membership, so limit that role
-  as well. OCC does not check either.
+  Workspaces. OpenShell Platform Admins bypass membership in every Workspace, so
+  limit that role as well. OCC does not check either.
 - **Gateway principal.** The API and worker share the Backend credential. That
   principal must be allowed to manage Workspaces, Sandboxes, and providers.
   Use `bearerTokenFile` and an `https` endpoint outside disposable development.
@@ -128,6 +128,26 @@ real key on matching requests.
   for `api.openai.com` in the Sandbox's `policy.networkPolicies`; it conflicts
   with the profile.
 - **Namespaces.** Sources never cross OCC Namespaces.
+
+### What the boundary covers
+
+The boundary keeps the key away from the Harness and from ordinary OpenShell
+reads, not from OpenShell administrators or OCC itself. On the pinned OpenShell
+revision:
+
+- **Covered.** Provider reads and writes return `REDACTED` values. Only the
+  Sandbox's own supervisor can fetch provider environments or exchange tokens.
+  OpenShell withholds a static key that has no credential binding. A Sandbox
+  policy cannot add a `credential_binding` for a profile that defines endpoints,
+  so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
+  `api.openai.com`.
+- **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
+  any Workspace. A Workspace admin, which includes OCC's gateway principal, can
+  update the `oce-openai` profile to add hosts or binaries while Sandboxes use
+  it, so anyone holding the Backend credential can redirect the key. With
+  `allow_unauthenticated_users` enabled, every caller that reaches the gateway
+  is a Platform Admin; never enable it outside disposable development. The OCC
+  worker can read the source's Kubernetes Secret directly.
 
 ## Limits
 

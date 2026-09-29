@@ -37,19 +37,17 @@ function loginFixture(overrides = {}) {
   const login = createHumanLogin(
     state,
     {
-      clientId: "fixture-client",
-      clientSecret: "fixture-client-secret",
       recoveryUserId: "fixture-recovery",
+      github: { clientId: "fixture-client", clientSecret: "fixture-client-secret" },
     },
     origin,
   );
   login.designateRecovery("Recovery@example.test");
+  const db = { user: [], session: [], account: [], verification: [] };
   const auth = betterAuth({
     baseURL: origin,
     secret: "test-only-authentication-secret-with-at-least-32-characters",
-    database: login.database(
-      memoryAdapter({ user: [], session: [], account: [], verification: [] }),
-    ),
+    database: login.database(memoryAdapter(db)),
     session: {
       expiresIn: 8 * 60 * 60,
       disableSessionRefresh: true,
@@ -71,6 +69,8 @@ function loginFixture(overrides = {}) {
     },
   });
   return {
+    auth,
+    db,
     subjects,
     denialReasons,
     errors,
@@ -213,6 +213,7 @@ test(
           await expectDenied(await login.callback());
           assert.equal(requests.slice(before).includes("/redirect-target"), false);
           assert.deepEqual(login.subjects, []);
+          assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
         },
       );
 
@@ -259,6 +260,7 @@ test(
       assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
+      assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
     });
 
     await t.test("profile body reads use the remaining overall deadline", async () => {
@@ -281,6 +283,7 @@ test(
       assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
+      assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
     });
 
     await t.test(
@@ -297,6 +300,69 @@ test(
         await expectDenied(await login.callback());
         assert.deepEqual(login.subjects, []);
         assert.deepEqual(login.denialReasons, ["EXTERNAL_IDENTITY_REJECTED"]);
+      },
+    );
+
+    await t.test(
+      "callback denials separate invalid attempts, provider outages and rejected identities",
+      async () => {
+        const profile = (status, body) => (request, response) => {
+          if (request.url === "/login/oauth/access_token") {
+            return token(response);
+          }
+          response.writeHead(status).end(body);
+        };
+        const unreachable = () => assert.fail("The provider must not be called");
+        const withState = (query) => `state=${callbackState}&${query}`;
+        // [case, expected reason, provider handler, callback query, State overrides]
+        const cases = [
+          ["malformed state", "INVALID_ATTEMPT", unreachable, "state=short&code=c"],
+          [
+            "unknown attempt",
+            "INVALID_ATTEMPT",
+            unreachable,
+            undefined,
+            {
+              consumeAttempt: async () => undefined,
+            },
+          ],
+          [
+            "access_denied",
+            "EXTERNAL_IDENTITY_REJECTED",
+            unreachable,
+            withState("error=access_denied"),
+          ],
+          [
+            "provider outage",
+            "PROVIDER_UNAVAILABLE",
+            unreachable,
+            withState("error=temporarily_unavailable"),
+          ],
+          [
+            "token 503",
+            "PROVIDER_UNAVAILABLE",
+            (_request, response) => response.writeHead(503).end(),
+          ],
+          [
+            "token 429",
+            "PROVIDER_UNAVAILABLE",
+            (_request, response) => response.writeHead(429).end(),
+          ],
+          [
+            "token not JSON",
+            "PROVIDER_UNAVAILABLE",
+            (_request, response) => response.end("<html>"),
+          ],
+          ["profile 500", "PROVIDER_UNAVAILABLE", profile(500, "")],
+          ["profile 401", "EXTERNAL_IDENTITY_REJECTED", profile(401, "{}")],
+          ["unenrolled subject", "EXTERNAL_IDENTITY_REJECTED", profile(200, '{"id":12345678}')],
+        ];
+        for (const [name, reason, handler, query, overrides] of cases) {
+          const login = loginFixture(overrides);
+          serve = handler;
+          await expectDenied(await login.callback(query));
+          assert.deepEqual(login.denialReasons, [reason], name);
+        }
       },
     );
 
@@ -646,3 +712,39 @@ test(
     );
   },
 );
+
+test("guarded adapter never lists, counts or mutates raw session rows", async () => {
+  const login = loginFixture({
+    // State owns session reads; this row would be rejected by it (for example, revoked).
+    currentSession: async () => undefined,
+  });
+  const now = new Date();
+  login.db.user.push({
+    id: "stale-user",
+    email: "stale@example.test",
+    name: "Stale",
+    emailVerified: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+  login.db.session.push({
+    id: "stale-session",
+    userId: "stale-user",
+    token: "stale-session-token",
+    expiresAt: new Date(now.getTime() + 3_600_000),
+    createdAt: now,
+    updatedAt: now,
+  });
+  const context = await login.auth.$context;
+  assert.deepEqual(await context.internalAdapter.listSessions("stale-user"), []);
+  assert.deepEqual(await context.adapter.findMany({ model: "session" }), []);
+  assert.equal(await context.adapter.count({ model: "session" }), 0);
+  const where = [{ field: "id", value: "stale-session" }];
+  await assert.rejects(context.adapter.consumeOne({ model: "session", where }));
+  await assert.rejects(
+    context.adapter.incrementOne({ model: "session", where, increment: { version: 1 } }),
+  );
+  assert.equal(login.db.session.length, 1, "the raw row is untouched");
+  // Other models still pass through to the underlying adapter.
+  assert.equal(await context.adapter.count({ model: "user" }), 1);
+});

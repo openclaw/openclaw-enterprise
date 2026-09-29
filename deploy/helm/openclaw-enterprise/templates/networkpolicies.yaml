@@ -226,6 +226,32 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
+{{- if and .Values.auth.google .Values.auth.google.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-api-google-login-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    # The API calls only oauth2.googleapis.com and www.googleapis.com. Google publishes
+    # no small stable range for them. Empty egressCidrs permits HTTPS to any address;
+    # narrow it with an egress proxy.
+    - to:
+        {{- range (default (list "0.0.0.0/0") .Values.auth.google.egressCidrs) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
 
 {{- if .Values.repositoryCredentials.enabled }}
 ---

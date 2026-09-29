@@ -2,27 +2,25 @@
 
 OpenClaw Control Plane (OCC) authenticates human controller API clients with
 user sessions established through email/password sign-in or an administrator-enrolled
-GitHub identity. Programmatic non-Agent automation authenticates with service
+GitHub or Google identity. Programmatic non-Agent automation authenticates with service
 API keys. Better Auth owns
 password verification, revocable session cookies, and hashed API-key storage.
 The selected IAM Driver resolves the authenticated account or service identity
 to an explicitly provisioned Principal or ServicePrincipal and owns
 [authorization](authorization.md).
 
-For a working sign-in procedure, see
+For a sign-in procedure, see
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
 For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
-The [platform console](console.md) provides login at `/console/` and uses these
-same session endpoints. Public signup, Google, enterprise OIDC, and bearer
-credentials are not supported controller API authentication paths.
+The [platform console](console.md) at `/console/` uses these session endpoints. Public signup, generic OIDC, and bearer
+credentials are unsupported.
 
 ## Installation and account ownership
 
 Authentication belongs to one bootstrapped Installation. The controller requires
-`OCC_AUTH_SECRET` and `OCC_AUTH_BASE_URL`; their deployment configuration is
-specified in [settings](settings.md). An account's immutable Better Auth user ID
-and Installation-specific trusted issuer identify its IAM Principal. Email
-addresses and display names do not grant access.
+`OCC_AUTH_SECRET` and `OCC_AUTH_BASE_URL` (see [settings](settings.md)). An account's immutable Better Auth user ID
+and Installation-specific trusted issuer identify its IAM Principal. Neither
+email nor display name grants access.
 
 Fresh native-IAM bootstrap creates the first human administrator and one
 Installation-scoped, non-Agent ServicePrincipal. Both have separate bindings to
@@ -33,22 +31,20 @@ its authority does not depend on the human account remaining present.
 Fresh bootstrap also creates the initial [`default` Namespace](namespaces.md#initial-namespace)
 under the bootstrap Principal's ordinary Namespace creation permission.
 Installation/IAM state, the Namespace, its queued reconciliation, and bootstrap
-audit commit together. Worker provisioning remains asynchronous.
+audit commit together. Worker provisioning is asynchronous.
 
 Bootstrap issues a 30-day service API key named `bootstrap-admin` and writes its
 one-time response to `OCC_BOOTSTRAP_SERVICE_KEY_FILE`. The JSON contains
 `data.id`, `data.servicePrincipalId`, `data.name`, `data.expiresAt`, `data.key`,
-and `meta.installationId`; it is usable with the existing service-key examples.
-Better Auth retains the hash, not plaintext. The file remains readable until the
-operator removes it; there is no server-side plaintext retrieval endpoint.
+and `meta.installationId`.
+Better Auth keeps only the hash; there is no server-side plaintext retrieval.
 
 Production also creates the configured `OCC_BOOTSTRAP_ADMIN_EMAIL` account with
 a random password written to `OCC_BOOTSTRAP_PASSWORD_FILE`. Both paths must be
 absolute, distinct siblings on protected operator-owned storage. Output is
 exclusive, owner-only (`0600`), and synced before committing Installation/IAM
 state; existing files, symlinks, or unsafe parent directories fail closed.
-Credentials never appear in bootstrap logs, audit, or the HTTP bootstrap
-response. OCC creates no Kubernetes Secret or PVC for delivery.
+Credentials never appear in logs, audit, or the bootstrap response. OCC creates no Kubernetes Secret or PVC for delivery.
 
 In Helm, `bootstrap.password.claimName` selects the existing protected PVC.
 Only the initialization Job mounts it; `bootstrap.password.fileName` and
@@ -85,7 +81,7 @@ File existence alone is not proof of successful initialization.
 
 ## Browser request origin
 
-Controller API requests that use a session cookie for a mutation must include an
+Cookie-authenticated controller API mutations must include an
 `Origin` matching the origin of `OCC_AUTH_BASE_URL`. This includes sign-out. A missing,
 malformed, or different origin is rejected with `403`. If `Sec-Fetch-Site` is
 present, it must be `same-origin`. Safe reads do not require an Origin.
@@ -111,8 +107,15 @@ foreign, malformed, or duplicated key returns `401`, and such a sign-out neither
 revokes nor clears the cookie. Without the header, requests are unchanged. Console
 pins each tab's key this way.
 
-Sign-in takes `{"email": "...", "password": "..."}`. The session credential
-arrives only through `Set-Cookie`; protected OCC API calls use that cookie.
+Sign-in takes `{"email": "...", "password": "..."}`. The session arrives only
+through `Set-Cookie`.
+
+Without an external provider, after 10 failed sign-ins per minute per email, or 20
+per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
+attempts wait 1–8 s and return `429` with `Retry-After`, whether or not the email
+exists; an Installation administrator's correct password still signs in. Without
+one, browsers share the ingress address and startup logs
+`authentication.sign-in-limit-warning`.
 
 The controller configures the Better Auth cookie with the `openclaw_occ`
 prefix; the OpenAPI contract names it `openclaw_occ.session_token`. Cookies are
@@ -126,129 +129,10 @@ disabled. A missing, expired, revoked, or forged session is rejected, as is an
 
 ## GitHub sign-in for existing accounts
 
-GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
-its restricted application role, native IAM, one GitHub App on github.com, and one
-canonical HTTPS Console origin with host-only cookies. Shared-cookie native
-administration, other session readers, rolling or mixed-version serving, and
-mutable Installation policy are unsupported. Keep bootstrap, seeding, external
-policy writers, and recovery-affecting changes stopped.
-Native IAM's policy read remains separate from State's actor guard. Loopback
-development does not qualify deployed HTTPS.
-
-HTTPS sessions use `__Host-openclaw_occ.session_token`, `Secure`, `HttpOnly`,
-`Path=/`, and no `Domain`, preventing sibling hosts from planting that cookie.
-Session reads, protected requests, and logout reject duplicate session cookies.
-
-Activation enrolls qualifying existing accounts and reports the rest, which cannot
-sign in. Creation continues and enrolls new accounts in the same transaction (see
-[Account provisioning](#account-provisioning)).
-Set all three API-process variables; partial configuration fails startup:
-
-| Variable                           | Purpose                                                                 |
-| ---------------------------------- | ----------------------------------------------------------------------- |
-| `OCC_AUTH_GITHUB_CLIENT_ID`        | GitHub App client ID, not App ID; determines the provider-instance key. |
-| `OCC_AUTH_GITHUB_CLIENT_SECRET`    | GitHub App client secret in protected server configuration.             |
-| `OCC_AUTH_GITHUB_RECOVERY_USER_ID` | Local password administrator seeding the first recovery designation.    |
-
-Helm renders them from `auth.github` and `auth.recoveryUserId`; see
-[production settings](settings/production.md#github-sign-in-and-trusted-proxies).
-
-Use the repository integration's GitHub App. Register `OCC_AUTH_BASE_URL` +
-`/api/auth/providers/github/callback` as its callback. Login receives the
-[client ID and secret](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app);
-the private key stays with the existing repository credential consumer.
-
-OCE requests no OAuth scopes. [App permissions and user access](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-login-with-github-button-with-a-github-app#specify-additional-parameters)
-govern the bearer token, which may carry repository authority; `read:user` would
-not restrict it. Login uses only [`GET /user`](https://docs.github.com/en/rest/users/users#get-the-authenticated-user),
-then discards tokens, expiry, and scope data. It performs no refresh, creates no
-repository grants, and gives no provider credentials to repository consumers or Agents.
-
-A new client ID requires reattachment under a new provider instance; then detach
-old methods by `methodId`. Secret rotation preserves enrollment and invalidates
-pending attempts. Emails and login names are not identity keys.
-
-A human Installation administrator reads `GET /api/auth/accounts/:userId`
-([requirements](#session-and-recovery-controls)). Its no-store response
-contains `userId`, `principalId`, `version`, `disabled`, and `methods` with
-`methodId`, `providerId`, and `subject`. Attach a verified positive decimal GitHub
-user ID (1–20 digits, no leading zero) through
-`POST /api/auth/accounts/:userId/providers/github` with
-`{"subject":"12345678","expectedVersion":1}`, using the version just read.
-
-Attachment preserves the user, Principal, and grants, advances the account version,
-and invalidates existing sessions and pending proofs. Subjects owned by another
-user, email association, signup, identity transfer, and self-service linking are
-rejected. For unknown identities, follow the
-[enrollment procedure](../guides/deploy/production-installation.md#enable-github-browser-sign-in).
-
-`GET /api/auth/providers` returns `github` and `sessionBinding` as `true` when enabled. A
-same-origin `POST /api/auth/providers/github/start` returns `data.url` and a public
-`data.attemptId`, and sets a browser-binding cookie. Other provider names return `404`; callers cannot select
-callback or return destinations. The [Console flow](../flows/platform-console.md#2-resolve-the-session-before-private-reads)
-owns button and error display.
-
-The callback consumes a short-lived, browser-bound attempt once before code
-exchange and resolves the immutable numeric GitHub user ID's exact enrollment.
-Unknown identities fail without signup. Success returns to exactly `/console/`
-and sets a two-minute HttpOnly, `SameSite=Strict` login receipt; failure returns
-to `/console/?authError=github` without automatic retry. The starting tab sends its
-`attemptId` with the configured Origin to `POST /api/auth/providers/github/result`,
-which returns the callback session's `sessionKey` once, only while that session's
-cookie is current. It never issues or extends a session.
-
-### Session and recovery controls
-
-Enabling this profile applies the same admission rules to password and GitHub
-sessions: an eight-hour absolute lifetime without refresh, current account and
-method checks, and required audit before a cookie is released or, on logout,
-cleared. Older sessions without account/method binding are
-rejected; users sign in again. Activation is one-way: removing GitHub
-configuration fails startup, and the database refuses sessions from older
-binaries. Returning to password-only sign-in needs [stopped maintenance](../guides/deploy/auth-maintenance.md#deactivate-github-sign-in).
-
-The recovery user needs one local password, its Installation Principal, and
-native IAM Installation `administer`; disabling it returns `409`. Keep its password
-in protected custody; out-of-band database or policy changes can still remove
-recovery. Password login never depends on GitHub.
-
-`POST /api/auth/recovery` (`userId`, `expectedCurrentUserId`, target
-`expectedVersion`) moves the designation (`GET` reads it) to another qualifying
-user. The variable, like `auth:maintain activate --recovery-user`, then only
-seeds first activation; a differing value warns, and each start re-checks the holder.
-
-Account reads and mutations require a human session, exact `Origin`, and
-Installation `administer`; service keys are refused. State locks actor and target
-accounts (retryable `503` after five-second lock waits) and rechecks the actor
-session, which logout or revocation can invalidate. A stale
-`expectedVersion` or disabled target returns `409 RESOURCE_CONFLICT`.
-
-Send the version just read, such as `{"expectedVersion":1}`:
-
-| Operation                                                  | Effect                                                                                     |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `POST /api/auth/accounts/:userId/disable`                  | Disables the account, invalidating sessions and pending proofs; refuses the recovery user. |
-| `POST /api/auth/accounts/:userId/enable`                   | Re-enables a disabled account; users sign in again.                                        |
-| `POST /api/auth/accounts/:userId/revoke`                   | Invalidates all account sessions and pending proofs; fresh sign-in still works.            |
-| `POST /api/auth/accounts/:userId/methods/:methodId/detach` | Removes one attached external identity and its sessions; password methods return `409`.    |
-
-`POST /api/auth/accounts/:userId/enrol` (no body) enrolls a skipped account holding
-its Principal and one password. These operations serialize with session issuance
-and leave IAM grants unchanged.
-An unknown administrative COMMIT returns `503 DEPENDENCY_UNAVAILABLE` with an
-unknown-outcome message, never success, automatic replay, or compensation. An
-account read shows present state, **not a receipt**: the original transaction may
-still be running. Resolve uncertainty before choosing a new action and version.
-Password reset and deletion remain deferred.
-
-Password sign-in allows 10 requests/minute, two active, per client address and
-per email; GitHub start/callback, including invalid callbacks, allows 30 and four
-per address. Global caps: four and eight active. The recovery email has a
-reserved lane (20, two active). A 4,096-key table bounds memory. Clients behind
-an ingress share its address unless
-[trusted proxies](cheatsheets/environment-variables.md#controller-and-authentication)
-are set. Pending attempts cap at 1,000. Provider calls share a ten-second
-deadline, refuse redirects, and read at most 64 KiB. Limits are per controller.
+An Installation can let enrolled existing accounts sign in with GitHub or Google.
+[External sign-in and account controls](authentication/external-sign-in.md)
+defines the single-controller profile, provider flow, session binding, the
+recovery user, the administrator account API, and sign-in limits.
 
 ## Native admin shared sessions
 
@@ -299,7 +183,7 @@ A representative provisioning body is:
 
 Emails are normalized to lowercase. Passwords must contain 12–128 characters.
 Provisioning has no public email-verification or signup flow; duplicates are
-rejected. There is no password reset API.
+rejected.
 
 ## Authorization and failures
 
@@ -317,8 +201,7 @@ headers and bearer credentials are not authorization evidence.
 | Duplicate account during provisioning                          | `409 RESOURCE_CONFLICT`.                                                           |
 | Authentication or IAM dependency unavailable                   | The request fails closed; dependency failures return `503 DEPENDENCY_UNAVAILABLE`. |
 
-The optional session-inspection route is not a protected resource operation:
-anonymous inspection returns `200` with `data: null`.
+Anonymous session inspection returns `200` with `data: null`.
 
 ## Automation credentials
 
@@ -327,9 +210,8 @@ Non-Agent automation uses `x-api-key` with an existing IAM ServicePrincipal. [Se
 ## Evidence and related references
 
 The [authentication implementation](../../apps/controller/src/auth/index.ts)
-owns session verification and safe responses; the
-[HTTP routes](../../apps/controller/src/index.ts) own public endpoint exposure
-and account-provisioning authorization.
+owns sessions; the [HTTP routes](../../apps/controller/src/index.ts) own
+endpoint exposure and provisioning authorization.
 
 - [Local authentication tests](../testing/local.md#authentication-and-authorization-coverage)
 - [Service-key persistence tests](../testing/postgresql.md#service-key-persistence)

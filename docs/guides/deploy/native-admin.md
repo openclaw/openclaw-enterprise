@@ -1,8 +1,40 @@
 # Deploy native admin UI access
 
-Enable Agent native admin UI access only for a trusted-operator pilot. The feature lets exact Agent administrators open the stock native UI through OCC on an isolated per-Agent browser host using their ordinary OCE console session. Start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+Enable Agent native admin UI access only for a trusted-operator pilot. The feature lets exact Agent administrators open the stock native UI through OCC on an isolated per-Agent browser host using their ordinary OCE console session. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
 
-## Requirements
+## Local development
+
+Local setup prepares private routing and the browser endpoint. To opt a selected
+Agent into native admin access:
+
+1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
+   console, for example with the Standard Codex Preset. Wait for its active
+   version. The account opening the UI needs `administer` permission on that
+   exact Agent.
+2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
+   to obtain the exact `data.origin` and active revision ID from the status
+   route. Include the returned port; do not construct or reuse another Agent's
+   origin. An `unsupported` response can include the origin. If OCC cannot
+   select an active revision, resolve that first.
+3. Use **Create new version** → **Configuration** → **Edit Configuration** to
+   merge the documented native policy and origin into the existing JSON. Review
+   other Agents that share the Configuration: they use its new values on their
+   next deployment. Preserve existing origins, gateway settings, and Secret
+   references. Resolve explicit opt-outs or conflicting policy before changing
+   them; do not silently replace them. Recheck the active revision before saving;
+   if it changed, refresh and review the current Configuration again.
+4. Save the Configuration and select **Deploy new version**. Once it is active,
+   request status again and expect `available` with the same origin. Open
+   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
+   saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
+
+The [first-Agent command](../first-agent.md) creates a separate Agent with native UI
+disabled and refuses to reuse it after outside Configuration edits. Create a
+console-managed Agent for this native admin walkthrough.
+
+<a id="requirements"></a>
+
+## Production requirements
 
 - Private workspace routing already works for the target Agents. Helm rejects `agentNativeAdmin.enabled: true` unless `gatewayRouting.enabled: true` is also set.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
@@ -11,7 +43,9 @@ Enable Agent native admin UI access only for a trusted-operator pilot. The featu
 - Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy admin device auto-approval.
 - Operators who use the console have exact Agent `administer` permission.
 
-## Steps
+<a id="steps"></a>
+
+## Install on an existing cluster
 
 The standard production values enable this feature. Replace their example domains
 with your reviewed domains and keep these values alongside private gateway routing:
@@ -57,8 +91,10 @@ spec:
 
 The API refuses protected requests carrying `X-Forwarded-*` or `X-Real-IP`
 headers, which ingress-nginx adds, unless the sender is a trusted proxy: set
-[`OCC_AUTH_TRUSTED_PROXY_CIDRS`](../../reference/cheatsheets/environment-variables.md#controller-and-authentication)
-to the ingress-nginx Pod CIDR, or strip those headers at the ingress.
+[`api.trustedProxy`](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)
+to preset `ingress-nginx` with the ingress-nginx Pod CIDR (profile installs:
+[`controlPlane.trustedProxy`](installation-profiles.md#external-sign-in-and-trusted-proxies)),
+or strip those headers at the ingress.
 
 Allow ingress only to the API Pods selected for public browser traffic. Keep the Envoy Service private:
 

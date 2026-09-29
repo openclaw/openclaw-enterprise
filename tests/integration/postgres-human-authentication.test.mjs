@@ -523,7 +523,7 @@ test(
     );
 
     await context.test(
-      "pending attempt capacity is serialized and expired cleanup has a finite batch",
+      "a full pending attempt table evicts the oldest attempts and expired cleanup has a finite batch",
       async () => {
         const attempt = {
           stateHash: randomBytes(32).toString("hex"),
@@ -536,21 +536,34 @@ test(
         await pool.query("DELETE FROM occ.human_authentication_attempts WHERE installation_id=$1", [
           installation.id,
         ]);
-        for (let i = 0; i < 999; i++) {
+        const oldest = { ...attempt, stateHash: randomBytes(32).toString("hex") };
+        await persistence.createAttempt(oldest);
+        const secondOldest = { ...attempt, stateHash: randomBytes(32).toString("hex") };
+        await persistence.createAttempt(secondOldest);
+        for (let i = 0; i < 997; i++) {
           await persistence.createAttempt({
             ...attempt,
             stateHash: randomBytes(32).toString("hex"),
           });
         }
+        // A full table must not refuse new starts: anyone can create attempts, so a refusal
+        // would let one client block every provider sign-in. The oldest pending attempt goes.
+        const competitor = { ...attempt, stateHash: randomBytes(32).toString("hex") };
         const results = await Promise.allSettled([
           persistence.createAttempt(attempt),
-          peer.createAttempt({ ...attempt, stateHash: randomBytes(32).toString("hex") }),
+          peer.createAttempt(competitor),
         ]);
-        assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
-        assert.equal(
-          results.find((result) => result.status === "rejected").reason.name,
-          "ResourceConflictError",
+        assert.deepEqual(
+          results.map((result) => result.status),
+          ["fulfilled", "fulfilled"],
         );
+        assert.equal(await peer.consumeAttempt(oldest), undefined);
+        assert.ok(await peer.consumeAttempt(competitor));
+        assert.ok(await peer.consumeAttempt(attempt));
+        assert.ok(await peer.consumeAttempt(secondOldest));
+        await persistence.createAttempt(attempt);
+        await persistence.createAttempt(competitor);
+        await persistence.createAttempt(secondOldest);
         assert.equal(
           (
             await pool.query(

@@ -134,8 +134,6 @@ test(
       assert.equal((await read(outsider, { forwarded: "for=1.2.3.4" })).statusCode, 403);
     });
 
-    // TODO(github-off-profile): repeat the isolation case with GitHub sign-in off once
-    // the guarded password-only profile lands; today trusted proxies require no GitHub,
-    // but the keyed password lane exists only with it.
+    // postgres-password-sign-in-limit.test.mjs proves the same keying with GitHub off.
   },
 );

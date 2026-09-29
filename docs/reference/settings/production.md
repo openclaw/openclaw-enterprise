@@ -133,8 +133,10 @@ for `github.com` and `api.github.com`. Empty `auth.github.egressCidrs` allows
 `https://api.github.com/meta`, and update them when GitHub changes them.
 
 `api.trustedProxy` is off by default: the API rejects `Forwarded`,
-`X-Forwarded-*`, and `X-Real-IP` with `403` and keys sign-in limits on the socket
-peer. Presets:
+`X-Forwarded-*`, and `X-Real-IP` with `403`. Sign-in limits then key on the
+socket peer with GitHub or Google, and on email alone in the password-only
+profile, which logs `authentication.sign-in-limit-warning` at startup; set
+`api.trustedProxy` to add its per-client-address limit. Presets:
 
 - `ingress-nginx`: `cidrs` is the ingress controller Pod CIDR; the header
   is `x-forwarded-for`. Keep ingress-nginx `use-forwarded-headers` off.
@@ -147,6 +149,26 @@ Trust only proxies that overwrite or append the header, and admit them through
 `api.clients`. Rendering fails on incomplete GitHub values, a shared Secret,
 `agentNativeAdmin.enabled` with GitHub, `/0` proxy CIDRs, another header with a
 named preset, or credential, routing and internal headers such as `cookie`.
+
+### Google sign-in
+
+These optional variables also apply to the API only. Google sign-in uses the same
+guarded profile and `OCC_AUTH_GITHUB_RECOVERY_USER_ID` recovery user as GitHub; see
+[Google sign-in](../../guides/deploy/google-sign-in.md).
+
+| Variable                          | Helm value                                 | Behavior                                                                                                                                           |
+| --------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_AUTH_GOOGLE_CLIENT_ID`       | `auth.google` Secret key `clientIdKey`     | Google OAuth web client ID; determines the provider instance. Set it with the client secret and recovery user ID, or not at all.                   |
+| `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey` | Google OAuth client secret, read from the dedicated `auth.google.secretName` Secret.                                                               |
+| `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`               | Optional comma-separated hosted domains. When set, the ID token's `hd` must match one and `email_verified` must be `true`. Requires the client ID. |
+
+With `auth.google.enabled`, the chart adds the API-only egress policy
+`openclaw-enterprise-api-google-login-egress` on TCP 443 for
+`oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
+allows `0.0.0.0/0`; narrow it with an egress proxy. Rendering fails on incomplete
+Google values, a Secret shared with GitHub or any other chart Secret,
+`agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed domain that
+is not a DNS name.
 
 ### Production Installation bootstrap environment
 

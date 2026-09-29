@@ -314,9 +314,10 @@ test(
     );
     apps.push(administration);
     await administration.ready();
-    // Admission, Native IAM identity lookup and authorization each finish their
-    // read transaction first. Drop the following account+audit mutation COMMIT.
-    administrationProxy.arm({ skipCommits: 3 });
+    // Admission, Native IAM identity lookup, authorization, the target Principal
+    // lookup and its grant coverage each finish their read transaction first.
+    // Drop the following account+audit mutation COMMIT.
+    administrationProxy.arm({ skipCommits: 5 });
     const unknownAdministration = await administration.inject({
       method: "POST",
       url: `/api/auth/accounts/${recoveryUserId}/revoke`,

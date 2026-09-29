@@ -45,7 +45,11 @@ test(
 
     const providers = await app.inject({ url: "/api/auth/providers" });
     assert.equal(providers.statusCode, 200);
-    assert.deepEqual(providers.json().data, { github: false, sessionBinding: false });
+    assert.deepEqual(providers.json().data, {
+      github: false,
+      google: false,
+      sessionBinding: false,
+    });
 
     const signIn = (email, password, remoteAddress) =>
       passwordSignIn(app, origin, { email, password }, remoteAddress);
@@ -128,7 +132,7 @@ test(
       assert.equal(await sessionOf(cookie), null);
     });
 
-    await t.test("GitHub routes refuse without contacting a provider", async () => {
+    await t.test("GitHub and Google routes refuse without contacting a provider", async () => {
       let providerCalls = 0;
       const originalFetch = globalThis.fetch;
       t.mock.method(globalThis, "fetch", (input, init) => {
@@ -137,26 +141,28 @@ test(
       });
       const admin = await signIn(adminEmail, adminPassword);
       const cookie = cookieHeaderFromSetCookie(admin.headers["set-cookie"]);
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/github/start",
-        headers: { origin },
-      });
-      assert.equal(start.statusCode, 403, start.body);
-      assert.equal(start.headers["set-cookie"], undefined);
-      const callback = await app.inject({
-        url: "/api/auth/providers/github/callback?state=unconfigured&code=unconfigured",
-      });
-      assert.equal(callback.statusCode, 302);
-      assert.equal(callback.headers.location, "/console/?authError=github");
-      assert.equal(callback.headers["set-cookie"], undefined);
-      const result = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/github/result",
-        headers: { cookie, origin },
-        payload: { attemptId: "A".repeat(43) },
-      });
-      assert.equal(result.statusCode, 403, result.body);
+      for (const provider of ["github", "google"]) {
+        const start = await app.inject({
+          method: "POST",
+          url: `/api/auth/providers/${provider}/start`,
+          headers: { origin },
+        });
+        assert.equal(start.statusCode, 403, start.body);
+        assert.equal(start.headers["set-cookie"], undefined);
+        const callback = await app.inject({
+          url: `/api/auth/providers/${provider}/callback?state=unconfigured&code=unconfigured`,
+        });
+        assert.equal(callback.statusCode, 302);
+        assert.equal(callback.headers.location, `/console/?authError=${provider}`);
+        assert.equal(callback.headers["set-cookie"], undefined);
+        const result = await app.inject({
+          method: "POST",
+          url: `/api/auth/providers/${provider}/result`,
+          headers: { cookie, origin },
+          payload: { attemptId: "A".repeat(43) },
+        });
+        assert.equal(result.statusCode, 403, result.body);
+      }
       assert.equal(providerCalls, 0);
       assert.equal(
         (await pool.query("SELECT count(*)::int AS count FROM occ.human_authentication_recovery"))
@@ -180,8 +186,9 @@ test(
         401,
         "a wrong administrator password is refused",
       );
-      // The password-only profile has no sign-in rate limit (a known gap tracked for after
-      // launch); what it must never do is lock the only administrator out.
+      // These failures stay under the password-only profile's limits
+      // (postgres-password-sign-in-limit.test.mjs); what it must never do is lock the only
+      // administrator out.
       const admin = await signIn(adminEmail, adminPassword, guesser);
       assert.equal(admin.statusCode, 200, admin.body);
       const other = await signIn(adminEmail, adminPassword, "203.0.113.20");

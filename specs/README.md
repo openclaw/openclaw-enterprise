@@ -1,5 +1,8 @@
 # Implementation specifications
 
+[Independent image and chart publication](41-independent-image-chart-publication.md) — Implementing;
+default image-only publication with a separate opt-in chart job.
+
 [Default production observability](36-production-observability.md) — Implemented locally;
 production telemetry defaults, separate demo stack, and local k3d/CI acceptance.
 See the [implementation plan](36-production-observability-plan.md) and

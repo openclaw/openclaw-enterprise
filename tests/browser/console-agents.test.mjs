@@ -2761,9 +2761,15 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   // Switching to OpenClaw defaults to Embedded; Dedicated is an explicit opt-in.
   await harness.selectOption("openclaw");
   assert.equal(await mode.inputValue(), "embedded");
+  const nativeHarnessWarning = page.getByText(
+    "Experimental: Dedicated OpenClaw requires a runtime build with native worker-inference support. Released OpenClaw images may not include it yet.",
+    { exact: true },
+  );
+  assert.equal(await nativeHarnessWarning.isHidden(), true);
   await page.locator(".launch-runtime:not([open]) > summary").click();
   await mode.selectOption("dedicated");
   assert.equal(await harness.inputValue(), "openclaw");
+  assert.equal(await nativeHarnessWarning.isVisible(), true);
 
   const nativeDedicatedTemplate = JSON.parse(await configuration.inputValue());
   assert.equal(nativeDedicatedTemplate.agents.defaults.model, "openai/gpt-5.1");
@@ -2776,6 +2782,7 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
 
   await mode.selectOption("embedded");
   assert.equal(await harness.inputValue(), "openclaw");
+  assert.equal(await nativeHarnessWarning.isHidden(), true);
 
   const embeddedTemplate = JSON.parse(await configuration.inputValue());
   assert.equal(embeddedTemplate.agents.defaults.model, "openai/gpt-5.1");

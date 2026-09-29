@@ -36,8 +36,8 @@ OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes
 
 ## IAM
 
-OCC authorizes creation and listing on the Namespace's Secret collection.
-`GET /namespaces/:namespaceId/secrets` requires collection `read` and returns
+OCC authorizes creation on the Namespace's Secret collection.
+`GET /namespaces/:namespaceId/secrets` requires Namespace `read` and returns
 only Secrets on which the caller also has exact-resource `read`. An empty list
 means no readable Secrets. Exact Secret reads, updates, and deletion require
 `read`, `update`, and `delete`, respectively. Reads return metadata from OCC;

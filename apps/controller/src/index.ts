@@ -497,7 +497,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
-  if (operation.operationId === "createSecret" || operation.operationId === "listSecrets") {
+  if (operation.operationId === "createSecret") {
     return [{ ...permission, scope: "namespace" }];
   }
 
@@ -710,6 +710,8 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         { ...permission, scope: "each_returned" },
       ];
     case "namespace_and_service_account_candidates":
+    case "namespace_and_secret_candidates":
+    case "namespace_and_credential_source_candidates":
       return [
         { action: "read", resourceKind: "namespace", scope: "requested" },
         { ...permission, scope: "each_returned" },
@@ -1205,13 +1207,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             authorization: validatedAuthorization?.request ?? {
               principalId: context.actorId,
               action: authorization?.action ?? operation.iamAction,
+              // Namespace IAM policy routes are admitted by administer on the
+              // Installation (plus reads), never by a Namespace administer check.
               resource:
                 authorization?.resource ??
-                operationTarget(
-                  operation,
-                  installationId,
-                  request.params as Record<string, unknown>,
-                ),
+                (operation.authorizationTarget === "namespace_iam"
+                  ? { kind: "installation", id: installationId }
+                  : operationTarget(
+                      operation,
+                      installationId,
+                      request.params as Record<string, unknown>,
+                    )),
             },
             ...(authorizationEvidence === undefined
               ? {}
@@ -2245,7 +2251,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
-        mutationEvent: (resource) => event(operation, request, resource, "mutation", context),
+        mutationEvent: (resource, details) => {
+          const recorded = event(operation, request, resource, "mutation", context);
+          return details === undefined
+            ? recorded
+            : { ...recorded, details: { ...recorded.details, ...details } };
+        },
       });
       return;
     }
@@ -3103,7 +3114,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: operation.operationId,
           summary: operation.summary,
           description: creating
-            ? "Requires a session or Installation-scoped service key with administer on the Installation. Issues a Better Auth key for an existing non-Agent ServicePrincipal in its exact scope; creates no identity or IAM grant. The plaintext key is returned only here."
+            ? "Requires a session or Installation-scoped service key with administer on the Installation. Issues a Better Auth key for an existing non-Agent ServicePrincipal in its exact scope when the caller already holds every IAM grant of that ServicePrincipal at the same or a broader scope; creates no identity or IAM grant. The plaintext key is returned only here."
             : "Requires a session or Installation-scoped service key with administer on the Installation. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
           tags: [...operation.tags],
           security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
@@ -3220,6 +3231,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 "An existing non-Agent ServicePrincipal in the exact scope is required.",
               );
             }
+            // A key carries all of its principal's grants; never issue beyond the caller's own.
+            let covered;
+            try {
+              covered =
+                typeof selected.coversIdentityAccess === "function" &&
+                (await selected.coversIdentityAccess({
+                  principalId: context.actorId,
+                  targetIdentityId: principal.id,
+                })) === true;
+            } catch {
+              throw dependencyUnavailable();
+            }
+            if (!covered) {
+              await denial(operation, request, "authorization_denial", context, decision.evidence);
+              throw failure(
+                403,
+                "FORBIDDEN",
+                "The caller does not hold every grant of the target ServicePrincipal.",
+              );
+            }
             let key;
             try {
               key = await options.auth.createServiceKey({
@@ -3270,18 +3301,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           response: responses({
             type: "object",
             additionalProperties: false,
-            required: ["github", "sessionBinding"],
-            properties: { github: { type: "boolean" }, sessionBinding: { type: "boolean" } },
+            required: ["github", "google", "sessionBinding"],
+            properties: {
+              github: { type: "boolean" },
+              google: { type: "boolean" },
+              sessionBinding: { type: "boolean" },
+            },
           }),
         },
       },
       async (request, reply) => {
         reply.header("cache-control", "no-store");
+        const github = options.auth.githubEnabled === true;
+        const google = options.auth.googleEnabled === true;
         return {
-          data: {
-            github: options.auth.githubEnabled === true,
-            sessionBinding: options.auth.githubEnabled === true,
-          },
+          data: { github, google, sessionBinding: github || google },
           meta: { requestId: request.id },
         };
       },
@@ -3293,7 +3327,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "startGitHubSignIn",
           summary: "Start GitHub sign-in for an enrolled account",
           description:
-            "Requires the configured browser Origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
+            "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
           tags: ["Authentication"],
           security: [],
           response: {
@@ -3356,6 +3390,76 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => options.auth.githubResult(request, reply),
     );
+    routes.post(
+      "/api/auth/providers/google/start",
+      {
+        schema: {
+          operationId: "startGoogleSignIn",
+          summary: "Start Google sign-in for an enrolled account",
+          description:
+            "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
+          tags: ["Authentication"],
+          security: [],
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["url", "attemptId"],
+              properties: {
+                url: { type: "string", format: "uri" },
+                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+              },
+            }),
+            403: { description: "Forbidden", ...error },
+          },
+        },
+      },
+      async (request, reply) => options.auth.googleStart(request, reply),
+    );
+    routes.get(
+      "/api/auth/providers/google/callback",
+      {
+        schema: {
+          operationId: "completeGoogleSignIn",
+          summary: "Complete an enrolled Google sign-in",
+          description:
+            "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
+          tags: ["Authentication"],
+          security: [],
+          response: { 302: { description: "Redirect to Console", type: "null" } },
+        },
+      },
+      async (request, reply) => options.auth.googleCallback(request, reply),
+    );
+    routes.post(
+      "/api/auth/providers/google/result",
+      {
+        schema: {
+          operationId: "confirmGoogleSignIn",
+          summary: "Confirm which session a Google sign-in created",
+          description:
+            "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
+          tags: ["Authentication"],
+          security: [{ sessionCookie: [] }],
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["attemptId"],
+            properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
+          },
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["sessionKey"],
+              properties: { sessionKey: { type: "string" } },
+            }),
+            403: { description: "Forbidden", ...error },
+          },
+        },
+      },
+      async (request, reply) => options.auth.googleResult(request, reply),
+    );
 
     const accountParams = {
       type: "object",
@@ -3379,6 +3483,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       request: FastifyRequest,
       operation: OccApiRoute,
       context: RequestContext,
+      targetUserId?: string,
     ) {
       const admitted = admissions.get(request);
       if (
@@ -3393,9 +3498,37 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           "A current human session and trusted browser origin are required.",
         );
       }
-      const { selected } = await requireInstallationAdmin(request, operation, context);
+      const { selected, decision } = await requireInstallationAdmin(request, operation, context);
       if (!(selected instanceof NativeIAMDriver)) {
         throw dependencyUnavailable();
+      }
+      // A change to an account acts for its Principal (an attached identity signs in as it), so
+      // the actor must already hold every grant of that Principal, as for service keys.
+      if (targetUserId !== undefined) {
+        let covered;
+        try {
+          const principal = await selected.lookupIdentity({
+            issuer: options.auth.issuer,
+            subject: targetUserId,
+          });
+          // Without a Principal the account is not enrolled, and State refuses the change.
+          covered =
+            principal?.kind !== "principal" ||
+            (await selected.coversIdentityAccess({
+              principalId: context.actorId,
+              targetIdentityId: principal.id,
+            })) === true;
+        } catch {
+          throw dependencyUnavailable();
+        }
+        if (!covered) {
+          await denial(operation, request, "authorization_denial", context, decision.evidence);
+          throw failure(
+            403,
+            "FORBIDDEN",
+            "The caller does not hold every grant of the target account's Principal.",
+          );
+        }
       }
       return {
         userId: admitted.session.userId,
@@ -3471,6 +3604,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         summary: "Attach an exact GitHub identity to an existing account",
       },
       {
+        operationName: "google",
+        path: "/api/auth/accounts/:userId/providers/google",
+        operationId: "attachGoogleIdentity",
+        summary: "Attach an exact Google identity to an existing account",
+      },
+      {
         operationName: "disable",
         path: "/api/auth/accounts/:userId/disable",
         operationId: "disableAuthAccount",
@@ -3524,7 +3663,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operationId: operation.operationId,
             summary: operation.summary,
             description:
-              "Requires a current human Native IAM Installation administrator, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.",
+              "Requires a current human Native IAM Installation administrator who holds every grant of the target account's Principal, trusted Origin and expectedVersion from a guarded account read. Commits state and audit together. An unknown outcome must be inspected without automatic retry; present state does not attribute the earlier request.",
             tags: [...operation.tags],
             security: [{ sessionCookie: [] }],
             "x-openclaw-permissions": [
@@ -3535,12 +3674,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required:
-                operationName === "github" ? ["subject", "expectedVersion"] : ["expectedVersion"],
+                operationName === "github" || operationName === "google"
+                  ? ["subject", "expectedVersion"]
+                  : ["expectedVersion"],
               properties: {
                 expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
                 ...(operationName === "github"
                   ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
-                  : {}),
+                  : operationName === "google"
+                    ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
+                    : {}),
               },
             },
             response: {
@@ -3563,15 +3706,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           if (!context || !options.auth.readAccount || !options.auth.changeAccount) {
             throw dependencyUnavailable();
           }
-          const actor = await humanAccountActor(request, operation, context);
-          const { expectedVersion } = request.body as { expectedVersion: number };
           const { userId } = request.params as { userId: string };
+          const actor = await humanAccountActor(request, operation, context, userId);
+          const { expectedVersion } = request.body as { expectedVersion: number };
           if (operationName === "github") {
             if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
               throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
             }
             const { subject } = request.body as { subject: string };
             await options.auth.attachGitHub(userId, subject, actor, expectedVersion);
+          } else if (operationName === "google") {
+            if (!options.auth.attachGoogle || !options.auth.googleEnabled) {
+              throw failure(409, "RESOURCE_CONFLICT", "Google sign-in is not configured.");
+            }
+            const { subject } = request.body as { subject: string };
+            await options.auth.attachGoogle(userId, subject, actor, expectedVersion);
           } else if (operationName === "detach") {
             if (!options.auth.detachMethod) {
               throw dependencyUnavailable();
@@ -3662,7 +3811,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: recoveryReplaceOperation.operationId,
           summary: recoveryReplaceOperation.summary,
           description:
-            "Requires a current human Native IAM Installation administrator and trusted Origin. The target must be an enrolled, enabled account with one password whose Principal administers the Installation. expectedCurrentUserId comes from the recovery read and expectedVersion from the target's account read. Commits state and audit together; an unknown outcome must be inspected without automatic retry.",
+            "Requires a current human Native IAM Installation administrator and trusted Origin who holds every IAM grant of the current holder's Principal (else 403). The target must be an enrolled, enabled account with one password whose Principal administers the Installation. expectedCurrentUserId comes from the recovery read and expectedVersion from the target's account read. Commits state and audit together; an unknown outcome must be inspected without automatic retry.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
@@ -3697,12 +3846,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         if (!context || !options.auth.replaceRecovery) {
           throw dependencyUnavailable();
         }
-        const actor = await humanAccountActor(request, recoveryReplaceOperation, context);
         const { userId, expectedCurrentUserId, expectedVersion } = request.body as {
           userId: string;
           expectedCurrentUserId: string;
           expectedVersion: number;
         };
+        // Taking the designation acts against its holder, which then cannot be disabled, so the
+        // actor must hold every grant of the holder's Principal. State commits only when the
+        // expected holder is still current.
+        const actor = await humanAccountActor(
+          request,
+          recoveryReplaceOperation,
+          context,
+          expectedCurrentUserId,
+        );
         // The new holder must administer the Installation, as startup requires of the seed. This
         // check runs before the State transaction. That is sound because Installation-scoped access
         // bindings have no online revocation path (deleteAccessBinding is Namespace-scoped), and
@@ -3811,7 +3968,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         schema: {
           operationId: "signInEmail",
           summary: "Sign in with email and password",
-          description: "Authenticates a local account and issues a user session cookie.",
+          description:
+            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are delayed and return 429 with Retry-After.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -3823,15 +3981,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               password: accountBody.properties.password,
             },
           },
-          response: responses({
-            type: "object",
-            additionalProperties: false,
-            required: ["authenticated"],
-            properties: {
-              authenticated: { type: "boolean", const: true },
-              sessionKey: { type: "string" },
-            },
-          }),
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["authenticated"],
+              properties: {
+                authenticated: { type: "boolean", const: true },
+                sessionKey: { type: "string" },
+              },
+            }),
+            429: { description: "Too Many Requests", ...error },
+          },
         },
       },
       async (request, reply) => options.auth.signInEmail(request, reply),

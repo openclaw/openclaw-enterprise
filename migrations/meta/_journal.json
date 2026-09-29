@@ -267,6 +267,20 @@
       "when": 1787000000037,
       "tag": "0037_human_authentication",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787000000038,
+      "tag": "0038_agent_deletion_takeover",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787000000039,
+      "tag": "0039_namespace_deletion_takeover",
+      "breakpoints": true
     }
   ]
 }

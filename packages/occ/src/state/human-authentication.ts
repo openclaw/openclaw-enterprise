@@ -151,6 +151,9 @@ function sessionFromRow(row: Row): HumanAuthenticationSession {
   };
 }
 
+// Pending external sign-in attempts per Installation. A full table evicts its oldest attempts.
+const pendingAttemptCapacity = 1000;
+
 const userColumns = `u.id AS user_id, u.email, u.name, u.email_verified, u.image,
   u.created_at AS user_created_at, u.updated_at AS user_updated_at`;
 
@@ -1004,8 +1007,17 @@ export class PostgresHumanAuthentication {
         `SELECT count(*)::integer AS count FROM occ.human_authentication_attempts WHERE installation_id = $1`,
         [this.installationId],
       );
-      if ((capacity!.count as number) >= 1000) {
-        throw new ResourceConflictError("Authentication attempt capacity is unavailable.");
+      // Any client can start an attempt, so a full table must not refuse new starts: that would
+      // let one client block provider sign-in for everyone. Evict the oldest pending attempts.
+      const excess = (capacity!.count as number) - (pendingAttemptCapacity - 1);
+      if (excess > 0) {
+        await this.query(
+          unit,
+          `DELETE FROM occ.human_authentication_attempts WHERE state_hash IN
+           (SELECT state_hash FROM occ.human_authentication_attempts WHERE installation_id = $1
+            ORDER BY expires_at, state_hash LIMIT $2)`,
+          [this.installationId, excess],
+        );
       }
       const [row] = await this.query(
         unit,

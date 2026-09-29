@@ -24,7 +24,11 @@ type ResourceHandler = (input: {
   readonly body: Record<string, unknown> | undefined;
   readonly namespaceId: string;
   // Build the event inside the handler's transaction, alongside the mutation.
-  readonly mutationEvent: (resource: ResourceRef) => AuditEvent;
+  // `details` records what changed (identifiers only, never secret values).
+  readonly mutationEvent: (
+    resource: ResourceRef,
+    details?: Readonly<Record<string, unknown>>,
+  ) => AuditEvent;
 }) => Promise<void>;
 
 export type ResourceHandlers = Readonly<Partial<Record<OccApiOperationId, ResourceHandler>>>;

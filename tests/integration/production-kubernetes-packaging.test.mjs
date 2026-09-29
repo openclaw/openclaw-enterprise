@@ -439,9 +439,11 @@ test("production Helm values example renders the backendless default chart", too
   assert.deepEqual(selected("Deployment", "api").spec.strategy, { type: "Recreate" });
   for (const component of ["api", "worker"]) {
     const env = selected("Deployment", component).spec.template.spec.containers[0].env;
-    assert.ok(!env.some(({ name }) => name.startsWith("OCC_AUTH_GITHUB_")));
+    assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
-  assert.ok(!objects.some(({ metadata }) => metadata.name.endsWith("-api-github-login-egress")));
+  assert.ok(
+    !objects.some(({ metadata }) => /-api-(github|google)-login-egress$/.test(metadata.name)),
+  );
   assert.ok(
     initialization.spec.template.spec.volumes.some(
       ({ name, secret }) => name === "database-ca" && secret?.secretName === "occ-rds-ca",
@@ -997,7 +999,7 @@ test(
     const bin = join(directory, "bin");
     await mkdir(bin);
     const liveValues = join(directory, "live-values.yaml");
-    // Use chart defaults and real Helm/yq; only remote reads are fixtures.
+    // Use real Helm/yq; remote reads and image qualification are fixtures.
     const defaults = await readFile(
       new URL("../../deploy/helm/openclaw-enterprise/values.yaml", import.meta.url),
       "utf8",
@@ -1019,24 +1021,83 @@ test(
     const installation = join(directory, "installation.json");
     const kubeconfig = join(directory, "kubeconfig");
     const key = join(directory, "key");
-    for (const path of [installation, kubeconfig, key]) {
-      await writeFile(path, "{}", { mode: 0o600 });
+    // The upgrade helper compares the protected Installation with its live Secret.
+    const installationDocument = loadYaml(
+      await readFile(
+        new URL("../../deploy/examples/production/installation.yaml", import.meta.url),
+        "utf8",
+      ),
+    );
+    installationDocument.backend = [
+      {
+        id: "github-primary",
+        type: "github",
+        configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
+        drivers: { repo: "repository-credentials" },
+      },
+    ];
+    installationDocument.drivers.repo = {
+      id: "repository-credentials",
+      configuration: {
+        controlSocket: "/run/openclaw/repository-control/private/control.sock",
+        sessionDurationSeconds: 86400,
+        publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+      },
+    };
+    installationDocument.drivers.compute.configuration.network.repositoryCredentials = {
+      namespace: "openclaw-system",
+      podLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+        "app.kubernetes.io/component": "worker",
+      },
+      port: 8443,
+    };
+    await writeFile(installation, JSON.stringify(installationDocument), { mode: 0o600 });
+    for (const path of [kubeconfig, key]) {
+      await writeFile(path, "fixture", { mode: 0o600 });
     }
     const secret = join(directory, "secret.json");
     await writeFile(
       secret,
       JSON.stringify({
-        metadata: { annotations: { "openclaw.dev/installation-id": "ins_test" } },
-        data: { "installation.yaml": Buffer.from("{}").toString("base64") },
+        metadata: {
+          uid: "secret-uid",
+          resourceVersion: "1",
+          annotations: { "openclaw.dev/installation-id": "ins_test" },
+        },
+        data: {
+          "installation.yaml": Buffer.from(JSON.stringify(installationDocument)).toString("base64"),
+        },
       }),
       { mode: 0o600 },
     );
     const worker = join(directory, "worker.json");
+    const nodes = join(directory, "nodes.json");
+    const probeCalls = join(directory, "probe-calls.txt");
+    const controllerImage = `registry.example.invalid/controller@sha256:${"c".repeat(64)}`;
+    const brokerImage = `registry.example.invalid/repository-credentials@sha256:${"e".repeat(64)}`;
+    await writeFile(
+      nodes,
+      JSON.stringify({
+        items: [
+          {
+            metadata: {
+              name: "fixture-node",
+              uid: "fixture-node-uid",
+              labels: { "kubernetes.io/os": "linux", "kubernetes.io/arch": "amd64" },
+            },
+            status: { nodeInfo: { operatingSystem: "linux", architecture: "amd64" } },
+          },
+        ],
+      }),
+    );
     const wrappers = {
       kubectl: `#!/usr/bin/env bash
 case "$*" in
   *'get secret '*) cat "$TEST_SECRET" ;;
   *'get deployment openclaw-enterprise-worker '*) cat "$TEST_WORKER" ;;
+  *'get nodes --output json'*) cat "$TEST_NODES" ;;
   *'get deployments,statefulsets,pods,persistentvolumeclaims '*) printf '{"items":[]}' ;;
   *'get --raw=/readyz'*) printf 'ok' ;;
   *) exit 90 ;;
@@ -1045,10 +1106,23 @@ esac
       occ: `#!/usr/bin/env bash
 printf '{"id":"ins_test"}'
 `,
+      // This test proves chart endpoint preservation, not image compatibility.
+      node: `#!/usr/bin/env bash
+if [[ "$1" == scripts/upgrade-repository-image-probe.mjs ]]; then
+  [[ $# == 4 ]] || exit 92
+  printf '%s|%s|%s\\n' "$2" "$3" "$4" >> "$TEST_PROBE_CALLS"
+  printf '{"fixture":true}\\n'
+else
+  exec "$TEST_REAL_NODE" "$@"
+fi
+`,
+      docker: `#!/usr/bin/env bash
+exit 93
+`,
       helm: `#!/usr/bin/env bash
 case "$1 $2" in
   'get values') cat "$TEST_LIVE_VALUES" ;;
-  'status oce') printf 'deployed' ;;
+  'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
   'template oce') exec "$TEST_REAL_HELM" "$@" ;;
   'upgrade --install') exit 47 ;;
   *) exit 91 ;;
@@ -1107,6 +1181,7 @@ esac
         liveValues,
       ]);
       const evidence = join(directory, name);
+      await writeFile(probeCalls, "", { mode: 0o600 });
       await assert.rejects(
         execute(
           new URL("../../scripts/upgrade-production-images", import.meta.url).pathname,
@@ -1124,7 +1199,9 @@ esac
             "--installation",
             installation,
             "--controller-image",
-            `registry.example.invalid/controller@sha256:${"c".repeat(64)}`,
+            controllerImage,
+            "--broker-image",
+            brokerImage,
             "--source-revision",
             "d".repeat(40),
             "--evidence-dir",
@@ -1141,6 +1218,9 @@ esac
               OCC_SERVICE_KEY_FILE: key,
               TEST_SECRET: secret,
               TEST_WORKER: worker,
+              TEST_NODES: nodes,
+              TEST_PROBE_CALLS: probeCalls,
+              TEST_REAL_NODE: process.execPath,
               TEST_LIVE_VALUES: liveValues,
               TEST_REAL_HELM: realHelm,
             },
@@ -1154,6 +1234,10 @@ esac
           }
           return true;
         },
+      );
+      assert.equal(
+        await readFile(probeCalls, "utf8"),
+        `${controllerImage}|${brokerImage}|linux/amd64\n`,
       );
       if (!failure) {
         const candidate = await resources(await readFile(join(evidence, "rendered.yaml"), "utf8"));
@@ -1966,7 +2050,7 @@ test(
   },
 );
 
-const signInEnv = /^OCC_AUTH_(GITHUB_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER)/;
+const signInEnv = /^OCC_AUTH_(GITHUB_|GOOGLE_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER)/;
 
 async function signInObjects(overrides) {
   const objects = await resources((await render(overrides)).stdout);
@@ -2114,9 +2198,9 @@ test(
         /auth\.github\.enabled requires auth\.recoveryUserId/,
       ],
       [
-        "a recovery user without GitHub sign-in",
+        "a recovery user without GitHub or Google sign-in",
         { "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ" },
-        /auth\.recoveryUserId requires auth\.github\.enabled/,
+        /auth\.recoveryUserId requires auth\.github\.enabled or auth\.google\.enabled/,
       ],
       [
         "GitHub sign-in with an invalid recovery user",

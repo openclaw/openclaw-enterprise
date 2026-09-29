@@ -2,6 +2,7 @@ package occclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json/jsontext"
@@ -21,10 +22,13 @@ type Config struct {
 	ServiceKeyFile string
 	CABundle       string
 	Timeout        time.Duration
+	// Context cancels in-flight requests, for example on Ctrl-C. Nil means no cancellation.
+	Context context.Context
 }
 
 // Client exposes supported OpenClaw Control Plane resource operations.
 type Client struct {
+	ctx        context.Context
 	baseURL    *url.URL
 	serviceKey string
 	http       *http.Client
@@ -67,7 +71,13 @@ func New(config Config) (*Client, error) {
 		return nil, err
 	}
 
+	ctx := config.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	return &Client{
+		ctx:        ctx,
 		baseURL:    baseURL,
 		serviceKey: serviceKey,
 		http: &http.Client{
@@ -370,7 +380,7 @@ func (client *Client) execute(method string, segments []string, body any) (int, 
 		requestBody = bytes.NewReader(encoded)
 	}
 
-	request, err := http.NewRequest(method, resourceURL.String(), requestBody)
+	request, err := http.NewRequestWithContext(client.ctx, method, resourceURL.String(), requestBody)
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to create OCC request: %w", err)
 	}

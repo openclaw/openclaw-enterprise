@@ -85,7 +85,7 @@ Existing-person sharing can precede enrollment and granular native roles. Neithe
 
 ## Settlement and withdrawal
 
-OCC resolves canonical targets. Selected IAM and original State must retain current administrator/account authority and target validity **through COMMIT** for ordinary grant/remove and enrollment, including deletion races. Ordinary writes currently authorize at admission only. Closing this gap remains a release obligation, without a waiver. Preserve bootstrap and the last usable local administrator. Zero-grant accounts and unshared Agents are safe.
+OCC resolves canonical targets. Selected IAM and original State must retain current administrator/account authority and target validity **through COMMIT** for ordinary grant/remove and enrollment, including deletion races. Ordinary Role and AccessBinding create/delete re-authorize the actor inside the write transaction, under the Namespace lock and a hold on the actor's account that a disable must wait for. The acting session's currentness is not rechecked there, and enrollment still authorizes at admission only. Closing these gaps remains a release obligation, without a waiver. Preserve bootstrap and the last usable local administrator. Zero-grant accounts and unshared Agents are safe.
 
 Each policy mutation/audit is atomic, but separate sharing transactions can leave safe partial grants. Committed policy/audit survives lost COMMIT replies. Refresh establishes current effective access, not historical settlement. The account/State owners must provide a stable operation/account receipt and authorized committed/rejected/unknown result lookup. Never blindly delete accounts or replay uncertain mutations.
 

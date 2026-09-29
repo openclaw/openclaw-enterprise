@@ -210,7 +210,7 @@ test(
       async () => {
         await assert.rejects(
           composeProductionSignIn(t, { databaseUrl, settings: defaultInstallSettings, secrets }),
-          /requires its GitHub configuration/,
+          /requires a configured external sign-in provider/,
           "an activated Installation refuses to start without GitHub",
         );
         const deactivated = await maintain(["deactivate", "--writers-stopped"]);
@@ -226,6 +226,7 @@ test(
         });
         assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
           github: false,
+          google: false,
           sessionBinding: false,
         });
         const signedIn = await signedInHeaders(

@@ -22,31 +22,56 @@ const drafts = createDraftStore();
 let draftUserId = null;
 // The session this tab signed in to or first observed; see api-client.mjs.
 let pinnedSessionKey = null;
-let githubSessionBinding = false;
-const githubAttemptStorageKey = "occ.console.githubAttempt";
+let externalSessionBinding = false;
+const externalAttemptStorageKeys = {
+  github: "occ.console.githubAttempt",
+  google: "occ.console.googleAttempt",
+};
+const externalProviders = {
+  github: {
+    label: "GitHub",
+    origin: "https://github.com",
+    pathname: "/login/oauth/authorize",
+  },
+  google: {
+    label: "Google",
+    origin: "https://accounts.google.com",
+    pathname: "/o/oauth2/v2/auth",
+  },
+};
 const bindingValue = /^[A-Za-z0-9_-]{43}$/;
 
 function pinSessionKey(value) {
   pinnedSessionKey = typeof value === "string" && value.length > 0 ? value : null;
 }
 
-// The attemptId is per tab: another tab's GitHub callback cannot complete this tab's sign-in.
-function rememberGithubAttempt(attemptId) {
+// The attemptId is per tab: another tab's provider callback cannot complete this tab's sign-in.
+function rememberExternalAttempt(provider, attemptId) {
   try {
-    sessionStorage.setItem(githubAttemptStorageKey, attemptId);
+    for (const key of Object.values(externalAttemptStorageKeys)) {
+      sessionStorage.removeItem(key);
+    }
+    sessionStorage.setItem(externalAttemptStorageKeys[provider], attemptId);
   } catch {
     // Without tab storage the callback still signs in; this tab adopts the session it sees.
   }
 }
 
-function takeGithubAttempt() {
-  try {
-    const attemptId = sessionStorage.getItem(githubAttemptStorageKey);
-    sessionStorage.removeItem(githubAttemptStorageKey);
-    return attemptId !== null && bindingValue.test(attemptId) ? attemptId : null;
-  } catch {
-    return null;
+// Returns and clears this tab's pending attempt as { provider, attemptId }, or null.
+function takeExternalAttempt() {
+  let pendingAttempt = null;
+  for (const [provider, key] of Object.entries(externalAttemptStorageKeys)) {
+    try {
+      const attemptId = sessionStorage.getItem(key);
+      sessionStorage.removeItem(key);
+      if (pendingAttempt === null && attemptId !== null && bindingValue.test(attemptId)) {
+        pendingAttempt = { provider, attemptId };
+      }
+    } catch {
+      // Unavailable tab storage leaves no attempt to adopt.
+    }
   }
+  return pendingAttempt;
 }
 const navigation = createNavigation({
   getNamespaceId: () => namespaceId,
@@ -173,7 +198,7 @@ function restoreRetainedView(current) {
     return null;
   }
   retainedViews.delete(key);
-  const shell = renderShell(current.feature);
+  const shell = renderShell(current.feature, true);
   if (retained.title) {
     app.querySelector(".content h1").textContent = retained.title;
   }
@@ -229,8 +254,14 @@ function resetReads({ retainView = false } = {}) {
   return lifetime.reset();
 }
 
-function renderShell(feature) {
-  return shellUI.renderShell(feature, { session, namespaces, namespaceId, observabilityUrl });
+function renderShell(feature, namespaceAdmissionPending = false) {
+  return shellUI.renderShell(feature, {
+    session,
+    namespaces,
+    namespaceId,
+    observabilityUrl,
+    namespaceAdmissionPending,
+  });
 }
 
 function clearPrivate() {
@@ -254,8 +285,8 @@ function showLogin(message = "", returnPath = null) {
   clearPrivate();
   pinSessionKey(null);
   // A pending exchange runs before any login view; an abandoned attempt must not
-  // turn a later password sign-in into a GitHub failure.
-  takeGithubAttempt();
+  // turn a later password sign-in into a provider failure.
+  takeExternalAttempt();
   const url = new URL("/console/login", location.origin);
   const destination = safeReturn(returnPath);
   if (destination) {
@@ -290,44 +321,53 @@ function showLogin(message = "", returnPath = null) {
     feedback,
     submit,
   );
-  const github = button("Continue with GitHub", async () => {
-    if (pending) {
-      return;
-    }
-    pending = true;
-    submit.disabled = true;
-    github.disabled = true;
-    feedback.textContent = "";
-    try {
-      const result = await request("/api/auth/providers/github/start", { method: "POST" });
-      if (!lifetime.isCurrent(loginView)) {
+  const providerButton = (provider) => {
+    const { label, origin, pathname } = externalProviders[provider];
+    const control = button(`Continue with ${label}`, async () => {
+      if (pending) {
         return;
       }
-      const authorization = new URL(result.url);
-      if (
-        authorization.origin !== "https://github.com" ||
-        authorization.pathname !== "/login/oauth/authorize" ||
-        (githubSessionBinding && !bindingValue.test(result.attemptId ?? ""))
-      ) {
-        throw new Error("Invalid authorization URL");
+      pending = true;
+      setDisabled(true);
+      feedback.textContent = "";
+      try {
+        const result = await request(`/api/auth/providers/${provider}/start`, { method: "POST" });
+        if (!lifetime.isCurrent(loginView)) {
+          return;
+        }
+        const authorization = new URL(result.url);
+        if (
+          authorization.origin !== origin ||
+          authorization.pathname !== pathname ||
+          (externalSessionBinding && !bindingValue.test(result.attemptId ?? ""))
+        ) {
+          throw new Error("Invalid authorization URL");
+        }
+        if (externalSessionBinding) {
+          rememberExternalAttempt(provider, result.attemptId);
+        }
+        location.assign(authorization.href);
+      } catch (error) {
+        if (!lifetime.isCurrent(loginView)) {
+          return;
+        }
+        feedback.textContent =
+          error.status === 429
+            ? "Too many attempts. Please try again later."
+            : `${label} sign-in is unavailable. Try again or use your password.`;
+        pending = false;
+        setDisabled(false);
       }
-      if (githubSessionBinding) {
-        rememberGithubAttempt(result.attemptId);
-      }
-      location.assign(authorization.href);
-    } catch (error) {
-      if (!lifetime.isCurrent(loginView)) {
-        return;
-      }
-      feedback.textContent =
-        error.status === 429
-          ? "Too many attempts. Please try again later."
-          : "GitHub sign-in is unavailable. Try again or use your password.";
-      pending = false;
-      submit.disabled = false;
-      github.disabled = false;
-    }
-  });
+    });
+    return control;
+  };
+  const github = providerButton("github");
+  const google = providerButton("google");
+  function setDisabled(disabled) {
+    submit.disabled = disabled;
+    github.disabled = disabled;
+    google.disabled = disabled;
+  }
   const providers = element("div", { className: "auth-providers" });
   let pending = false;
   form.addEventListener("submit", async (event) => {
@@ -336,10 +376,9 @@ function showLogin(message = "", returnPath = null) {
       return;
     }
     pending = true;
-    submit.disabled = true;
-    github.disabled = true;
+    setDisabled(true);
     feedback.textContent = "";
-    takeGithubAttempt();
+    takeExternalAttempt();
     const active = lifetime.capture();
     try {
       const signedIn = await request("/api/auth/sign-in/email", {
@@ -366,8 +405,7 @@ function showLogin(message = "", returnPath = null) {
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
-        submit.disabled = false;
-        github.disabled = false;
+        setDisabled(false);
       }
     }
   });
@@ -389,9 +427,14 @@ function showLogin(message = "", returnPath = null) {
   );
   void request("/api/auth/providers")
     .then((available) => {
-      if (lifetime.isCurrent(loginView) && available?.github === true) {
-        githubSessionBinding = available.sessionBinding === true;
-        providers.append(github);
+      if (lifetime.isCurrent(loginView)) {
+        externalSessionBinding = available?.sessionBinding === true;
+        if (available?.github === true) {
+          providers.append(github);
+        }
+        if (available?.google === true) {
+          providers.append(google);
+        }
       }
     })
     .catch(() => {
@@ -440,18 +483,22 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     return;
   }
   if (current.feature !== "login" && !retained) {
-    shell = renderShell(current.feature);
+    shell = renderShell(current.feature, true);
     panel(shell.view, "Loading…", "Checking your session and Namespace access.");
   }
   let sessionResolved = false;
   let accessResolved = false;
-  const githubAttempt = takeGithubAttempt();
-  if (githubAttempt !== null && current.url.searchParams.get("authError") !== "github") {
-    // Adopt only the session this tab's own GitHub attempt created.
+  const authError = current.url.searchParams.get("authError");
+  const providerError = Object.hasOwn(externalProviders, authError ?? "")
+    ? externalProviders[authError]
+    : null;
+  const externalAttempt = takeExternalAttempt();
+  if (externalAttempt !== null && providerError === null) {
+    // Adopt only the session this tab's own provider attempt created.
     try {
-      const confirmed = await request("/api/auth/providers/github/result", {
+      const confirmed = await request(`/api/auth/providers/${externalAttempt.provider}/result`, {
         method: "POST",
-        body: { attemptId: githubAttempt },
+        body: { attemptId: externalAttempt.attemptId },
       });
       if (!lifetime.isCurrent(active)) {
         return;
@@ -460,7 +507,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     } catch {
       if (lifetime.isCurrent(active)) {
         showLogin(
-          "Could not sign in with GitHub. Try again or use your password.",
+          `Could not sign in with ${externalProviders[externalAttempt.provider].label}. Try again or use your password.`,
           "/console/agents",
         );
       }
@@ -483,14 +530,14 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     session = resolvedSession;
     if (session === null) {
       const destination =
-        current.url.searchParams.get("authError") === "github"
+        providerError !== null
           ? "/console/agents"
           : current.feature === "login"
             ? current.url.searchParams.get("return")
             : pageUrl(current.target, current.namespace);
       showLogin(
-        current.url.searchParams.get("authError") === "github"
-          ? "Could not sign in with GitHub. Try again or use your password."
+        providerError !== null
+          ? `Could not sign in with ${providerError.label}. Try again or use your password.`
           : current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
@@ -640,7 +687,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         return;
       }
     }
-    shell = renderShell(current.feature);
+    shell = renderShell(current.feature, false);
     const viewState = {
       active,
       pending: 0,
@@ -1023,33 +1070,21 @@ async function revalidateMountedAgent(current) {
   }
 }
 
-// A pristine sharing form is always mounted on Agent detail; it must not disable
-// the access recheck. Any other form, or a sharing form with input, still does.
-function hasUnfinishedForm() {
-  if (app.querySelector("dialog[open]")) {
-    return true;
-  }
-  return Array.from(app.querySelectorAll("form")).some(
-    (form) =>
-      !form.classList.contains("agent-access-form") ||
-      Array.from(form.elements).some((field) =>
-        field.type === "checkbox" ? field.checked : Boolean(field.value),
-      ),
-  );
-}
-
 function resumePage() {
-  if (document.hidden || !session || loggingOut || hasUnfinishedForm()) {
+  if (document.hidden || !session || loggingOut || app.querySelector("dialog[open]")) {
     return;
   }
   if (resumePending) {
     return;
   }
   const current = route();
-  const pending =
-    current.agentId && mountedRouteKey === routeKey(current)
-      ? revalidateMountedAgent(current)
-      : loadPage({ reuseView: true });
+  // Agent detail rechecks in place and keeps its forms, so their input must not skip the
+  // check. Other pages reload the view, which would discard an unfinished form.
+  const inPlace = current.agentId && mountedRouteKey === routeKey(current);
+  if (!inPlace && app.querySelector("form")) {
+    return;
+  }
+  const pending = inPlace ? revalidateMountedAgent(current) : loadPage({ reuseView: true });
   resumePending = pending;
   void pending.finally(() => {
     if (resumePending === pending) {

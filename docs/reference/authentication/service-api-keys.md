@@ -112,7 +112,8 @@ rmdir -- "$OCC_SESSION_DIRECTORY"
 ## Manage keys with a service administrator
 
 An Installation-scoped non-Agent service principal with `administer` can issue
-or revoke keys without a human cookie. Set `OCC_ADMIN_SERVICE_KEY_FILE` to its
+or revoke keys without a human cookie. It can issue keys only for principals
+whose grants it already holds, as described in [issuance](#issuance). Set `OCC_ADMIN_SERVICE_KEY_FILE` to its
 protected key-response file and `OCC_SERVICE_KEY_FILE` to a new, private output
 file as in [issuance](#issue-a-service-key). Send the admin key through stdin so
 it does not appear in process arguments:
@@ -174,7 +175,11 @@ export key values, password hashes, sessions, or full table dumps.
 ## Issuance
 
 `POST /api/auth/service-keys` requires current IAM `administer` on the singleton
-Installation, even for a Namespace key. The body names an existing
+Installation, even for a Namespace key. A key carries every grant of its
+principal, so the caller must also already hold each of that principal's grants
+at the same or a broader scope; otherwise issuance returns `403`. An
+administrator bound only to the exact Installation cannot issue a key for the
+unscoped bootstrap service administrator or for a Namespace principal. The body names an existing
 `servicePrincipalId`, its exact `namespaceId` when scoped, and a nonblank `name`
 of 1–32 characters. Optional `expiresIn` is an integer from 86,400 to
 31,536,000 seconds (1–365 days); omission gives 30 days. Other fields are

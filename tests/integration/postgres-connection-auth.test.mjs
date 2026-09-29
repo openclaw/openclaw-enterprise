@@ -145,3 +145,72 @@ test("workload authentication rejects password fallback and unverified TLS", asy
     /Unsupported OCC_DATABASE_AUTH/,
   );
 });
+
+test("an idle pooled client error is logged instead of crashing the process", async () => {
+  const pool = await createPostgresPool("postgresql://occ_app:test-only@localhost/occ", {
+    authMode: "password",
+  });
+  const writes = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    writes.push(String(chunk));
+    return typeof rest.at(-1) === "function" ? (rest.at(-1)(), true) : true;
+  };
+  try {
+    // pg-pool re-emits an idle client's socket error on the Pool. Without a
+    // listener, EventEmitter throws it and Node exits.
+    const error = Object.assign(new Error("terminating connection host=db.internal"), {
+      code: "57P01",
+    });
+    assert.doesNotThrow(() => pool.emit("error", error));
+  } finally {
+    process.stderr.write = write;
+    await pool.end();
+  }
+  const records = writes.map((line) => JSON.parse(line));
+  assert.deepEqual(records, [
+    { level: "warn", event: "database.idle-client-error", code: "57P01" },
+  ]);
+});
+
+test(
+  "the pool survives PostgreSQL terminating an idle backend",
+  {
+    skip: process.env.OCC_TEST_DATABASE_URL
+      ? false
+      : "Set OCC_TEST_DATABASE_URL to terminate a real idle PostgreSQL backend.",
+  },
+  async () => {
+    const url = process.env.OCC_TEST_DATABASE_URL;
+    const pool = await createPostgresPool(url, { authMode: "password", max: 1 });
+    const killer = new Client({ connectionString: url });
+    const write = process.stderr.write;
+    const writes = [];
+    process.stderr.write = (chunk, ...rest) => {
+      writes.push(String(chunk));
+      return typeof rest.at(-1) === "function" ? (rest.at(-1)(), true) : true;
+    };
+    try {
+      const {
+        rows: [{ pid }],
+      } = await pool.query("SELECT pg_backend_pid() AS pid");
+      assert.equal(pool.idleCount, 1);
+      await killer.connect();
+      const { rows } = await killer.query("SELECT pg_terminate_backend($1) AS ok", [pid]);
+      assert.equal(rows[0].ok, true);
+      // pg-pool discards the broken idle client after emitting its error.
+      const deadline = Date.now() + 5000;
+      while (pool.idleCount !== 0) {
+        assert.ok(Date.now() < deadline, "the terminated idle client was not discarded");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const next = await pool.query("SELECT pg_backend_pid() AS pid");
+      assert.notEqual(next.rows[0].pid, pid);
+    } finally {
+      process.stderr.write = write;
+      await killer.end();
+      await pool.end();
+    }
+    assert.ok(writes.some((line) => JSON.parse(line).code === "57P01"));
+  },
+);

@@ -6,15 +6,19 @@ usage() {
 Usage: scripts/upgrade-production-images \
   --kubeconfig FILE --context NAME --namespace NAME --release NAME \
   --values FILE --installation FILE \
+  [--candidate-values FILE] [--candidate-installation FILE] \
   [--controller-image IMAGE@sha256:DIGEST] \
+  [--broker-image IMAGE@sha256:DIGEST] \
   [--runtime-image IMAGE@sha256:DIGEST] \
-  --source-revision FULL_GIT_SHA --evidence-dir NEW_DIRECTORY \
-  [--occ PATH] [--timeout-seconds SECONDS]
+  --source-revision FULL_GIT_SHA --evidence-dir DIRECTORY \
+  [--occ PATH] [--timeout-seconds SECONDS] [--resume] [--migration-history-checked]
 
-Select at least one image. A controller-only upgrade leaves the Installation and
-Agent revisions unchanged. A runtime upgrade restarts OCC on its current image,
-then redeploys every Agent that was running when the command began. OCC_URL,
-OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
+Select at least one image. Candidate files contain reviewed settings changes;
+image fields are selected only by the image flags. A controller-only upgrade
+does not deploy Agent revisions. A runtime upgrade restarts OCC on its current image,
+then redeploys every Agent that was running when the command began. Resume with
+the same arguments and evidence directory after inspecting any unknown outcomes.
+OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
 EOF
 }
 
@@ -58,11 +62,29 @@ json_file_name() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
-normalize_yaml_without() {
+project_yaml() {
   local path=$1
   local filter=$2
   local output=$3
-  yq -o=json '.' "$path" | jq -S "$filter" >"$output"
+  yq -p=yaml -o=json '.' "$path" | jq -S "$filter" >"$output"
+}
+
+matches_yaml() {
+  local actual=$1
+  local expected=$2
+  yq -p=yaml -o=json '.' "$actual" | jq -eS 'select(type == "object")' >"$evidence_dir/compare-actual.json" || return 1
+  yq -p=yaml -o=json '.' "$expected" | jq -eS 'select(type == "object")' >"$evidence_dir/compare-expected.json" || return 1
+  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || return 1
+  cmp -s "$evidence_dir/compare-actual.json" "$evidence_dir/compare-expected.json"
+}
+
+install_atomically() {
+  local source=$1
+  local destination=$2
+  local temporary
+  temporary=$(mktemp "${destination}.upgrade.XXXXXXXX")
+  install -m 600 "$source" "$temporary"
+  mv -f "$temporary" "$destination"
 }
 
 kubeconfig=
@@ -71,16 +93,21 @@ namespace=
 release=
 values=
 installation=
+requested_values=
+requested_installation=
 controller_image=
+broker_image=
 runtime_image=
 source_revision=
 evidence_dir=
 occ=occ
 timeout_seconds=900
+resume=0
+migration_history_checked=0
 
 while (($#)); do
   case "$1" in
-    --kubeconfig | --context | --namespace | --release | --values | --installation | --controller-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds)
+    --kubeconfig | --context | --namespace | --release | --values | --installation | --candidate-values | --candidate-installation | --controller-image | --broker-image | --runtime-image | --source-revision | --evidence-dir | --occ | --timeout-seconds)
       (($# >= 2)) || die "$1 requires a value."
       case "$1" in
         --kubeconfig) kubeconfig=$2 ;;
@@ -89,7 +116,10 @@ while (($#)); do
         --release) release=$2 ;;
         --values) values=$2 ;;
         --installation) installation=$2 ;;
+        --candidate-values) requested_values=$2 ;;
+        --candidate-installation) requested_installation=$2 ;;
         --controller-image) controller_image=$2 ;;
+        --broker-image) broker_image=$2 ;;
         --runtime-image) runtime_image=$2 ;;
         --source-revision) source_revision=$2 ;;
         --evidence-dir) evidence_dir=$2 ;;
@@ -97,6 +127,14 @@ while (($#)); do
         --timeout-seconds) timeout_seconds=$2 ;;
       esac
       shift 2
+      ;;
+    --resume)
+      resume=1
+      shift
+      ;;
+    --migration-history-checked)
+      migration_history_checked=1
+      shift
       ;;
     -h | --help)
       usage
@@ -112,20 +150,41 @@ done
 for input in kubeconfig context namespace release values installation source_revision evidence_dir; do
   [[ -n "${!input}" ]] || die "--${input//_/-} is required."
 done
-[[ -n "$controller_image" || -n "$runtime_image" ]] ||
-  die "select --controller-image, --runtime-image, or both."
+[[ -n "$controller_image" || -n "$broker_image" || -n "$runtime_image" ]] ||
+  die "select a controller, broker, or runtime image."
 [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || die "--timeout-seconds must be positive."
 [[ -z "$controller_image" ]] || immutable_image "$controller_image" ||
   die "--controller-image must be an approved immutable SHA-256 image reference."
+[[ -z "$broker_image" ]] || immutable_image "$broker_image" ||
+  die "--broker-image must be an approved immutable SHA-256 image reference."
 [[ -z "$runtime_image" ]] || immutable_image "$runtime_image" ||
   die "--runtime-image must be an approved immutable SHA-256 image reference."
 [[ "$source_revision" =~ ^[a-f0-9]{40}$ ]] ||
   die "--source-revision must be a full lowercase Git commit SHA."
-[[ ! -e "$evidence_dir" ]] || die "--evidence-dir must not already exist."
+if ((resume)); then
+  [[ -d "$evidence_dir" && ! -L "$evidence_dir" ]] || die "--resume requires the original evidence directory."
+  mode=$(private_file_mode "$evidence_dir")
+  (((8#$mode & 077) == 0)) || die "the evidence directory must not grant group or other permissions."
+else
+  [[ ! -e "$evidence_dir" ]] || die "--evidence-dir must not already exist."
+  ((migration_history_checked == 0)) || die "--migration-history-checked is only valid with --resume."
+fi
 
 require_private_file "$kubeconfig"
 require_private_file "$values"
 require_private_file "$installation"
+[[ -z "$requested_values" ]] || require_private_file "$requested_values"
+[[ -z "$requested_installation" ]] || require_private_file "$requested_installation"
+# The protected baselines are replaced during execution; candidate inputs must
+# remain independent, including when different paths are hard links.
+python3 - "$values" "$installation" "$requested_values" "$requested_installation" <<'PYTHON'
+import os, sys
+paths = [path for path in sys.argv[1:] if path]
+for index, path in enumerate(paths):
+    for other in paths[:index]:
+        if os.path.samefile(path, other):
+            sys.exit("Baseline and candidate inputs must be distinct files.")
+PYTHON
 : "${OCC_URL:?Set OCC_URL to the trusted HTTPS OCC origin.}"
 [[ "$OCC_URL" == https://* ]] || die "OCC_URL must use HTTPS."
 : "${OCC_SERVICE_KEY_FILE:?Set OCC_SERVICE_KEY_FILE to a protected service-key response.}"
@@ -133,28 +192,74 @@ require_private_file "$OCC_SERVICE_KEY_FILE"
 if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
   require_regular_file "$OCC_CA_BUNDLE"
 fi
-for command in cmp helm jq kubectl python3 yq; do
+for command in cmp helm jq kubectl mktemp python3 yq; do
   require_command "$command"
 done
 [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
 
 umask 077
-mkdir -m 700 "$evidence_dir"
-if [[ -n "$runtime_image" ]]; then
-  mkdir -m 700 "$evidence_dir/inventory" "$evidence_dir/dispatch" "$evidence_dir/status"
+if ((resume == 0)); then
+  mkdir -m 700 "$evidence_dir"
 fi
-printf '%s\n' "$source_revision" >"$evidence_dir/source-revision"
-[[ -z "$controller_image" ]] || printf '%s\n' "$controller_image" >"$evidence_dir/controller-image"
-[[ -z "$runtime_image" ]] || printf '%s\n' "$runtime_image" >"$evidence_dir/runtime-image"
-cp "$values" "$evidence_dir/before-values.yaml"
-cp "$installation" "$evidence_dir/before-installation.yaml"
+mkdir "$evidence_dir/.upgrade-lock" 2>/dev/null || die "the evidence directory is locked; check for a running upgrade before removing its stale .upgrade-lock directory."
+trap 'rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+
+# Bind resume to the same inputs and chart. Kubeconfig bytes bind the selected
+# context to the same cluster even if the file is later replaced.
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" <<'PYTHON'
+import hashlib, json, os, sys
+chart = "deploy/helm/openclaw-enterprise"
+h = hashlib.sha256()
+for root, dirs, files in os.walk(chart):
+    dirs.sort()
+    for name in sorted(files):
+        path = os.path.join(root, name)
+        h.update(path.encode() + b"\0" + open(path, "rb").read() + b"\0")
+def digest(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+print(json.dumps({"arguments": sys.argv[1:], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": h.hexdigest(), "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+PYTHON
+)
+if ((resume)); then
+  require_private_file "$evidence_dir/parameters.json"
+  original_parameters=$(python3 - "$evidence_dir/parameters.json" <<'PYTHON'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = json.load(source)
+values.pop("pairEvidence", None)
+values.pop("preparedEvidence", None)
+print(json.dumps(values, sort_keys=True))
+PYTHON
+  )
+  [[ "$parameters" == "$original_parameters" ]] || die "resume inputs, kubeconfig, CA, script, chart, or flow changed; investigate before continuing."
+  [[ -f "$evidence_dir/prepared" ]] || die "preparation did not finish; no mutation was started. Start again with a new evidence directory."
+else
+  printf '%s\n' "$parameters" >"$evidence_dir/parameters.json"
+fi
 
 kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
 helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
 
+prepare_upgrade() {
+if [[ -n "$runtime_image" ]]; then
+  mkdir -m 700 "$evidence_dir/inventory" "$evidence_dir/dispatch" "$evidence_dir/status"
+fi
+printf '%s\n' "$source_revision" >"$evidence_dir/source-revision"
+[[ -z "$controller_image" ]] || printf '%s\n' "$controller_image" >"$evidence_dir/controller-image"
+[[ -z "$broker_image" ]] || printf '%s\n' "$broker_image" >"$evidence_dir/broker-image"
+[[ -z "$runtime_image" ]] || printf '%s\n' "$runtime_image" >"$evidence_dir/runtime-image"
+cp "$values" "$evidence_dir/before-values.yaml"
+cp "$installation" "$evidence_dir/before-installation.yaml"
+[[ -z "$requested_values" ]] || cp "$requested_values" "$evidence_dir/requested-values.yaml"
+[[ -z "$requested_installation" ]] || cp "$requested_installation" "$evidence_dir/requested-installation.yaml"
+
 "${kube[@]}" --request-timeout=15s get --raw=/readyz >"$evidence_dir/kubernetes-readyz"
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/before-helm-status.txt"
+helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-status.json"
+jq -e '.info.status == "deployed" and (.version | type == "number")' \
+  "$evidence_dir/before-helm-status.json" >/dev/null || die "the Helm release must be deployed before starting an upgrade."
 helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/before-live-values.yaml"
 installation_secret=$(
   yq -er '.installation.secretName // "occ-installation-startup"' \
@@ -167,6 +272,9 @@ installation_key=$(
 live_installation_secret="$evidence_dir/before-live-installation-secret.json"
 "${kube[@]}" --namespace "$namespace" get secret "$installation_secret" --output json \
   >"$live_installation_secret"
+jq -e '(.metadata.uid | type == "string" and length > 0) and
+  (.metadata.resourceVersion | type == "string" and length > 0)' \
+  "$live_installation_secret" >/dev/null || die "the live Installation Secret lacks a UID or resource version."
 if ! cluster_installation_id=$(
   jq -er '.metadata.annotations["openclaw.dev/installation-id"]' "$live_installation_secret"
 ); then
@@ -176,29 +284,10 @@ jq -er --arg key "$installation_key" '.data[$key]' "$live_installation_secret" |
   python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' \
     >"$evidence_dir/before-live-installation.yaml"
 
-values_filter='.'
-if [[ -n "$controller_image" ]]; then
-  values_filter='del(.images.controller)'
-fi
-normalize_yaml_without "$values" "$values_filter" \
-  "$evidence_dir/before-values-without-controller.json"
-normalize_yaml_without "$evidence_dir/before-live-values.yaml" "$values_filter" \
-  "$evidence_dir/before-live-values-without-controller.json"
-cmp -s "$evidence_dir/before-values-without-controller.json" \
-  "$evidence_dir/before-live-values-without-controller.json" ||
-  die "the protected Helm values differ from the live release outside the controller image; refresh --values before upgrading."
-
-runtime_filter='.'
-if [[ -n "$runtime_image" ]]; then
-  runtime_filter='del(.drivers.compute.configuration.images.gateway, .drivers.compute.configuration.images.agent)'
-fi
-normalize_yaml_without "$installation" "$runtime_filter" \
-  "$evidence_dir/before-installation-without-runtime-images.json"
-normalize_yaml_without "$evidence_dir/before-live-installation.yaml" "$runtime_filter" \
-  "$evidence_dir/before-live-installation-without-runtime-images.json"
-cmp -s "$evidence_dir/before-installation-without-runtime-images.json" \
-  "$evidence_dir/before-live-installation-without-runtime-images.json" ||
-  die "the protected Installation YAML differs from the live Secret outside the runtime images; refresh --installation before upgrading."
+matches_yaml "$evidence_dir/before-values.yaml" "$evidence_dir/before-live-values.yaml" ||
+  die "the protected Helm values differ from the live release; refresh --values before upgrading."
+matches_yaml "$evidence_dir/before-installation.yaml" "$evidence_dir/before-live-installation.yaml" ||
+  die "the protected Installation YAML differs from the live Secret; refresh --installation before upgrading."
 
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/before-workloads.json"
@@ -248,30 +337,101 @@ if [[ -n "$runtime_image" ]]; then
   ' "$inventory" >"$targets"
   target_count=$(wc -l <"$targets" | tr -d ' ')
 
-  current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$installation")
-  current_agent=$(yq -er '.drivers.compute.configuration.images.agent' "$installation")
+  current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$evidence_dir/before-installation.yaml")
+  current_agent=$(yq -er '.drivers.compute.configuration.images.agent' "$evidence_dir/before-installation.yaml")
   [[ "$runtime_image" != "$current_gateway" || "$runtime_image" != "$current_agent" ]] ||
     die "both runtime image slots already select the candidate digest."
 fi
 
-current_controller=$(yq -er '.images.controller' "$values")
+current_controller=$(yq -er '.images.controller' "$evidence_dir/before-values.yaml")
+repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$evidence_dir/before-values.yaml")
 if [[ -n "$controller_image" && -z "$runtime_image" && "$controller_image" == "$current_controller" ]]; then
-  die "the controller image already selects the candidate digest."
+  if [[ -z "$broker_image" ]]; then
+    die "the controller image already selects the candidate digest."
+  elif [[ "$repository_enabled" == true ]] &&
+    [[ "$broker_image" == "$(yq -r '.repositoryCredentials.image // ""' "$evidence_dir/before-values.yaml")" ]]; then
+    die "the controller and broker already select the candidate digests."
+  fi
 fi
 selected_controller=${controller_image:-$current_controller}
 
 candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
-cp "$values" "$candidate_values"
-cp "$installation" "$candidate_installation"
+if [[ -n "$requested_values" ]]; then
+  cp "$evidence_dir/requested-values.yaml" "${candidate_values}.requested"
+else
+  cp "$evidence_dir/before-values.yaml" "${candidate_values}.requested"
+fi
+if [[ -n "$requested_installation" ]]; then
+  cp "$evidence_dir/requested-installation.yaml" "${candidate_installation}.requested"
+else
+  cp "$evidence_dir/before-installation.yaml" "${candidate_installation}.requested"
+fi
+# Keep all settings protected except the supported proxy and curated catalog
+# selections. New configuration fields remain protected until explicitly reviewed.
+values_guard='del(.api.channelDirectoryProxyUrl) | if .api == {} then del(.api) else . end'
+installation_guard='del(.drivers.plugin.id, .drivers.plugin.configuration.catalogSource) |
+  if .drivers.plugin.configuration == {} then del(.drivers.plugin.configuration) else . end |
+  if .drivers.plugin == {} then del(.drivers.plugin) else . end'
+project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
+project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
+cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
+  die "candidate values change a protected setting; only api.channelDirectoryProxyUrl may change."
+project_yaml "$evidence_dir/before-installation.yaml" "$installation_guard" "$evidence_dir/installation-guard.json"
+project_yaml "${candidate_installation}.requested" "$installation_guard" "$evidence_dir/candidate-installation-guard.json"
+cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json" ||
+  die "candidate Installation changes a protected setting; only the curated Plugin Driver selection may change."
+plugin_guard='if (.drivers | type) == "object" and (.drivers | has("plugin"))
+  then {plugin: .drivers.plugin} else {} end'
+project_yaml "$evidence_dir/before-installation.yaml" "$plugin_guard" "$evidence_dir/plugin-guard.json"
+project_yaml "${candidate_installation}.requested" "$plugin_guard" "$evidence_dir/candidate-plugin-guard.json"
+if ! cmp -s "$evidence_dir/plugin-guard.json" "$evidence_dir/candidate-plugin-guard.json"; then
+  jq -e '.plugin.id == "codex-plugin" and .plugin.configuration.catalogSource == "openai-curated"' \
+    "$evidence_dir/candidate-plugin-guard.json" >/dev/null ||
+    die "candidate Installation changes the Plugin Driver to an unsupported selection; select codex-plugin with openai-curated."
+fi
+matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
+matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
+mv "${candidate_values}.requested" "$candidate_values"
+mv "${candidate_installation}.requested" "$candidate_installation"
+
+if [[ "$repository_enabled" == true ]]; then
+  [[ -n "$controller_image" && -n "$broker_image" ]] ||
+    die "repository-enabled upgrades require explicit controller and broker image selections."
+  [[ $(yq -r '.drivers.repo.configuration.controlSocket // ""' "$candidate_installation") == "/run/openclaw/repository-control/private/control.sock" ]] ||
+    die "the repository Driver must use the worker's private broker socket."
+  for command in docker node openssl; do
+    require_command "$command"
+  done
+  "${kube[@]}" --request-timeout=15s get nodes --output json >"$evidence_dir/before-nodes.json"
+  yq -o=json '.' "$candidate_values" >"$evidence_dir/node-selector-values.json"
+  python3 scripts/upgrade-node-platform.py "$evidence_dir/before-nodes.json" \
+    "$evidence_dir/node-selector-values.json" >"$evidence_dir/eligible-nodes.json" ||
+    die "cannot identify a single eligible control-plane platform."
+  qualified_platform=$(jq -er '.platform' "$evidence_dir/eligible-nodes.json")
+  node scripts/upgrade-repository-image-probe.mjs "$controller_image" "$broker_image" \
+    "$qualified_platform" >"$evidence_dir/pair-proof.json" ||
+    die "the selected repository image pair failed compatibility qualification."
+  python3 - "$evidence_dir/parameters.json" "$evidence_dir/pair-proof.json" "$evidence_dir/eligible-nodes.json" "$evidence_dir/node-selector-values.json" \
+    >"$evidence_dir/parameters.prepared.json" <<'PYTHON'
+import hashlib, json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    parameters = json.load(source)
+parameters["pairEvidence"] = {path.rsplit("/", 1)[-1]: hashlib.sha256(open(path, "rb").read()).hexdigest() for path in sys.argv[2:]}
+print(json.dumps(parameters, sort_keys=True))
+PYTHON
+  mv "$evidence_dir/parameters.prepared.json" "$evidence_dir/parameters.json"
+elif [[ -n "$broker_image" ]]; then
+  die "--broker-image requires repository credentials to be enabled."
+fi
 
 # Keep the endpoint already pinned by certificates and repository sessions.
 # Read it only after protected/live values and Installation identity agree.
-if [[ $(yq -r '.repositoryCredentials.enabled // false' "$values") == true ]]; then
+if [[ $(yq -r '.repositoryCredentials.enabled // false' "$evidence_dir/before-values.yaml") == true ]]; then
   broker_deployment="$evidence_dir/before-broker-deployment.json"
   "${kube[@]}" --namespace "$namespace" get deployment openclaw-enterprise-worker \
     --output json >"$broker_deployment"
-  yq -o=json '.' "$values" >"$evidence_dir/before-broker-values.json"
+  yq -o=json '.' "$evidence_dir/before-values.yaml" >"$evidence_dir/before-broker-values.json"
   broker_hostname=$(python3 - "$broker_deployment" "$evidence_dir/before-broker-values.json" "$namespace" "$release" <<'PYTHON'
 import json, re, sys
 try:
@@ -302,11 +462,18 @@ if [[ -n "$controller_image" ]]; then
   CONTROLLER_IMAGE="$controller_image" yq -i \
     '.images.controller = strenv(CONTROLLER_IMAGE)' "$candidate_values"
 fi
+if [[ -n "$broker_image" ]]; then
+  BROKER_IMAGE="$broker_image" yq -i \
+    '.repositoryCredentials.image = strenv(BROKER_IMAGE)' "$candidate_values"
+fi
 if [[ -n "$runtime_image" ]]; then
   RUNTIME_IMAGE="$runtime_image" yq -i \
     '.drivers.compute.configuration.images.gateway = strenv(RUNTIME_IMAGE) |
      .drivers.compute.configuration.images.agent = strenv(RUNTIME_IMAGE)' \
     "$candidate_installation"
+fi
+if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installation.yaml"; then
+  touch "$evidence_dir/installation-changed"
   installation_checksum=$(
     python3 -c \
       'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
@@ -323,48 +490,344 @@ helm template "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
 helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
   --values "$candidate_values" --dry-run=server --hide-secret \
   >"$evidence_dir/server-dry-run.txt"
+printf '%s\n' "$installation_id" >"$evidence_dir/installation-id"
+printf '%s\n' "$installation_secret" >"$evidence_dir/installation-secret-name"
+printf '%s\n' "$installation_key" >"$evidence_dir/installation-secret-key"
+printf '%s\n' "$selected_controller" >"$evidence_dir/selected-controller"
+python3 scripts/upgrade-evidence.py capture "$evidence_dir" ||
+  die "cannot bind prepared upgrade evidence."
+touch "$evidence_dir/prepared"
+}
 
-# The protected local inputs become the recovery source before either cluster
-# mutation. Their original bytes remain in the private evidence directory.
-install -m 600 "$candidate_values" "$values"
-if [[ -n "$runtime_image" ]]; then
-  install -m 600 "$candidate_installation" "$installation"
-  "${kube[@]}" --namespace "$namespace" create secret generic "$installation_secret" \
-    --from-file="$installation_key=$installation" --dry-run=client --output yaml |
-    INSTALLATION_ID="$installation_id" yq \
-      '.metadata.annotations."openclaw.dev/installation-id" = strenv(INSTALLATION_ID)' |
-    "${kube[@]}" --namespace "$namespace" apply --filename - \
-    >"$evidence_dir/installation-secret-apply.txt"
+if ((resume == 0)); then
+  prepare_upgrade
 fi
 
-helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
-  --values "$values" --wait --timeout 5m >"$evidence_dir/helm-upgrade.txt"
+candidate_values="$evidence_dir/candidate-values.yaml"
+candidate_installation="$evidence_dir/candidate-installation.yaml"
+python3 scripts/upgrade-evidence.py verify "$evidence_dir" ||
+  die "prepared upgrade evidence changed; investigate before continuing."
+current_controller=$(yq -er '.images.controller' "$evidence_dir/before-values.yaml")
+repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$candidate_values")
+verify_pair_nodes() {
+  "${kube[@]}" --request-timeout=15s get nodes --output json >"$evidence_dir/current-nodes.json"
+  python3 scripts/upgrade-node-platform.py "$evidence_dir/current-nodes.json" \
+    "$evidence_dir/node-selector-values.json" >"$evidence_dir/current-eligible-nodes.json" ||
+    die "cannot verify the eligible control-plane nodes."
+  cmp -s "$evidence_dir/eligible-nodes.json" "$evidence_dir/current-eligible-nodes.json" ||
+    die "the eligible control-plane nodes changed after image qualification."
+}
+if [[ "$repository_enabled" == true ]]; then
+  python3 - "$evidence_dir/pair-proof.json" "$evidence_dir/eligible-nodes.json" "$evidence_dir/node-selector-values.json" \
+    "$evidence_dir/parameters.json" <<'PYTHON' || die "the image-pair proof changed; investigate before continuing."
+import hashlib, json, sys
+with open(sys.argv[4], encoding="utf-8") as f:
+    expected = json.load(f)["pairEvidence"]
+actual = {path.rsplit("/", 1)[-1]: hashlib.sha256(open(path, "rb").read()).hexdigest() for path in sys.argv[1:4]}
+if actual != expected:
+    sys.exit(1)
+PYTHON
+  verify_pair_nodes
+  if ((resume)); then
+    resume_pair_proof=$(mktemp "$evidence_dir/pair-resume.XXXXXXXX.json")
+    qualified_platform=$(jq -er '.platform' "$evidence_dir/eligible-nodes.json")
+    node scripts/upgrade-repository-image-probe.mjs "$controller_image" "$broker_image" \
+      "$qualified_platform" >"$resume_pair_proof" || die "the selected image pair could not be requalified."
+    jq -e --slurpfile original "$evidence_dir/pair-proof.json" \
+      '.controller == $original[0].controller and .broker == $original[0].broker' \
+      "$resume_pair_proof" >/dev/null || die "the selected image identities changed since preparation."
+    verify_pair_nodes
+  fi
+fi
+targets="$evidence_dir/targets.jsonl"
+target_count=$(wc -l <"$targets" | tr -d ' ')
+installation_id=$(cat "$evidence_dir/installation-id")
+installation_secret=$(cat "$evidence_dir/installation-secret-name")
+installation_key=$(cat "$evidence_dir/installation-secret-key")
+selected_controller=$(cat "$evidence_dir/selected-controller")
+if [[ -n "$requested_values" ]]; then
+  matches_yaml "$requested_values" "$evidence_dir/requested-values.yaml" || die "reviewed candidate values changed after preparation."
+fi
+if [[ -n "$requested_installation" ]]; then
+  matches_yaml "$requested_installation" "$evidence_dir/requested-installation.yaml" || die "reviewed candidate Installation changed after preparation."
+fi
 
+# Read the live state on every attempt before deciding whether a mutation is
+# needed. An accepted write whose response was lost must not be repeated.
+helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/current-helm-status.json"
+helm_state=$(jq -er '.info.status' "$evidence_dir/current-helm-status.json")
+helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/current-live-values.yaml"
+matches_yaml "$values" "$evidence_dir/before-values.yaml" ||
+  matches_yaml "$values" "$candidate_values" || die "protected Helm values changed outside this upgrade."
+matches_yaml "$installation" "$evidence_dir/before-installation.yaml" ||
+  matches_yaml "$installation" "$candidate_installation" || die "protected Installation changed outside this upgrade."
+matches_yaml "$evidence_dir/current-live-values.yaml" "$evidence_dir/before-live-values.yaml" ||
+  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values" || die "live Helm values changed outside this upgrade."
+
+live_secret="$evidence_dir/current-live-installation-secret.json"
+"${kube[@]}" --namespace "$namespace" get secret "$installation_secret" --output json >"$live_secret"
+jq -e --arg id "$installation_id" --slurpfile before "$evidence_dir/before-live-installation-secret.json" '
+  .metadata.uid == $before[0].metadata.uid and
+  .metadata.annotations["openclaw.dev/installation-id"] == $id and
+  (.data | del(.[$key])) == ($before[0].data | del(.[$key]))
+' --arg key "$installation_key" "$live_secret" >/dev/null || die "the Installation Secret identity or unrelated data changed."
+jq -er --arg key "$installation_key" '.data[$key]' "$live_secret" |
+  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read().strip(), validate=True))' \
+    >"$evidence_dir/current-live-installation.yaml"
+matches_yaml "$evidence_dir/current-live-installation.yaml" "$evidence_dir/before-live-installation.yaml" ||
+  matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation" ||
+  die "the live Installation Secret changed outside this upgrade."
+
+case "$helm_state" in
+  deployed | failed) ;;
+  *) die "Helm reports $helm_state; resolve the in-progress or unknown release before resuming." ;;
+esac
+if [[ ! -f "$evidence_dir/helm-started" && "$helm_state" != deployed ]]; then
+  die "the Helm release changed before this upgrade started; investigate before continuing."
+fi
+if [[ ! -f "$evidence_dir/helm-started" ]]; then
+  jq -e --slurpfile before "$evidence_dir/before-helm-status.json" \
+    '.version == $before[0].version' "$evidence_dir/current-helm-status.json" >/dev/null ||
+    die "the Helm release revision changed before this upgrade started."
+fi
+
+helm_complete=0
+if [[ -f "$evidence_dir/helm-started" && "$helm_state" == deployed ]] &&
+  matches_yaml "$evidence_dir/current-live-values.yaml" "$candidate_values"; then
+  # A deployed Helm revision includes successful hooks, but ensure it is newer
+  # than the baseline before interpreting a lost response as success.
+  if jq -e --slurpfile before "$evidence_dir/before-helm-status.json" \
+    '.version > $before[0].version' "$evidence_dir/current-helm-status.json" >/dev/null; then
+    helm_complete=1
+  fi
+fi
+if ((helm_complete)) && ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
+  die "Helm selected the candidate but the live Installation Secret does not; investigate before continuing."
+fi
+if [[ -f "$evidence_dir/helm-started" ]] && ((helm_complete == 0)); then
+  ((migration_history_checked)) || die "Helm's outcome is unresolved. Inspect the release and initialization Job, run the candidate migration --check against the retained database, then resume with --migration-history-checked."
+  # A Job with no running Pods can still create a new Pod. Require both the
+  # Job and its Pods to be terminal before another migration may start.
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get jobs \
+    --selector "app.kubernetes.io/instance=$release,app.kubernetes.io/component=initialization" \
+    --output json >"$evidence_dir/current-initialization-jobs.json"
+  jq -e 'all(.items[]; any(.status.conditions[]?; (.type == "Complete" or .type == "Failed") and .status == "True"))' \
+    "$evidence_dir/current-initialization-jobs.json" >/dev/null || die "an initialization Job is still active; wait for it to finish before retrying Helm."
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" get pods \
+    --selector "app.kubernetes.io/instance=$release,app.kubernetes.io/component=initialization" \
+    --output json >"$evidence_dir/current-initialization-pods.json"
+  jq -e 'all(.items[]; .status.phase == "Succeeded" or .status.phase == "Failed")' \
+    "$evidence_dir/current-initialization-pods.json" >/dev/null || die "an initialization Pod is still active; wait for it to terminate before retrying Helm."
+fi
+
+if ((helm_complete == 0)); then
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+  # Stop the old database writers before the migration hook. Other writers and
+  # autoscalers must already be stopped by the operator's maintenance window.
+  deadline=$((SECONDS + timeout_seconds))
+  quiescence_remaining() {
+    remaining_seconds=$((deadline - SECONDS))
+    ((remaining_seconds > 0)) || die "OCC quiescence timed out; migration was not started."
+  }
+  for component in api worker; do
+    deployment="openclaw-enterprise-$component"
+    quiescence_remaining
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/$deployment" --output json \
+      >"$evidence_dir/current-$component-deployment.json"
+    jq -e --arg release "$release" --arg component "$component" '
+      .metadata.labels["app.kubernetes.io/instance"] == $release and
+      .metadata.labels["app.kubernetes.io/component"] == $component and
+      (.spec.replicas == 0 or .spec.replicas == 1)
+    ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
+    quiescence_remaining
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" scale "deployment/$deployment" --replicas=0
+  done
+  while true; do
+    quiescence_remaining
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get pods \
+      --selector "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$release" \
+      --output json >"$evidence_dir/quiescence-pods.json"
+    if jq -e '[.items[] | select(.metadata.labels["app.kubernetes.io/component"] == "api" or .metadata.labels["app.kubernetes.io/component"] == "worker")] | length == 0' \
+      "$evidence_dir/quiescence-pods.json" >/dev/null; then
+      break
+    fi
+    ((SECONDS < deadline)) || die "OCC Pods did not terminate before the timeout; migration was not started."
+    sleep 2
+  done
+  for component in api worker; do
+    quiescence_remaining
+    "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
+      >"$evidence_dir/quiescence-$component-deployment.json"
+    jq -e '.spec.replicas == 0' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
+      die "OCC replicas changed during quiescence; migration was not started."
+  done
+
+  install_atomically "$candidate_values" "$values"
+  if [[ -f "$evidence_dir/installation-changed" ]]; then
+    install_atomically "$candidate_installation" "$installation"
+    if ! matches_yaml "$evidence_dir/current-live-installation.yaml" "$candidate_installation"; then
+      python3 - "$live_secret" "$candidate_installation" "$installation_key" <<'PYTHON' |
+import base64, json, sys
+with open(sys.argv[1]) as f:
+    secret = json.load(f)
+with open(sys.argv[2], "rb") as f:
+    secret["data"][sys.argv[3]] = base64.b64encode(f.read()).decode()
+secret["metadata"].pop("managedFields", None)
+json.dump(secret, sys.stdout)
+PYTHON
+        "${kube[@]}" --namespace "$namespace" replace --filename - \
+          >"$evidence_dir/installation-secret-apply.txt"
+    fi
+  fi
+  # The marker precedes the request, so a crash cannot turn an unknown Helm
+  # outcome into an automatic retry or an unsafe return to the old image.
+  if [[ "$repository_enabled" == true ]]; then
+    verify_pair_nodes
+  fi
+  touch "$evidence_dir/helm-started"
+  helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+    --values "$values" --wait --timeout 5m >"$evidence_dir/helm-upgrade.txt"
+fi
+
+repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$candidate_values")
 for component in api worker; do
   deployment="openclaw-enterprise-$component"
   "${kube[@]}" --namespace "$namespace" rollout status "deployment/$deployment" --timeout=180s
-  observed=$("${kube[@]}" --namespace "$namespace" get "deployment/$deployment" \
-    --output "jsonpath={.spec.template.spec.containers[?(@.name=='$component')].image}")
-  [[ "$observed" == "$selected_controller" ]] ||
-    die "$deployment uses $observed instead of the selected controller image."
+  "${kube[@]}" --namespace "$namespace" get "deployment/$deployment" --output json \
+    >"$evidence_dir/after-$component-deployment.json"
+  # The broker-enabled worker may be an ordinary container on the existing
+  # chart or a restartable init container on charts with broker drain recovery.
+  jq -e --arg component "$component" --arg image "$selected_controller" \
+    --arg repositoryEnabled "$repository_enabled" '
+      .spec.template.spec as $pod |
+      [$pod.containers[]? | select(.name == $component)] as $containers |
+      [$pod.initContainers[]? | select(.name == $component)] as $initContainers |
+      (($containers | length) + ($initContainers | length)) == 1 and
+      (if ($containers | length) == 1 then
+        $containers[0].image == $image
+      else
+        $component == "worker" and $repositoryEnabled == "true" and
+        $initContainers[0].restartPolicy == "Always" and $initContainers[0].image == $image
+      end)
+    ' "$evidence_dir/after-$component-deployment.json" >/dev/null ||
+    die "$deployment must contain exactly one $component with the selected controller image in a valid container placement."
+  jq -e '.spec.replicas == 1' "$evidence_dir/after-$component-deployment.json" >/dev/null ||
+    die "$deployment does not have its expected replica."
+  if [[ -f "$evidence_dir/installation-changed" ]]; then
+    installation_checksum=$(cat "$evidence_dir/installation-checksum")
+    jq -e --arg checksum "$installation_checksum" \
+      '.spec.template.metadata.annotations["openclaw.dev/installation-checksum"] == $checksum' \
+      "$evidence_dir/after-$component-deployment.json" >/dev/null ||
+      die "$deployment does not select the candidate Installation checksum."
+  fi
 done
+
+if [[ "$repository_enabled" == true ]]; then
+  # Check the exact ready Pods, their controlling ReplicaSets, and the selected
+  # image identities before asking the deployed Driver to query its broker.
+  verify_deployed_pair() {
+    local phase=$1
+    for component in api worker; do
+      "${kube[@]}" --request-timeout=15s --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
+        >"$evidence_dir/$phase-$component-deployment.json"
+      "${kube[@]}" --request-timeout=15s --namespace "$namespace" get replicasets \
+        --selector "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$release,app.kubernetes.io/component=$component" \
+        --output json >"$evidence_dir/$phase-$component-replicasets.json"
+      "${kube[@]}" --request-timeout=15s --namespace "$namespace" get pods \
+        --selector "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=$release,app.kubernetes.io/component=$component" \
+        --output json >"$evidence_dir/$phase-$component-pods.json"
+      python3 scripts/upgrade-deployment-identity.py "$component" \
+        "$evidence_dir/$phase-$component-deployment.json" "$evidence_dir/$phase-$component-replicasets.json" \
+        "$evidence_dir/$phase-$component-pods.json" "$evidence_dir/eligible-nodes.json" \
+        "$evidence_dir/pair-proof.json" "$release" >"$evidence_dir/$phase-$component-identity.json" ||
+        die "the deployed $component identity does not match the qualified image pair."
+    done
+  }
+  verify_pair_nodes
+  verify_deployed_pair capability-before
+  capability_pod=$(jq -er '.podName' "$evidence_dir/capability-before-worker-identity.json")
+  capability_code=$(cat <<'JAVASCRIPT'
+import { GitHubRepoDriver } from "/app/apps/controller/src/drivers/repo/github/driver.ts";
+import { UnixRepositoryCredentialControlClient } from "/app/apps/controller/src/backends/repository-credentials/control-client.ts";
+const id = "compatibility-probe";
+const registry = { version: 1, backendId: id, providerInstanceId: id, appId: "1", githubInstallationId: "1", maximumDurationSeconds: 60, repositories: [{ repositoryRef: id, repositoryId: "1", repository: "fixture/repository", namespaces: [{ namespaceId: id, profiles: ["git-read"] }] }] };
+const client = new UnixRepositoryCredentialControlClient({ controlSocket: "/run/openclaw/repository-control/private/control.sock" });
+const driver = new GitHubRepoDriver({ id, drivers: { repo: id }, client }, registry, { sessionDurationSeconds: 60 });
+if (typeof driver.checkAdmissionReady !== "function") throw new Error("capability check unavailable");
+await driver.checkAdmissionReady(AbortSignal.timeout(5000));
+process.stdout.write("repository-admission-ready\n");
+JAVASCRIPT
+)
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" exec "$capability_pod" -c worker -- \
+    node --input-type=module -e "$capability_code" >"$evidence_dir/deployed-capability.txt" ||
+    die "the deployed controller cannot verify repository admission capability."
+  [[ "$(cat "$evidence_dir/deployed-capability.txt")" == repository-admission-ready ]] ||
+    die "the deployed controller returned an unexpected capability result."
+  verify_pair_nodes
+  verify_deployed_pair capability-after
+  for component in api worker; do
+    cmp -s "$evidence_dir/capability-before-$component-identity.json" \
+      "$evidence_dir/capability-after-$component-identity.json" ||
+      die "the deployed $component changed while checking repository capability."
+  done
+fi
 
 deadline=$((SECONDS + timeout_seconds))
 until "${occ_json[@]}" installation get >"$evidence_dir/installation-after.json" 2>"$evidence_dir/occ-recovery-error.txt"; do
   ((SECONDS < deadline)) || die "OCC authentication did not recover before the timeout."
   sleep 2
 done
+jq -e --arg id "$installation_id" '.id == $id' "$evidence_dir/installation-after.json" >/dev/null ||
+  die "the recovered OCC endpoint identifies a different Installation."
 rm -f "$evidence_dir/occ-recovery-error.txt"
+
+if [[ "$repository_enabled" == true ]]; then
+  verify_pair_nodes
+  verify_deployed_pair before-dispatch
+  for component in api worker; do
+    cmp -s "$evidence_dir/capability-after-$component-identity.json" \
+      "$evidence_dir/before-dispatch-$component-identity.json" ||
+      die "the deployed $component changed after the repository capability check."
+  done
+fi
 
 dispatch_failed=0
 if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
+  # Check every prior intent before launching any additional requests.
+  while IFS= read -r target; do
+    namespace_id=$(jq -r '.namespaceId' <<<"$target")
+    agent_id=$(jq -r '.agentId' <<<"$target")
+    prefix="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id")"
+    if [[ -f "$prefix.json" ]]; then
+      jq -e '.id | type == "string" and length > 0' "$prefix.json" >/dev/null ||
+        die "invalid recorded deployment response for Agent $agent_id; inspect it before resuming."
+    elif [[ -f "$prefix.intent" ]]; then
+      # Active revision alone cannot prove that a timed-out request was rejected.
+      "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" \
+        >"$prefix.readback.json" || true
+      die "Agent $agent_id has an unknown deployment outcome; inspect revision history and audit evidence before recording a resolved response."
+    fi
+  done <"$targets"
+
   pids=()
   while IFS= read -r target; do
     namespace_id=$(jq -r '.namespaceId' <<<"$target")
     agent_id=$(jq -r '.agentId' <<<"$target")
     output="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").json"
     error="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").error"
-    ("${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" >"$output" 2>"$error") &
+    intent="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").intent"
+    if [[ -f "$output" ]]; then
+      continue
+    fi
+    touch "$intent"
+    (
+      temporary="$output.tmp"
+      "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" >"$temporary" 2>"$error" &&
+        jq -e '.id | type == "string" and length > 0' "$temporary" >/dev/null &&
+        mv "$temporary" "$output"
+    ) &
     pids+=("$!")
   done <"$targets"
 
@@ -372,7 +835,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     wait "$pid" || dispatch_failed=1
   done
 fi
-((dispatch_failed == 0)) || die "at least one Agent deployment request failed; inspect $evidence_dir/dispatch before retrying."
+((dispatch_failed == 0)) || die "at least one Agent deployment outcome is unknown; inspect $evidence_dir/dispatch and reconcile it before resuming."
 
 deployments="$evidence_dir/deployments.jsonl"
 : >"$deployments"
@@ -504,13 +967,37 @@ fi
 ((doctor_failed == 0)) ||
   die "OpenClaw Doctor failed for at least one replacement gateway; inspect $evidence_dir/status/*.doctor.error."
 
+if [[ "$repository_enabled" == true ]]; then
+  verify_pair_nodes
+  verify_deployed_pair completion-before
+  for component in api worker; do
+    cmp -s "$evidence_dir/capability-after-$component-identity.json" \
+      "$evidence_dir/completion-before-$component-identity.json" ||
+      die "the deployed $component changed before completion."
+  done
+  "${kube[@]}" --request-timeout=15s --namespace "$namespace" exec "$capability_pod" -c worker -- \
+    node --input-type=module -e "$capability_code" >"$evidence_dir/completion-capability.txt" ||
+    die "the deployed controller cannot verify repository admission capability at completion."
+  [[ "$(cat "$evidence_dir/completion-capability.txt")" == repository-admission-ready ]] ||
+    die "the deployed controller returned an unexpected capability result at completion."
+  verify_pair_nodes
+  verify_deployed_pair completion-after
+  for component in api worker; do
+    cmp -s "$evidence_dir/completion-before-$component-identity.json" \
+      "$evidence_dir/completion-after-$component-identity.json" ||
+      die "the deployed $component changed while checking completion."
+  done
+fi
+
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
-if [[ -n "$runtime_image" && -n "$controller_image" ]]; then
+if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then
   printf 'Upgraded runtime image; controller image remained unchanged and %s running Agents selected new revisions.\n' "$target_count"
+elif [[ -n "$broker_image" && "$controller_image" == "$current_controller" ]]; then
+  printf 'Upgraded repository broker image; no Agent deployments were requested.\n'
 else
-  printf 'Upgraded controller image; runtime configuration stayed unchanged and no Agent deployments were requested.\n'
+  printf 'Upgraded controller image; no Agent deployments were requested.\n'
 fi

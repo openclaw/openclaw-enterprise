@@ -230,7 +230,7 @@ no admission or close endpoint.
 lowercase UUIDv4. The CLI prints this nonsecret ID before dispatch. HTTP 201
 returns the bearer once; matching ID/duration/profile returns HTTP 200 with
 status only. Conflicts fail. Follow
-[lost-response recovery](../guides/repository-credentials.md#recover-an-admission)
+[lost-response recovery](../guides/repository-credentials/standalone-service.md#recover-an-admission)
 before explicitly requesting replacement material.
 
 Registry-backed brokers advertise `durableAdmissionVersion: 1` privately. The

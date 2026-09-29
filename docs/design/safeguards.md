@@ -1,8 +1,20 @@
 # Secrets, failure behavior, and platform invariants
 
-This page owns the secrets, failure behavior, and platform invariants portion of the authoritative
-[platform target design](../design.md). Read it with the other design chapters;
-the [current architecture](../ARCHITECTURE.md) describes implementation status.
+This chapter defines requirements within the authoritative
+[platform architecture](../design.md). The implementation status below separates
+current behavior from remaining design work.
+
+## Implementation status
+
+Secret storage, exact binding authorization, revision-scoped delivery, and
+transactional mutation audit are implemented. With Kubernetes, canonical Secrets
+live in the tenant control-plane namespace; the worker materializes admitted
+runtime Secrets for the exact consumer. Model credentials still reach the executing Harness.
+Brokered model access, OAG audit, universal pre-execution policy enforcement, and
+mutually authenticated workload transport remain broader design requirements.
+See [Secret storage](../reference/drivers/secret.md),
+[runtime isolation](../reference/security/runtime-isolation.md), and
+[audit](../guides/topics/audit-log.md) for current behavior.
 
 ## Secret access
 
@@ -52,23 +64,27 @@ own admission and dispatch authorization; the dedicated gateway gets no key.
 
 For a provider-managed account, API-side Kubernetes Compute stores the issued
 access token and pinned provider workspace in one account-owned Secret in the
-exact backing namespace. The revision snapshots only the OCC account identity,
-exact credential reference, and verified private Backend/workspace ownership. Kubernetes projects
-that account Secret directly into each associated dedicated Codex workload;
-there is no Agent-specific credential copy. Codex logs in with its access token
-under the forced provider workspace. Its separate gateway never receives the
+tenant control-plane namespace. The revision snapshots only the OCC account
+identity, exact credential reference, and verified private Backend/workspace
+ownership. The worker materializes the admitted credential into a revision-owned
+runtime Secret in the data plane, which Kubernetes projects into the associated
+dedicated Codex workload. Codex logs in with its access token under the forced
+provider workspace. Its separate gateway never receives the
 token, workspace, or provider admin credential; embedded access-token execution
-is unsupported. The API alone receives tenant-local direct Secret permissions;
-the worker and workloads receive no Secret API permissions. However, a trusted
-worker with Deployment write access can indirectly project tenant Secrets, so
-its effective trust boundary remains the backing namespace. Provider credentials
+is unsupported. The API has tenant-local credential provisioning permissions.
+The worker reads canonical control-plane Secrets and manages revision-owned
+data-plane Secrets;
+Agent workloads receive no direct Secret API permissions. A trusted worker with
+Deployment write access can also indirectly project tenant Secrets, so its
+effective trust boundary remains each granted tenant namespace. Provider credentials
 never enter OCC resources, snapshots, routes, or audit records.
 
-These existing Kubernetes delivery paths do not establish delivery across
-runtime targets. In the target design, the selected `SecretDriver` materializes
-approved Secrets for each exact consumer without shared Kubernetes Secret
-references. Logical Secret ownership remains the Agent's Namespace; existing
-bindings and consumption checks still apply.
+Kubernetes Compute now materializes admitted runtime Secrets across the selected
+Gateway and Harness targets without shared cross-namespace Secret references.
+The selected SecretDriver owns canonical storage; Compute owns the runtime
+projections. Logical Secret ownership remains the Agent's Namespace, and existing
+bindings and consumption checks still apply. See the
+[storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 
 A trusted dedicated gateway may receive its existing Agent-scoped gateway and
 Channel credentials and Secrets explicitly bound by its approved Configuration.
@@ -78,8 +94,8 @@ Direct model-credential delivery to the tenant data-plane Harness is a temporary
 implementation exception. Target model-credential mediation keeps real upstream
 credentials outside Harness execution; the Harness receives only scoped substitutes.
 Workload-write authority must be bounded in each target, since it can indirectly
-expose Secrets there. Cross-target materialization remains a prerequisite for
-dedicated gateway relocation; the concrete delivery mechanism is deferred.
+expose Secrets there. Cross-target materialization does not establish brokered
+model access or workload-bound transport authentication; those guarantees remain deferred.
 
 ## Failure behavior
 

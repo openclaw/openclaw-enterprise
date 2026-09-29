@@ -1,4 +1,4 @@
-import { clientAddressConfiguration, githubLoginConfiguration } from "./auth/index.ts";
+import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
@@ -201,14 +201,15 @@ function configuration() {
     throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
   }
 
-  const github = githubLoginConfiguration(process.env);
+  // { github?, google? }: each configured provider carries the recovery user ID.
+  const humanLogin = humanLoginConfiguration(process.env);
   const clientAddress = clientAddressConfiguration(process.env);
   if (mode === "production") {
     return Object.freeze({
       ...settings,
       authSecret: requiredEnvironment("OCC_AUTH_SECRET"),
       authBaseURL,
-      ...(github === undefined ? {} : { github }),
+      ...humanLogin,
       ...(clientAddress === undefined ? {} : { clientAddress }),
       ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
       ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
@@ -233,7 +234,7 @@ function configuration() {
     ...settings,
     authSecret,
     authBaseURL,
-    ...(github === undefined ? {} : { github }),
+    ...humanLogin,
     ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
     ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
     ...(trustedDevelopmentBridgeCidr === undefined ? {} : { trustedDevelopmentBridgeCidr }),

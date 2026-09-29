@@ -1,8 +1,20 @@
 # Agent gateways and deployment
 
-This page owns the agent gateways and deployment portion of the authoritative
-[platform target design](../design.md). Read it with the other design chapters;
-the [current architecture](../ARCHITECTURE.md) describes implementation status.
+This chapter defines requirements within the authoritative
+[platform architecture](../design.md). The implementation status below separates
+current behavior from remaining design work.
+
+## Implementation status
+
+Kubernetes implements separate dedicated Gateway and Harness namespaces,
+identities, and storage; its two-cluster execution profile remains experimental.
+The deployment requirements below include planned OAG admission, full
+SandboxPolicy enforcement, and workload-bound transport identity. They do not
+establish uninterrupted replacement: embedded replacement can stop the
+predecessor before validating the replacement credential. See
+[Harness execution](../reference/harness-execution.md),
+[Kubernetes Compute](../reference/drivers/kubernetes-compute.md), and the
+[current provisioning sequence](#current-provisioning-sequence).
 
 ## OpenClaw gateways
 
@@ -62,10 +74,11 @@ Each Agent explicitly selects one Harness execution topology:
 The [model-credential boundary](safeguards.md#secret-access) distinguishes these
 current delivery exceptions from target mediation outside Harness execution.
 
-Runtime targets initially use one Kubernetes cluster, with distinct namespace
-placements for dedicated gateway and Harness. They may later use separate
-clusters or other Compute-backed locations. Kubernetes Compute implements the
-same-cluster split: a managed Gateway runtime namespace per logical Namespace,
+The default runtime targets use one Kubernetes cluster, with distinct namespace
+placements for dedicated gateway and Harness. The experimental `executionCluster`
+profile selects a second cluster for Harness resources; complete runtime
+acceptance remains pending. See [Kubernetes Compute](../reference/drivers/kubernetes-compute.md).
+Other Compute-backed locations remain design scope. The same-cluster split uses a managed Gateway runtime namespace per logical Namespace,
 separate from its Harness namespace and from OCC's own API/worker namespace.
 This per-tenant namespace allocation is a Kubernetes isolation choice, not a
 required mapping for every Compute implementation. It preserves namespace-scoped
@@ -175,3 +188,66 @@ routing. A candidate app-server can start idle, but a candidate or retired
 revision cannot receive traffic or execute Agent turns.
 Failures before activation leave the previously active revision and Agent
 workload unchanged. Failures after activation require fail-closed rollback.
+
+## Current provisioning sequence
+
+The following sequence describes the implemented API and worker success path.
+It does not imply the OAG admission, SandboxPolicy enforcement, or workload-token
+authentication required by the broader design above. Failed and interrupted
+replacement follows the [controller contract](../reference/controller/reconciliation.md)
+and [Harness limits](../reference/harness-execution.md#harness-authentication).
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as OCC API
+    participant IAM as IAMDriver
+    participant OCC as OpenClawController
+    participant DB as PostgreSQL state
+    participant Worker
+    participant Compute as ComputeDriver
+    participant Runtime
+
+    Client->>API: Create Namespace
+    API->>API: Authenticate caller
+    API->>IAM: Authorize Namespace creation
+    IAM-->>API: Allowed with evidence
+    API->>OCC: Create Namespace in provisioning
+    OCC->>DB: Commit Namespace, audit, and work
+    API-->>Client: 201 Namespace
+    Worker->>DB: Claim Namespace work
+    Worker->>IAM: Reauthorize original actor
+    Worker->>Compute: ensureNamespace(namespace)
+    Compute->>Runtime: Prepare backing network or namespace
+    Worker->>DB: Commit Namespace readiness, audit, and completion
+
+    Client->>API: Create Configuration and Agent
+    API->>IAM: Authorize exact resources
+    API->>OCC: Record resource definitions
+    OCC->>DB: Commit resource state and audit
+    API-->>Client: Created resources, no Agent runtime yet
+
+    Client->>API: Deploy Agent
+    API->>IAM: Authorize deployment and referenced resources
+    API->>OCC: Admit immutable AgentRevision
+    OCC->>DB: Commit revision, audit, and work
+    API-->>Client: 202 AgentRevision
+    Worker->>DB: Claim revision work
+    Worker->>IAM: Reauthorize deployment and references
+    Worker->>Compute: prepareRevision(revision)
+    alt dedicated Codex
+        Compute->>Runtime: Prepare Agent gateway and separate Codex Harness
+    else embedded OpenClaw
+        Compute->>Runtime: Prepare combined gateway and Harness
+    end
+    Compute-->>Worker: Revision ready for activation
+    opt Driver activates before commit
+        Worker->>Compute: Activate prepared revision
+    end
+    Worker->>DB: Commit active revision under the live claim
+    opt Driver activates after commit
+        Worker->>Compute: Activate committed revision
+    end
+    Worker->>Compute: Retire prior revision when present
+    Worker->>DB: Commit activation audit and work completion
+```

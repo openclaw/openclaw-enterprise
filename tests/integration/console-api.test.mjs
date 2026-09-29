@@ -277,7 +277,11 @@ test("console auth routes reject untrusted browser origins and issue production 
 
   // Without the GitHub profile the session key still only narrows the cookie session.
   const providers = await fixture.rawRequest("GET", "/api/auth/providers");
-  assert.deepEqual(JSON.parse(providers.text).data, { github: false, sessionBinding: false });
+  assert.deepEqual(JSON.parse(providers.text).data, {
+    github: false,
+    google: false,
+    sessionBinding: false,
+  });
   const sessionKey = JSON.parse(retainedSession.text).data.sessionKey;
   assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
   const foreignKey = "A".repeat(43);

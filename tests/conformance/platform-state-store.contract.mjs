@@ -1217,6 +1217,8 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     revision,
   });
 
+  await verifyDeletedResourceAccessBindingContract(store, revision);
+
   return {
     installation,
     namespace,
@@ -1232,6 +1234,164 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     lifecycleNamespace,
     deletedAt,
   };
+}
+
+// Deleting a Configuration, Preset, Secret, credential source or ServiceAccount
+// removes the AccessBindings that grant on it, so none outlives its target or
+// keeps the Role it references from being deleted.
+async function verifyDeletedResourceAccessBindingContract(store, revision) {
+  const createdAt = new Date().toISOString();
+  const namespace = {
+    id: identifier("ns"),
+    name: "Binding cleanup " + randomUUID(),
+    status: "ready",
+    createdAt,
+  };
+  const secretFor = (name) => ({
+    id: identifier("sec"),
+    namespaceId: namespace.id,
+    name: name + " " + randomUUID(),
+    driverId: "secret-contract",
+    backendRef: {
+      namespaceName: "contract",
+      name: "binding-cleanup",
+      key: "value",
+      uid: randomUUID(),
+    },
+    createdAt,
+  });
+  const configurationFor = () => ({
+    id: identifier("cfg"),
+    namespaceId: namespace.id,
+    kind: "agent",
+    generation: 1,
+    createdAt,
+  });
+  const agentConfiguration = configurationFor();
+  const agentSecret = secretFor("Agent key");
+  const agent = {
+    id: identifier("agt"),
+    namespaceId: namespace.id,
+    name: "Binding subject " + randomUUID(),
+    configurationId: agentConfiguration.id,
+    backendId: null,
+    harnessAuth: {
+      method: "api_key",
+      source: { kind: "secret", namespaceId: namespace.id, id: agentSecret.id },
+    },
+    executionMode: "embedded",
+    servicePrincipalId: identifier("service-agent"),
+    desiredRuntimeState: "stopped",
+    status: "active",
+    createdAt,
+  };
+  const configuration = configurationFor();
+  const secret = secretFor("Bound secret");
+  const preset = {
+    id: identifier("pre"),
+    namespaceId: namespace.id,
+    name: "Bound preset " + randomUUID(),
+    createdAt,
+    template: {
+      variables: {},
+      agent: { name: "Assistant", executionMode: "embedded" },
+      configuration: { values: {} },
+    },
+  };
+  const source = {
+    id: identifier("cs"),
+    namespaceId: namespace.id,
+    name: "Bound source " + randomUUID(),
+    type: "openai",
+    config: { base_url: "https://api.openai.com/v1" },
+    secrets: { api_key: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
+    driverId: "credential-gateway-contract",
+    state: "ready",
+    createdAt,
+  };
+  const account = {
+    id: identifier("sa"),
+    namespaceId: namespace.id,
+    name: "Bound " + randomUUID(),
+  };
+  const role = {
+    id: identifier("role"),
+    namespaceId: namespace.id,
+    permissions: [{ action: "read", resourceKind: "configuration" }],
+  };
+  const bindingOn = (resourceKind, resourceId) => ({
+    id: identifier("binding"),
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: role.id,
+    resourceKind,
+    resourceId,
+  });
+  const surviving = bindingOn("configuration", agentConfiguration.id);
+
+  await store.transact(async (transaction) => {
+    await transaction.namespaces.createNamespace(namespace);
+    await transaction.configurations.createConfiguration(agentConfiguration);
+    await transaction.configurations.createConfiguration(configuration);
+    await transaction.secrets.createSecret(agentSecret);
+    await transaction.secrets.createSecret(secret);
+    await transaction.agents.createAgent(agent);
+    await transaction.revisions.createRevision({
+      ...revision,
+      id: identifier("rev"),
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: agentConfiguration.id,
+      servicePrincipalId: agent.servicePrincipalId,
+      harnessAuth: { ...agent.harnessAuth, secretDriverId: agentSecret.driverId },
+    });
+    await transaction.presets.createPreset(preset);
+    await transaction.credentialSources.createCredentialSource(source);
+    await transaction.serviceAccounts.createServiceAccount(account);
+    await transaction.iamPolicy.createRole(role);
+    for (const binding of [
+      bindingOn("configuration", configuration.id),
+      bindingOn("preset", preset.id),
+      bindingOn("secret", secret.id),
+      bindingOn("credential_source", source.id),
+      bindingOn("service_account", account.id),
+      surviving,
+    ]) {
+      await transaction.iamPolicy.createAccessBinding(binding);
+    }
+  });
+
+  // The credential source references the Secret, so it goes first.
+  await store.transact(async (transaction) => {
+    assert.equal(
+      await transaction.credentialSources.deleteCredentialSource(namespace.id, source.id),
+      true,
+    );
+    assert.equal(await transaction.secrets.deleteSecret(namespace.id, secret.id), true);
+    assert.equal(
+      await transaction.configurations.deleteConfiguration(namespace.id, configuration.id),
+      true,
+    );
+    assert.equal(await transaction.presets.deletePreset(namespace.id, preset.id), true);
+    assert.equal(
+      await transaction.serviceAccounts.deleteServiceAccount(namespace.id, account.id),
+      true,
+    );
+  });
+
+  await store.read(async (state) => {
+    assert.deepEqual(await state.iamPolicy.listAccessBindings(namespace.id), [surviving]);
+  });
+  // Only the binding on a live resource still holds the Role.
+  await assert.rejects(
+    store.transact((transaction) => transaction.iamPolicy.deleteRole(namespace.id, role.id)),
+    /referenced by an AccessBinding/,
+  );
+  await store.transact(async (transaction) => {
+    assert.equal(await transaction.iamPolicy.deleteAccessBinding(namespace.id, surviving.id), true);
+    assert.equal(await transaction.iamPolicy.deleteRole(namespace.id, role.id), true);
+  });
 }
 
 async function verifyCredentialSourceContract(

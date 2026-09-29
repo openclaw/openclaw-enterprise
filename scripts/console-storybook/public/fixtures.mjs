@@ -71,6 +71,10 @@ export function installFixture(scenario, evidence) {
     // Simulates returning from a GitHub callback started in this tab.
     sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
   }
+  if (scenario.pendingGoogleAttempt) {
+    // Simulates returning from a Google callback started in this tab.
+    sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));
+  }
   let serial = 100;
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
@@ -463,14 +467,23 @@ export function installFixture(scenario, evidence) {
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
         github: scenario.githubEnabled === true,
-        sessionBinding: scenario.githubEnabled === true,
+        google: scenario.googleEnabled === true,
+        sessionBinding: scenario.githubEnabled === true || scenario.googleEnabled === true,
       });
     }
-    if (path === "/api/auth/providers/github/start" && method === "POST") {
+    if (
+      (path === "/api/auth/providers/github/start" ||
+        path === "/api/auth/providers/google/start") &&
+      method === "POST"
+    ) {
       // Keep the preview local; provider navigation needs real backend verification.
       return error(503);
     }
-    if (path === "/api/auth/providers/github/result" && method === "POST") {
+    if (
+      (path === "/api/auth/providers/github/result" ||
+        path === "/api/auth/providers/google/result") &&
+      method === "POST"
+    ) {
       return response({ sessionKey: session.sessionKey });
     }
     if (path === "/api/auth/session") {

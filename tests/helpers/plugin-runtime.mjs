@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import {
@@ -7,10 +8,30 @@ import {
 
 const nodeRequire = createRequire(import.meta.url);
 
+export const WORKSPACE_NODE_BINDING_PATH = "/run/openclaw-workspace-node/workspace-node.json";
+export const WORKSPACE_NODE_REVISION_ID = "revision-1";
+
+// A Codex Gateway receives its node through the controller's binding file;
+// options.workspaceNodeId writes that file before launch.
+export function workspaceNodeBinding(deviceId, revisionId = WORKSPACE_NODE_REVISION_ID) {
+  return JSON.stringify({ revisionId, deviceId });
+}
+
 export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
   const gatewayRuntime =
-    options.workspaceNodeId !== undefined || options.env?.APP_SERVER_URL !== undefined;
+    options.workspaceNodeId !== undefined ||
+    options.workspaceNodeBindingPath === true ||
+    options.env?.APP_SERVER_URL !== undefined;
   const calls = options.calls ?? [];
+  const intervals = options.intervals ?? [];
+  const kills = options.kills ?? [];
+  const bindingEnvironment =
+    options.workspaceNodeId !== undefined || options.workspaceNodeBindingPath === true
+      ? {
+          OPENCLAW_WORKSPACE_NODE_PATH: WORKSPACE_NODE_BINDING_PATH,
+          OPENCLAW_AGENT_REVISION_ID: WORKSPACE_NODE_REVISION_ID,
+        }
+      : {};
   const files = new Map([
     [
       "/etc/openclaw/openclaw.json",
@@ -23,8 +44,26 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       ),
     ],
     ...(options.files ?? []),
+    ...(options.workspaceNodeId === undefined
+      ? []
+      : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
   let temporaryDirectory = 0;
+  // A Gateway RPC through the OpenClaw CLI; options.gatewayCall(method) answers
+  // with a JSON value, or undefined for a failed call.
+  const gatewayCall = (method) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.kill = () => {};
+    queueMicrotask(() => {
+      const value = options.gatewayCall?.(method);
+      if (value !== undefined) {
+        child.stdout.emit("data", Buffer.from(JSON.stringify(value)));
+      }
+      child.emit("close", value === undefined ? 1 : 0, null);
+    });
+    return child;
+  };
   const sandbox = {
     Buffer,
     files,
@@ -32,19 +71,37 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       env: {
         OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
         HOME: "/home/node",
+        ...bindingEnvironment,
         ...(options.env ?? {}),
-        ...(options.workspaceNodeId === undefined
-          ? {}
-          : { OPENCLAW_WORKSPACE_NODE_ID: options.workspaceNodeId }),
       },
       on() {},
+      exit(code) {
+        kills.push({ exit: code });
+      },
     },
+    setInterval(callback, ms) {
+      intervals.push({ callback, ms });
+      return { unref() {} };
+    },
+    ...(options.setTimeout === undefined ? {} : { setTimeout: options.setTimeout }),
+    ...(options.Date === undefined ? {} : { Date: options.Date }),
+    ...(options.console === undefined ? {} : { console: options.console }),
+    clearInterval() {},
+    clearTimeout() {},
     require(specifier) {
       if (specifier === "node:child_process") {
         return {
           spawn(command, args) {
             calls.push({ command, args });
-            return { on() {} };
+            if (args?.[1] === "gateway" && args[2] === "call") {
+              return gatewayCall(args[3]);
+            }
+            return {
+              on() {},
+              kill(signal) {
+                kills.push({ signal });
+              },
+            };
           },
           spawnSync(command, args, spawnOptions) {
             options.beforeSpawn?.(command, args, sandbox, spawnOptions);
@@ -96,6 +153,10 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           writeFileSync(path, data) {
             files.set(path, String(data));
           },
+          renameSync(from, to) {
+            files.set(to, files.get(from));
+            files.delete(from);
+          },
         };
       }
       return nodeRequire(specifier);
@@ -111,7 +172,7 @@ result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringi
       sandbox,
     );
     if (gatewayRuntime) {
-      return execution.then(() => ({ calls, files }));
+      return execution.then(() => ({ calls, files, sandbox }));
     }
   } catch (error) {
     if (options.captureError === true) {

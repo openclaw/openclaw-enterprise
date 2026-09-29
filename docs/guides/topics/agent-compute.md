@@ -8,10 +8,11 @@ Agent. If you are setting up your own first installation, use the
 
 ## Choose an execution mode
 
-| Mode          | What runs                                                          | When to choose it                                                                                         |
-| ------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| **Embedded**  | The Agent's OpenClaw gateway also runs the OpenClaw Harness.       | Use it when you need OpenClaw's built-in Harness, or when the installation uses SSH.                      |
-| **Dedicated** | The Agent's gateway connects to Codex or a native OpenClaw worker. | Use it for worker execution isolation, Codex, a ChatGPT service account, or a supported external channel. |
+| Mode and Harness                             | Deployment and use                                                                                                                                                                       |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Embedded OpenClaw**                        | One gateway runs the OpenClaw Harness. Use it on Kubernetes or an operator-managed SSH host.                                                                                             |
+| **Dedicated Codex**                          | A gateway connects to a separate Codex Harness on Kubernetes. Use it for Codex, a ChatGPT service account, or a supported external channel.                                              |
+| **Dedicated native OpenClaw (experimental)** | A gateway connects to a native worker. Requires a provisioning SandboxDriver with all three isolation facets. The bundled OpenShell path has upstream blockers and is verification-only. |
 
 The mode belongs to the Agent. Its [Configuration](../../reference/configuration.md)
 selects the model and Harness, and the two must agree. The HTTP API defaults a

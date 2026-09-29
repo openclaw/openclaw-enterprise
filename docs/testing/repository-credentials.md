@@ -221,7 +221,7 @@ ordinary-Agent routing require the platform checks. The context case rebuilds
 both Docker inputs and rejects source files, compiler artifacts and linked inputs.
 
 Build the service and client images using the
-[operator guide](../guides/repository-credentials.md#container-images). Then
+[operator guide](../guides/repository-credentials/standalone-service.md#container-images). Then
 combine those artifacts in an owned test-only image. Use the same local Docker
 builder for all three builds so it resolves the delivered input images:
 

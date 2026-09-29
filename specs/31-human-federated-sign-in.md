@@ -17,7 +17,7 @@ An Installation administrator creates an OpenClaw Enterprise (OCE) password acco
 
 ## Scope
 
-One Installation and one serving controller, which the chart enforces with `Recreate`. Helm is the launch deployment path, behind ingress-nginx, an AWS load balancer or another proxy. The guarded profile requires PostgreSQL State with its restricted role, native IAM and one HTTPS origin. Excluded: self-service linking, other providers (future spec), password reset by email, and shared native administration with the guarded profile. Service keys retain precedence.
+One Installation and one serving controller, which the chart enforces with `Recreate`. Helm is the launch deployment path, behind ingress-nginx, an AWS load balancer or another proxy. The guarded profile requires PostgreSQL State with its restricted role, native IAM and one HTTPS origin. Excluded: self-service linking, providers other than GitHub and [Google](#google-sign-in) (future spec), password reset by email, and shared native administration with the guarded profile. Service keys retain precedence.
 
 ## Profiles: password default, optional GitHub, fallback
 
@@ -62,7 +62,7 @@ All paths begin with `/api/auth`. JSON results use the `{data, meta: {requestId}
 | Operation                                 | Input and result                                                                                                                                                                                          |
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /providers`                          | Returns `{github, sessionBinding}` booleans for the Console button.                                                                                                                                       |
-| `POST /providers/github/start`            | Requires the exact configured `Origin`; returns `{url, attemptId}` and sets the attempt cookie. No provider override or return URL.                                                                       |
+| `POST /providers/github/start`            | Requires the exact configured `Origin` (`Sec-Fetch-Site`, when present, must be `same-origin`); returns `{url, attemptId}` and sets the attempt cookie. No provider override or return URL.               |
 | `GET /providers/github/callback`          | `state` and `code` or `error` with the matching cookie; redirects to `/console/` or `/console/?authError=github`.                                                                                         |
 | `POST /providers/github/result`           | `{attemptId}` with the exact configured `Origin` and the receipt cookie; returns that callback session's `sessionKey` once and issues no session.                                                         |
 | `POST /sign-in/email`                     | Password sign-in. An `Origin`, when present, must match; a request without one is rejected only on `Sec-Fetch-Site: cross-site`. Admission is keyed by client address and email.                          |
@@ -135,13 +135,25 @@ Admission is keyed: password attempts by client address and by email, 10 per min
 
 `OCC_AUTH_TRUSTED_PROXY_CIDRS`, `OCC_AUTH_TRUSTED_PROXY_PRESET` and, for `generic`, `OCC_AUTH_CLIENT_IP_HEADER` are off by default, so direct requests keep today's behavior. From a socket peer inside the CIDRs, protected routes accept forwarded headers instead of returning `403`, and the limiter keys on the client address from the header, walking `X-Forwarded-For` right to left past trusted addresses; a missing or malformed value falls back to the peer. From any other peer, protected routes still reject forwarded headers and the limiter keys on the peer. The forwarded address is used only for limiter keys, not authentication or authorization; Fastify `trustProxy` remains disabled. Helm renders them from `api.trustedProxy`: `preset` `ingress-nginx` (`X-Forwarded-For`), `aws` (`X-Forwarded-For` as appended by an ALB; an NLB that preserves the source address needs no preset) or `generic` (`clientAddressHeader`, for example `X-Real-IP`), each with `cidrs` naming the proxy Pods or subnets, never `/0`.
 
-Attempts expire in five minutes and bind to one browser cookie; State caps 1,000 pending attempts per Installation. Provider calls share ten seconds, cap responses at 64 KiB and refuse redirects. Sessions last eight hours without refresh and use host-only Secure, HttpOnly, SameSite=Lax cookies. Revocation does not track GitHub suspension or stop Agents.
+Attempts expire in five minutes and bind to one browser cookie; State caps 1,000 pending attempts per Installation; a new start evicts the oldest instead of failing. Provider calls share ten seconds, cap responses at 64 KiB and refuse redirects. Sessions last eight hours without refresh and use host-only Secure, HttpOnly, SameSite=Lax cookies. Revocation does not track GitHub suspension or stop Agents.
 
 <a id="activation-and-recovery"></a>
 
 ### Recovery and uncertain outcomes
 
 State commits local effects and audit together, not IAM reads, GitHub calls or browser delivery. An unknown administrative commit returns `503 DEPENDENCY_UNAVAILABLE` stating the outcome is unknown, without replay or compensation; inspect before retrying. An administrator replaces the recovery designation online through `POST /recovery`. `auth:maintain` (PR #521) is implemented: with every writer stopped it activates, repairs enrollment, resets a lost recovery password, purges sessions and deactivates; see the [operator procedure](../docs/guides/deploy/auth-maintenance.md). Before activation, verify the designated account's local password and preserve that credential. Do not edit authentication rows ad hoc or roll back past activation.
+
+## Google sign-in
+
+**2026-09-29 amendment (G, branch `feat/google-sign-in-20260929`).** Google OpenID Connect is a second optional provider in the guarded profile, with the same rules: administrators attach an exact identity to an existing account, sign-in never creates or matches accounts, and password fallback and recovery are unchanged. Operator procedure: [Google sign-in](../docs/guides/deploy/google-sign-in.md).
+
+- **Provider instance.** `google:<sha256(client ID)>`, mirroring `github:<sha256(client ID)>`; the method subject is the ID token's `sub`, never the email. A new client ID needs reattachment.
+- **Shared endpoint code.** Start, callback and result run through one provider-parameterized helper in `apps/controller/src/auth/github.ts`, so `Origin` checks, PKCE `S256`, state, the `__Host-` binding cookie, the keyed limiter (one budget for both providers), `attemptId`, the receipt and the one-use result apply unchanged. Routes are `/api/auth/providers/google/{start,callback,result}` and `POST /api/auth/accounts/:userId/providers/google`; discovery adds `google`.
+- **Nonce.** `base64url(HMAC-SHA256(OCC_AUTH_SECRET, "oce-google-nonce\0" + state))`, sent at start and recomputed from the callback state. It binds the ID token to one one-use, five-minute attempt without storage; rotating the auth secret fails attempts in flight.
+- **Verification.** Fixed endpoints, no runtime discovery. The ID token must have exactly three base64url segments, `alg` `RS256` and a `kid` matching an RSA key from `https://www.googleapis.com/oauth2/v3/certs`, fetched through the bounded provider transport. `iss` is `https://accounts.google.com` or `accounts.google.com`; `aud` equals the client ID (an array must include it, with `azp` equal to it); `exp` is in the future; `iat` lies within the last hour and at most 60 seconds ahead; `nonce` matches; `sub` is 1–255 printable ASCII characters. With `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`, `hd` must be listed and `email_verified` exactly `true`. Tokens are never stored or logged.
+- **Configuration.** Client ID and secret are both or neither; the recovery ID (`OCC_AUTH_GITHUB_RECOVERY_USER_ID`, Helm `auth.recoveryUserId`) is required when either provider is configured; an activated database with no provider refuses startup. Helm adds `auth.google` with its own Secret and egress policy.
+- **No migration.** Identities are `identity_only` account rows and attempts use the existing free-text provider id.
+- **Verification status.** Tested against a fake OIDC provider (`google-id-token`, `google-login-transport`, `postgres-google-sign-in`, chart parity). Not yet verified against a real Google client.
 
 ## Milestones
 

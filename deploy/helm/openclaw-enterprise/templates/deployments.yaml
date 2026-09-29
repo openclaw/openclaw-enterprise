@@ -229,6 +229,14 @@ spec:
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_ID" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientIdKey) | nindent 12 }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_SECRET" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientSecretKey) | nindent 12 }}
             {{- end }}
+            {{- if and $.Values.auth.google $.Values.auth.google.enabled }}
+            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GOOGLE_CLIENT_ID" "secretName" $.Values.auth.google.secretName "key" $.Values.auth.google.clientIdKey) | nindent 12 }}
+            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GOOGLE_CLIENT_SECRET" "secretName" $.Values.auth.google.secretName "key" $.Values.auth.google.clientSecretKey) | nindent 12 }}
+            {{- if $.Values.auth.google.allowedDomains }}
+            - name: OCC_AUTH_GOOGLE_ALLOWED_DOMAINS
+              value: {{ join "," $.Values.auth.google.allowedDomains | quote }}
+            {{- end }}
+            {{- end }}
             {{- if $.Values.auth.recoveryUserId }}
             - name: OCC_AUTH_GITHUB_RECOVERY_USER_ID
               value: {{ $.Values.auth.recoveryUserId | quote }}

@@ -1374,3 +1374,68 @@ test("platform state failures surface as dependency failures", async () => {
     /state unavailable/,
   );
 });
+
+test("identity access coverage requires every target grant at the same or a broader scope", async () => {
+  const principal = (id) => ({ kind: "principal", id, issuer: "https://idp.example", subject: id });
+  const service = (id, namespaceId) => ({
+    kind: "service_principal",
+    id,
+    ...(namespaceId === undefined ? {} : { namespaceId }),
+  });
+  const bind = (id, subjectId, roleId, scope = {}, subjectKind = "identity") => ({
+    id,
+    subjectKind,
+    subjectId,
+    roleId,
+    ...scope,
+  });
+  const readNamespace = { action: "read", resourceKind: "namespace" };
+  const administer = { action: "administer", resourceKind: "installation" };
+  const policy = {
+    identities: [
+      principal("exact-admin"),
+      principal("broad-admin"),
+      principal("tenant-a-member"),
+      service("unscoped-service"),
+      service("tenant-a-service", "tenant-a"),
+      service("tenant-b-service", "tenant-b"),
+      service("exact-service"),
+    ],
+    groups: [{ id: "tenant-a-readers", namespaceId: "tenant-a", name: "Readers" }],
+    memberships: [
+      { groupId: "tenant-a-readers", principalId: "tenant-a-member", namespaceId: "tenant-a" },
+    ],
+    roles: [
+      { id: "admin", permissions: [administer, readNamespace] },
+      { id: "reader", permissions: [readNamespace] },
+    ],
+    bindings: [
+      bind("b1", "exact-admin", "admin", { resourceKind: "installation", resourceId: "ins" }),
+      bind("b2", "broad-admin", "admin"),
+      bind("b3", "tenant-a-readers", "reader", { namespaceId: "tenant-a" }, "group"),
+      bind("b4", "unscoped-service", "admin"),
+      bind("b5", "tenant-a-service", "reader", { namespaceId: "tenant-a" }),
+      bind("b6", "tenant-b-service", "reader", { namespaceId: "tenant-b" }),
+      bind("b7", "exact-service", "admin", { resourceKind: "installation", resourceId: "ins" }),
+    ],
+    restrictions: [],
+  };
+  const driver = new NativeIAMDriver({ loadNativeIAMState: async () => policy });
+  const covers = (principalId, targetIdentityId) =>
+    driver.coversIdentityAccess({ principalId, targetIdentityId });
+
+  assert.equal(await covers("exact-admin", "unscoped-service"), false);
+  assert.equal(await covers("exact-admin", "tenant-a-service"), false);
+  assert.equal(await covers("exact-admin", "exact-service"), true);
+  assert.equal(await covers("broad-admin", "unscoped-service"), true);
+  assert.equal(await covers("broad-admin", "tenant-a-service"), true);
+  // Group grants count only inside the membership's Namespace.
+  assert.equal(await covers("tenant-a-member", "tenant-a-service"), true);
+  assert.equal(await covers("tenant-a-member", "tenant-b-service"), false);
+  // A Namespace identity cannot cover an unscoped one, even with the same Role.
+  assert.equal(await covers("tenant-a-service", "tenant-a-member"), true);
+  assert.equal(await covers("tenant-a-service", "exact-service"), false);
+  assert.equal(await covers("unknown", "exact-service"), false);
+  assert.equal(await covers("broad-admin", "unknown"), false);
+  assert.equal(await covers("broad-admin", undefined), false);
+});

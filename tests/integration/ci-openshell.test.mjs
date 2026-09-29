@@ -172,7 +172,13 @@ test("OpenShell fixture networking admits the supervisor callback without granti
 
   // The Harness workload (any profile) is not the gateway caller, and no additive fixture policy
   // may select an openclaw Pod, classified or not.
-  for (const profile of [undefined, "", "unknown-profile", "broad-egress-v1"]) {
+  for (const profile of [
+    undefined,
+    "",
+    "unknown-profile",
+    "broad-egress-v1",
+    "provider-fenced-v1",
+  ]) {
     const agent = {
       "openclaw.dev/workload-role": "agent",
       ...(profile === undefined ? {} : { "openclaw.dev/network-profile": profile }),

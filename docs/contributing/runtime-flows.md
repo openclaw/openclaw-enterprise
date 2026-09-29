@@ -26,6 +26,14 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 
 ## Identity and credentials
 
+- [Agent repository access](../flows/agent-repository-credentials.md),
+  [credential service](../flows/repository-credentials.md), and
+  [repository configuration](../flows/repository-credential-configuration.md)
+- [Repository credential tests](../testing/repository-credentials.md); the
+  [original RFC](../../specs/31-repository-credentials.md) and
+  [qualification record](../../specs/31-repository-credentials/qualification.md)
+  preserve proposal and historical evidence separately from current support
+
 - [Namespace IAM policy](../flows/namespace-iam-policy.md): authorized Role and AccessBinding changes and audit commit
 
 - [Local password authentication](../flows/local-password-authentication.md) and [service API keys](../flows/service-api-keys.md)

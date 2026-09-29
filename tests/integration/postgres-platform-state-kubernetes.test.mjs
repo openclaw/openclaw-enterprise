@@ -322,10 +322,25 @@ test(
     assert.equal(persistedRevision.rows[0].active_revision_id, revision.id);
     assert.equal(activeAgent.activeRevisionId, revision.id);
 
-    const revisionWork = await pool.query(
-      `SELECT namespace_id, agent_id, revision_id, actor_id, state
-       FROM occ.controller_work WHERE revision_id = $1`,
-      [revision.id],
+    // Activation is visible before post-commit effects complete the worker claim.
+    // Wait for durable completion before asserting the admitted work's ownership.
+    const revisionWork = await pollUntil(
+      `admitted revision ${revision.id} work to succeed`,
+      async () => {
+        const current = await pool.query(
+          `SELECT namespace_id, agent_id, revision_id, actor_id, state
+           FROM occ.controller_work WHERE revision_id = $1`,
+          [revision.id],
+        );
+        assert.equal(current.rowCount, 1);
+        assert.notEqual(
+          current.rows[0].state,
+          "failed_permanent",
+          `Revision ${revision.id} work failed permanently`,
+        );
+        return current.rows[0].state === "succeeded" ? current : undefined;
+      },
+      { worker },
     );
     assert.deepEqual(revisionWork.rows, [
       {

@@ -312,5 +312,176 @@ test(
         ["authentication.account.enable", adminPrincipal, second.id],
       ]);
     });
+
+    await t.test(
+      "a current session without Installation administer is refused by every account route",
+      async () => {
+        const memberHeaders = await signedInHeaders(app, origin, member, address());
+        const adminAccount = await readAccount(app, adminHeaders, admin.id);
+        const memberAccount = await readAccount(app, adminHeaders, member.id);
+        const external = adminAccount.methods.find(({ providerId }) => providerId !== "credential");
+        assert.ok(external);
+        const users = async () =>
+          (await pool.query('SELECT count(*)::int AS count FROM occ."user"')).rows[0].count;
+        const usersBefore = await users();
+        const recoveryBefore = (
+          await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })
+        ).json().data;
+        const version = adminAccount.version;
+        const requests = [
+          ["GET", `/api/auth/accounts/${admin.id}`],
+          ["GET", `/api/auth/accounts/${member.id}`],
+          [
+            "POST",
+            "/api/auth/accounts",
+            { email: "refused@example.test", password, roleId: roles.admin.id },
+          ],
+          [
+            "POST",
+            `/api/auth/accounts/${admin.id}/providers/github`,
+            { subject: "9100005", expectedVersion: version },
+          ],
+          [
+            "POST",
+            `/api/auth/accounts/${member.id}/providers/github`,
+            { subject: "9100005", expectedVersion: memberAccount.version },
+          ],
+          [
+            "POST",
+            `/api/auth/accounts/${admin.id}/providers/google`,
+            { subject: "refused-google", expectedVersion: version },
+          ],
+          [
+            "POST",
+            `/api/auth/accounts/${admin.id}/methods/${external.methodId}/detach`,
+            { expectedVersion: version },
+          ],
+          ["POST", `/api/auth/accounts/${admin.id}/disable`, { expectedVersion: version }],
+          ["POST", `/api/auth/accounts/${admin.id}/enable`, { expectedVersion: version }],
+          ["POST", `/api/auth/accounts/${admin.id}/revoke`, { expectedVersion: version }],
+          ["POST", `/api/auth/accounts/${member.id}/enrol`],
+          ["GET", "/api/auth/recovery"],
+          [
+            "POST",
+            "/api/auth/recovery",
+            {
+              userId: member.id,
+              expectedCurrentUserId: admin.id,
+              expectedVersion: memberAccount.version,
+            },
+          ],
+        ];
+        for (const [method, url, payload] of requests) {
+          const refused = await app.inject({ method, url, headers: memberHeaders, payload });
+          assert.equal(refused.statusCode, 403, `${method} ${url}: ${refused.body}`);
+          assert.equal(refused.json().error.code, "FORBIDDEN", `${method} ${url}`);
+        }
+        assert.deepEqual(await readAccount(app, adminHeaders, admin.id), adminAccount);
+        assert.deepEqual(await readAccount(app, adminHeaders, member.id), memberAccount);
+        assert.equal(await users(), usersBefore);
+        assert.deepEqual(
+          (await app.inject({ url: "/api/auth/recovery", headers: adminHeaders })).json().data,
+          recoveryBefore,
+        );
+        assert.ok(
+          await currentSession(app, adminHeaders.cookie),
+          "the administrator stays signed in",
+        );
+        assert.ok(await currentSession(app, memberHeaders.cookie), "a refusal changes no session");
+        await assertGitHubRefused("9100005");
+      },
+    );
+
+    await t.test(
+      "two administrators attaching one GitHub identity to two accounts at once: one wins, one conflicts",
+      async () => {
+        const createReader = async (email) => {
+          const created = await app.inject({
+            method: "POST",
+            url: "/api/auth/accounts",
+            headers: adminHeaders,
+            payload: { email, password, roleId: roles.reader.id },
+          });
+          assert.equal(created.statusCode, 201, created.body);
+          return { id: created.json().data.id, email, password };
+        };
+        const third = await createReader("attach-third@example.test");
+        // The blocking row's owner is locked by neither attach: its foreign key share
+        // lock would otherwise hold an actor's own row lock instead of the identity insert.
+        const bystander = await createReader("attach-bystander@example.test");
+        const secondHeaders = await signedInHeaders(app, origin, second, address());
+        const racedSubject = "9100004";
+        const { providerId } = (await readAccount(app, adminHeaders, admin.id)).methods.find(
+          (method) => method.subject === adminSubject,
+        );
+        const targets = [member, third];
+        const before = await Promise.all(
+          targets.map((target) => readAccount(app, adminHeaders, target.id)),
+        );
+        const targetCookies = await Promise.all(
+          targets.map(
+            async (target) => (await signedInHeaders(app, origin, target, address())).cookie,
+          ),
+        );
+        // An uncommitted row for the same identity hides from both existence checks and
+        // holds both inserts on the unique index, so the two attaches really overlap.
+        const blocker = await pool.connect();
+        let attaches;
+        try {
+          await blocker.query("BEGIN");
+          const blockerPid = (await blocker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+          await blocker.query(
+            `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only)
+             VALUES ('race-blocker', $1, $2, $3, clock_timestamp(), clock_timestamp(), true)`,
+            [racedSubject, providerId, bystander.id],
+          );
+          attaches = Promise.all([
+            attach(adminHeaders, member.id, racedSubject, before[0].version),
+            attach(secondHeaders, third.id, racedSubject, before[1].version),
+          ]);
+          const deadline = performance.now() + 10_000;
+          for (;;) {
+            const { rows } = await pool.query(
+              `SELECT count(*)::int AS count FROM pg_stat_activity
+               WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO occ.account %'`,
+              [blockerPid],
+            );
+            if (rows[0].count === 2) {
+              break;
+            }
+            assert.ok(performance.now() < deadline, "both attaches reach the identity insert");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        } finally {
+          await blocker.query("ROLLBACK");
+          blocker.release();
+        }
+        const responses = await attaches;
+        const winner = responses.findIndex(({ statusCode }) => statusCode === 200);
+        assert.notEqual(winner, -1, responses.map(({ body }) => body).join("\n"));
+        const loser = 1 - winner;
+        assert.equal(responses[loser].statusCode, 409, responses[loser].body);
+        assert.equal(responses[loser].json().error.code, "RESOURCE_CONFLICT");
+        // The losing account is untouched: same version, no identity, sessions intact.
+        assert.deepEqual(await readAccount(app, adminHeaders, targets[loser].id), before[loser]);
+        assert.ok(await currentSession(app, targetCookies[loser]));
+        assert.equal(await currentSession(app, targetCookies[winner]), null);
+        const owners = await pool.query(
+          "SELECT user_id FROM occ.account WHERE provider_id = $1 AND account_id = $2",
+          [providerId, racedSubject],
+        );
+        assert.deepEqual(owners.rows, [{ user_id: targets[winner].id }]);
+        const raceAudits = (await state.transact((unit) => unit.audit.list())).filter(
+          ({ action, details }) =>
+            action === "authentication.method.attach" &&
+            targets.some(({ id }) => id === details.userId),
+        );
+        assert.deepEqual(
+          raceAudits.map(({ details }) => details.userId),
+          [targets[winner].id],
+        );
+        await assertGitHubSignIn(racedSubject, targets[winner].id);
+      },
+    );
   },
 );

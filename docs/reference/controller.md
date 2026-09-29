@@ -199,4 +199,4 @@ worker does not expose an HTTP health endpoint.
 - [Namespace Configuration and Kubernetes ConfigMaps](configuration.md)
 - [Kubernetes Compute Driver and local-cluster verification](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
-- [Implementation architecture](../ARCHITECTURE.md)
+- [Platform architecture](../design.md)

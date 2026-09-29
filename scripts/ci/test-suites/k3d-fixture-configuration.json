@@ -19,6 +19,12 @@
       "expectedTests": ["production Helm policies enforce workload network access levels"]
     },
     {
+      "path": "tests/integration/kubelet-volume-refresh-k3d.test.mjs",
+      "expectedTests": [
+        "optional Secret and ConfigMap volumes populate in running Pods within the measured kubelet refresh bounds"
+      ]
+    },
+    {
       "path": "tests/integration/kubernetes-compute-real.test.mjs",
       "expectedTests": [
         "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",

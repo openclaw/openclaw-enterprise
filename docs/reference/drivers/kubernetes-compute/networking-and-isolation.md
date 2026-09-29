@@ -134,10 +134,14 @@ same profile. Missing, empty or unknown profiles receive no ordinary grant;
 the tenant and separate Gateway namespace default-deny policies still select every Pod.
 
 Compute assigns this profile when creating ordinary embedded and dedicated
-workload templates. Their existing routes and ports remain unchanged. It also
-passes the profile in provider-owned Harness requirements. Deployment readiness
-requires the expected template profile; provider Harness readiness and activation
-reject an otherwise matching Pod that omits or changes a required profile.
+workload templates. Their existing routes and ports remain unchanged. Deployment
+readiness requires the expected template profile.
+
+Harness Pods provisioned by a SandboxDriver, such as OpenShell, carry
+`provider-fenced-v1` instead. The provider fences their egress, so Compute grants
+them only Gateway transport and plugin-status ingress (`allow-agent-runtime` is
+ingress-only for them): no DNS, workspace-node, model or authentication egress.
+Provider Harness readiness and activation reject a Pod with any other profile.
 
 Existing policy names remain stable, and the upgrade restarts no Pod. New
 namespaces receive the narrowed `allow-dns`, `allow-gateway-ingress` and
@@ -162,11 +166,6 @@ callback policies. Its caller is the OpenShell supervisor Pod
 (`openshell.ai/managed-by=openshell`, `openshell.ai/boundary-role=supervisor`),
 which carries no `openclaw.dev` labels; supervisor-labelled peers admit it, not
 the ordinary profile. Platform services retain their existing Helm policy selectors.
-
-Known limitation: OpenShell-provisioned Harness Pods carry the ordinary profile
-today, so Compute's DNS, model and authentication grants add to OpenShell's own
-egress fence rather than being replaced by it. A provider-fenced profile for
-SandboxDriver Harness Pods is the planned follow-up.
 
 Profile assignment is a trusted controller decision. The label qualifies a Pod
 for network grants; it does not supply workload identity or authorization to

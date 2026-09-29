@@ -1315,8 +1315,9 @@ export class OpenClawController {
     }
     const namespace = await this.admitIAMPolicyOperation(principalId, input.namespaceId);
     const driver = this.iamPolicyDriver("createNamespaceRole");
-    return this.mutate((state) =>
-      this.iamPolicyOperation(() =>
+    return this.mutate(async (state) => {
+      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
+      return this.iamPolicyOperation(() =>
         driver.createNamespaceRole!(
           { policy: state.iamPolicy },
           {
@@ -1326,8 +1327,8 @@ export class OpenClawController {
             permissions,
           },
         ),
-      ),
-    );
+      );
+    });
   }
 
   async getIAMRole(
@@ -1351,20 +1352,39 @@ export class OpenClawController {
     return role;
   }
 
-  async deleteIAMRole(principalId: string, namespaceId: string, roleId: string): Promise<void> {
+  // Returns the removed Role so the caller can audit what was deleted.
+  async deleteIAMRole(
+    principalId: string,
+    namespaceId: string,
+    roleId: string,
+  ): Promise<Readonly<Role>> {
     if (!isNonEmptyString(roleId)) {
       throw new ScopeViolationError("The exact IAM Role identity is missing.");
     }
     const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
+    const reader = this.iamPolicyDriver("getNamespaceRole");
     const driver = this.iamPolicyDriver("deleteNamespaceRole");
-    const deleted = await this.mutate((state) =>
-      this.iamPolicyOperation(() =>
-        driver.deleteNamespaceRole!({ policy: state.iamPolicy }, namespace.id, roleId),
-      ),
-    );
-    if (!deleted) {
+    const deleted = await this.mutate(async (state) => {
+      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
+      return this.iamPolicyOperation(async () => {
+        const role = await reader.getNamespaceRole!(
+          { policy: state.iamPolicy },
+          namespace.id,
+          roleId,
+        );
+        if (
+          role === undefined ||
+          !(await driver.deleteNamespaceRole!({ policy: state.iamPolicy }, namespace.id, roleId))
+        ) {
+          return undefined;
+        }
+        return role;
+      });
+    });
+    if (deleted === undefined) {
       throw new ScopeViolationError("The IAM Role does not belong to the exact Namespace.");
     }
+    return deleted;
   }
 
   async listIAMAccessBindings(
@@ -1402,8 +1422,13 @@ export class OpenClawController {
     });
     await this.verifyNamespacePolicyResource(namespace.id, input.resourceKind, input.resourceId);
     const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
-    return this.mutate((state) =>
-      this.iamPolicyOperation(() =>
+    return this.mutate(async (state) => {
+      await this.holdIAMPolicyAuthority(state, principalId, namespace.id, {
+        kind: input.resourceKind,
+        id: input.resourceId,
+        namespaceId: namespace.id,
+      });
+      return this.iamPolicyOperation(() =>
         driver.createNamespaceAccessBinding!(
           { policy: state.iamPolicy },
           {
@@ -1416,8 +1441,8 @@ export class OpenClawController {
             resourceId: input.resourceId,
           },
         ),
-      ),
-    );
+      );
+    });
   }
 
   async getIAMAccessBinding(
@@ -1443,26 +1468,45 @@ export class OpenClawController {
     return binding;
   }
 
+  // Returns the removed AccessBinding so the caller can audit who lost access.
   async deleteIAMAccessBinding(
     principalId: string,
     namespaceId: string,
     bindingId: string,
-  ): Promise<void> {
+  ): Promise<Readonly<AccessBinding>> {
     if (!isNonEmptyString(bindingId)) {
       throw new ScopeViolationError("The exact IAM AccessBinding identity is missing.");
     }
     const namespace = await this.admitIAMPolicyOperation(principalId, namespaceId);
+    const reader = this.iamPolicyDriver("getNamespaceAccessBinding");
     const driver = this.iamPolicyDriver("deleteNamespaceAccessBinding");
-    const deleted = await this.mutate((state) =>
-      this.iamPolicyOperation(() =>
-        driver.deleteNamespaceAccessBinding!({ policy: state.iamPolicy }, namespace.id, bindingId),
-      ),
-    );
-    if (!deleted) {
+    const deleted = await this.mutate(async (state) => {
+      await this.holdIAMPolicyAuthority(state, principalId, namespace.id);
+      return this.iamPolicyOperation(async () => {
+        const binding = await reader.getNamespaceAccessBinding!(
+          { policy: state.iamPolicy },
+          namespace.id,
+          bindingId,
+        );
+        if (
+          binding === undefined ||
+          !(await driver.deleteNamespaceAccessBinding!(
+            { policy: state.iamPolicy },
+            namespace.id,
+            bindingId,
+          ))
+        ) {
+          return undefined;
+        }
+        return binding;
+      });
+    });
+    if (deleted === undefined) {
       throw new ScopeViolationError(
         "The IAM AccessBinding does not belong to the exact Namespace.",
       );
     }
+    return deleted;
   }
 
   async listAgents(
@@ -2799,8 +2843,8 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<SecretMetadata>[]> {
+    const namespace = await this.getNamespace(principalId, namespaceId);
     return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
       const readable: Readonly<SecretMetadata>[] = [];
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
         if (
@@ -3051,8 +3095,8 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
   ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
+    const namespace = await this.getNamespace(principalId, namespaceId);
     return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
       const readable: Readonly<CredentialSourceMetadata>[] = [];
       for (const source of await state.credentialSources.listCredentialSources(namespace.id)) {
         if (
@@ -4576,7 +4620,7 @@ export class OpenClawController {
   }
 
   /**
-   * Begin logical deletion of one exact, authorized, empty Namespace.
+   * Begin or retry logical deletion of one exact, authorized, empty Namespace.
    * Driver effects remain deferred to handleNamespaceLifecycle().
    */
   async deleteNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>> {
@@ -4595,7 +4639,56 @@ export class OpenClawController {
         id: namespace.id,
         namespaceId: namespace.id,
       });
+      // Keep in-flight teardown idempotent. The original caller can explicitly
+      // retry terminal work after repairing the dependency or permission failure.
+      // Another authorized caller can take over only once the initiating actor
+      // no longer holds delete permission on this Namespace (for example, it
+      // was offboarded), so terminal teardown is never stranded.
       if (namespace.status === "deleting") {
+        const workId = `namespace:${namespace.id}:reconcile:deleted`;
+        const work = await state.operations.findWork(workId);
+        if (work?.state === "failed_permanent") {
+          const takeover = work.actorId !== principalId;
+          if (
+            takeover &&
+            (
+              await this.authorizationDecision(work.actorId, "delete", {
+                kind: "namespace",
+                id: namespace.id,
+                namespaceId: namespace.id,
+              })
+            ).decision.allowed
+          ) {
+            throw new AuthorizationDeniedError("Only the initiating actor can retry deletion.");
+          }
+          if (
+            !(await state.operations.retryFailedNamespaceDeletion(
+              namespace.id,
+              work.actorId,
+              principalId,
+            ))
+          ) {
+            throw new ResourceConflictError("The Namespace deletion work changed during retry.");
+          }
+          await state.audit.append({
+            id: `aud_${crypto.randomUUID()}`,
+            installationId: this.installation.id,
+            namespaceId: namespace.id,
+            occurredAt: this.timestamp(),
+            kind: "mutation",
+            actorId: principalId,
+            source: "occ",
+            action: "openclaw.namespaces.delete.retry",
+            resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
+            outcome: "success",
+            details: {
+              workId,
+              previousAttemptCount: work.attemptCount,
+              previousReasonCode: work.reasonCode,
+              ...(takeover ? { takeover: true, previousActorId: work.actorId } : {}),
+            },
+          });
+        }
         return namespace;
       }
       if (await state.namespaces.hasAgents(namespace.id)) {
@@ -4680,15 +4773,33 @@ export class OpenClawController {
       await state.workspaceSetups.delete(namespace.id, agent.id);
       // Keep in-flight teardown idempotent. The original caller can explicitly
       // retry terminal work after repairing the dependency or permission failure.
+      // Another authorized caller can take over only once the initiating actor
+      // no longer holds delete permission on this Agent (for example, it was
+      // offboarded), so terminal teardown is never stranded.
       if (agent.status === "deleting") {
         const workId = `agent:${agent.id}:reconcile:deleted`;
         const work = await state.operations.findWork(workId);
         if (work?.state === "failed_permanent") {
-          if (work.actorId !== principalId) {
+          const takeover = work.actorId !== principalId;
+          if (
+            takeover &&
+            (
+              await this.authorizationDecision(work.actorId, "delete", {
+                kind: "agent",
+                id: agent.id,
+                namespaceId: namespace.id,
+              })
+            ).decision.allowed
+          ) {
             throw new AuthorizationDeniedError("Only the initiating actor can retry deletion.");
           }
           if (
-            !(await state.operations.retryFailedAgentDeletion(namespace.id, agent.id, principalId))
+            !(await state.operations.retryFailedAgentDeletion(
+              namespace.id,
+              agent.id,
+              work.actorId,
+              principalId,
+            ))
           ) {
             throw new ResourceConflictError("The Agent deletion work changed during retry.");
           }
@@ -4707,6 +4818,7 @@ export class OpenClawController {
               workId,
               previousAttemptCount: work.attemptCount,
               previousReasonCode: work.reasonCode,
+              ...(takeover ? { takeover: true, previousActorId: work.actorId } : {}),
             },
           });
         }
@@ -6416,6 +6528,33 @@ export class OpenClawController {
       namespaceId,
     });
     return this.read((state) => this.exactNamespace(state, namespaceId));
+  }
+
+  /**
+   * Re-checks the admitted actor inside the policy write's transaction and holds that
+   * authority until COMMIT. The Namespace lock orders this write after, or before, every
+   * other policy write and deletion in the Namespace, so a revocation there cannot commit
+   * in between; the account hold does the same for a disable. The actor's Installation
+   * grants have no runtime writer that removes them.
+   */
+  private async holdIAMPolicyAuthority(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    namespaceId: string,
+    target?: ResourceRef,
+  ): Promise<void> {
+    await this.lockNamespace(state, namespaceId);
+    if (!(await state.installations.holdPrincipalAccount(principalId))) {
+      throw new AuthorizationDeniedError("The acting account is disabled.");
+    }
+    await this.authorize(principalId, "administer", {
+      kind: "installation",
+      id: this.installation.id,
+    });
+    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
+    if (target !== undefined) {
+      await this.authorize(principalId, "read", target);
+    }
   }
 
   private assertNamespacePolicyResourceKind(kind: ResourceKind): void {

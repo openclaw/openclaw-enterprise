@@ -11,6 +11,25 @@ Install Node.js 24 or newer, the repository-pinned pnpm, the Go version from
 mode, the container engine hosts k3d and builds or imports images without
 running OCE application services.
 
+K3s requires the `cpuset` cgroup controller, which systemd does not delegate to
+a rootless session. On Podman, select a rootful engine before starting. On
+macOS:
+
+```bash
+podman machine stop
+podman machine set --rootful
+podman machine start
+```
+
+Rootful describes the virtual machine; keep running `podman` as your normal
+host user. Rootful and rootless keep separate container storage, so the first
+start after switching rebuilds the images. On Linux, run Podman as root or
+delegate `cpuset` to your user session.
+
+Startup resolves the engine's host API socket itself. Do not export
+`DOCKER_HOST` or `CONTAINER_HOST` from the path `podman info` reports: on a
+machine-backed installation that path exists only inside the virtual machine.
+
 Build the CLI and start the Kubernetes profile:
 
 ```bash

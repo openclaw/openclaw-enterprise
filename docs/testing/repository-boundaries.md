@@ -14,8 +14,8 @@ and a forbidden HTTP-to-Driver import in a temporary copy of that source.
 
 ## Ownership and allowed dependencies
 
-The [platform design](../design.md) owns the target architecture;
-[current architecture](../ARCHITECTURE.md) describes implemented components.
+The [platform architecture](../design.md) describes implemented components and
+identifies remaining design requirements.
 [Repository policy](../../scripts/module-boundaries/policy.json) makes the
 following source-level checks explicit. It scans all source files under the
 controller and the five active packages, including newly added files.

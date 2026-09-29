@@ -7,8 +7,9 @@ line binaries through a separate protected workflow.
 controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
 (`deploy/runtime/Dockerfile`) as OCI archives containing both `linux/amd64` and
 `linux/arm64`. Each image has one multi-platform index digest; Docker selects
-the matching architecture when pulling it. Publishing also packages the OCC
-Helm chart under the same OCE release version. It does not deploy Kubernetes
+the matching architecture when pulling it. Chart publication is opt-in through
+`publish_chart: true`; it packages the OCC Helm chart under the same OCE release
+version. It does not deploy Kubernetes
 resources or change the existing CI test matrix.
 
 ## Source visibility
@@ -47,9 +48,9 @@ approval or approval-comment requirement. Complete these prerequisites first.
   approved Node 24 digest used by `scripts/ci/test-suites/images-packaging.json`
   and the runtime Dockerfile. All three must agree. This is an explicit approval,
   not a default.
-- Bootstrap three **private**, pre-existing GHCR container packages: the two
-  images and `ghcr.io/openclaw/charts/openclaw-enterprise`. Link each to
-  `openclaw/openclaw-enterprise` and grant this repository Actions access. The
+- Bootstrap the two **private**, pre-existing GHCR image packages. Chart publication
+  also requires `ghcr.io/openclaw/charts/openclaw-enterprise`. Link each selected
+  package to `openclaw/openclaw-enterprise` and grant this repository Actions access. The
   Enterprise publisher requires these packages to exist. Use the manual
   [marker bootstrap](#bootstrap-private-packages), then confirm private
   visibility and linkage.
@@ -146,17 +147,27 @@ grant a workstation credential additional scopes.
    run on their matching native Linux architectures. The publisher copies those exact
    archive and all child manifests with Skopeo and verifies the remote index digests. Source, CI attempt,
    environment branch policy, and package visibility are rechecked before transfer.
-4. Use the `image@sha256:...` references in the job summary and
-   `chart-publication-<run-id>-<attempt>` receipt for deployment. Each image
+4. Use the `image@sha256:...` references in the image job summary and
+   `container-publication-<run-id>-<attempt>` receipt for deployment. Each image
    receives an immutable `sha-<source-sha>` tag, the selected mutable alias,
-   and an OCE version tag matching the chart. The image-only
-   `container-publication` receipt records the source tags and alias for
+   and, only with `publish_chart: true`, an OCE version tag matching the chart.
+   The image-only `container-publication` receipt records the source tags and alias for
    promotion and recovery. Existing source and version tags cannot be replaced
    by different bytes. Publication does not create a Git tag, GitHub release,
    or deployment.
 
-Follow [chart publication and installation](chart-publication.md) to advance the
-shared version, inspect the chart metadata, and pull the private OCI package.
+Image publication defaults to `publish_chart: false` and needs no chart package.
+For a versioned chart release, also select `publish_chart: true` and follow
+[chart publication and installation](chart-publication.md). With `publish: false`,
+preparation never publishes images or a chart regardless of `publish_chart`.
+
+Images and the optional chart have separate jobs. A chart failure leaves the
+verified images and their successful job intact, but fails the combined run.
+The workflow holds the shared publication lock from preparation through both
+publication jobs; preparation-only runs use independent groups. A queued run can
+be superseded before it starts, but an active release retains the lock.
+The final summary reports both outcomes. Chart publication produces its own
+`chart-publication-<run-id>-<attempt>` receipt.
 
 The multi-platform publisher requires both architectures in every seal. Earlier
 amd64-only tags retain their original bytes and digests; building this workflow

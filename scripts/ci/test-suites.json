@@ -6,6 +6,7 @@
     "postgres-application": "./test-suites/postgres-application.json",
     "postgres-azure-workload-identity": "./test-suites/postgres-azure-workload-identity.json",
     "images-packaging": "./test-suites/images-packaging.json",
+    "image-pair-qualification": "./test-suites/image-pair-qualification.json",
     "k3d-fixture-configuration": "./test-suites/k3d-fixture-configuration.json",
     "k3d-fixture-state": "./test-suites/k3d-fixture-state.json",
     "k3d-fixture-plugins": "./test-suites/k3d-fixture-plugins.json",

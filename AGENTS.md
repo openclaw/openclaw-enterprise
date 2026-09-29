@@ -145,8 +145,10 @@ Use these expansions consistently in documentation and interface labels.
 
 Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 
-- Root `README.md`, `docs/README.md`, `docs/design.md`, and `docs/ARCHITECTURE.md`
-  own orientation, navigation, authoritative target design, and current architecture.
+- Root `README.md` and `docs/README.md` own orientation and navigation.
+  `docs/design.md` owns the authoritative architecture, with implemented behavior
+  and remaining design work distinguished explicitly. `docs/design/` owns its
+  detailed requirements and implementation limits.
 - `docs/reference/` owns living specifications for supported features and Driver
   contracts. State development, production, and verification-only limits explicitly;
   do not promote a proposed capability into current reference before implementation.
@@ -175,10 +177,11 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - Top-level `specs/` records implementation proposals, milestones, and delivery
   history. Completed specifications do not override current feature reference.
 
-Keep `docs/design.md` and `docs/ARCHITECTURE.md` about system structure, ownership,
-trust boundaries, and major interactions; update them only for architectural
-changes. Put feature details, configuration, edge cases, and delivery history in
-their owning reference, guide, flow, or spec. Link as needed, without per-PR entries.
+Keep `docs/design.md` and its chapters about system structure, ownership,
+trust boundaries, and major interactions; update them for architectural changes
+or corrections to implementation status.
+Put feature details, configuration, edge cases, and delivery history in their
+owning reference, guide, flow, or spec. Link as needed, without per-PR entries.
 
 Document new components under `docs/` in the same change: purpose, setup,
 boundaries, verification, and troubleshooting. Update navigation and affected

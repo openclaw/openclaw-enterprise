@@ -235,7 +235,7 @@ execution begins in the adjacent
 
 - [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 
-- [Platform architecture](../ARCHITECTURE.md)
+- [Platform architecture](../design.md)
 - [Controller worker operation](../reference/controller.md)
 - [Controller and Installation configuration](../reference/settings.md)
 - [ComputeDriver contract](../reference/drivers/compute.md)

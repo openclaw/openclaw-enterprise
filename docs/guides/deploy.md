@@ -45,9 +45,11 @@ hosting does not select the Agent model provider.
 
 - Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,
   Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the installed
-  [OCC CLI](cli.md). Profile generation also requires Node.js 24 or newer on the
-  operator host; manual YAML installs do not. Older Kubernetes servers produce a
-  startup warning and remain outside the supported boundary.
+  [OCC CLI](cli.md). Use Bash for image selection and model verification, and
+  Node.js 24 or newer for profile generation or the API transport-credential
+  example. Manual YAML plus console transport provisioning avoids those Node
+  commands. Older Kubernetes servers produce a startup warning and remain
+  outside the supported boundary.
 - Controller and runtime image digests and a chart matched to their source; see
   [private image delivery](deploy/private-registry-images.md).
 - External PostgreSQL with separate migrator and application roles.

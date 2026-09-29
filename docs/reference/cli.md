@@ -25,6 +25,9 @@ HTTPS endpoint unless connecting to a local loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.
 
+Pressing Ctrl-C, or sending `SIGTERM`, cancels an in-flight request and exits
+with an error instead of waiting for `--timeout-seconds` to expire.
+
 ## Resource commands
 
 Replace `ID` with the corresponding resource ID, `NAME` with a Namespace name,

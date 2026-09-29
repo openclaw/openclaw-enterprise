@@ -167,6 +167,42 @@ Both startup suites accept `OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER`, an integer from
    amd64. Expected errors, readiness, plugin discovery, and packaging assertions are
    unchanged; a timeout still fails the suite.
 
+## Repository image-pair qualification
+
+The qualification test invokes the actual staged controller and broker images
+with synthetic App and TLS material and a disposable receipt listener. On a
+Linux host running as UID 1000, stage immutable images for its native Docker
+daemon architecture and run:
+
+```sh
+OCC_PROBE_CONTROLLER_IMAGE='<controller>@sha256:<digest>' \
+OCC_PROBE_BROKER_IMAGE='<broker>@sha256:<digest>' \
+OCC_PROBE_OLD_CONTROLLER_IMAGE='<old-controller>@sha256:<digest>' \
+OCC_PROBE_OLD_BROKER_IMAGE='<old-broker>@sha256:<digest>' \
+node --test tests/integration/production-image-real-qualification.test.mjs
+```
+
+The old images exercise both incompatible version directions. Select an old
+controller without the admission probe and an old broker without durable-admission
+capability; an older image alone may still support the required protocol. Omitted
+image variables skip the corresponding real-image cases. To require both cases,
+export all four variables and run the optional local suite lane:
+
+```sh
+umask 077
+pair_state_dir=$(mktemp -d)
+node scripts/ci/run-tests.mjs run image-pair-qualification \
+  --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
+```
+
+The lane requires all four immutable references and fails if either case skips.
+It is not part of the automated CI groups. The test does not connect
+to a cluster or provider, and it proves protocol compatibility rather than
+database durability, session disposal, or a real Agent workflow.
+The images-packaging lane separately exercises node selection, deployed-identity
+validation, and upgrade recovery with simulated external command responses;
+those fixtures do not establish image-pair compatibility.
+
 ## Production image startup test environment
 
 [`production-image-startup.test.mjs`](../../tests/integration/production-image-startup.test.mjs)

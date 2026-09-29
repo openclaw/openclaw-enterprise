@@ -180,15 +180,30 @@ install_helm() {
     helm version --short
     return
   fi
-  linux_amd64_or_manual helm
-  local archive="${bin_dir}/helm-v${version}-linux-amd64.tar.gz"
+  local arch
+  local checksum
+  case "${platform}" in
+    Linux-x86_64)
+      arch="amd64"
+      checksum="2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e"
+      ;;
+    Linux-aarch64|Linux-arm64)
+      arch="arm64"
+      checksum="566e9f3a5a83a81e4b03503ae37e368edd52d699619e8a9bb1fdf21561ae0e88"
+      ;;
+    *)
+      echo "Install Helm v${version} manually on ${platform}." >&2
+      return 1
+      ;;
+  esac
+  local archive="${bin_dir}/helm-v${version}-linux-${arch}.tar.gz"
   download_file \
-    "https://get.helm.sh/helm-v${version}-linux-amd64.tar.gz" \
+    "https://get.helm.sh/helm-v${version}-linux-${arch}.tar.gz" \
     "${archive}" \
-    "2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e"
-  tar -xzf "${archive}" -C "${bin_dir}" linux-amd64/helm
-  mv "${bin_dir}/linux-amd64/helm" "${bin_dir}/helm"
-  rmdir "${bin_dir}/linux-amd64"
+    "${checksum}"
+  tar -xzf "${archive}" -C "${bin_dir}" "linux-${arch}/helm"
+  mv "${bin_dir}/linux-${arch}/helm" "${bin_dir}/helm"
+  rmdir "${bin_dir}/linux-${arch}"
   chmod 0755 "${bin_dir}/helm"
   helm version --short
 }
@@ -199,12 +214,27 @@ install_yq() {
     yq --version
     return
   fi
-  linux_amd64_or_manual yq
+  local arch
+  local checksum
+  case "${platform}" in
+    Linux-x86_64)
+      arch="amd64"
+      checksum="99df6047f5b577a9d25f969f7c3823ada3488de2e2115b30a0abb10d9324fd9f"
+      ;;
+    Linux-aarch64|Linux-arm64)
+      arch="arm64"
+      checksum="0e46b5b926a9e57c526fa2bd8f8e38b7e17fbf6e2403ff1741f3b268e3363a9e"
+      ;;
+    *)
+      echo "Install yq v${version} manually on ${platform}." >&2
+      return 1
+      ;;
+  esac
   local binary="${bin_dir}/yq"
   download_file \
-    "https://github.com/mikefarah/yq/releases/download/v${version}/yq_linux_amd64" \
+    "https://github.com/mikefarah/yq/releases/download/v${version}/yq_linux_${arch}" \
     "${binary}" \
-    "99df6047f5b577a9d25f969f7c3823ada3488de2e2115b30a0abb10d9324fd9f"
+    "${checksum}"
   chmod 0755 "${binary}"
   yq --version
 }

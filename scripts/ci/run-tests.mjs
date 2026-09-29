@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -335,6 +336,7 @@ function shouldRemoveInheritedEnv(name) {
     name === "NODE_TEST_CONTEXT" ||
     name === "NODE_TEST_WORKER_ID" ||
     name.startsWith("OCC_TEST_") ||
+    name.startsWith("OCC_PROBE_") ||
     name.endsWith("_KEEP") ||
     name.endsWith("_DEBUG")
   );
@@ -380,6 +382,36 @@ function sanitizeError(error) {
     name: error?.name,
     code: error?.code,
   };
+}
+
+// Preparation errors may contain command arguments, credentials and child output.
+// Only this closed diagnostic contract is safe to include in CI artifacts.
+function sanitizePreparationError(error) {
+  const result = { name: "Error" };
+  const { code, stage, failure, exitCode, signal, timedOut } = error ?? {};
+  if (
+    code !== "CI_PREPARATION_COMMAND_FAILED" ||
+    !["database-create", "database-schema", "database-migrate"].includes(stage) ||
+    !["spawn", "exit", "signal", "timeout"].includes(failure)
+  ) {
+    return result;
+  }
+  result.code = code;
+  result.stage = stage;
+  result.failure = failure;
+  if (exitCode === null || (Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255)) {
+    result.exitCode = exitCode;
+  }
+  if (
+    signal === null ||
+    (typeof signal === "string" && Object.hasOwn(osConstants.signals, signal))
+  ) {
+    result.signal = signal;
+  }
+  if (typeof timedOut === "boolean") {
+    result.timedOut = timedOut;
+  }
+  return result;
 }
 
 function validatePreparedEnv(value) {
@@ -459,6 +491,10 @@ function imageDigests(env) {
     prometheus: "OCC_TEST_OBSERVABILITY_PROMETHEUS_IMAGE",
     grafana: "OCC_TEST_OBSERVABILITY_GRAFANA_IMAGE",
     loki: "OCC_TEST_OBSERVABILITY_LOKI_IMAGE",
+    pairController: "OCC_PROBE_CONTROLLER_IMAGE",
+    pairBroker: "OCC_PROBE_BROKER_IMAGE",
+    pairOldController: "OCC_PROBE_OLD_CONTROLLER_IMAGE",
+    pairOldBroker: "OCC_PROBE_OLD_BROKER_IMAGE",
   };
   return Object.fromEntries(
     Object.entries(names).flatMap(([role, name]) => {
@@ -499,7 +535,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
       issues.push(
         issue("prepare-failed", `prepareFile failed for ${relativePath}`, {
           file: relativePath,
-          error: sanitizeError(error),
+          error: sanitizePreparationError(error),
         }),
       );
       return emptyFileResult(relativePath, issues);
@@ -522,6 +558,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
   let tests = [];
   let fileFailure;
   let agentActivity;
+  let measurements = [];
   try {
     if (issues.length === 0) {
       agentActivity = await startAgentNamespaceCapture({
@@ -559,6 +596,9 @@ async function runFile(root, lane, file, statePath, prepareFile) {
             : {}),
         };
       }
+      measurements = events
+        .filter((event) => event.type === "test:diagnostic" && event.data?.kind === "measurement")
+        .map((event) => event.data.measurement);
       tests = events
         .filter((event) => isRealTestEvent(event, absolutePath))
         .map((event) => ({
@@ -661,6 +701,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     ...(fileFailure ? { fileFailure } : {}),
     counts,
     tests,
+    ...(measurements.length > 0 ? { measurements } : {}),
     issues,
     cleanup: cleanupResult,
     imageDigests: imageDigests(env),

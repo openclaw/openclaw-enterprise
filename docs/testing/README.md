@@ -117,6 +117,13 @@ Do not report a skipped model turn, database case, or cluster case as verified.
 Keep optional live Configuration cases and mutually exclusive Slack selection
 distinct from missing prerequisites.
 
+CI results artifacts also carry a per-file `measurements` array. A test adds one
+with `t.diagnostic("openclaw-ci-measurement <json>")`; the
+[reporter](../../scripts/ci/reporter.mjs) keeps only allowlisted shapes (today
+`kubelet-volume-refresh`, from the
+[volume refresh test](../../tests/integration/kubelet-volume-refresh-k3d.test.mjs))
+and drops other diagnostics.
+
 Tests normally clean up their own temporary processes, resources, and files, but
 some suites leave clusters, databases, Slack messages, or provider accounts for
 inspection or follow-up. Retain failure evidence before cleanup. Remove only

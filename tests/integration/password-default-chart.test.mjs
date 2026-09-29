@@ -17,6 +17,8 @@ const tooling = await chartTooling();
 
 const githubEgress = ({ kind, metadata }) =>
   kind === "NetworkPolicy" && metadata.name.endsWith("-api-github-login-egress");
+const googleEgress = ({ kind, metadata }) =>
+  kind === "NetworkPolicy" && metadata.name.endsWith("-api-google-login-egress");
 
 test(
   "the example install renders password-only sign-in and GitHub only as an upgrade",
@@ -25,6 +27,7 @@ test(
     const install = await render();
     assert.deepEqual(signInSettings(deploymentEnv(install, "api")), defaultInstallSettings);
     assert.equal(install.some(githubEgress), false);
+    assert.equal(install.some(googleEgress), false);
 
     const upgrade = await render(githubUpgradeValues(recoveryUserId));
     assert.deepEqual(
@@ -32,6 +35,7 @@ test(
       githubUpgradeSettings(recoveryUserId),
     );
     assert.equal(upgrade.filter(githubEgress).length, 1);
+    assert.equal(upgrade.some(googleEgress), false);
 
     const proxied = await render({
       "api.trustedProxy.preset": "ingress-nginx",
@@ -45,7 +49,7 @@ test(
     for (const objects of [install, upgrade, proxied]) {
       assert.ok(
         !deploymentEnv(objects, "worker").some(({ name }) =>
-          /^OCC_AUTH_(GITHUB_|TRUSTED_PROXY_|CLIENT_IP_HEADER)/.test(name),
+          /^OCC_AUTH_(GITHUB_|GOOGLE_|TRUSTED_PROXY_|CLIENT_IP_HEADER)/.test(name),
         ),
       );
     }

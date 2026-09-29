@@ -28,6 +28,9 @@
       "path": "tests/conformance/docker-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/grafana-overview-dashboard.test.mjs"
+    },
+    {
       "path": "tests/conformance/iam.test.mjs"
     },
     {
@@ -451,7 +454,16 @@
       "path": "tests/integration/github-login-transport.test.mjs"
     },
     {
+      "path": "tests/integration/google-id-token.test.mjs"
+    },
+    {
+      "path": "tests/integration/google-login-transport.test.mjs"
+    },
+    {
       "path": "tests/integration/client-address.test.mjs"
+    },
+    {
+      "path": "tests/integration/password-sign-in-admission.test.mjs"
     }
   ]
 }

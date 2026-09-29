@@ -14,6 +14,7 @@ import {
   betterAuthIssuer,
   createPostgresControllerAuth,
 } from "../../apps/controller/src/auth/index.ts";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { parseAuthMaintainArguments } from "../../scripts/lib/auth-maintain-arguments.mjs";
 import {
   ensureDevelopmentBootstrap,
@@ -218,7 +219,7 @@ test(
       ]);
       assert.equal(repeated.code, 0, repeated.stderr);
       assert.equal(repeated.output.designation.userId, recoveryUserId);
-      // The activated profile now refuses a controller started without GitHub configuration.
+      // The activated profile now refuses a controller started without an external sign-in provider.
       await withPool(databaseUrl, async (pool) => {
         await assert.rejects(
           createPostgresControllerAuth({
@@ -229,8 +230,33 @@ test(
             pool,
             state: new PostgresPlatformState(pool),
           }),
-          /requires its GitHub configuration/,
+          /requires a configured external sign-in provider/,
         );
+      });
+      // Google alone is such a provider: it composes the guarded profile without GitHub.
+      await withPool(databaseUrl, async (pool) => {
+        const state = new PostgresPlatformState(pool);
+        const google = await createPostgresControllerAuth({
+          mode: "development",
+          installationId,
+          baseURL,
+          secret,
+          pool,
+          state,
+          iamDriver: new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
+          google: {
+            clientId: "google-client",
+            clientSecret: "google-secret",
+            allowedDomains: [],
+            recoveryUserId,
+          },
+        });
+        assert.equal(google.humanProfile, "guarded");
+        assert.equal(google.googleEnabled, true);
+        assert.equal(google.githubEnabled, false);
+        assert.match(google.googleProviderId, /^google:[0-9a-f]{64}$/);
+        assert.equal(google.attachGitHub, undefined);
+        assert.equal(typeof google.attachGoogle, "function");
       });
     });
 

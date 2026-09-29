@@ -1,19 +1,32 @@
 /** Explicit classification for controller-approved workload templates. Label
  * writers and NetworkPolicy enforcement remain separate trust boundaries.
  *
- * This module is the single home for network profile constants. The ordinary
- * profile is the only value today; a provider-fenced profile for Harness Pods
- * owned by a SandboxDriver is planned as a second value in a follow-up. */
+ * This module is the single home for network profile constants. Compute-owned
+ * workloads carry the ordinary profile. Harness Pods provisioned by a
+ * SandboxDriver carry the provider-fenced profile: they receive Compute's
+ * ingress grants (Gateway transport and plugin status) but none of its egress
+ * grants, so the provider's own egress fence is the only egress that applies. */
 export const NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile";
 export const ORDINARY_NETWORK_PROFILE = "broad-egress-v1";
+export const PROVIDER_FENCED_NETWORK_PROFILE = "provider-fenced-v1";
+export type NetworkProfile =
+  typeof ORDINARY_NETWORK_PROFILE | typeof PROVIDER_FENCED_NETWORK_PROFILE;
+
+/** Grants require their exact profile. Scope labels cannot override it. */
+export function profileNetworkPolicySelector(
+  profile: NetworkProfile,
+  matchLabels: Readonly<Record<string, string>> = {},
+): {
+  matchLabels: Record<string, string>;
+} {
+  return { matchLabels: { ...matchLabels, [NETWORK_PROFILE_LABEL]: profile } };
+}
 
 /** Ordinary grants require their exact profile. Scope labels cannot override it. */
 export function ordinaryNetworkPolicySelector(matchLabels: Readonly<Record<string, string>> = {}): {
   matchLabels: Record<string, string>;
 } {
-  return {
-    matchLabels: { ...matchLabels, [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE },
-  };
+  return profileNetworkPolicySelector(ORDINARY_NETWORK_PROFILE, matchLabels);
 }
 
 /** The same selector without the profile, as written before explicit profiles.

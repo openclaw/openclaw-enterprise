@@ -18,6 +18,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
+const zeroGrant = "principal-source-zero-grant";
 const installation = Object.freeze({
   id: "installation-credential-source-occ",
   name: "Credential source OCC conformance",
@@ -125,7 +126,7 @@ function createTestSandbox() {
 
 async function fixture(options = {}) {
   const iamState = {
-    identities: [administrator, deployer].map((id) => ({
+    identities: [administrator, deployer, zeroGrant].map((id) => ({
       kind: "principal",
       id,
       issuer: "credential-source-occ",
@@ -799,6 +800,30 @@ test("Namespace IAM delegates operate on an exact credential source to an Agent 
       resourceId: "cs_00000000-0000-4000-8000-000000000000",
     }),
     ScopeViolationError,
+  );
+});
+
+test("listing credential sources requires Namespace read before filtering each source", async () => {
+  const { controller, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  // Without Namespace read, an existing and a missing Namespace are indistinguishable.
+  for (const namespaceId of [namespace.id, "ns_00000000-0000-4000-8000-000000000000"]) {
+    await assert.rejects(
+      controller.listCredentialSources(zeroGrant, namespaceId),
+      AuthorizationDeniedError,
+    );
+  }
+  const listed = await controller.listCredentialSources(deployer, namespace.id);
+  assert.deepEqual(
+    listed.map(({ id }) => id),
+    [source.id],
   );
 });
 

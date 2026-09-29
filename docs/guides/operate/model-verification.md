@@ -5,7 +5,21 @@ request and returns a real model response. The private OCC workspace proxy
 serves workspace administration; this check uses a separate gateway password
 over a Kubernetes port-forward bound to your machine's loopback address. For
 an interactive check with the same loopback password, use the
-[OpenClaw TUI](../deploy/production-agents.md#attach-with-the-openclaw-tui).
+[OpenClaw TUI](../deploy/production-tui.md).
+
+## What each check establishes
+
+| Check                                                      | Evidence                                                                                                 |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Authenticated `occ installation get`                       | The control plane accepts the caller's credential.                                                       |
+| Accepted deployment                                        | OCC stored a revision and queued work.                                                                   |
+| Deployment `succeeded` and the expected `activeRevisionId` | The worker completed the requested work and OCC selected that revision; this is not a live health probe. |
+| Successful OCC workspace-file read                         | Private routing and file access work for that Agent and caller.                                          |
+| Fresh nonce returned by the model                          | The selected Agent executed a model request.                                                             |
+
+Run the checks needed for your task. A model response does not establish tool,
+plugin, repository, sandbox, or workspace-file behavior; verify those operations
+separately. The console reports persisted deployment state, not live gateway health.
 
 ## Prepare the Agent
 

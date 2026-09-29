@@ -254,9 +254,9 @@ test(
     assert.equal(overview.dashboard.panels[0].type, "text");
     assert.match(
       overview.dashboard.panels[0].options.content,
-      /\[Metrics\]\(\/d\/occ-development\)/,
+      /\[Metrics\]\(\.\/d\/occ-development\)/,
     );
-    assert.doesNotMatch(overview.dashboard.panels[0].options.content, /\/d\/occ-logs/);
+    assert.doesNotMatch(overview.dashboard.panels[0].options.content, /occ-logs/);
     // Grafana's HTTP listener can be ready before its datasource backend. Wait
     // for the actual Grafana-to-Prometheus query to succeed within the same bound.
     await waitForMonitoring(

@@ -45,8 +45,9 @@ auth:
   baseUrl: ""
   secretName: occ-auth
   secretKey: secret
-  # Existing local password administrator's user ID. Required with auth.github; it
-  # designates the recovery account when the API first starts with GitHub sign-in.
+  # Existing local password administrator's user ID. Required with auth.github or
+  # auth.google; it designates the recovery account when the API first starts with
+  # external sign-in.
   recoveryUserId: ""
   # Optional GitHub browser sign-in for existing password accounts (API Pod only).
   # Needs an HTTPS baseUrl, auth.recoveryUserId and agentNativeAdmin.enabled: false.
@@ -58,6 +59,21 @@ auth:
     clientSecretKey: client-secret
     # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443
     # to 0.0.0.0/0; list the web and api IPv4 ranges from api.github.com/meta to narrow it.
+    egressCidrs: []
+  # Optional Google sign-in (OpenID Connect) for existing password accounts (API Pod
+  # only). Same requirements as auth.github; its Secret must differ from auth.github's.
+  # Create the dedicated Secret first.
+  google:
+    enabled: false
+    secretName: occ-google-login
+    clientIdKey: client-id
+    clientSecretKey: client-secret
+    # Google Workspace hosted domains (the ID token's hd claim). Empty accepts any
+    # Google account; set, it also requires a verified email address.
+    allowedDomains: []
+    # API Pod HTTPS egress for oauth2.googleapis.com and www.googleapis.com; browsers,
+    # not the API, reach accounts.google.com. Empty allows TCP 443 to 0.0.0.0/0; Google
+    # publishes no small stable range, so narrow it with an egress proxy.
     egressCidrs: []
 
 agentNativeAdmin:

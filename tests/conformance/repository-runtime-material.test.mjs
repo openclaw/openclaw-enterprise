@@ -325,6 +325,11 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       ),
     };
   };
+  // Annotation patches that sync a running Harness after its node setup is written.
+  clients.core.patchNamespacedPod = async ({ name, namespace: target }) => {
+    calls.push({ operation: "patchPod", name, namespace: target });
+    return {};
+  };
   for (const [api, kinds] of [
     [
       clients.core,
@@ -693,15 +698,16 @@ test("Dedicated credential refresh preserves its enrolled workspace node", async
   const original = runtimeBinding();
   await f.driver.prepareRevision(f.revision, f.context([original]));
   f.markReady();
-  // Gateway readiness permits enrollment, then a separate observation admits the node.
-  assert.equal((await f.driver.prepareRevision(f.revision, f.context([original]))).ready, false);
-  f.markReady();
-  await f.driver.prepareRevision(f.revision, f.context([original]));
-  f.markReady();
-  assert.equal((await f.driver.prepareRevision(f.revision, f.context([original]))).ready, false);
-  // Recording the node ID updates the Gateway binding and requires its new generation.
-  f.markReady();
+  // Gateway readiness permits enrollment. The setup reaches the running Harness
+  // through its volume without replacing it, and this fixture pairs at once.
   assert.equal((await f.driver.prepareRevision(f.revision, f.context([original]))).ready, true);
+  // Without a status proxy the controller cannot read the Gateway's ack, so
+  // activation binds the recorded node ID into the Gateway's pod spec and waits.
+  await assert.rejects(
+    f.driver.activateRevision(f.revision, f.context([original])),
+    /gateway is not ready/,
+  );
+  f.markReady();
   await f.driver.activateRevision(f.revision, f.context([original]));
   const before = structuredClone(f.consumer());
   const nodeSecret = [...f.objects.values()].find(
@@ -734,13 +740,16 @@ test("Dedicated credential refresh preserves its enrolled workspace node", async
     container.volumeMounts.find((mount) => mount.subPath === nodeSecret.metadata.name),
     nodeMount,
   );
-  assert.deepEqual(
-    container.env.find(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE"),
-    {
-      name: "OPENCLAW_NODE_SETUP_CODE",
-      valueFrom: { secretKeyRef: { name: nodeSecret.metadata.name, key: "setupCode" } },
-    },
+  assert.equal(
+    container.env.some(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE"),
+    false,
+    "the setup code never enters the Harness environment",
   );
+  assert.deepEqual(
+    refreshed.spec.template.spec.volumes.find(({ name }) => name === "openclaw-node-setup"),
+    before.spec.template.spec.volumes.find(({ name }) => name === "openclaw-node-setup"),
+  );
+  assert.equal(nodeSecret.data.setupCode, undefined, "readiness removed the paired setup code");
   assert.deepEqual(
     f.objects.get(`Secret:${nodeSecret.metadata.namespace}:${nodeSecret.metadata.name}`),
     nodeSecret,

@@ -377,6 +377,14 @@ function execFile(command, args, options = {}) {
       error.stdout = stdout;
       error.stderr = stderr;
       Object.assign(error, properties);
+      return preparationError(error, timedOut ? "timeout" : properties.signal ? "signal" : "exit");
+    }
+    function preparationError(error, failure) {
+      if (["database-create", "database-schema", "database-migrate"].includes(options.stage)) {
+        error.code = "CI_PREPARATION_COMMAND_FAILED";
+        error.stage = options.stage;
+        error.failure = failure;
+      }
       return error;
     }
     function finish(callback) {
@@ -398,7 +406,7 @@ function execFile(command, args, options = {}) {
         error.args = args;
         error.stdout = stdout;
         error.stderr = stderr;
-        reject(error);
+        reject(preparationError(error, "spawn"));
       }),
     );
     // Exit can precede pipe drain; callers need complete diagnostics to classify failures.
@@ -505,12 +513,13 @@ async function ensurePostgresServer(statePath, state) {
   return resource;
 }
 
-async function postgresExec(resource, args) {
+async function postgresExec(resource, args, stage) {
   await execFile(
     process.env.OCC_DOCKER_BIN ?? "docker",
     dockerArgsForPostgres(resource, "exec", "-T", "postgres", ...args),
     {
       env: { OCC_POSTGRES_PORT: String(resource.port) },
+      stage,
     },
   );
 }
@@ -535,31 +544,40 @@ async function createAndMigrateDatabase(
   });
   await writeState(statePath, state);
 
-  await postgresExec(server, [
-    "psql",
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-U",
-    "postgres",
-    "-d",
-    "postgres",
-    "-c",
-    `CREATE DATABASE ${quoteIdentifier(name)}`,
-  ]);
-  await postgresExec(server, [
-    "psql",
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-U",
-    "postgres",
-    "-d",
-    name,
-    "-c",
-    `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-  ]);
+  await postgresExec(
+    server,
+    [
+      "psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+      "-c",
+      `CREATE DATABASE ${quoteIdentifier(name)}`,
+    ],
+    "database-create",
+  );
+  await postgresExec(
+    server,
+    [
+      "psql",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-U",
+      "postgres",
+      "-d",
+      name,
+      "-c",
+      `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+    ],
+    "database-schema",
+  );
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
   await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
     env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
+    stage: "database-migrate",
   });
   await markResourceReady(statePath, state, resource);
   return {

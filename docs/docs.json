@@ -151,6 +151,10 @@
                         "label": "Service Accounts"
                       },
                       {
+                        "page": "reference/authentication/external-sign-in",
+                        "label": "External Sign-In"
+                      },
+                      {
                         "page": "reference/authentication/service-api-keys",
                         "label": "Service API Keys"
                       }
@@ -392,7 +396,8 @@
                   }
                 ]
               }
-            ]
+            ],
+            "hidden": ["guides/repository-credentials/standalone-service"]
           },
           {
             "tab": "Operate",
@@ -436,6 +441,10 @@
                   {
                     "page": "guides/deploy/auth-maintenance",
                     "label": "Sign-in Maintenance"
+                  },
+                  {
+                    "page": "guides/deploy/google-sign-in",
+                    "label": "Google Sign-in"
                   },
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
@@ -544,7 +553,9 @@
             "hidden": [
               "guides/deploy/service-keys",
               "guides/deploy/local-operations",
-              "flows/installation-profile-rendering"
+              "flows/installation-profile-rendering",
+              "guides/deploy/published-images",
+              "guides/deploy/production-tui"
             ]
           },
           {
@@ -640,12 +651,8 @@
                     "label": "Readable Code"
                   },
                   {
-                    "page": "ARCHITECTURE",
-                    "label": "Current Architecture"
-                  },
-                  {
                     "page": "design",
-                    "label": "Target Architecture"
+                    "label": "Architecture"
                   },
                   {
                     "page": "reference/controller",
@@ -806,7 +813,7 @@
                   },
                   {
                     "page": "documentation-inventory",
-                    "label": "Inventory"
+                    "label": "Historical Inventory"
                   }
                 ]
               }

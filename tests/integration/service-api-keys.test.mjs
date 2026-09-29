@@ -601,13 +601,27 @@ test("service API keys authenticate scoped automation without replacing sessions
         ).status,
         403,
       );
-      const adminBinding = {
-        id: "installation-service-admin",
+      // Installation administer alone cannot issue a key that reaches the
+      // Namespace grants the issuer itself lacks.
+      const exactAdminBinding = {
+        id: "installation-service-exact-admin",
         subjectKind: "identity",
         subjectId: installationPrincipal.id,
         roleId: seed.bindings[0].roleId,
         resourceKind: "installation",
         resourceId: installationId,
+      };
+      policy.bindings.push(exactAdminBinding);
+      assert.equal(
+        (await request("POST", "/api/auth/service-keys", { headers: keyHeaders, body })).status,
+        403,
+      );
+      policy.bindings.splice(policy.bindings.indexOf(exactAdminBinding), 1);
+      const adminBinding = {
+        id: "installation-service-admin",
+        subjectKind: "identity",
+        subjectId: installationPrincipal.id,
+        roleId: seed.bindings[0].roleId,
       };
       policy.bindings.push(adminBinding);
       const child = await request("POST", "/api/auth/service-keys", { headers: keyHeaders, body });
@@ -834,5 +848,157 @@ test("service API keys authenticate scoped automation without replacing sessions
         ),
       );
     },
+  );
+});
+
+// Issuing a key hands the caller every grant of the target ServicePrincipal, so
+// Installation administer alone must not reach a principal with broader access.
+test("service key issuance cannot exceed the caller's own IAM grants", async (t) => {
+  const installationId = `ins_${randomUUID()}`;
+  const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
+  const baseURL = "http://127.0.0.1";
+  const auth = createControllerAuth({
+    installationId,
+    mode: "development",
+    baseURL,
+    secret: `test-secret-${randomUUID()}`,
+    memoryDatabase,
+    secureCookies: false,
+  });
+  const adminCredentials = {
+    email: "admin@example.invalid",
+    password: `test-password-${randomUUID()}`,
+  };
+  const operatorCredentials = {
+    email: "operator@example.invalid",
+    password: `test-password-${randomUUID()}`,
+  };
+  const admin = auth.principalSeed(await auth.createAccount(adminCredentials), {
+    grant: "administrator",
+  });
+  const administratorRole = admin.roles[0];
+  // POST /api/auth/accounts with the administrator roleId binds it to the exact Installation.
+  const operator = auth.principalSeed(await auth.createAccount(operatorCredentials), {
+    roleId: administratorRole.id,
+  });
+  // Same shape as the bootstrap ServicePrincipal: the administrator Role, unscoped.
+  const bootstrapService = { kind: "service_principal", id: `spn_${randomUUID()}` };
+  const installationService = { kind: "service_principal", id: `spn_${randomUUID()}` };
+  const policy = {
+    identities: [admin.principal, operator.principal, bootstrapService, installationService],
+    roles: [
+      ...admin.roles,
+      {
+        id: "installation-iam",
+        permissions: [{ action: "administer", resourceKind: "installation" }],
+      },
+    ],
+    bindings: [
+      ...admin.bindings,
+      ...operator.bindings,
+      {
+        id: "bootstrap-service-admin",
+        subjectKind: "identity",
+        subjectId: bootstrapService.id,
+        roleId: administratorRole.id,
+      },
+      {
+        id: "installation-service-iam",
+        subjectKind: "identity",
+        subjectId: installationService.id,
+        roleId: "installation-iam",
+        resourceKind: "installation",
+        resourceId: installationId,
+      },
+    ],
+    groups: [],
+    memberships: [],
+    restrictions: [],
+  };
+  const auditSink = new InMemoryAuditSink();
+  const app = createFastifyApp({
+    auth,
+    iamDriver: new NativeIAMDriver({ loadNativeIAMState: async () => policy }),
+    auditSink,
+    development: { enabled: true, installationId },
+    computeDriver: createDevelopmentComputeDriver(),
+    secretDriver: createTestSecretDriver(),
+    configurationDriver: createTestConfigurationDriver(),
+    resolveHarness: resolveApprovedDevelopmentHarness,
+    createController(installation) {
+      return new OpenClawController(installation, {
+        state: new InMemoryPlatformState({ auditSink }),
+        recordOperations: false,
+      });
+    },
+  });
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  t.after(() => app.close());
+  const origin = `http://127.0.0.1:${app.server.address().port}`;
+  const adminSession = await signInWithEmailPassword({ origin, ...adminCredentials });
+  const operatorSession = await signInWithEmailPassword({ origin, ...operatorCredentials });
+  async function request(method, path, { headers, body } = {}) {
+    const response = await fetch(`${origin}${path}`, {
+      method,
+      headers: {
+        origin: baseURL,
+        ...headers,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: response.status, ...(await response.json()) };
+  }
+  const asAdmin = { cookie: adminSession.cookie };
+  const asOperator = { cookie: operatorSession.cookie };
+  assert.equal(
+    (await request("POST", "/installation/bootstrap", { headers: asAdmin, body: { name: "t" } }))
+      .status,
+    201,
+  );
+  const namespace = await request("POST", "/namespaces", {
+    headers: asAdmin,
+    body: { name: "tenant" },
+  });
+  assert.equal(namespace.status, 201);
+  const namespacePath = `/namespaces/${namespace.data.id}`;
+
+  // The operator's grant stops at the exact Installation.
+  assert.equal((await request("GET", "/installation", { headers: asOperator })).status, 200);
+  assert.equal((await request("GET", namespacePath, { headers: asOperator })).status, 403);
+
+  const escalation = await request("POST", "/api/auth/service-keys", {
+    headers: asOperator,
+    body: { servicePrincipalId: bootstrapService.id, name: "escalation" },
+  });
+  assert.equal(escalation.status, 403, JSON.stringify(escalation));
+  assert.equal(JSON.stringify(escalation).includes("occ_"), false);
+  assert.equal(memoryDatabase.apikey.length, 0);
+  assert.ok(
+    auditSink.events.some(
+      (event) =>
+        event.action === "openclaw.auth.service-keys.create" &&
+        event.kind === "authorization_denial" &&
+        event.actorId === operator.principal.id,
+    ),
+  );
+
+  // A principal whose grants the operator already holds is still issuable.
+  const covered = await request("POST", "/api/auth/service-keys", {
+    headers: asOperator,
+    body: { servicePrincipalId: installationService.id, name: "covered" },
+  });
+  assert.equal(covered.status, 201, JSON.stringify(covered));
+
+  // The unscoped administrator holds every grant of the bootstrap principal.
+  const bootstrapKey = await request("POST", "/api/auth/service-keys", {
+    headers: asAdmin,
+    body: { servicePrincipalId: bootstrapService.id, name: "bootstrap" },
+  });
+  assert.equal(bootstrapKey.status, 201, JSON.stringify(bootstrapKey));
+  assert.equal(
+    (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
+      .status,
+    200,
   );
 });

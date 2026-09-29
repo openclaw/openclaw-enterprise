@@ -20,6 +20,7 @@ import {
   betterAuthIssuer,
   createPostgresControllerAuth,
   type GitHubLoginConfiguration,
+  type GoogleSignInConfiguration,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
@@ -57,6 +58,7 @@ export interface PostgresDevelopmentConfig {
   readonly authSecret: string;
   readonly authBaseURL: string;
   readonly github?: GitHubLoginConfiguration;
+  readonly google?: GoogleSignInConfiguration;
   readonly poolMax?: number;
   readonly logger?: OccLogger;
   readonly logging?: LoggingConfiguration;
@@ -100,6 +102,9 @@ export async function composePostgresDevelopment(
   if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("GitHub sign-in does not support native administration.");
   }
+  if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
+    throw new Error("Google sign-in does not support native administration.");
+  }
 
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
@@ -138,6 +143,7 @@ export async function composePostgresDevelopment(
       state,
       iamDriver,
       ...(config.github === undefined ? {} : { github: config.github }),
+      ...(config.google === undefined ? {} : { google: config.google }),
       ...(config.logger === undefined
         ? {}
         : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),

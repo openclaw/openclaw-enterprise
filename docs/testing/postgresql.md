@@ -195,12 +195,23 @@ example Helm values render, after the real production bootstrap:
 The same composition covers the GitHub profile against the fixture provider:
 
 - `postgres-github-admin-attach.test.mjs`: administrators attach, detach and
-  re-attach GitHub identities, and disable and enable accounts.
+  re-attach GitHub identities, and disable and enable accounts. A session without
+  Installation `administer` gets `403` on every account and recovery route, and two
+  administrators attaching one GitHub identity at once get one `200` and one `409`.
+- `postgres-github-admin-scope.test.mjs`: a created administrator cannot attach
+  an identity to, or revoke, the broader bootstrap administrator's account, or
+  take its recovery designation.
 - `postgres-github-tab-binding.test.mjs`: Playwright over the HTTPS Origin. A tab
   signed in with GitHub signs out after another tab's password sign-in, and the
   login receipt is one-use and needs the exact Origin.
 - `postgres-github-recovery-replacement.test.mjs`: online recovery replacement
   moves the reserved password lane and survives a restart with the original seed.
+- `postgres-google-sign-in.test.mjs`: Google sign-in against a fixture OpenID
+  Connect provider (`fakeGoogle` in `tests/helpers/production-sign-in.mjs`) that
+  signs RS256 ID tokens with a local key. It covers attached-only admission, bad
+  ID-token claims, state and binding-cookie replay, password fallback, detach,
+  disablement, and GitHub plus Google together. No real Google client is used;
+  `google-id-token` and `google-login-transport` cover the verifier and transport.
 - `postgres-break-glass-auth-maintain.test.mjs`: also needs
   `OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL`. With the API stopped,
   `auth:maintain` resets the recovery password and deactivates GitHub sign-in.
@@ -294,8 +305,8 @@ Select the `postgres-azure-workload-identity` lane to run
 [postgres-azure-workload-identity.test.mjs](../../tests/integration/postgres-azure-workload-identity.test.mjs)
 against an existing authorized Azure PostgreSQL database. This lane has no
 GitHub workflow entrypoint and provisions no database or identity resources.
-The ordinary constructor, security-rejection, and real password-authentication
-cases remain in
+The ordinary constructor, security-rejection, real password-authentication,
+and terminated-idle-connection cases remain in
 [postgres-connection-auth.test.mjs](../../tests/integration/postgres-connection-auth.test.mjs),
 owned by the mandatory `postgres` lane.
 
@@ -358,7 +369,9 @@ retrying an effect. A socket failure does not prove rollback.
 `tests/conformance/postgres-transaction-commit.test.mjs` exercises the actual outer
 transaction owner with a transport protocol fixture. It covers definite server
 rejection, ambiguous SQLSTATEs, exact COMMIT/ROLLBACK command acknowledgment,
-and cleanup errors. The fixture supplies no database or persistence proof.
+and cleanup errors. A deadlock (`40P01`) or serialization failure (`40001`) is a
+definite rollback and maps to retryable `DependencyUnavailableError` (`503`).
+The fixture supplies no database or persistence proof.
 Unknown acknowledgment always remains possibly committed, even when a later
 ROLLBACK responds. An independent exact readback is required before reconciliation.
 

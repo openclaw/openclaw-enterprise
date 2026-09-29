@@ -244,12 +244,15 @@ discovery. This does not prove a model turn, native sandbox, or Git operation.
 
 `internal/occdev/command.go:selectEngine`,
 `internal/occdev/command.go:pinEndpoint`,
+`internal/occdev/command.go:podmanEndpoint`,
 `internal/occdev/up.go:Up`.
 
 The ordinary Kubernetes lifecycle, with no Sandbox Driver selected, chooses
-Docker or Podman, resolves the selected local
-Unix socket, and records it with the Compose project and generated `occ-dev-*`
-cluster name in a private state directory. Cleanup validates that state and
+Docker or Podman and resolves a host-reachable Unix socket: Docker from the
+active context, and Podman from `podman machine inspect` whenever its reported
+socket exists only inside a virtual machine. It records that socket with the
+Compose project and generated `occ-dev-*` cluster name in a private state
+directory. Cleanup validates that state and
 reuses the recorded endpoint. Changing the active Docker context after startup
 does not redirect cleanup to another engine.
 

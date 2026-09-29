@@ -1,8 +1,19 @@
 # Access and authorization
 
-This page owns the access and authorization portion of the authoritative
-[platform target design](../design.md). Read it with the other design chapters;
-the [current architecture](../ARCHITECTURE.md) describes implementation status.
+This chapter defines requirements within the authoritative
+[platform architecture](../design.md). The implementation status below separates
+current behavior from remaining design work.
+
+## Implementation status
+
+OCC currently authenticates human sessions and non-Agent service API keys.
+The separate OAG admission path below is planned. Projected Kubernetes tokens do
+not yet authenticate Agent workloads to the OCC API, and same-cluster dedicated
+Codex transport uses capability-token `ws://`, not mutual TLS. Native IAM already
+supports exact-resource permissions and deny-only Restrictions; the design's
+cross-Driver policy guarantees are broader. See [authentication](../reference/authentication.md),
+[authorization](../reference/authorization.md), and
+[runtime isolation](../reference/security/runtime-isolation.md) for enforcement today.
 
 ## Access gateway
 

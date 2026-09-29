@@ -20,6 +20,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish_chart:
+        description: Also publish the Helm chart and OCE version tags (requires publish)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -29,6 +34,12 @@ env:
   CI_RUN_ID: ${{ inputs.ci_run_id }}
   NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
   IMAGE_TAG: ${{ inputs.image_tag }}
+
+# Hold the shared publication lock until both image and optional chart jobs finish.
+# Preparation-only runs neither block publication nor cancel one another.
+concurrency:
+  group: ${{ inputs.publish && 'enterprise-container-publish' || format('enterprise-container-prepare-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -112,9 +123,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: container-publish
-    concurrency:
-      group: enterprise-container-publish
-      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
@@ -136,12 +144,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y skopeo
           skopeo --version | grep -Fx 'skopeo version 1.13.3'
-      - name: Install pinned Helm
-        run: |
-          curl -fsSL https://get.helm.sh/helm-v3.19.2-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm.tar.gz"
-          echo '2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e  '"$RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
-          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
       - name: Revalidate private packages, CI and bytes before transfer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -156,7 +158,42 @@ jobs:
           path: ${{ runner.temp }}/prepared/publication.json
           if-no-files-found: error
           retention-days: 30
-      - name: Publish coupled OCE chart and image version tags
+
+  publish-chart:
+    name: Publish optional Helm chart and OCE version tags
+    if: ${{ inputs.publish && inputs.publish_chart }}
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: container-publish
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.16.0"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+      - name: Install OCI transport
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+      - name: Install pinned Helm
+        run: |
+          curl -fsSL https://get.helm.sh/helm-v3.19.2-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm.tar.gz"
+          echo '2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e  '"$RUNNER_TEMP/helm.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+      - name: Publish OCE chart and matching image version tags
         env:
           GH_TOKEN: ${{ github.token }}
           CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
@@ -170,3 +207,24 @@ jobs:
           path: ${{ runner.temp }}/prepared/chart-publication.json
           if-no-files-found: error
           retention-days: 30
+
+  summary:
+    name: Report publication outcomes
+    if: ${{ always() }}
+    needs: [validate, prepare, assemble, publish, publish-chart]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Summarize image and chart results
+        env:
+          IMAGES_REQUESTED: ${{ inputs.publish }}
+          CHART_REQUESTED: ${{ inputs.publish && inputs.publish_chart }}
+          IMAGE_RESULT: ${{ needs.publish.result }}
+          CHART_RESULT: ${{ needs.publish-chart.result }}
+        run: |
+          {
+            echo '## Publication outcomes'
+            echo "Images: requested=$IMAGES_REQUESTED, result=$IMAGE_RESULT"
+            echo "Chart and OCE version tags: requested=$CHART_REQUESTED, result=$CHART_RESULT"
+            echo 'See the publication job summaries and receipt artifacts for verified digests.'
+          } >> "$GITHUB_STEP_SUMMARY"

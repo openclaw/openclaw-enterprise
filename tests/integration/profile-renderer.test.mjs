@@ -129,7 +129,7 @@ function render(
   };
 }
 
-function helmTemplate(output, extraValueFiles = [], releaseName = "oce") {
+function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
   return execFileSync(
     helm,
     [
@@ -141,6 +141,7 @@ function helmTemplate(output, extraValueFiles = [], releaseName = "oce") {
       "--values",
       join(output.directory, "values.yaml"),
       ...extraValueFiles.flatMap((path) => ["--values", path]),
+      ...extraArgs,
     ],
     {
       cwd: repository,
@@ -346,8 +347,8 @@ test(
       }),
     );
 
-    assert.match(original.values, /installationChecksum: [a-f0-9]{64}/);
-    assert.match(changed.values, /installationChecksum: [a-f0-9]{64}/);
+    assert.match(original.values, /installationChecksum: "?[a-f0-9]{64}"?$/m);
+    assert.match(changed.values, /installationChecksum: "?[a-f0-9]{64}"?$/m);
     assert.notEqual(original.installation, changed.installation);
 
     const originalManifests = helmTemplate(original);
@@ -423,6 +424,44 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
   );
 });
 
+test("label values that YAML 1.1 would retype stay strings", () => {
+  const labels = {
+    spot: "no",
+    enabled: "on",
+    legacy: "Off",
+    short: "y",
+    scale: "1e3",
+    hex: "0x1f",
+    octal: "0o17",
+    sexagesimal: "1:20",
+    infinity: ".inf",
+    team: "@platform",
+    trailing: "zone:",
+    yes: "keep",
+  };
+  const input = baseInput();
+  input.controlPlane.nodeSelector = labels;
+  const output = render("openclaw", input);
+  for (const [key, value] of Object.entries(labels)) {
+    const quotedValue = JSON.stringify(value);
+    const expected = key === "yes" ? '"yes": keep' : `${key}: ${quotedValue}`;
+    assert.ok(
+      output.values.includes(expected),
+      `expected ${key} to render as a quoted string in values.yaml`,
+    );
+  }
+});
+
+test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip }, () => {
+  const input = baseInput();
+  input.controlPlane.nodeSelector = { spot: "no", scale: "1e3", team: "@platform" };
+  const manifests = helmTemplate(render("openclaw", input));
+  assert.match(manifests, /spot: ["']no["']/);
+  assert.match(manifests, /scale: ["']1e3["']/);
+  assert.match(manifests, /team: ["']@platform["']/);
+  assert.doesNotMatch(manifests, /spot: false/);
+});
+
 test("renderer rejects the removed default profile", () => {
   assert.throws(() => render("default", baseInput()), /--profile must be one of: openclaw, codex/);
 });
@@ -456,6 +495,39 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
     output.preflight.warnings.join("\n"),
     /Active repository sessions are not restored after broker loss/,
   );
+});
+
+test("repository serviceName is left to the chart so its upgrade guard applies", () => {
+  const repositoryInput = {
+    enabled: true,
+    image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
+    backendId: "github-primary",
+    registryConfigMapName: "occ-repository-registry-v1",
+    serviceConfigSecretName: "occ-repository-service-config",
+    appKeySecretName: "occ-repository-app-key",
+    tlsSecretName: "occ-repository-tls",
+    publicCaSecretName: "occ-repository-public-ca",
+    upstreamCidrs: ["192.0.2.30/32"],
+  };
+  const omitted = render("codex", codexInput({ repository: repositoryInput }));
+  assert.doesNotMatch(omitted.values, /serviceName: git/);
+  if (!helmSkip) {
+    assert.match(helmTemplate(omitted), /name: git\n/);
+    const error = renderError(() => helmTemplate(omitted, [], "oce", ["--is-upgrade"]));
+    assert.match(
+      `${error.stdout ?? ""}${error.stderr ?? ""}`,
+      /repositoryCredentials\.serviceName must be explicit during upgrades/,
+    );
+  }
+
+  const kept = render(
+    "codex",
+    codexInput({ repository: { ...repositoryInput, serviceName: "oce-git" } }),
+  );
+  assert.match(kept.values, /serviceName: oce-git/);
+  if (!helmSkip) {
+    assert.match(helmTemplate(kept, [], "oce", ["--is-upgrade"]), /name: oce-git\n/);
+  }
 });
 
 test("preflight rejects inputs that the selected profile does not consume", () => {
@@ -576,4 +648,103 @@ test("profiles pass an optional observability URL to Installation startup YAML",
       /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/,
     );
   }
+});
+
+function externalSignInInput(signIn = {}) {
+  const { agentNativeAdminDomain, sharedCookieDomain, ...controlPlane } = baseInput().controlPlane;
+  assert.ok(agentNativeAdminDomain && sharedCookieDomain);
+  return baseInput({
+    controlPlane: {
+      ...controlPlane,
+      recoveryUserId: "recovery-admin_1",
+      github: { egressCidrs: ["140.82.112.0/20"] },
+      ...signIn,
+    },
+  });
+}
+
+test(
+  "profiles carry external sign-in and trusted proxy settings through rerenders",
+  { skip: helmSkip },
+  () => {
+    const trustedProxy = { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] };
+    const github = render("openclaw", externalSignInInput({ trustedProxy }));
+    assert.equal(github.summary.ok, true);
+    // GitHub and Google sign-in support host-only cookies only, so native admin stays off.
+    assert.match(github.values, /agentNativeAdmin:\n {2}enabled: false\n/);
+    assert.match(github.values, /recoveryUserId: recovery-admin_1/);
+    assert.match(
+      github.values,
+      /github:\n {4}enabled: true\n {4}egressCidrs:\n {6}- 140\.82\.112\.0\/20/,
+    );
+    assert.match(github.values, /trustedProxy:\n {4}preset: ingress-nginx/);
+    assert.doesNotMatch(github.preflight.prerequisites.join("\n"), /native admin domain/);
+    const manifests = helmTemplate(github);
+    assert.match(manifests, /name: OCC_AUTH_GITHUB_CLIENT_ID/);
+    assert.match(manifests, /name: OCC_AUTH_GITHUB_RECOVERY_USER_ID\n\s+value: "recovery-admin_1"/);
+    assert.match(manifests, /name: OCC_AUTH_TRUSTED_PROXY_CIDRS\n\s+value: "10\.42\.0\.0\/16"/);
+
+    const google = render(
+      "codex",
+      codexInput({
+        controlPlane: externalSignInInput({
+          github: undefined,
+          google: { allowedDomains: ["example.com"] },
+        }).controlPlane,
+      }),
+    );
+    assert.equal(google.summary.ok, true);
+    assert.match(
+      google.values,
+      /google:\n {4}enabled: true\n {4}allowedDomains:\n {6}- example\.com/,
+    );
+    assert.doesNotMatch(google.values, /github:/);
+    assert.match(helmTemplate(google), /name: OCC_AUTH_GOOGLE_ALLOWED_DOMAINS/);
+
+    // Password-only installs behind ingress-nginx keep native admin and still trust the proxy.
+    const nativeAdmin = render(
+      "openclaw",
+      baseInput({ controlPlane: { ...baseInput().controlPlane, trustedProxy } }),
+    );
+    assert.match(nativeAdmin.values, /agentNativeAdmin:\n {2}enabled: true/);
+    assert.match(helmTemplate(nativeAdmin), /name: OCC_AUTH_TRUSTED_PROXY_PRESET/);
+  },
+);
+
+test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", () => {
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ recoveryUserId: undefined }),
+    /controlPlane.recoveryUserId is required with controlPlane.github or controlPlane.google/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    baseInput({ controlPlane: { ...baseInput().controlPlane, recoveryUserId: "admin" } }),
+    /controlPlane.recoveryUserId requires controlPlane.github or controlPlane.google/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ agentNativeAdminDomain: "agents.oce.example.internal" }),
+    /controlPlane.agentNativeAdminDomain is not consumed with external sign-in/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ authBaseUrl: "http://console.oce.example.internal" }),
+    /controlPlane.authBaseUrl must use HTTPS with external sign-in/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ github: { clientSecret: "inline" } }),
+    /controlPlane.github.clientSecret is not supported/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ trustedProxy: { preset: "generic", cidrs: ["10.42.0.0/16"] } }),
+    /controlPlane.trustedProxy.clientAddressHeader is required for the generic preset/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ trustedProxy: { preset: "ingress-nginx", cidrs: ["0.0.0.0/0"] } }),
+    /controlPlane.trustedProxy.cidrs\[0\] must be/,
+  );
 });

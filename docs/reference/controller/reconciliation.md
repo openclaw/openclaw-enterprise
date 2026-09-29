@@ -154,7 +154,8 @@ stateDiagram-v2
 - **`failed_permanent`:** Processing stopped because authorization failed, an
   unrecoverable error occurred, or the retry limit was exhausted. The failure
   is audited, and the terminal operation is never retried automatically.
-  The initiating caller can explicitly [retry Agent deletion](../agents.md#deletion).
+  The initiating caller can explicitly [retry Agent deletion](../agents.md#deletion)
+  or [Namespace deletion](../namespaces.md#failure-semantics-and-limitations).
 
 ### Terminal results
 

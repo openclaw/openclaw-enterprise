@@ -334,7 +334,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
       {
         op: "add",
         path: "/rules/-",
-        value: { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
+        value: { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch", "patch"] },
       },
       {
         op: "add",
@@ -1388,108 +1388,6 @@ async function topologyPods(topology) {
   return (await Promise.all(targets.map((target) => resources("pods", target)))).flat();
 }
 
-// Sample the real Pod and process before enrollment, not just the final ready workload.
-// Keep observations separate from assertions so the same probe can measure a baseline rollout.
-async function sampleHarnessEnrollment(observation, namespace, agentId, revisionId) {
-  const pods = await resources(
-    "pods",
-    namespace,
-    "--selector",
-    `openclaw.dev/agent=${agentId},openclaw.dev/workload-role=agent`,
-  );
-  let firstCodexThisSample = false;
-  observation.lastSampleCodexProcesses = [];
-  for (const pod of pods) {
-    const uid = pod.metadata.uid;
-    if (!observation.podUids.includes(uid)) {
-      observation.podUids.push(uid);
-    }
-    const templateHash = pod.metadata.labels["pod-template-hash"];
-    if (!observation.templateHashes.includes(templateHash)) {
-      observation.templateHashes.push(templateHash);
-    }
-    observation.firstPodCreatedAt ??= pod.metadata.creationTimestamp;
-    const ready = pod.status.conditions?.find(
-      ({ type, status }) => type === "Ready" && status === "True",
-    );
-    if (ready) {
-      observation.firstHarnessReadyAt ??= ready.lastTransitionTime;
-    }
-    const container = pod.status.containerStatuses?.find(
-      ({ name }) => name === pod.spec.containers[0].name,
-    );
-    observation.containerRestarts = Math.max(
-      observation.containerRestarts,
-      container?.restartCount ?? 0,
-    );
-    if (!container?.state.running || pod.metadata.deletionTimestamp) {
-      continue;
-    }
-    // Read only process identity and file metadata: never emit argv or credential contents.
-    const runtime = await execNode(
-      namespace,
-      pod.metadata.name,
-      String.raw`
-      const fs = require("node:fs");
-      const processes = [];
-      for (const pid of fs.readdirSync("/proc").filter(name => /^[0-9]+$/.test(name))) {
-        try {
-          const args = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\0");
-          if (!/(^|\/)codex$/.test(args[0]) || !args.includes("app-server") || !args.some(arg => arg.startsWith("ws://0.0.0.0:"))) continue;
-          const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
-          processes.push({ pid: Number(pid), startTicks: stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] });
-        } catch (error) {
-          if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
-        }
-      }
-      let setupFileVisible = false;
-      try { setupFileVisible = fs.statSync("/run/openclaw/node-setup/setupCode").size > 0; }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      process.stdout.write(JSON.stringify({ processes, setupFileVisible }));
-    `,
-    )
-      .then(JSON.parse)
-      .catch(() => undefined);
-    // A baseline Pod can disappear during exec. Retain the UID above and retry next sample.
-    if (!runtime) {
-      observation.execMisses += 1;
-      continue;
-    }
-    if (runtime.setupFileVisible) {
-      observation.setupFileVisibleAt ??= new Date().toISOString();
-    }
-    for (const process of runtime.processes) {
-      const identity = `${uid}:${process.pid}:${process.startTicks}`;
-      observation.lastSampleCodexProcesses.push(identity);
-      if (!observation.codexProcesses.includes(identity)) {
-        firstCodexThisSample ||= observation.codexProcesses.length === 0;
-        observation.codexProcesses.push(identity);
-      }
-    }
-  }
-  if (revisionId === undefined) {
-    return;
-  }
-  // Query metadata after /proc so absence establishes that the observed Codex preceded setup.
-  const createdAt = (
-    await kubectl(
-      "get",
-      "secret",
-      `workspace-node-${hash(agentId)}-${hash("harness:codex")}`,
-      "--namespace",
-      namespace,
-      "--ignore-not-found",
-      "-o=jsonpath={.metadata.creationTimestamp}",
-    )
-  ).trim();
-  if (createdAt) {
-    observation.setupSecretCreatedAt ??= createdAt;
-  }
-  if (firstCodexThisSample) {
-    observation.codexObservedBeforeSetup = !createdAt;
-  }
-}
-
 async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
@@ -2162,7 +2060,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
     ...launch.agent,
     configurationId: configuration.data.id,
-    ...(options.plugins === undefined ? {} : { plugins: options.plugins }),
   });
   assert.equal(agent.status, 201, JSON.stringify(agent.error));
   assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
@@ -2240,14 +2137,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     };
   }
 
-  const enrollment = options.observeEnrollment
-    ? { podUids: [], templateHashes: [], codexProcesses: [], containerRestarts: 0, execMisses: 0 }
-    : undefined;
-  if (enrollment) {
-    assert.equal(mode, "dedicated");
-    await sampleHarnessEnrollment(enrollment, placement, agent.data.id);
-    enrollment.submittedAt = new Date().toISOString();
-  }
   const deployed = await request(
     "POST",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
@@ -2268,16 +2157,10 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   }
 
   await waitFor(`production ${mode} AgentRevision ${deployed.data.id} activation`, async () => {
-    if (enrollment) {
-      await sampleHarnessEnrollment(enrollment, placement, agent.data.id, deployed.data.id);
-    }
     const observation = await request("GET", `/namespaces/${namespaceId}/agents/${agent.data.id}`);
     assert.equal(observation.status, 200);
     return observation.data.activeRevisionId === deployed.data.id ? observation.data : undefined;
   });
-  if (enrollment) {
-    enrollment.overallReadyAt = new Date().toISOString();
-  }
   await waitFor(`production worker completion of ${deployed.data.id}`, () =>
     events.find(
       (event) =>
@@ -2341,14 +2224,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const harnessPod = pods.find(
     ({ metadata }) => metadata.labels?.["openclaw.dev/workload-role"] === "agent",
   );
-  if (enrollment) {
-    await sampleHarnessEnrollment(enrollment, placement, agent.data.id, deployed.data.id);
-    const { nodes } = await gatewayCall({ gatewayPlacement, gatewayPod }, "node.list", {});
-    assert.equal(nodes.filter(({ connected }) => connected).length, 1);
-    // This is a post-activation upper bound, not the time the connection first opened.
-    enrollment.nodeConnectedObservedAt = new Date().toISOString();
-    context.diagnostic(`workspace enrollment: ${JSON.stringify(enrollment)}`);
-  }
   const modelStorage = await storedSecret(observerPool, namespaceId, secretApi.model.id);
   await assertModelRuntimeProjection(harnessPod ?? gatewayPod, modelStorage);
   if (mode === "dedicated") {
@@ -2490,7 +2365,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     gatewayPod,
     harnessPod,
     loggingObservationStartedAt,
-    enrollment,
     gatewayPassword,
     controllerUrl,
     credentials,

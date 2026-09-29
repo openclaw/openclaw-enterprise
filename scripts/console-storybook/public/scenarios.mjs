@@ -468,6 +468,45 @@ export const scenarios = {
     description:
       "The tab that started GitHub sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
   },
+  googleLogin: {
+    group: "Pages/Sign in",
+    name: "Google enabled",
+    path: "/console/login",
+    signedOut: true,
+    githubEnabled: true,
+    googleEnabled: true,
+    description:
+      "Provider discovery adds Continue with Google beside the password form and any other configured provider. Clicking it demonstrates an unavailable provider; this fixture never navigates to Google.",
+    gap: "An administrator must attach the Google subject identifier to an existing account through the API. Email addresses never match an account. OAuth navigation and session issuance require backend verification.",
+  },
+  googleUnavailable: {
+    group: "Pages/Sign in",
+    name: "Google unavailable",
+    path: "/console/login",
+    signedOut: true,
+    googleEnabled: true,
+    actions: [click("Continue with Google")],
+    description: "A failed Google start leaves password sign-in and a deliberate retry available.",
+  },
+  googleCallbackRejected: {
+    group: "Pages/Sign in",
+    name: "Google callback rejected",
+    path: "/console/?authError=google",
+    signedOut: true,
+    googleEnabled: true,
+    description:
+      "A rejected Google callback shows the generic sign-in error and keeps password recovery available.",
+  },
+  googleResultRejected: {
+    group: "Pages/Sign in",
+    name: "Google result not confirmed",
+    path: "/console/",
+    pendingGoogleAttempt: true,
+    googleEnabled: true,
+    rules: [{ path: "/api/auth/providers/google/result", method: "POST", status: 401 }],
+    description:
+      "The tab that started Google sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
+  },
   providerDiscoveryUnavailable: {
     group: "Pages/Sign in",
     name: "Provider discovery unavailable",
@@ -475,7 +514,7 @@ export const scenarios = {
     signedOut: true,
     rules: [{ path: "/api/auth/providers", status: 503 }],
     description:
-      "Failed provider discovery leaves the password form usable without a GitHub button.",
+      "Failed provider discovery leaves the password form usable without provider buttons.",
   },
   loginError: {
     group: "Pages/Sign in",
@@ -1508,6 +1547,20 @@ export const scenarios = {
     description:
       "OpenClaw remains available for OpenAI with an API key. It uses Embedded execution and disables unsupported channel editing.",
   },
+  createDedicatedOpenclawExperimental: {
+    group: "Pages/Create Agent",
+    name: "Experimental Dedicated OpenClaw",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+    ],
+    description:
+      "Dedicated OpenClaw displays its experimental status and runtime-build compatibility requirement before deployment.",
+    gap: "This simulated form does not verify that a selected OpenClaw runtime image includes native worker-inference support.",
+  },
   createRepositoriesSelected: {
     group: "Pages/Create Agent",
     name: "Approved repositories and shared access",
@@ -1729,7 +1782,7 @@ export const scenarios = {
     standardCodexPreset: true,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "The shipped Preset asks for name, model, and a masked modelSecret password. No Namespace or Secret ID is needed.",
+      "The shipped Preset asks for Name, Model, and a masked Model Secret. No Namespace or Secret ID is needed.",
     steps: [
       "Enter a name, model ID, and a dummy model key.",
       "Use Preset and review the masked API key and restricted configuration.",
@@ -3345,7 +3398,7 @@ export const scenarios = {
     description:
       "Interactive walkthrough from Preset selection through first-time provisioning and deployment activation. Worker progress is simulated; it is not a live deployment.",
     steps: [
-      "Choose Research assistant, fill Variable: name, then Use Preset.",
+      "Choose Research assistant, fill Name, then Use Preset.",
       "Review the Configuration, masked pre-existing model Secret reference, and four seeded workspace files; click Create Agent.",
       "Wait for provisioning to finish; the Console opens Agent details with the queued deployment. Refresh deployment to finish simulated activation, then open Workspace files.",
       "Use Versions to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",

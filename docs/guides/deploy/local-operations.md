@@ -120,7 +120,7 @@ Compose; exporting `OPENAI_API_KEY` to the worker does not change this.
 
 For a local authenticated Agent and TUI trial, build the Kubernetes images above,
 then follow [production Agent deployment](production-agents.md) and
-[production TUI verification](production-agents.md#attach-with-the-openclaw-tui) against that disposable cluster.
+[production TUI verification](production-tui.md) against that disposable cluster.
 Complete the same Secret binding, exact IAM grants, and tenant RoleBindings as
 for a production installation. Both the TUI and the
 [HTTP model response check](../operate/model-verification.md) use an optional

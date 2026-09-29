@@ -305,6 +305,22 @@
       "tag": "0037_human_authentication",
       "breakpoints": true,
       "sha256": "eeba67e323c53e5a24cb8f7bbbeb9fa770f4920fbdc10a8a039df20e5b65aac0"
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787000000038,
+      "tag": "0038_agent_deletion_takeover",
+      "breakpoints": true,
+      "sha256": "baf0e7a5000ae754f32b7561344fd0fb9964a279ee76f8b5d2e4d9143babf599"
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787000000039,
+      "tag": "0039_namespace_deletion_takeover",
+      "breakpoints": true,
+      "sha256": "5cd65a25e0e8a223e372042bb7e7cd8043d34cf810113bced02f710efbf54ba0"
     }
   ],
   "initialSchemaStates": {
@@ -318,18 +334,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -342,7 +348,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "0f093bdf3b0a5c1f8aefd18bd7ecd3be99a8a5c8559d25b309e2e582119a4c4c",
+    "completed": "89dee96b21e37a8e67afd09c3d8096672ed2825ce7bdccd62153da5965e984bd",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -352,7 +358,9 @@
     "preBrokerReceipts": "f4f4515306a31d07605c0e56da9e26dfec920a872f66cbe245ee0e5b14f5a845",
     "preAgentDeletion": "d34dc4d6c510d2aaa2173d7eb40136246c074827145ff26e133d0082596cf93c",
     "preDeploymentProgress": "2030a4bccc1f6fe8fac4858cf715bef7c1b275d494ba44a293eb6b0d5d29cf1a",
-    "preHumanAuthentication": "04afe7195a43827e39103c8ed78b19e4edc29f21bd857a79fba95caa39a9074b"
+    "preHumanAuthentication": "04afe7195a43827e39103c8ed78b19e4edc29f21bd857a79fba95caa39a9074b",
+    "preAgentDeletionTakeover": "0f093bdf3b0a5c1f8aefd18bd7ecd3be99a8a5c8559d25b309e2e582119a4c4c",
+    "preNamespaceDeletionTakeover": "0dc81ad5504c9e05cf285c3c4c7cf9da1d4e1556c4c674d39eed4a32abe44b1d"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

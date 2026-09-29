@@ -106,6 +106,12 @@ test("run resolves lane documents relative to the manifest and preserves ordered
   // Lane documents follow the manifest, but test paths still follow --root.
   await mkdir(join(root, "manifests/lanes"), { recursive: true });
   await writeJson(join(root, "manifests/lanes/baseline.json"), {
+    requiredEnv: [
+      "OCC_PROBE_CONTROLLER_IMAGE",
+      "OCC_PROBE_BROKER_IMAGE",
+      "OCC_PROBE_OLD_CONTROLLER_IMAGE",
+      "OCC_PROBE_OLD_BROKER_IMAGE",
+    ],
     files: [
       {
         path: "tests/integration/first.test.mjs",
@@ -123,18 +129,27 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     groups: { ci: ["baseline"] },
   });
 
-  const result = run(root, [
-    "run",
-    "baseline",
-    "--manifest",
-    "manifests/suites.json",
-    "--root",
+  const result = run(
     root,
-    "--state",
-    statePath,
-    "--results",
-    resultsPath,
-  ]);
+    [
+      "run",
+      "baseline",
+      "--manifest",
+      "manifests/suites.json",
+      "--root",
+      root,
+      "--state",
+      statePath,
+      "--results",
+      resultsPath,
+    ],
+    {
+      OCC_PROBE_CONTROLLER_IMAGE: `private.example/current-controller@sha256:${"b".repeat(64)}`,
+      OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
+      OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
+      OCC_PROBE_OLD_BROKER_IMAGE: `private.example/old-broker@sha256:${"e".repeat(64)}`,
+    },
+  );
 
   assert.equal(result.status, 0, result.stderr);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
@@ -154,14 +169,21 @@ test("run resolves lane documents relative to the manifest and preserves ordered
   );
   // Evidence must retain immutable identity without exporting private registry names
   // or arbitrary prepared environment values alongside the public CI artifact.
+  const pairDigests = {
+    pairController: `sha256:${"b".repeat(64)}`,
+    pairBroker: `sha256:${"c".repeat(64)}`,
+    pairOldController: `sha256:${"d".repeat(64)}`,
+    pairOldBroker: `sha256:${"e".repeat(64)}`,
+  };
   assert.deepEqual(summary.files[0].imageDigests, {
     controller: `sha256:${"a".repeat(64)}`,
     runtime: `sha256:${"b".repeat(64)}`,
     controllerUpgrade: `sha256:${"d".repeat(64)}`,
     runtimeUpgrade: `sha256:${"e".repeat(64)}`,
     repositoryCredentials: `sha256:${"c".repeat(64)}`,
+    ...pairDigests,
   });
-  assert.deepEqual(summary.files[1].imageDigests, {});
+  assert.deepEqual(summary.files[1].imageDigests, pairDigests);
   assert.doesNotMatch(JSON.stringify(summary), /private\.example|untrusted-image-value/);
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
 });
@@ -415,6 +437,8 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       '  assert.equal(process.env.OCC_TEST_REQUIRED_SELECTOR, "required");',
       '  assert.equal(process.env.OCC_TEST_LANE_SELECTOR, "lane");',
       "  assert.equal(process.env.OCC_TEST_LEAKED_SELECTOR, undefined);",
+      '  assert.equal(process.env.OCC_PROBE_REQUIRED_SELECTOR, "required");',
+      "  assert.equal(process.env.OCC_PROBE_LEAKED_SELECTOR, undefined);",
       "  assert.equal(process.env.KEEP, undefined);",
       "  assert.equal(process.env.OCC_RUNTIME_KEEP, undefined);",
       "});",
@@ -428,7 +452,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
         env: {
           OCC_TEST_LANE_SELECTOR: "lane",
         },
-        requiredEnv: ["OCC_TEST_REQUIRED_SELECTOR"],
+        requiredEnv: ["OCC_TEST_REQUIRED_SELECTOR", "OCC_PROBE_REQUIRED_SELECTOR"],
         files: [{ path: "tests/integration/env-isolation.test.mjs" }],
       },
     },
@@ -456,6 +480,8 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       OCC_RUNTIME_KEEP: "1",
       OCC_TEST_LEAKED_SELECTOR: "1",
       OCC_TEST_REQUIRED_SELECTOR: "required",
+      OCC_PROBE_LEAKED_SELECTOR: "1",
+      OCC_PROBE_REQUIRED_SELECTOR: "required",
     },
   );
 
@@ -1607,3 +1633,244 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
   );
   assert.equal(summary.issues[0].need, "audit");
 });
+
+test("run records only allowlisted measurements from test diagnostics", async (t) => {
+  const root = await fixture(t);
+  const resultsPath = join(root, "results/measurements.json");
+  const measurement = (value) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
+  await writeFile(
+    join(root, "tests/integration/measurements.test.mjs"),
+    [
+      'import test from "node:test";',
+      'test("measures", (t) => {',
+      ...[
+        measurement({
+          kind: "kubelet-volume-refresh",
+          volume: "secret",
+          nudge: "pod-annotation",
+          sample: 1,
+          seconds: 1.234,
+          extra: "secretauthvalue-extra",
+        }),
+        measurement({
+          kind: "kubelet-volume-refresh",
+          volume: "secretauthvalue-volume",
+          nudge: "none",
+          sample: 0,
+          seconds: 1,
+        }),
+        measurement({
+          kind: "kubelet-volume-refresh",
+          volume: "configmap",
+          nudge: "none",
+          sample: 0,
+          seconds: "secretauthvalue-seconds",
+        }),
+        "openclaw-ci-measurement secretauthvalue-not-json",
+        "secretauthvalue-plain-diagnostic",
+      ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
+      "});",
+      "",
+    ].join("\n"),
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: { measure: { files: [{ path: "tests/integration/measurements.test.mjs" }] } },
+    groups: { ci: ["measure"] },
+  });
+
+  const result = run(root, [
+    "run",
+    "measure",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/measurements.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  const artifact = await readFile(resultsPath, "utf8");
+  const summary = JSON.parse(artifact);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(summary.files[0].measurements, [
+    {
+      kind: "kubelet-volume-refresh",
+      volume: "secret",
+      nudge: "pod-annotation",
+      sample: 1,
+      seconds: 1.2,
+    },
+  ]);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+});
+
+for (const scenario of [
+  {
+    name: "exit",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "exit",
+      exitCode: 42,
+      signal: null,
+      timedOut: false,
+    },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "exit",
+      exitCode: 42,
+      signal: null,
+      timedOut: false,
+    },
+  },
+  {
+    name: "spawn",
+    input: { code: "CI_PREPARATION_COMMAND_FAILED", stage: "database-schema", failure: "spawn" },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-schema",
+      failure: "spawn",
+    },
+  },
+  {
+    name: "signal",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-migrate",
+      failure: "signal",
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+    },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-migrate",
+      failure: "signal",
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+    },
+  },
+  {
+    name: "timeout",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-migrate",
+      failure: "timeout",
+      exitCode: null,
+      signal: "SIGKILL",
+      timedOut: true,
+    },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-migrate",
+      failure: "timeout",
+      exitCode: null,
+      signal: "SIGKILL",
+      timedOut: true,
+    },
+  },
+  {
+    name: "unknown error",
+    input: {
+      code: "secret-canary-code",
+      stage: "secret-canary-stage",
+      failure: "secret-canary-failure",
+    },
+    expected: { name: "Error" },
+  },
+  {
+    name: "unknown stage",
+    input: { code: "CI_PREPARATION_COMMAND_FAILED", stage: "secret-canary-stage", failure: "exit" },
+    expected: { name: "Error" },
+  },
+  {
+    name: "unknown failure",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-create",
+      failure: "secret-canary-failure",
+    },
+    expected: { name: "Error" },
+  },
+  {
+    name: "invalid details",
+    input: {
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-schema",
+      failure: "exit",
+      exitCode: 256,
+      signal: "secret-canary-signal",
+      timedOut: "secret-canary-timeout",
+    },
+    expected: {
+      name: "Error",
+      code: "CI_PREPARATION_COMMAND_FAILED",
+      stage: "database-schema",
+      failure: "exit",
+    },
+  },
+]) {
+  test(`run retains safe preparation ${scenario.name} diagnostics without starting tests`, async (t) => {
+    const root = await fixture(t);
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      lanes: { preparation: { files: [{ path: "tests/integration/unstarted.test.mjs" }] } },
+      groups: { ci: ["preparation"] },
+    });
+    await writeFile(
+      join(root, "tests/integration/unstarted.test.mjs"),
+      'import { writeFileSync } from "node:fs"; writeFileSync(new URL("../../started", import.meta.url), "started");\n',
+    );
+    const payload = {
+      name: "secret-canary-name",
+      message: "secret-canary-message",
+      command: "secret-canary-command",
+      args: ["secret-canary-argv"],
+      url: "https://secret-canary-url.invalid",
+      env: { KEY: "secret-canary-env" },
+      stdout: "secret-canary-stdout",
+      stderr: "secret-canary-stderr",
+      stack: "secret-canary-stack",
+      ...scenario.input,
+    };
+    await writeFile(
+      join(root, "scripts/ci/prepare.mjs"),
+      `export async function prepareFile() { throw Object.assign(new Error(), ${JSON.stringify(payload)}); }\n`,
+    );
+    const result = run(root, [
+      "run",
+      "preparation",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.json",
+      "--results",
+      "results/preparation.json",
+    ]);
+    assert.equal(result.status, 1, result.stderr);
+    const artifact = await readFile(join(root, "results/preparation.json"), "utf8");
+    const summary = JSON.parse(artifact);
+    assert.deepEqual(
+      summary.files[0].issues.find(({ code }) => code === "prepare-failed").error,
+      scenario.expected,
+    );
+    assert.equal(summary.files[0].status, "failed");
+    assert.equal(summary.files[0].nodeExitCode, null);
+    assert.deepEqual(summary.files[0].tests, []);
+    assert.equal(summary.counts.passed, 0);
+    assert.equal(summary.counts.skipped, 0);
+    assert.equal(summary.files[0].cleanup, null);
+    await assert.rejects(readFile(join(root, "started")), { code: "ENOENT" });
+    assert.doesNotMatch(artifact + result.stdout + result.stderr, /secret-canary/);
+  });
+}

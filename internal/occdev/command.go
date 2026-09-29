@@ -146,14 +146,11 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 func (r *runner) pinEndpoint(ctx context.Context) error {
 	endpoint := r.env["DOCKER_HOST"]
 	if r.engine == "podman" {
-		data, err := r.output(ctx, "podman", "info", "--format", "{{.Host.RemoteSocket.Path}}")
+		resolved, err := r.podmanEndpoint(ctx)
 		if err != nil {
 			return err
 		}
-		endpoint = string(data)
-		if !strings.HasPrefix(endpoint, "unix://") {
-			endpoint = "unix://" + endpoint
-		}
+		endpoint = resolved
 	} else if endpoint == "" || r.env["DOCKER_CONTEXT"] != "" {
 		selected := r.env["DOCKER_CONTEXT"]
 		if selected == "" {
@@ -183,6 +180,152 @@ func (r *runner) pinEndpoint(ctx context.Context) error {
 	r.useEndpoint(endpoint)
 	return nil
 }
+
+// podmanEndpoint resolves the Podman API socket reachable from this host.
+//
+// `podman info` reports the socket from the service's own point of view. A
+// machine-backed installation runs that service inside a virtual machine, so
+// the reported path exists only in the guest and every later k3d, image, and
+// cluster call fails to connect. Only `podman machine inspect` records the
+// forwarded socket the host can reach, so select that for a remote service.
+func (r *runner) podmanEndpoint(ctx context.Context) (string, error) {
+	data, err := r.output(ctx, "podman", "info", "--format", "json")
+	if err != nil {
+		return "", err
+	}
+	socket, remote, err := parsePodmanInfoSocket(data)
+	if err != nil {
+		return "", err
+	}
+	// A successful `podman info` proves an explicitly selected unix endpoint is
+	// usable. A named connection outranks it, matching the Podman CLI.
+	if r.env["CONTAINER_CONNECTION"] == "" {
+		if explicit := unixEndpoint(r.env["CONTAINER_HOST"]); explicit != "" {
+			return explicit, nil
+		}
+	}
+	if !remote {
+		endpoint := unixEndpoint(socket)
+		if endpoint == "" {
+			return "", fmt.Errorf("Podman did not report a unix API socket")
+		}
+		return endpoint, nil
+	}
+	return r.podmanMachineEndpoint(ctx)
+}
+
+func (r *runner) podmanMachineEndpoint(ctx context.Context) (string, error) {
+	data, err := r.output(ctx, "podman", "system", "connection", "list", "--format", "json")
+	if err != nil {
+		return "", err
+	}
+	var connections []podmanConnection
+	if err := json.Unmarshal(data, &connections); err != nil {
+		return "", fmt.Errorf("invalid Podman connection inventory: %w", err)
+	}
+	active := activeMachineConnection(r.env["CONTAINER_CONNECTION"], r.env["CONTAINER_HOST"], connections)
+	if active == "" {
+		return "", fmt.Errorf("could not identify the active Podman machine connection")
+	}
+	for _, name := range machineInspectTargets(active) {
+		data, err := r.output(ctx, "podman", "machine", "inspect", name)
+		if err != nil {
+			continue
+		}
+		if endpoint := unixEndpoint(parsePodmanMachineSocket(data)); endpoint != "" {
+			return endpoint, nil
+		}
+	}
+	return "", fmt.Errorf("could not resolve the host API socket for Podman machine %q", active)
+}
+
+// podmanConnection is one entry of `podman system connection list`.
+type podmanConnection struct {
+	Name      string `json:"Name"`
+	URI       string `json:"URI"`
+	Default   bool   `json:"Default"`
+	IsMachine bool   `json:"IsMachine"`
+}
+
+func parsePodmanInfoSocket(data []byte) (string, bool, error) {
+	var info struct {
+		Host struct {
+			ServiceIsRemote bool `json:"serviceIsRemote"`
+			RemoteSocket    struct {
+				Path string `json:"path"`
+			} `json:"remoteSocket"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(data, &info); err != nil {
+		return "", false, fmt.Errorf("invalid Podman engine inventory: %w", err)
+	}
+	return info.Host.RemoteSocket.Path, info.Host.ServiceIsRemote, nil
+}
+
+func parsePodmanMachineSocket(data []byte) string {
+	var machines []struct {
+		ConnectionInfo struct {
+			PodmanSocket struct {
+				Path string `json:"Path"`
+			} `json:"PodmanSocket"`
+		} `json:"ConnectionInfo"`
+	}
+	if err := json.Unmarshal(data, &machines); err != nil || len(machines) == 0 {
+		return ""
+	}
+	return machines[0].ConnectionInfo.PodmanSocket.Path
+}
+
+// activeMachineConnection names the machine whose forwarded socket this host
+// should use, following the same precedence as the Podman CLI.
+func activeMachineConnection(connection, host string, connections []podmanConnection) string {
+	if name := strings.TrimSpace(connection); name != "" {
+		return name
+	}
+	// An explicitly selected endpoint must resolve to its own machine rather
+	// than falling back to an unrelated local one.
+	if selected := strings.TrimSpace(host); selected != "" {
+		for _, candidate := range connections {
+			if candidate.IsMachine && candidate.URI == selected {
+				return candidate.Name
+			}
+		}
+		return ""
+	}
+	for _, candidate := range connections {
+		if candidate.Default && candidate.IsMachine {
+			return candidate.Name
+		}
+	}
+	return "podman-machine-default"
+}
+
+// machineInspectTargets lists the names to inspect for a connection. A rootful
+// connection appends "-root" to its machine's name, and `podman machine
+// inspect` accepts only the machine name.
+func machineInspectTargets(connection string) []string {
+	targets := []string{connection}
+	if machine, found := strings.CutSuffix(connection, "-root"); found && machine != "" {
+		targets = append(targets, machine)
+	}
+	return targets
+}
+
+// unixEndpoint normalizes a socket path or unix URL to a DOCKER_HOST value and
+// rejects transports, such as ssh, that are not a local socket.
+func unixEndpoint(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if path, found := strings.CutPrefix(trimmed, "unix://"); found {
+		trimmed = path
+	} else if strings.Contains(trimmed, "://") {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		return ""
+	}
+	return "unix://" + trimmed
+}
+
 func (r *runner) useEndpoint(endpoint string) {
 	delete(r.env, "DOCKER_CONTEXT")
 	delete(r.env, "DOCKER_TLS_VERIFY")

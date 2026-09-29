@@ -69,8 +69,8 @@ separate console-managed Agent; see [Agent Configuration](../reference/configura
 Keep the command running until it prints `Model response verified:` followed by
 the phrase it asked the model to repeat. Under `Agent response:`, it then prints
 the model's answer to your question. It also prints the Agent ID, active
-revision, and console URL. A deployment being accepted or a revision showing
-as active does not establish that the model responded; the returned answer does.
+revision, and console URL. These returned responses complete the model check; see
+[what each check establishes](operate/model-verification.md#what-each-check-establishes).
 
 <span id="4-check-what-actually-deployed"></span>
 <span id="4.-check-what-actually-deployed"></span>
@@ -80,10 +80,9 @@ as active does not establish that the model responded; the returned answer does.
 Open the console link from the command and sign in with the local credentials
 from [Local setup](quickstart.md#open-the-platform-console). **Current version**
 shows the revision selected by OCC; **Deployment activity** shows persisted
-deployment progress. The console has no browser chat or live health view; use the
-model response printed by the command as verification. Local setup configures private routing; follow the
-[workspace routing guide](deploy/workspace-routing.md) to verify browser access
-to the Agent’s files separately.
+deployment progress. Use the terminal command for further model prompts. For
+browser access to the Agent's files, follow
+[workspace verification](deploy/workspace-routing.md#verify-routing-and-file-access).
 
 The Agent remains available after the command exits. Run the same command with
 the same Agent name and a different `--prompt` to ask another question; you do

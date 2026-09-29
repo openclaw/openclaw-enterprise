@@ -63,9 +63,11 @@ rules:
   - apiGroups: [""]
     resources: [configmaps, serviceaccounts, services, resourcequotas, limitranges]
     verbs: [get, list, create, patch, delete]
+  # patch: an annotation on a running Harness or Gateway Pod syncs its workspace
+  # node setup or binding volume at once.
   - apiGroups: [""]
     resources: [pods]
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, patch]
   - apiGroups: [""]
     resources: [pods/proxy]
     verbs: [get]

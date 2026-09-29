@@ -11,6 +11,14 @@ function harnessSecretVariable(template) {
   return typeof value === "string" ? HARNESS_SECRET_TOKEN.exec(value)?.[1] : undefined;
 }
 
+function variableLabel(name) {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replaceAll("_", " ")
+    .trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : name;
+}
+
 function sameNamespaceSecret(context, secret) {
   return (
     secret?.namespaceId === context.namespaceId &&
@@ -248,6 +256,7 @@ export function createPresetFields(context, apply) {
       }
       selected = preset;
       fields = Object.entries(preset.template.variables ?? {}).map(([name, definition]) => {
+        const label = variableLabel(name);
         const input =
           definition.type === "boolean"
             ? element(
@@ -283,7 +292,7 @@ export function createPresetFields(context, apply) {
             element(
               "div",
               { className: "form-field" },
-              element("label", { for: input.id }, `Variable: ${name}`),
+              element("label", { for: input.id }, label),
               input,
               definition.description
                 ? element("p", { className: "hint" }, definition.description)
@@ -314,7 +323,7 @@ export function createPresetFields(context, apply) {
         const inputField = element(
           "div",
           { className: "form-field" },
-          element("label", { for: input.id }, `Variable: ${name}`),
+          element("label", { for: input.id }, label),
           input,
           definition.description
             ? element("p", { className: "hint" }, definition.description)
@@ -323,7 +332,7 @@ export function createPresetFields(context, apply) {
         const secretField = element(
           "div",
           { className: "form-field", hidden: true },
-          element("label", { for: secretSelect.id }, `Existing Secret for ${name}`),
+          element("label", { for: secretSelect.id }, `Existing Secret for ${label}`),
           secretSelect,
           secretStatus,
         );
@@ -353,7 +362,7 @@ export function createPresetFields(context, apply) {
           element(
             "div",
             { className: "form-field" },
-            element("label", { for: mode.id }, `Secret source for ${name}`),
+            element("label", { for: mode.id }, `Secret source for ${label}`),
             mode,
             element(
               "p",

@@ -7,8 +7,8 @@ To use or administer an installation, start with [Getting Started](../README.md)
 
 ## Find the code and its design
 
-- [Design](design.md) separates the current architecture, approved target, and
-  source-backed implementation guides.
+- [Design](design.md) links the platform architecture, remaining design work,
+  and source-backed implementation guides.
 - The [RFC guide](rfcs.md) explains how to propose architectural changes and
   request feedback.
 - [Design philosophy](design-philosophy.md) guides interface, ownership, and

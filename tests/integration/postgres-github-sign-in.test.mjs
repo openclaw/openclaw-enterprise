@@ -347,6 +347,33 @@ test(
       401,
     );
 
+    // A GitHub-only profile refuses Google attachment and Google browser routes.
+    assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
+      github: true,
+      google: false,
+      sessionBinding: true,
+    });
+    const googleAttach = await app.inject({
+      method: "POST",
+      url: `/api/auth/accounts/${recovery}/providers/google`,
+      headers,
+      payload: {
+        subject: "108765432109876543210",
+        expectedVersion: (await readAccount(recovery, headers)).version,
+      },
+    });
+    assert.equal(googleAttach.statusCode, 409, googleAttach.body);
+    assert.match(googleAttach.json().error.message, /Google sign-in is not configured/);
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/auth/providers/google/start",
+          headers: { origin },
+        })
+      ).statusCode,
+      403,
+    );
     const attach = await app.inject({
       method: "POST",
       url: `/api/auth/accounts/${recovery}/providers/github`,
@@ -453,6 +480,8 @@ test(
       ["missing Origin", {}],
       ["foreign Origin", { origin: "https://github-sign-in.attacker.example" }],
       ["another host name for the same address", { origin: `http://localhost:${port}` }],
+      ["same-site fetch", { origin, "sec-fetch-site": "same-site" }],
+      ["cross-site fetch", { origin, "sec-fetch-site": "cross-site" }],
     ]) {
       const refused = await app.inject({
         method: "POST",

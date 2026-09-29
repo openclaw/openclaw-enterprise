@@ -118,7 +118,7 @@ for this startup even if the Agent deployed. Dedicated Codex can also report
 `PLUGIN_AUTH_REQUIRED` when a selected app still needs authentication.
 
 To verify that Diffs actually ran, use an Agent client that displays native
-tool results. An operator can [attach with the OpenClaw TUI](../deploy/production-agents.md#attach-with-the-openclaw-tui)
+tool results. An operator can [attach with the OpenClaw TUI](../deploy/production-tui.md)
 using the gateway's optional loopback password. Ask the deployed Agent to compare two
 harmless lines:
 

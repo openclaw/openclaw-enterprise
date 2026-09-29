@@ -26,6 +26,31 @@ const (
 	developmentPostgres    = "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
 )
 
+// developmentCodexProfile matches the localhost seccomp profile name
+// `scripts/lib/codex-seccomp-k3d.mjs` builds for the dedicated Codex sandbox.
+//
+// The reviewed Codex version is deliberately not pinned here. That script owns
+// the list of reviewed versions and refuses to prepare a profile for any other,
+// so repeating the version would only let the two drift apart on the next bump.
+// This checks the shape of an untrusted subprocess result: a relative path under
+// `openclaw/` naming a reviewed version and the profile's content digest.
+var developmentCodexProfile = regexp.MustCompile(`^openclaw/codex-[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]{64}\.json$`)
+
+// validDevelopmentCodexSeccompResult reports whether the preparation script
+// returned a result the lifecycle can act on: either the node's RuntimeDefault
+// profile already confines the Codex sandbox and no profile was installed, or a
+// localhost profile was installed and named.
+func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
+	switch mode {
+	case "RuntimeDefault":
+		return profileName == ""
+	case "Localhost":
+		return developmentCodexProfile.MatchString(profileName)
+	default:
+		return false
+	}
+}
+
 func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result error) {
 	r := newRunner(opts)
 	if len(opts.ComposeArgs) != 0 {
@@ -259,8 +284,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		if err := json.Unmarshal(output, &result, json.RejectUnknownMembers(true)); err != nil {
 			return fmt.Errorf("invalid dedicated Codex sandbox preparation result: %w", err)
 		}
-		validProfile, _ := regexp.MatchString(`^openclaw/codex-0\.156\.0-[a-f0-9]{64}\.json$`, result.ProfileName)
-		if (result.Mode != "RuntimeDefault" || result.ProfileName != "") && (result.Mode != "Localhost" || !validProfile) {
+		if !validDevelopmentCodexSeccompResult(result.Mode, result.ProfileName) {
 			return fmt.Errorf("invalid dedicated Codex sandbox preparation result")
 		}
 		codexSeccompProfile = result.ProfileName

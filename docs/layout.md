@@ -50,8 +50,8 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 Start from the existing primitive that owns a capability. Keep platform core
 behavior dependent on contracts; put implementation-specific behavior in the
 owning Driver or Backend and wire it through composition. See
-[current architecture](ARCHITECTURE.md) for component interactions and the
-[platform design](design.md) for the approved target and implementation status.
+[platform architecture](design.md) for component interactions, implementation
+status, and remaining design requirements.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
 uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
@@ -130,8 +130,7 @@ Do not install dependencies as a verification side effect.
 | ------------------------------------- | ------------------------------------------------------------------------------- |
 | Root `README.md` and `docs/README.md` | Project orientation and the documentation map.                                  |
 | `docs/layout.md`                      | Repository organization and file-placement conventions.                         |
-| `docs/design.md` and `docs/design/`   | Authoritative target architecture.                                              |
-| `docs/ARCHITECTURE.md`                | Current system structure and ownership boundaries.                              |
+| `docs/design.md` and `docs/design/`   | Authoritative architecture, design requirements, and implementation status.     |
 | `docs/reference/`                     | Living supported-feature specifications and Driver contracts.                   |
 | `docs/guides/`                        | Product user and operator procedures, including console, CLI, and API tasks.    |
 | `docs/contributing/`                  | Onboarding and workflows for people changing the platform source or docs.       |

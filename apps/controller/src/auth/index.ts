@@ -30,11 +30,63 @@ import {
   type PreparedPasswordAccount,
 } from "@openclaw-enterprise/occ";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
-import { createHumanLogin, type GitHubLoginConfiguration } from "./github.ts";
+import {
+  createHumanLogin,
+  githubLoginConfiguration,
+  type GitHubLoginConfiguration,
+} from "./github.ts";
+import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
+import {
+  SignInRateLimited,
+  passwordFailureAdmission,
+  passwordFailureBudget,
+  type PasswordSignInAdmission,
+} from "./admission.ts";
 
 export { githubLoginConfiguration, type GitHubLoginConfiguration } from "./github.ts";
+export {
+  googleLoginConfiguration,
+  type GoogleLoginConfiguration,
+  type GoogleSignInConfiguration,
+} from "./google.ts";
+
+export interface HumanLoginConfiguration {
+  readonly github?: GitHubLoginConfiguration;
+  readonly google?: GoogleSignInConfiguration;
+}
+
+/**
+ * Parses every external sign-in provider. The recovery user ID (still named
+ * OCC_AUTH_GITHUB_RECOVERY_USER_ID) seeds the guarded profile, so it is required exactly
+ * when at least one provider is configured.
+ */
+export function humanLoginConfiguration(
+  environment: Readonly<Record<string, string | undefined>>,
+): HumanLoginConfiguration {
+  const github = githubLoginConfiguration(environment);
+  const google = googleLoginConfiguration(environment);
+  const recoveryUserId = environment.OCC_AUTH_GITHUB_RECOVERY_USER_ID;
+  if (github === undefined && google === undefined) {
+    if (recoveryUserId !== undefined) {
+      throw new Error(
+        "External sign-in requires client ID, client secret and recovery user ID for GitHub or Google.",
+      );
+    }
+    return {};
+  }
+  if (
+    google !== undefined &&
+    (recoveryUserId === undefined || recoveryUserId.trim().length === 0)
+  ) {
+    throw new Error("Google sign-in requires client ID, client secret and recovery user ID.");
+  }
+  return {
+    ...(github === undefined ? {} : { github }),
+    ...(google === undefined ? {} : { google: { ...google, recoveryUserId: recoveryUserId! } }),
+  };
+}
 export {
   clientAddressConfiguration,
   resolveClientAddress,
@@ -83,6 +135,14 @@ export interface ControllerAuthOptions {
   readonly humanLogin?: ReturnType<typeof createHumanLogin>;
   /** Trusted proxies whose client-address header keys sign-in admission. */
   readonly clientAddress?: ClientAddressConfiguration;
+  /**
+   * Password-only profile: whether a user administers the Installation. Once the shared
+   * budget is spent, only administrators' passwords are still checked (slowly). Without it
+   * no account is.
+   */
+  readonly passwordAdministrator?: (userId: string) => Promise<boolean>;
+  /** Password-only profile: replaces the in-memory failure-counting admission. */
+  readonly passwordAdmission?: PasswordSignInAdmission;
 }
 
 export interface PostgresControllerAuthOptions extends Omit<
@@ -93,6 +153,7 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly state?: PostgresPlatformState;
   readonly iamDriver?: IAMDriver;
   readonly github?: GitHubLoginConfiguration;
+  readonly google?: GoogleSignInConfiguration;
   /** Receives nonfatal startup conditions as structured log events. */
   readonly onWarning?: (event: { readonly event: string; readonly message: string }) => void;
 }
@@ -135,11 +196,23 @@ export interface ControllerAuth {
   githubStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   githubCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   githubResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  readonly googleEnabled: boolean;
+  /** Provider-instance key for Google identities; set only while Google sign-in is configured. */
+  readonly googleProviderId?: string;
+  googleStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  googleCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  googleResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   readAccount?(
     userId: string,
     actor: HumanAuthenticationActor,
   ): Promise<HumanAuthenticationAccount>;
   attachGitHub?(
+    userId: string,
+    subject: string,
+    actor: HumanAuthenticationActor,
+    expectedVersion: number,
+  ): Promise<unknown>;
+  attachGoogle?(
     userId: string,
     subject: string,
     actor: HumanAuthenticationActor,
@@ -341,7 +414,13 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
       return {
         status,
         code:
-          status === 401 ? "UNAUTHENTICATED" : status === 409 ? "RESOURCE_CONFLICT" : "FORBIDDEN",
+          status === 401
+            ? "UNAUTHENTICATED"
+            : status === 409
+              ? "RESOURCE_CONFLICT"
+              : status === 429
+                ? "RATE_LIMITED"
+                : "FORBIDDEN",
       };
     }
     if (error instanceof APIError) {
@@ -349,6 +428,12 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
     }
   }
   return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+}
+
+// Credential rejections spend the password budget; dependency failures do not.
+function countsAsSignInFailure(error: unknown): boolean {
+  const { status } = authFailure(error);
+  return status >= 400 && status < 500;
 }
 
 function authBody(request: FastifyRequest): Record<string, unknown> {
@@ -519,6 +604,9 @@ async function sendAuthEndpoint(
     });
   } catch (error) {
     const failure = authFailure(error);
+    if (error instanceof SignInRateLimited) {
+      reply.header("retry-after", String(error.retryAfterSeconds));
+    }
     reply.status(failure.status).send({
       error: { code: failure.code, message: failureMessage },
       meta: { requestId: request.id },
@@ -812,6 +900,25 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     },
   });
   const api = auth.api;
+  // Password-only profile: failure-counting admission keyed on email and, behind a trusted
+  // proxy, client address; administrators are slowed, never refused (see admission.ts).
+  const passwordAdmission =
+    humanLogin !== undefined
+      ? undefined
+      : (options.passwordAdmission ??
+        passwordFailureAdmission({
+          ...passwordFailureBudget,
+          countsAsFailure: countsAsSignInFailure,
+          // Timing differences here are hidden by the slow lane's floor. Lookup failures
+          // propagate, so an outage is 503 rather than a refusal.
+          async isReserved(email) {
+            if (options.passwordAdministrator === undefined) {
+              return false;
+            }
+            const found = await (await auth.$context).internalAdapter.findUserByEmail(email);
+            return found !== null && (await options.passwordAdministrator(found.user.id));
+          },
+        }));
 
   /** Validates and hashes a new password account without writing it. */
   async function prepareAccount(input: ProvisionAuthAccountInput): Promise<PreparedAuthAccount> {
@@ -927,6 +1034,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     await context.internalAdapter.deleteUser(account.id);
   }
 
+  function clientAddressOf(request: FastifyRequest): string {
+    return resolveClientAddress(
+      options.clientAddress,
+      request.ip,
+      options.clientAddress === undefined
+        ? undefined
+        : request.headers[options.clientAddress.header],
+    );
+  }
+
   async function runPrivateEndpoint(
     request: FastifyRequest,
     path: string,
@@ -939,16 +1056,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     const headers = authHeaders(request.headers);
     headers.set("host", new URL(options.baseURL).host);
     // Sign-in admission keys on this value; Better Auth reads only this address header.
-    headers.set(
-      "x-occ-client-ip",
-      resolveClientAddress(
-        options.clientAddress,
-        request.ip,
-        options.clientAddress === undefined
-          ? undefined
-          : request.headers[options.clientAddress.header],
-      ),
-    );
+    headers.set("x-occ-client-ip", clientAddressOf(request));
     // Password sign-in keeps the established browser/CLI origin contract; sign-out already
     // required the exact browser Origin before reaching this point.
     if (!headers.has("origin") && path === "/oce/password") {
@@ -978,59 +1086,69 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     return { response: await response.json(), headers: response.headers, status: response.status };
   }
 
-  async function githubStart(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    await sendAuthEndpoint(
-      request,
-      reply,
-      () => {
-        if (!humanLogin) {
-          throw new AdmissionFailure(403, "FORBIDDEN", "GitHub sign-in is unavailable.");
-        }
-        if (request.headers.origin !== expectedBrowserOrigin) {
-          throw new AdmissionFailure(403, "FORBIDDEN", "The browser origin is not trusted.");
-        }
-        return runPrivateEndpoint(request, "/oce/providers/github/start");
+  // Browser endpoints for one external provider; its absence is a 403 (start/result) or
+  // the console error redirect (callback), as before.
+  function externalProviderRoutes(name: "github" | "google", label: string) {
+    const configured =
+      name === "github"
+        ? humanLogin?.githubProviderId !== undefined
+        : humanLogin?.googleProviderId !== undefined;
+    return {
+      async start(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+        await sendAuthEndpoint(
+          request,
+          reply,
+          () => {
+            if (!configured) {
+              throw new AdmissionFailure(403, "FORBIDDEN", `${label} sign-in is unavailable.`);
+            }
+            // Sets the browser-binding cookie, so it takes the same exact-Origin and
+            // Sec-Fetch-Site guard as sign-out and the result exchange.
+            requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
+            return runPrivateEndpoint(request, `/oce/providers/${name}/start`);
+          },
+          (value) => value,
+          `${label} sign-in could not be started.`,
+        );
       },
-      (value) => value,
-      "GitHub sign-in could not be started.",
-    );
-  }
-
-  async function githubCallback(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    reply.header("cache-control", "no-store");
-    reply.header("referrer-policy", "no-referrer");
-    try {
-      if (!humanLogin) {
-        throw new Error("GitHub sign-in unavailable.");
-      }
-      const result = await runPrivateEndpoint(request, "/oce/providers/github/callback");
-      setAuthHeaders(reply, result.headers);
-      reply.redirect("/console/");
-    } catch {
-      reply.redirect("/console/?authError=github");
-    }
-  }
-
-  async function githubResult(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    reply.header("cache-control", "no-store");
-    await sendAuthEndpoint(
-      request,
-      reply,
-      () => {
-        if (!humanLogin) {
-          throw new AdmissionFailure(403, "FORBIDDEN", "GitHub sign-in is unavailable.");
+      async callback(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+        reply.header("cache-control", "no-store");
+        reply.header("referrer-policy", "no-referrer");
+        try {
+          if (!configured) {
+            throw new Error(`${label} sign-in unavailable.`);
+          }
+          const result = await runPrivateEndpoint(request, `/oce/providers/${name}/callback`);
+          setAuthHeaders(reply, result.headers);
+          reply.redirect("/console/");
+        } catch {
+          reply.redirect(`/console/?authError=${name}`);
         }
-        // Reads the session cookie, so it takes the same exact-Origin guard as sign-out.
-        requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
-        return runPrivateEndpoint(request, "/oce/providers/github/result", authBody(request));
       },
-      (value) => {
-        const sessionKey = (value as { readonly sessionKey?: unknown } | null)?.sessionKey;
-        return { sessionKey: isNonEmptyString(sessionKey) ? sessionKey : null };
+      async result(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+        reply.header("cache-control", "no-store");
+        await sendAuthEndpoint(
+          request,
+          reply,
+          () => {
+            if (!configured) {
+              throw new AdmissionFailure(403, "FORBIDDEN", `${label} sign-in is unavailable.`);
+            }
+            // Reads the session cookie, so it takes the same exact-Origin guard as sign-out.
+            requireSessionMutationOrigin(authHeaders(request.headers), expectedBrowserOrigin);
+            return runPrivateEndpoint(request, `/oce/providers/${name}/result`, authBody(request));
+          },
+          (value) => {
+            const sessionKey = (value as { readonly sessionKey?: unknown } | null)?.sessionKey;
+            return { sessionKey: isNonEmptyString(sessionKey) ? sessionKey : null };
+          },
+          `${label} sign-in could not be confirmed.`,
+        );
       },
-      "GitHub sign-in could not be confirmed.",
-    );
+    };
   }
+  const githubRoutes = externalProviderRoutes("github", "GitHub");
+  const googleRoutes = externalProviderRoutes("google", "Google");
 
   async function signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
@@ -1039,17 +1157,30 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       () => {
         // Better Auth server API calls skip origin middleware without a Request context.
         requireTrustedBrowserOrigin(request, expectedBrowserOrigin);
-        const body = ensureEmailPassword(authBody(request));
+        const input = authBody(request);
+        const body = ensureEmailPassword(input);
         if (humanLogin) {
           return runPrivateEndpoint(request, "/oce/password", body);
         }
-        return api.signInEmail({
-          body: { ...body, rememberMe: true },
-          headers: authHeaders(request.headers),
-          asResponse: false,
-          returnHeaders: true,
-          returnStatus: true,
-        });
+        // The address lane needs a trusted proxy: without one, browsers behind the ingress
+        // share its address, so only the email lane applies.
+        const attempt = {
+          ...(options.clientAddress === undefined
+            ? {}
+            : { clientAddress: clientAddressOf(request) }),
+          // Read from the validated input, not the credential pair, so the admission key
+          // is plainly derived from the email alone.
+          email: String(input.email).trim().toLowerCase(),
+        };
+        return passwordAdmission!.admit(attempt, () =>
+          api.signInEmail({
+            body: { ...body, rememberMe: true },
+            headers: authHeaders(request.headers),
+            asResponse: false,
+            returnHeaders: true,
+            returnStatus: true,
+          }),
+        );
       },
       (response) => {
         const sessionKey = (response as { readonly sessionKey?: unknown } | null)?.sessionKey;
@@ -1171,11 +1302,15 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         account,
         seedOptions,
       ),
-    githubEnabled: humanLogin !== undefined,
+    githubEnabled: humanLogin?.githubProviderId !== undefined,
     humanProfile: humanLogin === undefined ? "password" : "guarded",
-    githubStart,
-    githubCallback,
-    githubResult,
+    githubStart: githubRoutes.start,
+    githubCallback: githubRoutes.callback,
+    githubResult: githubRoutes.result,
+    googleEnabled: humanLogin?.googleProviderId !== undefined,
+    googleStart: googleRoutes.start,
+    googleCallback: googleRoutes.callback,
+    googleResult: googleRoutes.result,
     signInEmail,
     signOut,
     session,
@@ -1223,7 +1358,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 }
 
 /**
- * Startup and stopped maintenance share this one-way activation path. GitHub sign-in
+ * Startup and stopped maintenance share this one-way activation path. External sign-in
  * requires the native IAM Driver, so both authorize through it. The configured recovery
  * user id only seeds the first activation: once a designation exists (possibly moved by an
  * online replacement) it is kept, and `seedIgnored` reports a differing seed. Every call
@@ -1260,6 +1395,27 @@ export async function activateRecoveryAccount(
   return { ...activation, recoveryUserId, seedIgnored };
 }
 
+/** Whether a Better Auth user's Principal holds Installation `administer`. */
+async function administersInstallation(
+  iamDriver: IAMDriver,
+  installationId: string,
+  userId: string,
+): Promise<boolean> {
+  const principal = await iamDriver.lookupIdentity({
+    issuer: betterAuthIssuer(installationId),
+    subject: userId,
+  });
+  if (!principal || principal.kind !== "principal") {
+    return false;
+  }
+  const decision = await iamDriver.authorize({
+    principalId: principal.id,
+    action: "administer",
+    resource: { kind: "installation", id: installationId },
+  });
+  return decision.allowed;
+}
+
 /** Hash a local password exactly as the controller's password sign-in verifies it. */
 export async function hashLocalPassword(password: string): Promise<string> {
   if (password.length < LOCAL_PASSWORD_MIN_LENGTH || password.length > LOCAL_PASSWORD_MAX_LENGTH) {
@@ -1273,7 +1429,7 @@ export async function hashLocalPassword(password: string): Promise<string> {
 export async function createPostgresControllerAuth(
   options: PostgresControllerAuthOptions,
 ): Promise<ControllerAuth> {
-  const { pool, state, iamDriver, github, onWarning, ...controllerOptions } = options;
+  const { pool, state, iamDriver, github, google, onWarning, ...controllerOptions } = options;
   const persistence =
     state === undefined
       ? undefined
@@ -1282,41 +1438,69 @@ export async function createPostgresControllerAuth(
           options.installationId,
           betterAuthIssuer(options.installationId),
         );
-  if (github === undefined && persistence && (await persistence.recoveryDesignation())) {
-    throw new Error("An activated human authentication profile requires its GitHub configuration.");
+  // Either external provider activates the guarded profile; both share its recovery user.
+  const recoveryUserId = github?.recoveryUserId ?? google?.recoveryUserId;
+  const guarded = recoveryUserId !== undefined;
+  const providerLabel = github === undefined ? "Google" : "GitHub";
+  if (!guarded && persistence && (await persistence.recoveryDesignation())) {
+    throw new Error(
+      "An activated human authentication profile requires a configured external sign-in provider.",
+    );
   }
-  if (github !== undefined) {
+  if (guarded) {
+    if (
+      github !== undefined &&
+      google !== undefined &&
+      github.recoveryUserId !== google.recoveryUserId
+    ) {
+      throw new Error("GitHub and Google sign-in require the same recovery user ID.");
+    }
     if (!persistence || !(iamDriver instanceof NativeIAMDriver)) {
       throw new Error(
-        "GitHub sign-in requires original PostgreSQL State and the native IAM Driver.",
+        `${providerLabel} sign-in requires original PostgreSQL State and the native IAM Driver.`,
       );
     }
     if (options.sharedCookieDomain !== undefined) {
       throw new Error(
-        "GitHub sign-in supports host-only cookies without shared native administration.",
+        `${providerLabel} sign-in supports host-only cookies without shared native administration.`,
       );
     }
     if (options.mode === "production" && new URL(options.baseURL).protocol !== "https:") {
-      throw new Error("Production GitHub sign-in requires HTTPS.");
+      throw new Error(`Production ${providerLabel} sign-in requires HTTPS.`);
     }
   }
-  const humanLogin =
-    github === undefined ? undefined : createHumanLogin(persistence!, github, options.baseURL);
+  const humanLogin = !guarded
+    ? undefined
+    : createHumanLogin(
+        persistence!,
+        {
+          recoveryUserId,
+          ...(github === undefined ? {} : { github }),
+          ...(google === undefined ? {} : { google }),
+        },
+        options.baseURL,
+      );
   const auth = createControllerAuth({
     ...controllerOptions,
     ...(humanLogin === undefined ? {} : { humanLogin }),
+    ...(humanLogin !== undefined || iamDriver === undefined
+      ? {}
+      : {
+          passwordAdministrator: (userId: string) =>
+            administersInstallation(iamDriver, options.installationId, userId),
+        }),
     database: await createOccAuthDatabase(pool),
   });
   // Finish static auth initialization before the one-way activation transaction.
   await auth.auth.$context;
   let activationSkipped: readonly string[] = [];
-  if (github !== undefined) {
+  if (guarded) {
     const activation = await activateRecoveryAccount(
       persistence!,
-      // Checked above: GitHub sign-in requires the native IAM Driver.
+      // Checked above: external sign-in requires the native IAM Driver.
       iamDriver as NativeIAMDriver,
       options.installationId,
-      github.recoveryUserId,
+      recoveryUserId,
     );
     if (activation.seedIgnored) {
       onWarning?.({
@@ -1340,22 +1524,48 @@ export async function createPostgresControllerAuth(
     ...(humanLogin === undefined
       ? {}
       : {
-          githubProviderId: humanLogin.providerId,
+          ...(humanLogin.githubProviderId === undefined
+            ? {}
+            : { githubProviderId: humanLogin.githubProviderId }),
+          ...(humanLogin.googleProviderId === undefined
+            ? {}
+            : { googleProviderId: humanLogin.googleProviderId }),
           readAccount: (userId: string, actor: HumanAuthenticationActor) =>
             persistence!.readAccount(userId, actor),
-          attachGitHub: (
-            userId: string,
-            subject: string,
-            actor: HumanAuthenticationActor,
-            expectedVersion: number,
-          ) =>
-            persistence!.attachExternal(
-              userId,
-              humanLogin.providerId,
-              subject,
-              actor,
-              expectedVersion,
-            ),
+          ...(humanLogin.githubProviderId === undefined
+            ? {}
+            : {
+                attachGitHub: (
+                  userId: string,
+                  subject: string,
+                  actor: HumanAuthenticationActor,
+                  expectedVersion: number,
+                ) =>
+                  persistence!.attachExternal(
+                    userId,
+                    humanLogin.githubProviderId!,
+                    subject,
+                    actor,
+                    expectedVersion,
+                  ),
+              }),
+          ...(humanLogin.googleProviderId === undefined
+            ? {}
+            : {
+                attachGoogle: (
+                  userId: string,
+                  subject: string,
+                  actor: HumanAuthenticationActor,
+                  expectedVersion: number,
+                ) =>
+                  persistence!.attachExternal(
+                    userId,
+                    humanLogin.googleProviderId!,
+                    subject,
+                    actor,
+                    expectedVersion,
+                  ),
+              }),
           changeAccount: (
             userId: string,
             operation: "disable" | "enable" | "revoke",

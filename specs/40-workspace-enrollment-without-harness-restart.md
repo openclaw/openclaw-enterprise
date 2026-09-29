@@ -1,8 +1,10 @@
 # Feature Spec: Workspace enrollment without a Harness restart
 
 **Date:** 2026-09-28
-**Status:** Implemented; API-key workflow verified, plugin and timing proof deferred
+**Status:** Superseded by the implementation merged in PR #616
 **Owner:** Kubernetes Compute Driver and dedicated Codex runtime
+
+> Historical design: [PR #616](https://github.com/openclaw/openclaw-enterprise/pull/616) independently shipped workspace enrollment without a Harness restart; [PR #640](https://github.com/openclaw/openclaw-enterprise/pull/640) extended Gateway startup. The file path, renewal, and delivery details below describe this earlier proposal. Use the [current storage reference](../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md) for the shipped contract. This branch retains only the test-fixture repairs discovered during validation.
 
 ## Problem and Decision
 
@@ -83,6 +85,8 @@ Acceptance requires zero enrollment-induced Harness/Codex restarts with working 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-29: Main independently shipped the feature in #616. Preserved its newer implementation and kept only the Kubernetes test-fixture repairs in this follow-up. Earlier live proof used controller base `8f3fc12c` and runtime `01d7131`; it does not qualify the newer main runtime.
 
 - 2026-09-29: User approved publishing the scoped implementation with plugin-enabled and timing proof deferred. Retained the failed results and withheld any latency improvement claim.
 

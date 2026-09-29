@@ -269,7 +269,7 @@ OpenAPI contract, [HTTP API reference](../reference/api.md), and
 the checked-in OpenAPI contract without loading controller dependencies, run
 `node scripts/generate-occ-api-reference.mjs --check`.
 
-See the [architecture guide](../ARCHITECTURE.md) for ownership and runtime
+See the [architecture guide](../design.md) for ownership and runtime
 boundaries, the [quickstart](../guides/quickstart.md) for the default local
 startup helper, and the [deployment guide](../guides/deploy.md) for production
 example files and Helm installation.
