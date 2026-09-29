@@ -2714,12 +2714,24 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology, options =
     assert.equal(gateways.length, 1);
     assert.equal(gateways[0].metadata.uid, rejectedPod.metadata.uid);
   }
-  const stillServing = await resource("service", serviceName, topology.placement);
-  assert.deepEqual(
-    stillServing.spec.selector,
-    servingService.spec.selector,
-    "the Service keeps its existing topology selector through failed authentication",
-  );
+  const currentService = await resource("service", serviceName, topology.placement);
+  if (topology.mode === "dedicated") {
+    // With the predecessor drained, preparation selects the candidate before
+    // readiness; the EndpointSlice checks below ensure invalid auth cannot serve.
+    assert.deepEqual(currentService.spec.selector, {
+      "app.kubernetes.io/name": `${serviceName}-rev-${hash(candidate.data.id)}`,
+      "openclaw.dev/namespace": topology.agent.namespaceId,
+      "openclaw.dev/agent": topology.agent.id,
+      "openclaw.dev/revision": candidate.data.id,
+      "openclaw.dev/workload-role": "agent",
+    });
+  } else {
+    assert.deepEqual(
+      currentService.spec.selector,
+      servingService.spec.selector,
+      "the Service keeps its existing topology selector through failed authentication",
+    );
+  }
   const slices = await resources("endpointslices", topology.placement);
   assert.equal(
     slices
