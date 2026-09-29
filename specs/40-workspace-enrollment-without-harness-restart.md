@@ -1,7 +1,7 @@
 # Feature Spec: Workspace enrollment without a Harness restart
 
 **Date:** 2026-09-28
-**Status:** Implemented; API-key workflow verified, plugin-enabled proof blocked
+**Status:** Implemented; API-key workflow verified, plugin and timing proof deferred
 **Owner:** Kubernetes Compute Driver and dedicated Codex runtime
 
 ## Problem and Decision
@@ -62,11 +62,13 @@ No public configuration, database migration, Secret schema, or native API change
 
 ## Verification
 
+For this PR, the user approved deferring plugin-enabled acceptance and comparative timing after both baseline and candidate failed native `plugin/list` startup. The required real-Kubernetes acceptance uses the API-key workflow, including stable enrollment, workspace/model operations, retained storage, and credential recovery. The plugin and timing procedures below remain follow-up work; no latency improvement is claimed.
+
 | Surface                                                                           | Required outcome                                                                                                                                                                                                                                                        |
 | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Controller conformance](../tests/conformance/kubernetes-compute.test.mjs)        | The full Harness template stays equal across Gateway readiness, one setup issuance, and `deviceId` persistence. Cover initial and replacement-recovery paths; final readiness still requires native connection. Existing provider/embedded coverage remains valid.      |
 | [Supervisor conformance](../tests/conformance/workspace-node-supervisor.test.mjs) | Delayed file arrival starts one node while Codex keeps its PID/start count. Projection replacement, later updates, invalid input, node-only restart, and shutdown preserve supervision and credential filtering. Retain existing Codex-restart coverage.                |
-| [Real K3d topology](../tests/integration/harness-topology-k3d-real.test.mjs)      | A plugin-enabled dedicated Codex revision retains its Harness Pod UID, template hash, and Codex process identity through enrollment. Verify authenticated workspace file access and a model turn after activation; preserve predecessor, ownership, and PVC assertions. |
+| [Real K3d topology](../tests/integration/harness-topology-k3d-real.test.mjs)      | An API-key-authenticated dedicated Codex revision retains its Harness Pod UID, template hash, and Codex process identity through enrollment. Verify authenticated workspace file access and a model turn after activation; preserve predecessor, ownership, and PVC assertions. |
 
 The permanent Kubernetes regression retains its API-key authentication and recovery assertions. Run the plugin-enabled acceptance proof separately with the supported `codex_pat` binding: API-key login exposes a different native plugin marketplace. Keep the production enrollment path and observation logic identical, and require successful plugin initialization without deployment warnings.
 
@@ -81,6 +83,8 @@ Acceptance requires zero enrollment-induced Harness/Codex restarts with working 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-29: User approved publishing the scoped implementation with plugin-enabled and timing proof deferred. Retained the failed results and withheld any latency improvement claim.
 
 - 2026-09-29: Verified stable enrollment, workspace/model operations, retained storage, and credential recovery on real Kubernetes. Retained completed full-run scenarios and passed a focused recovery rerun after repairing stale fixtures. Plugin-enabled baseline and candidate deployments both fail the existing native `plugin/list` startup deadline; no latency improvement is claimed.
 
