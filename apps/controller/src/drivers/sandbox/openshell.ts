@@ -1,6 +1,7 @@
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { KubernetesObjectApi, type KubernetesObject, PatchStrategy } from "@kubernetes/client-node";
 import { setTimeout as delay } from "node:timers/promises";
+import { unavailableOpenShellMaterial } from "./openshell-material.ts";
 import type {
   AgentRevision,
   Backend,
@@ -1134,6 +1135,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const serviceExposures = codex
       ? [{ service: "", targetPort: harnessPort(context.requirements) }]
       : [];
+    const spec = sandboxSpec(this.options, context.requirements);
+    const unavailableMaterial = unavailableOpenShellMaterial(context);
+    if (unavailableMaterial.length !== 0) {
+      throw new OpenShellSandboxConfigurationFailure(
+        `OpenShell material delivery is unavailable for ${unavailableMaterial.join(" and ")}; an accepted revision-bound producer is required.`,
+      );
+    }
     let created;
     try {
       created = await this.gatewayClientForNamespace(sandbox.namespaceName).createSandbox(
@@ -1147,7 +1155,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             "openclaw.dev/agent-id": context.revision.agentId,
             "openclaw.dev/revision-id": context.revision.id,
           },
-          spec: sandboxSpec(this.options, context.requirements),
+          spec,
           serviceExposures,
         },
         context.signal,
