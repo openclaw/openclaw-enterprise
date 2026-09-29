@@ -464,6 +464,9 @@
     },
     {
       "path": "tests/integration/password-sign-in-admission.test.mjs"
+    },
+    {
+      "path": "tests/conformance/sandbox-repository-material.test.mjs"
     }
   ]
 }
