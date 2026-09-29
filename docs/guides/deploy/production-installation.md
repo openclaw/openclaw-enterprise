@@ -287,7 +287,7 @@ without quotes or a variable assignment.
 | `occ-application-url` | PostgreSQL connection URL for the limited application role, used by bootstrap, the API, and the worker. Obtain it from your database administrator or provider. Example shape: `postgresql://occ_app:<url-encoded-password>@<postgres-host>:5432/<database>`.                   |
 | `occ-migration-url`   | Connection URL for a separate role allowed to apply schema migrations. It targets the same database. Example shape: `postgresql://occ_migrator:<url-encoded-password>@<postgres-host>:5432/<database>`. Obtain this credential separately; do not give it to the API or worker. |
 | `occ-database-ca.pem` | Optional PostgreSQL root CA bundle when the database root is not in the base image trust store. Required only when `database.caSecretName` is set.                                                                                                                              |
-| `occ-auth-secret`     | A random secret used to sign and verify user sessions. Generate it once for this Installation with the command below, then retain it across redeployments. It is separate from the administrator password, service API key, and model-provider key.                             |
+| `occ-auth-secret`     | Random secret that signs and verifies user sessions. Generate it once with the command below and keep it across redeployments. It is separate from the administrator password, service API key, and model-provider key.                                                         |
 
 Save both database URLs in protected files, replacing placeholders and preserving
 required TLS options. For managed PostgreSQL roots supplied through
@@ -401,8 +401,7 @@ does not configure their distinct identity inputs or enable Azure mode.
 Before installing the chart, configure the Collector Secrets and Helm values
 using [Configure platform observability](../observability.md#kubernetes-and-helm).
 That guide also covers reusing an existing cluster Collector, exporter
-credentials, and verification. Return here to prepare the bootstrap PVC and
-install OCC.
+credentials, and verification.
 
 ### Prepare the fresh bootstrap output PVC
 
