@@ -1,7 +1,7 @@
 # Feature Spec: Workspace enrollment without a Harness restart
 
 **Date:** 2026-09-28
-**Status:** Implemented; current-main integration and live verification in progress
+**Status:** Implemented; API-key workflow verified, plugin-enabled proof blocked
 **Owner:** Kubernetes Compute Driver and dedicated Codex runtime
 
 ## Problem and Decision
@@ -81,6 +81,8 @@ Acceptance requires zero enrollment-induced Harness/Codex restarts with working 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-29: Verified stable enrollment, workspace/model operations, retained storage, and credential recovery on real Kubernetes. Retained completed full-run scenarios and passed a focused recovery rerun after repairing stale fixtures. Plugin-enabled baseline and candidate deployments both fail the existing native `plugin/list` startup deadline; no latency improvement is claimed.
 
 - 2026-09-29: Integrated current main’s Agent-and-Harness identity and setup renewal; node retries reread the projected code while running nodes remain undisturbed.
 
