@@ -19,7 +19,7 @@
     "@better-auth/api-key": "1.7.3",
     "@fastify/swagger": "9.8.1",
     "@fastify/type-provider-typebox": "6.1.0",
-    "@grpc/grpc-js": "1.14.4",
+    "@grpc/grpc-js": "1.14.5",
     "@grpc/proto-loader": "0.8.1",
     "@kubernetes/client-node": "2.0.0",
     "@openclaw-enterprise/audit": "workspace:*",
@@ -31,11 +31,11 @@
     "@prometheus-io/client": "0.16.1",
     "ajv-formats": "3.0.1",
     "better-auth": "1.7.3",
-    "fastify": "5.12.3",
+    "fastify": "5.12.5",
     "pg": "8.23.0",
     "pino": "10.3.1",
     "tldts": "7.0.18",
-    "typebox": "1.3.29",
+    "typebox": "1.3.34",
     "undici": "8.10.1"
   }
 }

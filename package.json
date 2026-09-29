@@ -70,14 +70,14 @@
     "@types/node": "26.5.0",
     "@types/pg": "8.23.1",
     "@typescript/native": "npm:typescript@7.0.2",
-    "drizzle-kit": "0.31.10",
-    "eslint": "10.10.0",
+    "drizzle-kit": "0.31.11",
+    "eslint": "10.11.0",
     "globals": "17.12.0",
     "pg": "8.23.0",
     "playwright": "1.63.0",
     "prettier": "3.9.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
-    "typescript-eslint": "8.70.0"
+    "typescript-eslint": "8.70.1"
   }
 }
