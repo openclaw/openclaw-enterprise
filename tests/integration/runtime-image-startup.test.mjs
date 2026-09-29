@@ -169,7 +169,7 @@ process.exit(child.status ?? 1);
       {},
       JSON.stringify(files),
     );
-    assert.match(stdout, /pass 1/);
+    assert.match(stdout, /pass 2/);
     assert.match(stdout, /skipped 0/);
   },
 );

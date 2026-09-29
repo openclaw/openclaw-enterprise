@@ -2315,14 +2315,18 @@ startAuthenticatedCodex();
 // for each Codex start; other Harnesses need their own execution composition.
 // Codex starts from bounded program pieces, like the container that runs this.
 export const AGENT_WITH_NODE_ENTRYPOINT = String.raw`
-const { mkdirSync, writeFileSync, rmSync } = require("node:fs");
+const { mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
-const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
-if (!state || !setupCode) throw new Error("The workspace node is not provisioned.");
+let setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
+const setupCodeFile = process.env.OPENCLAW_NODE_SETUP_CODE_FILE;
+if (setupCode !== undefined && setupCodeFile !== undefined) {
+  throw new Error("The workspace node requires exactly one setup input.");
+}
+if (!state || (!setupCode && !setupCodeFile)) throw new Error("The workspace node is not provisioned.");
 mkdirSync(state, { recursive: true });
 initializeRuntimeAssets();
 publishAgentPluginSkillPath();
@@ -2360,6 +2364,7 @@ if (baseline.error) throw baseline.error;
 if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
 const codexEnv = { ...process.env, PATH: harnessPath };
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
+delete codexEnv.OPENCLAW_NODE_SETUP_CODE_FILE;
 delete codexEnv.OPENCLAW_NODE_CA_PEM;
 delete codexEnv.OPENCLAW_NODE_STATE_DIR;
 delete codexEnv.OPENCLAW_WORKSPACE_BOOTSTRAP;
@@ -2373,6 +2378,7 @@ const processes = [
   { name: "Codex", args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])}, env: codexEnv },
 ];
 let stopping = false;
+let lastSetupWarning = 0;
 function killGroup(child, signal) {
   if (!child?.pid) return;
   try { process.kill(-child.pid, signal); }
@@ -2380,6 +2386,27 @@ function killGroup(child, signal) {
 }
 function start(slot) {
   if (stopping) return;
+  if (slot === processes[0] && setupCodeFile) {
+    // Reopen only when launching/retrying the node. A renewed setup code must
+    // replace an expired one; projection updates never restart a running node.
+    setupCode = undefined;
+    let warn = false;
+    try {
+      setupCode = readFileSync(setupCodeFile, "utf8").trim();
+      warn = !setupCode;
+    } catch (error) {
+      warn = error.code !== "ENOENT";
+    }
+    if (!setupCode) {
+      if (warn && Date.now() - lastSetupWarning >= 30_000) {
+        console.error("Workspace node credentials are not readable yet.");
+        lastSetupWarning = Date.now();
+      }
+      slot.timer = setTimeout(() => start(slot), 1_000);
+      return;
+    }
+    slot.args[4] = setupCode;
+  }
   const child = spawn(process.execPath, slot.args, {
     env: slot.env, stdio: "inherit", detached: true,
   });
@@ -2415,7 +2442,8 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 logStartupPhase("supervisor-spawn", startupPhaseOrigin);
-for (const slot of processes) start(slot);
+start(processes[1]);
+start(processes[0]);
 `;
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`

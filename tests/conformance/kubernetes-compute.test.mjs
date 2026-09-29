@@ -826,7 +826,7 @@ function dedicatedFirstDeployFixture() {
         },
         async observeSetup() {
           if (!state.enrollmentAvailable) {
-            throw new Error("Gateway is restarting after the Harness replacement");
+            throw new Error("Gateway is restarting");
           }
           return state.connected ? { deviceId: "node-1", connected: true } : undefined;
         },
@@ -1093,6 +1093,26 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     objects.has(key("Deployment", agentName)),
     "Harness can initialize plugins without the node",
   );
+  const initialTemplate = read("Deployment", agentName).spec.template;
+  const setupVolume = initialTemplate.spec.volumes.find(
+    ({ name }) => name === "workspace-node-setup",
+  );
+  assert.deepEqual(setupVolume.secret, {
+    secretName: `workspace-node-${digest(revision.agentId)}-${digest("harness:codex")}`,
+    optional: true,
+    defaultMode: 0o440,
+    items: [{ key: "setupCode", path: "setupCode" }],
+  });
+  assert.deepEqual(
+    initialTemplate.spec.containers[0].volumeMounts.find(
+      ({ name }) => name === "workspace-node-setup",
+    ),
+    {
+      name: "workspace-node-setup",
+      mountPath: "/run/openclaw/node-setup",
+      readOnly: true,
+    },
+  );
   const initialStrategy = read("Deployment", agentName).spec.strategy;
   assert.equal(
     initialStrategy?.type,
@@ -1111,14 +1131,19 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   assert.equal(state.setupCalls, 1);
   const agent = read("Deployment", agentName);
   assert.deepEqual(agent.spec.strategy, initialStrategy);
+  assert.deepEqual(
+    agent.spec.template,
+    initialTemplate,
+    "issuing setup must not replace the Harness",
+  );
   assert.ok(
     agent.spec.template.spec.containers[0].env.some(
-      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE",
+      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE_FILE",
     ),
   );
   markReady(agentName);
-  // Adding the workspace node replaces the Harness. Its Gateway restarts when
-  // the peer changes, so enrollment must wait for Gateway readiness as well.
+  // An independently restarting Gateway must become ready before enrollment
+  // RPCs run; delayed node launch does not replace the Harness.
   const restartingGateway = read(
     "Deployment",
     gatewayName,
@@ -1134,6 +1159,11 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   state.connected = true;
   assert.equal((await prepare()).ready, true);
   assert.equal(state.setupCalls, 1);
+  assert.deepEqual(
+    read("Deployment", agentName).spec.template,
+    initialTemplate,
+    "recording the node identity must not replace the Harness",
+  );
   // The node supervisor embeds Codex; neither it nor an OpenShell Sandbox, which
   // carries the whole command in one environment variable, nears the exec limit.
   assertExecStringsWithinBudget(objects.values());
@@ -1159,15 +1189,13 @@ test("a first dedicated deploy pins its serial workload starts through activatio
     pendingPasses += Number(!ready);
     return ready;
   };
-  assert.equal(await pass(), false, "the Harness starts first, without its node");
+  assert.equal(await pass(), false, "the Harness starts first, waiting for node credentials");
   markReady(agentName);
   assert.equal(await pass(), false, "the Gateway waits for Harness plugin status");
   markReady(gatewayName);
   state.connected = true;
-  assert.equal(await pass(), false, "node enrollment replaces the Harness");
-  markReady(agentName);
-  assert.equal(await pass(), true);
-  assert.equal(pendingPasses, 3);
+  assert.equal(await pass(), true, "node enrollment preserves the ready Harness");
+  assert.equal(pendingPasses, 2);
   await assert.rejects(
     driver.activateRevision(revision, authContext(revision)),
     /gateway is not ready/,
@@ -1179,26 +1207,21 @@ test("a first dedicated deploy pins its serial workload starts through activatio
 
   assert.deepEqual(
     templates.map(({ name }) => (name === agentName ? "harness" : name)),
-    ["harness", gatewayName, "harness", gatewayName],
+    ["harness", gatewayName, gatewayName],
   );
-  const [harness, gateway, enrolledHarness, activeGateway] = templates.map(
-    ({ template }) => template,
-  );
-  // Harness start 2: the node setup code reaches the Harness through its pod spec.
+  const [harness, gateway, activeGateway] = templates.map(({ template }) => template);
+  assert.equal(environment(harness).has("OPENCLAW_NODE_SETUP_CODE_FILE"), true);
   assert.equal(environment(harness).has("OPENCLAW_NODE_SETUP_CODE"), false);
-  assert.equal(environment(enrolledHarness).has("OPENCLAW_NODE_SETUP_CODE"), true);
-  // Gateway start 3: activation adds the enrolled node id to the Gateway pod spec.
+  // Gateway start 2: activation adds the enrolled node id to the Gateway pod spec.
   assert.equal(environment(gateway).has("OPENCLAW_WORKSPACE_NODE_ID"), false);
   assert.equal(environment(activeGateway).has("OPENCLAW_WORKSPACE_NODE_ID"), true);
-  // Gateway start 2 has no pod template change: the running Gateway container
-  // exits when its Harness peer restarts (GATEWAY_RUNTIME_ENTRYPOINT peer poll),
-  // and the kubelet restarts it.
+  // Preserving the Harness also avoids the Gateway peer-change restart.
   const gatewayCreated = templates.findIndex(({ name }) => name === gatewayName);
   const inPodGatewayRestarts = templates
     .slice(gatewayCreated)
     .filter(({ name }) => name === agentName).length;
-  assert.equal(inPodGatewayRestarts, 1);
-  assert.equal(templates.length + inPodGatewayRestarts, 5, "Harness 2 + Gateway 3");
+  assert.equal(inPodGatewayRestarts, 0);
+  assert.equal(templates.length + inPodGatewayRestarts, 3, "Harness 1 + Gateway 2");
 });
 
 test("dedicated replacement starts a candidate Gateway when the predecessor cannot enroll its workspace node", async () => {
@@ -1422,7 +1445,7 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
   const initiallyPreparedAgent = read("Deployment", agentName);
   assert.ok(
     initiallyPreparedAgent.spec.template.spec.containers[0].env.some(
-      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE",
+      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE_FILE",
     ),
   );
   markReady(agentName);
@@ -1451,9 +1474,14 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
   assert.equal((await prepare()).ready, false);
   assert.equal(setupCalls, 1);
   const agentWithSetup = read("Deployment", agentName);
+  assert.deepEqual(
+    agentWithSetup.spec.template,
+    initiallyPreparedAgent.spec.template,
+    "Gateway recovery must preserve the enrolled Harness template",
+  );
   assert.ok(
     agentWithSetup.spec.template.spec.containers[0].env.some(
-      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE",
+      (variable) => variable.name === "OPENCLAW_NODE_SETUP_CODE_FILE",
     ),
   );
   markReady(agentName);
@@ -7202,7 +7230,13 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
   };
   const withNode = (candidate) => {
     const workload = structuredClone(harness);
-    driver.addWorkspaceNode(workload, driver.workspaceNodeName(candidate), undefined, candidate);
+    driver.addWorkspaceNode(
+      workload,
+      driver.workspaceNodeName(candidate),
+      undefined,
+      candidate,
+      true,
+    );
     const pod = workload.spec.template.spec;
     // The node-state claim keeps the Harness policy: ownership is fixed only on a root mismatch.
     assert.deepEqual(pod.securityContext, harness.spec.template.spec.securityContext);

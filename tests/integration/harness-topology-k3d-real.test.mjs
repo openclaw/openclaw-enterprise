@@ -37,8 +37,29 @@ test(
   async (context) => {
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       gatewayPassword: true,
+      observeEnrollment: true,
     });
     assert.ok(topology.harnessPod, "dedicated production must start a real separate Codex Pod");
+    // Enrollment must preserve the Harness Pod and its running Codex process.
+    assert.deepEqual(topology.enrollment.podUids, [topology.harnessPod.metadata.uid]);
+    assert.deepEqual(topology.enrollment.templateHashes, [
+      topology.harnessPod.metadata.labels["pod-template-hash"],
+    ]);
+    assert.equal(
+      topology.enrollment.codexProcesses.length,
+      1,
+      "enrollment must preserve the original Codex PID and process start time",
+    );
+    assert.deepEqual(
+      topology.enrollment.lastSampleCodexProcesses,
+      topology.enrollment.codexProcesses,
+      "the original Codex process must still be running after activation",
+    );
+    assert.equal(topology.enrollment.containerRestarts, 0);
+    assert.ok(
+      topology.enrollment.setupFileVisibleAt,
+      "the actual projected setup file must become visible",
+    );
     assert.notEqual(topology.gatewayPod.metadata.uid, topology.harnessPod.metadata.uid);
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.gatewayServiceName);
     assert.equal(topology.harnessPod.spec.serviceAccountName, topology.agentServiceName);

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-28
-last_updated_session: oce-pr-440-sync
+updated: 2026-09-29
+last_updated_session: 01a0ead5-66c0-7a72-a9ab-1188a7b4ce75
 ---
 
 # Harness Execution Topology Flow
@@ -82,17 +82,13 @@ approved harness, and calls `ComputeDriver.prepareRevision`.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
-Docker starts an embedded gateway or dedicated Codex container but does not
-support the harness-auth binding contract; unsupported bindings fail before deployment. In the underlying container path,
-`dockerGatewayConfigurationDocument` admits only supported authentication
-fields and modes. Omitted
-mode renders password mode. An omitted password or explicit managed reference
-selects `OPENCLAW_GATEWAY_PASSWORD`; other password settings are preserved.
-Explicit trusted proxy retains its native configuration and can also request the
-managed password. `reconcileGateway` generates the managed credential only for a
-new container, leaving a reused container's credential intact. Dedicated
-Codex app-server authentication remains independent. These implementation checks
-do not establish a currently deployable Docker Agent path.
+Docker's underlying container path starts embedded OpenClaw or dedicated Codex,
+but does not implement the harness-auth binding contract; unsupported bindings
+fail before deployment. `dockerGatewayConfigurationDocument` validates native
+authentication settings. `reconcileGateway` generates a managed password only
+for a new container; reused credentials and explicit native settings remain
+intact. Codex app-server authentication is independent. See the
+[Docker Compute contract](../reference/drivers/docker-compute.md).
 
 Kubernetes supports managed bindings.
 SSH supports `{ "method": "runtime" }` only for embedded OpenClaw: operator
@@ -132,6 +128,18 @@ the candidate Harness enrolls its workspace node. If the predecessor Gateway is 
 cannot become ready, preparation starts the candidate Gateway after the candidate Harness is
 otherwise ready. That candidate Gateway provides the bootstrap endpoint; the revision remains
 not ready until the workspace node is enrolled and observed.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareWorkspaceNode`
+and `addWorkspaceNode` give ordinary dedicated Codex Pods their supervisor and
+optional setup-Secret mount before enrollment. Gateway readiness permits Secret
+creation; setup issuance and `deviceId` recording leave the Pod template unchanged.
+
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_WITH_NODE_ENTRYPOINT`
+initializes the workspace, starts Codex, then polls for credentials each second.
+It reads the current code before each node launch or retry; projection updates
+leave a running node alone. Unreadable credentials leave Codex running; shutdown
+cancels polling. Final preparation requires the exact node connection. Provider
+inputs remain unchanged. See the [enrollment contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#workspace-node-enrollment).
 
 Dedicated Codex and dedicated OpenClaw keep separate Agent-owned Gateway and
 Harness ServiceAccounts. Compute owns the Gateway Pod; the selected SandboxDriver
@@ -211,21 +219,17 @@ pinned runtime's 330-second service stop budget; the controller waits for Pod
 disappearance before stopping the Harness. Idle shutdown should complete promptly.
 Forced termination can delay the successor until the persistent owner lease expires.
 
-Kubernetes gateways in both modes mount their own persistent SQLite and media
-directories. Embedded gateways also retain their attested default workspace on
-the same private claim so continued turns survive Pod replacement. Dedicated
-Harnesses receive only the Harness workspace claim, where an Agent-scoped
-subdirectory keeps the node identity across Pod and revision replacement. The
-gateway's nested Codex home remains ephemeral. The driver creates separate Harness and gateway claims before
-their consuming Pods and relies on workload readiness instead of waiting for
-`Bound`, which would deadlock `WaitForFirstConsumer` storage classes. A nonroot
-gateway-image init container prepares private SQLite and media directories
-without credentials or elevated privileges, plus a node-owned mode-`0700` `/tmp`
-so the fsGroup-writable `emptyDir` root never becomes a worker workspace ancestor.
+Kubernetes gateways retain SQLite, media, and their attested embedded workspace
+on a private claim. Dedicated Harnesses receive a separate workspace claim with
+persistent Agent-and-Harness node identity; Gateway Codex credentials remain
+ephemeral. Claims precede Pods without waiting for `Bound`, supporting
+`WaitForFirstConsumer`. Nonroot initialization prepares private state and a
+node-owned mode-`0700` `/tmp`.
 
-Each image initializes its own bundled and plugin assets. Workspace-file access
-uses the enrolled Harness node; generated-image bytes return through the remote
-media reader. Gateway and Harness share no workspace, session, skill, or image mounts. See the [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+Images initialize their own assets. Gateway workspace access uses the enrolled
+node; generated images use the remote-media reader. Gateway and Harness share
+no mounts. See the [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+
 The OpenClaw node host keeps Gateway-issued worker bundles in its own state and
 workspaces below `/home/node/workspace`, away from gateway state, `CODEX_HOME`,
 and credentials. A restart republishes image-owned
@@ -257,6 +261,10 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
   provisioned application-role PostgreSQL database.
 - Check dedicated Gateway repair after an unready predecessor:
   `pnpm test:files --test-name-pattern='dedicated replacement starts a candidate Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
+- Check deferred enrollment with `node --test tests/conformance/workspace-node-supervisor.test.mjs`
+  on Linux. Real k3d proof must show stable Harness Pod and Codex identities through
+  enrollment, workspace access, and a model turn. Include Secret projection delay
+  in latency measurements.
 - Run real disposable-k3d Kubernetes coverage for both production topologies, exact identity and
   model-key placement, authenticated dedicated transport, isolated networking, and active routing;
   an HTTP fixture or skipped cluster scenario is not model-turn proof.
@@ -292,6 +300,7 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 ## Changelog
 
+- 2026-09-28 22:49: Trace deferred workspace-node enrollment without a Harness restart in the accompanying implementation. (01a0ead5-66c0-7a72-a9ab-1188a7b4ce75 - 11755a9c510538054e0f158fbd8274cbcb971c60)
 - 2026-09-28 02:55: Trace dedicated native OpenClaw on paired node hosts with full-facet Sandbox provisioning. (oce-pr-440-sync - e2b739f51f89)
 
 - 2026-09-25 18:25: Document candidate Gateway bootstrap during dedicated recovery from an unready predecessor. (authoring-run/9b15ee1e-3767-4dd0-8d9a-56ad2087dcb5 - 7b2345a3cd6e78b9c7c8bae530f3379db56be443)

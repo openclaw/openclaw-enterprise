@@ -3256,7 +3256,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.reconcileHarnessRoute(revision, namespace);
       const launch = await this.lifecycle.beforeWorkloadStart(revision);
       launchPrepared = true;
-      const node = await this.prepareWorkspaceNode(revision, namespace);
+      const setupFromFile =
+        nativeRuntime === undefined && sandboxDriver?.provisionHarness === undefined;
+      const node = await this.prepareWorkspaceNode(revision, namespace, setupFromFile);
       const agentDeployment = this.deployment(
         revisionName,
         revisionOwnership,
@@ -3280,7 +3282,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       if (node !== undefined) {
         if (nativeRuntime === undefined) {
-          this.addWorkspaceNode(agentDeployment, node.name, node.ca, revision);
+          this.addWorkspaceNode(
+            agentDeployment,
+            node.name,
+            node.ca,
+            revision,
+            setupFromFile,
+            workspaceSetup,
+          );
         } else {
           this.addNativeWorker(agentDeployment, node.name, node.ca, revision);
         }
@@ -3419,8 +3428,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
         return incomplete();
       }
-      // Enrolling the workspace node replaces the Harness and restarts its
-      // Gateway. Wait for that Gateway before making enrollment RPCs.
+      // The Gateway may still be starting or restarting. Wait for it before
+      // making workspace enrollment RPCs.
       const workspaceNodeIsReady = await this.workspaceNodeReady(revision, namespace);
       if (pluginStatusContainer === "gateway") {
         return ready(pluginWarnings, "gateway");
@@ -3696,10 +3705,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const launch = await this.lifecycle.beforeWorkloadStart(revision);
         try {
           const replacement = renderAgentDeployment(launch.environment);
-          const node = await this.prepareWorkspaceNode(revision, namespace);
+          const node = await this.prepareWorkspaceNode(
+            revision,
+            namespace,
+            nativeRuntime === undefined,
+          );
           if (node !== undefined) {
             if (nativeRuntime === undefined) {
-              this.addWorkspaceNode(replacement, node.name, node.ca, revision);
+              this.addWorkspaceNode(
+                replacement,
+                node.name,
+                node.ca,
+                revision,
+                true,
+                workspaceSetup,
+              );
             } else {
               this.addNativeWorker(replacement, node.name, node.ca, revision);
             }
@@ -6095,6 +6115,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async prepareWorkspaceNode(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
+    setupFromFile = false,
   ): Promise<{ readonly name: string; readonly ca?: string } | undefined> {
     const enrollment = this.nodeEnrollment;
     const url = this.getGatewayEndpoint(revision);
@@ -6142,84 +6163,85 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existing === undefined || expired) {
       const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
       const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
-      // Plugin initialization can precede the first Gateway. Start the Harness
-      // without a node, then enroll once its Gateway is available.
-      if (
-        !(await this.gatewayReady(
-          gatewayOwnership,
-          gatewayName,
-          this.gatewayNamespace(revision, namespace),
-          revision.id,
-        ))
-      ) {
+      // File-mode Codex starts with a static projection before setup can be
+      // issued. Other Harnesses retain readiness-dependent environment input.
+      const ready = await this.gatewayReady(
+        gatewayOwnership,
+        gatewayName,
+        this.gatewayNamespace(revision, namespace),
+        revision.id,
+      );
+      if (!ready && !setupFromFile) {
         return undefined;
       }
-      // An expired setup may already have been redeemed before readiness
-      // recorded its device. Re-minting would drop that completion, so record
-      // the device from the old setup first.
-      const decode = (value: string | undefined) =>
-        Buffer.from(value ?? "", "base64").toString("utf8");
-      const observed =
-        existing !== undefined && !decode(existing.data?.deviceId)
-          ? await enrollment.observeSetup(
-              url,
-              required(decode(existing.data?.setupId), "Workspace node setup ID"),
-              this.operationSignal(),
-            )
-          : undefined;
-      const setup = await enrollment.createSetup(url, `${url}/node`, this.operationSignal());
-      const setupData = {
-        setupId: setup.setupId,
-        setupCode: setup.setupCode,
-        expiresAtMs: String(setup.expiresAtMs),
-        ...(observed === undefined ? {} : { deviceId: observed.deviceId }),
-      };
-      const clients = await this.clients(namespace.plane);
-      if (existing === undefined) {
-        // Persist before launching. An uncertain create is not replayed here; the
-        // next reconciliation reads the exact Agent-owned Secret first.
-        await this.request(
-          () =>
-            clients.core.createNamespacedSecret({
-              namespace: namespace.name,
-              body: {
-                ...this.manifest("v1", "Secret", name, ownership, namespace),
-                type: "Opaque",
-                stringData: setupData,
-              },
-            }),
-          { mutating: true },
-        );
-      } else {
-        // The identity outlives revisions, but the native connect entrypoint
-        // refuses an expired setup code. Replace only the setup: a recorded
-        // deviceId stays, and the node reconnects with its persisted device
-        // token, so the new bootstrap token only lets the code decode. A device
-        // observed on the expired setup above is recorded in the same write.
-        required(existing.metadata.resourceVersion, "Workspace node Secret resource version");
-        await this.request(
-          () =>
-            clients.core.replaceNamespacedSecret({
-              name,
-              namespace: namespace.name,
-              body: {
-                apiVersion: "v1",
-                kind: "Secret",
-                metadata: existing.metadata,
-                type: "Opaque",
-                data: {
-                  ...existing.data,
-                  ...Object.fromEntries(
-                    Object.entries(setupData).map(([key, value]) => [
-                      key,
-                      Buffer.from(value, "utf8").toString("base64"),
-                    ]),
-                  ),
+      if (ready) {
+        // An expired setup may already have been redeemed before readiness
+        // recorded its device. Re-minting would drop that completion, so record
+        // the device from the old setup first.
+        const decode = (value: string | undefined) =>
+          Buffer.from(value ?? "", "base64").toString("utf8");
+        const observed =
+          existing !== undefined && !decode(existing.data?.deviceId)
+            ? await enrollment.observeSetup(
+                url,
+                required(decode(existing.data?.setupId), "Workspace node setup ID"),
+                this.operationSignal(),
+              )
+            : undefined;
+        const setup = await enrollment.createSetup(url, `${url}/node`, this.operationSignal());
+        const setupData = {
+          setupId: setup.setupId,
+          setupCode: setup.setupCode,
+          expiresAtMs: String(setup.expiresAtMs),
+          ...(observed === undefined ? {} : { deviceId: observed.deviceId }),
+        };
+        const clients = await this.clients(namespace.plane);
+        if (existing === undefined) {
+          // Persist before launching. An uncertain create is not replayed here; the
+          // next reconciliation reads the exact Agent-owned Secret first.
+          await this.request(
+            () =>
+              clients.core.createNamespacedSecret({
+                namespace: namespace.name,
+                body: {
+                  ...this.manifest("v1", "Secret", name, ownership, namespace),
+                  type: "Opaque",
+                  stringData: setupData,
                 },
-              },
-            }),
-          { mutating: true },
-        );
+              }),
+            { mutating: true },
+          );
+        } else {
+          // The identity outlives revisions, but the native connect entrypoint
+          // refuses an expired setup code. Replace only the setup: a recorded
+          // deviceId stays, and the node reconnects with its persisted device
+          // token, so the new bootstrap token only lets the code decode. A device
+          // observed on the expired setup above is recorded in the same write.
+          required(existing.metadata.resourceVersion, "Workspace node Secret resource version");
+          await this.request(
+            () =>
+              clients.core.replaceNamespacedSecret({
+                name,
+                namespace: namespace.name,
+                body: {
+                  apiVersion: "v1",
+                  kind: "Secret",
+                  metadata: existing.metadata,
+                  type: "Opaque",
+                  data: {
+                    ...existing.data,
+                    ...Object.fromEntries(
+                      Object.entries(setupData).map(([key, value]) => [
+                        key,
+                        Buffer.from(value, "utf8").toString("base64"),
+                      ]),
+                    ),
+                  },
+                },
+              }),
+            { mutating: true },
+          );
+        }
       }
     }
     const ca = await this.readNodeCa?.();
@@ -6231,8 +6253,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     name: string,
     ca: string | undefined,
     revision: AgentRevision,
+    setupFromFile = false,
+    workspaceSetup?: WorkspaceSetup,
   ): void {
-    const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, revision);
+    const { container, variables } = this.addNodeEnrollmentState(
+      deployment,
+      name,
+      ca,
+      revision,
+      setupFromFile,
+    );
     const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
     variables.push({
       name: "OPENCLAW_WORKSPACE_BOOTSTRAP",
@@ -6245,7 +6275,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Independent restarts can orphan descendants of a failed wrapper. Tini
     // reaps them, including when a Sandbox provider runs this below PID 1.
     container.command = ["/usr/bin/tini", "-s", "--", "node", "-e"];
-    container.args = nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT);
+    container.args = nodeProgramArguments(
+      (workspaceSetup === undefined
+        ? ""
+        : workspaceSetupVerifier(workspaceSetup, "/home/node/workspace")) +
+        AGENT_WITH_NODE_ENTRYPOINT,
+    );
   }
 
   private addNativeWorker(
@@ -6277,18 +6312,38 @@ export class KubernetesComputeDriver implements ComputeDriver {
     name: string,
     ca: string | undefined,
     revision: AgentRevision,
+    setupFromFile = false,
   ): { readonly container: KubernetesRecord; readonly variables: V1EnvVar[] } {
     const pod = asRecord(asRecord(deployment.spec?.template)?.spec)!;
     const container = (pod.containers as KubernetesRecord[])[0]!;
     const variables = container.env as V1EnvVar[];
     variables.push(
-      {
-        name: "OPENCLAW_NODE_SETUP_CODE",
-        valueFrom: { secretKeyRef: { name, key: "setupCode" } },
-      },
+      setupFromFile
+        ? { name: "OPENCLAW_NODE_SETUP_CODE_FILE", value: "/run/openclaw/node-setup/setupCode" }
+        : {
+            name: "OPENCLAW_NODE_SETUP_CODE",
+            valueFrom: { secretKeyRef: { name, key: "setupCode" } },
+          },
       { name: "OPENCLAW_NODE_STATE_DIR", value: NODE_STATE_PATH },
       ...(ca === undefined ? [] : [{ name: "OPENCLAW_NODE_CA_PEM", value: ca }]),
     );
+    if (setupFromFile) {
+      (pod.volumes as V1Volume[]).push({
+        name: "workspace-node-setup",
+        secret: {
+          secretName: name,
+          optional: true,
+          defaultMode: 0o440,
+          items: [{ key: "setupCode", path: "setupCode" }],
+        },
+      });
+      // Mount the directory: subPath would freeze an initially absent Secret.
+      (container.volumeMounts as V1VolumeMount[]).push({
+        name: "workspace-node-setup",
+        mountPath: "/run/openclaw/node-setup",
+        readOnly: true,
+      });
+    }
     (pod.volumes as V1Volume[]).push({
       name: NODE_STATE_VOLUME,
       persistentVolumeClaim: { claimName: this.harnessWorkspaceClaimName(revision.agentId) },
@@ -9442,8 +9497,8 @@ for (const path of ${JSON.stringify(
       },
       spec: {
         replicas: 1,
-        // Node enrollment updates the initial Harness after its Gateway starts.
-        // Keep one strategy: Kubernetes rejects Recreate while default RollingUpdate fields remain.
+        // Gateway and node state must have only one live workload owner.
+        // Keep one strategy across preparation and activation.
         ...(role === "gateway" || (runtime !== undefined && this.nodeEnrollment !== undefined)
           ? { strategy: { type: "Recreate" } }
           : {}),

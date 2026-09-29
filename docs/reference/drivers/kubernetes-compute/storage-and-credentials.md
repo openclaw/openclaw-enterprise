@@ -155,6 +155,28 @@ retires every revision before its final cleanup hook deletes the owned claims
 using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
 for retry; it does not remove the Agent's database identity.
 
+## Workspace-node enrollment
+
+Ordinary Kubernetes-managed dedicated Codex Pods start with an optional,
+read-only mount of their Agent-and-Harness-owned setup Secret. Compute creates that
+Secret only after the Gateway is ready. Kubernetes delivers `setupCode` at
+`/run/openclaw/node-setup/setupCode`; the directory mount has no `subPath`, so
+it receives later projection updates. Delivery is asynchronous.
+
+The supervisor starts Codex after local workspace initialization and starts the
+file node when the code arrives. Enrollment does not recreate the Harness Pod
+or restart Codex. Overall preparation still requires the authenticated node to
+connect; a visible credential file alone is insufficient. Saved node identity
+survives Pod and revision replacement in its private Agent-and-Harness directory.
+A running node ignores projection changes. After a node exit, the supervisor reads
+the current code before retrying, allowing existing setup renewal to take effect
+without restarting Codex. Setup renewal and retirement remain Compute-owned.
+
+This delivery path does not extend Sandbox workload contracts or establish
+isolation between processes sharing the Harness container. See the
+[execution flow](../../../flows/harness-execution-topology.md#2-claim-work-and-realize-the-approved-topology)
+for implementation and verification.
+
 ## Managed native configuration
 
 Ordinary runtime gateways read the managed ConfigMap at
