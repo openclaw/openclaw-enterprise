@@ -885,6 +885,7 @@
               "testing/openshell",
               "testing/openshell-pre5-local-experiment",
               "driver-docs-inventory",
+              "documentation-inventory/quality-audit-2026-09-29",
               "documentation-inventory/gaps",
               "documentation-inventory/getting-started",
               "documentation-inventory/topics",

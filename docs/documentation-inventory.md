@@ -1,5 +1,10 @@
 # Documentation inventory
 
+For the September 29, 2026 clarity review, see the
+[documentation quality audit](documentation-inventory/quality-audit-2026-09-29.md).
+It records 14 findings and their resolution in PR #615. The inventory below
+retains the earlier audit and its proposals.
+
 This audit mapped the documentation to **Getting Started**, **Topics**, **Integrations**, **Reference**, and **Contribute**. It assigns a destination, action, and quality rating to **224 tracked Markdown files**: 121 website pages and 103 repository-only files. This audit predates the website reorganization and records what the source looked like at the time.
 
 The tables below preserve the earlier five-menu proposal, including suggestions that were not adopted. The site now has six sections: **Getting Started**, **Topics**, **Integrations**, **Operate**, **Reference**, and **Contribute**. Getting Started offers local Kubernetes setup and a first Agent; joining an existing installation and the Docker/Podman preview are deferred. Use the [documentation home](README.md) for the current layout and the [organization and naming guidance](../.agents/skills/technical-writing/references/documentation-navigation.md) when changing it. Pinned evidence below refers to the original source snapshot.
