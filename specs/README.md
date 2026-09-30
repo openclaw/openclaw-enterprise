@@ -106,6 +106,9 @@ implemented by #305, #520, #521 and #522; M1.1 (GitHub off) deferred.
 [Basic role-based access control](31-basic-rbac.md) — Direction; deferred past 0.x.
 Personal and team Agent access, exact grants, and withdrawal; see the current-source amendment.
 
+[Basic observability](31-basic-observability.md) — Proposed; Agent History,
+retention, and attributed repository-read evidence.
+
 [Harness authentication bindings](30-harness-auth-binding.md) — Accepted for implementation;
 one Agent auth binding for supplied OpenAI keys and issued ChatGPT account credentials.
 

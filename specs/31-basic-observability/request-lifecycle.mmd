@@ -1,0 +1,81 @@
+---
+title: "Proposed lifecycle History request"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 28
+    width: 130
+    height: 64
+    diagramMarginX: 18
+    diagramMarginY: 18
+    boxMargin: 12
+    boxTextMargin: 12
+    messageMargin: 30
+    noteMargin: 12
+    mirrorActors: true
+    wrap: true
+    actorFontFamily: "Arial, sans-serif"
+    noteFontFamily: "Arial, sans-serif"
+    messageFontFamily: "Arial, sans-serif"
+---
+sequenceDiagram
+  actor A as Deployer A
+  box rgb(237,243,248) OCC process
+    participant API as API / lifecycle<br/>Audit / selected IAM
+  end
+  participant DB as State / PostgreSQL
+  participant W as Lifecycle worker
+  actor C as Reader C
+
+  Note over A,C: 1 · Accept lifecycle work
+  A->>API: Create, update, deploy or stop
+  API->>API: Authenticate and authorize primary action<br/>Validate producer fact
+  API->>DB: Original transaction: mutation + evidence + work
+  DB->>DB: Guard order, retention lock<br/>Trusted receipt and sequence
+  DB-->>API: Acknowledged COMMIT
+  API-->>A: Local acceptance
+
+  Note over A,C: 2 · Observe owned work
+  W->>DB: Claim accepted work and original causation
+  DB-->>W: Owned work
+  W->>W: Perform lifecycle work<br/>Establish only observed facts
+  W->>DB: Append observed or unknown fact
+  DB-->>W: Committed evidence
+  Note over DB,W: Queue completion does not prove<br/>physical stop or provider success.
+
+  Note over A,C: 3 · Query one historical Agent
+  C->>API: GET exact-Agent History
+  API->>API: Authenticate current reader<br/>Bind IAM read intent in State write unit
+  API->>DB: Installation, account/session, policy,<br/>resource guards, then retention FOR SHARE
+  DB-->>API: Locks acquired
+  API->>DB: Sample time after lock<br/>Current authorization and indexed query
+  DB-->>API: Eligible bounded events<br/>State receipt and decimal sequence
+
+  Note over A,C: 4 · Commit disclosure before bytes
+  API->>API: Reauthorize exact historical Agent
+  API->>DB: Append disclosure evidence and COMMIT
+  alt Acknowledged COMMIT and release rule holds
+    DB-->>API: Evidence committed
+    API-->>C: Safe page and optional cursor
+  else Failed or unknown commit
+    API->>API: Classify refused or unknown COMMIT
+    API-->>C: Sanitized error, no protected page
+  end
+  Note over API,C: Expiry-crossing release remains an owner decision.<br/>No silent resampling or extended eligibility.
+
+  Note over A,C: 5 · Preserve uncertainty
+  Note over A,DB: Exact mutation recovery observes local acceptance only.<br/>Missing or erased evidence stays unknown. No replay.
+  Note over A,C: Proposed composition, not installed qualification.<br/>Time flows downward. Solid arrows request, dashed arrows reply.
