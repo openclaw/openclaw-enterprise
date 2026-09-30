@@ -188,3 +188,9 @@ export const CreatePresetNavigation = story("createPresetNavigation");
 export const PresetVariableNavigation = story("presetVariableNavigation");
 
 export const RepositoryNavigationOutage = story("createRepositoryNavigationOutage");
+
+export const CreateConfigurationRetry = {
+  ...story("createConfigurationRetry"),
+  name: "Draft Configuration retry",
+};
+export const CreateAgentRetry = { ...story("createAgentRetry"), name: "Draft Agent retry" };

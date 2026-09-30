@@ -100,6 +100,33 @@ server-generated `id`, owning `namespaceId`, `kind: "agent"`, initial
 `createdAt`; `meta.requestId` identifies the request. Add `secretBindings` only
 after the referenced Namespace-owned Secrets exist.
 
+### Recover an interrupted create
+
+Configuration and Agent creation accept an optional `idempotencyKey`. Generate a
+separate key for each create and reuse it with unchanged inputs if the reply is
+lost. OCC still generates resource IDs: the key identifies the request, not a
+resource name. Timeouts and retry limits do not justify replacing the key;
+intentional new creations need new keys. Creates without keys are not safe to
+retry blindly.
+
+Keys are scoped to the authenticated principal, Namespace, and create operation.
+Replay requires current create and exact-resource read permission, and returns
+HTTP `201` with the original ID and current state. Changed inputs produce `409`;
+object-key ordering is irrelevant. Replaying a deleted result also conflicts
+instead of recreating it.
+
+Request records commit with resource metadata and audit, survive OCC restarts,
+and outlive individual resource deletion. This recovers committed OCC creations;
+it does not make Configuration Driver storage atomic with the database. Native
+value write and compensation failures retain their existing recovery requirements.
+
+A lost database COMMIT reply returns `503 DEPENDENCY_UNAVAILABLE` with an
+explicit unknown-outcome warning. It does not establish rollback. For keyed
+creates, a deliberate retry with the same key and inputs recovers the result;
+the Console never retries automatically.
+
+### Read, update, or delete an exact Configuration
+
 OCC generates the `cfg_` identifier and derives ownership from the exact route
 Namespace; callers cannot select either field. GET, PATCH, and DELETE operate
 on `/namespaces/:namespaceId/configurations/:configurationId`. A PATCH body

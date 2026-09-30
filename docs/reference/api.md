@@ -1572,6 +1572,7 @@ Create a Namespace-owned Agent
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `harnessAuth` | `object or object or object or object or object or null` | No | — |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$` |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
@@ -3458,6 +3459,7 @@ Create a native Namespace-owned Agent Configuration
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$` |
 | `kind` | `"agent"` | Yes | — |
 | `secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |

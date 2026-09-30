@@ -36,6 +36,9 @@ import {
   createModelCredentialSecret,
   enterManualModel,
   openAdvancedSettings,
+  openEmbeddedDraft,
+  dropFirstCommittedReply,
+  waitForCreationRetry,
   configurationPostRequests,
   agentProvisionPostRequests,
   routeInstallationProvisioning,
@@ -358,7 +361,12 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       ["POST", `/namespaces/${namespace.id}/iam/access-bindings`],
     ],
   );
-  assert.deepEqual(configurationPostRequests(requests, namespace.id)[0].body, {
+  const { idempotencyKey: configurationKey, ...configurationBody } = configurationPostRequests(
+    requests,
+    namespace.id,
+  )[0].body;
+  assert.match(configurationKey, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(configurationBody, {
     kind: "agent",
     values: stagedValues,
     secretBindings: stagedSecretBindings,
@@ -944,9 +952,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     await page.getByRole("heading", { name: "Recover from a rejected Agent save" }).isVisible(),
     true,
   );
-  await page
-    .getByText(`Configuration saved: ${savedConfiguration.data.id}.`, { exact: false })
-    .waitFor();
+  await page.getByText("Your saved settings will be reused.", { exact: false }).waitFor();
   assert.equal(await page.locator(".repository-options input").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Start a new draft" }).isEnabled(), true);
@@ -1036,7 +1042,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
   assert.equal(created.data.configurationId, savedConfiguration.data.id);
 });
 
-test("Agent creation does not expose recovery actions after an unknown admission outcome", async (t) => {
+test("Repository Agent replay keeps original inputs after an unknown outcome and later denial", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {
       repositoryRef: "application",
@@ -1047,13 +1053,7 @@ test("Agent creation does not expose recovery actions after an unknown admission
   ]);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  await page.route(`**/namespaces/${namespace.id}/agents`, async (route) => {
-    if (route.request().method() === "POST") {
-      await route.abort("failed");
-      return;
-    }
-    await route.continue();
-  });
+  const lost = await dropFirstCommittedReply(page, namespace.id, "agents");
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
@@ -1063,8 +1063,9 @@ test("Agent creation does not expose recovery actions after an unknown admission
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Unknown Outcome Agent");
 
+  await page.clock.install();
   await page.getByRole("button", { name: "Create Agent" }).click();
-  await page.getByText(/Outcome unknown/).waitFor();
+  await waitForCreationRetry(page);
   assert.equal(
     await page
       .getByRole("heading", {
@@ -1074,7 +1075,7 @@ test("Agent creation does not expose recovery actions after an unknown admission
       .isVisible(),
     false,
   );
-  assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Try again" }).isEnabled(), true);
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
   assert.equal(
     await page.getByRole("button", { name: "Start a new draft", includeHidden: true }).isDisabled(),
@@ -1085,9 +1086,59 @@ test("Agent creation does not expose recovery actions after an unknown admission
     true,
   );
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
-  await page.waitForTimeout(100);
+  await page.clock.runFor(10_000);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+
+  // A later denial must not unlock repository edits or start a new draft.
+  fixture.policy.restrictions.push({
+    id: "deny-repository-replay",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  });
+  const denied = page.waitForResponse((response) => response.status() === 403);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await denied;
+  await waitForCreationRetry(page);
+  assert.equal(
+    await page
+      .getByRole("heading", { name: "Recover from a rejected Agent save", includeHidden: true })
+      .isVisible(),
+    false,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Reload repository choices", includeHidden: true })
+      .isDisabled(),
+    true,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Start a new draft", includeHidden: true }).isDisabled(),
+    true,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Remove example/application" }).isDisabled(),
+    true,
+  );
+  fixture.policy.restrictions.pop();
+
+  await page.getByRole("button", { name: "Try again" }).click();
+  await page.waitForURL(new RegExp(`/console/agents/${lost.resource.id}`));
+  await page.getByRole("heading", { name: "Create new version" }).waitFor();
+  const attempts = agentPostRequests(requests, namespace.id);
+  assert.equal(attempts.length, 3);
+  assert.deepEqual(attempts[0].body, attempts[1].body);
+  assert.deepEqual(attempts[0].body, attempts[2].body);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.deepEqual(lost.resource.repositoryBindings, [
+    { repositoryRef: "application", profile: "git-read" },
+  ]);
+  const agents = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.deepEqual(
+    agents.data.map((agent) => agent.id),
+    [lost.resource.id],
+  );
 });
 
 test("Agent repository recovery with empty current policy requires an explicit new draft", async (t) => {
@@ -1590,7 +1641,11 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   assert.equal(Object.hasOwn(configurationWrites[0].body, "secretBindings"), false);
   assert.equal(accessBindingPostRequests(requests, namespace.id).length, 1);
   assert.deepEqual(
-    agentPostRequests(requests, namespace.id).map((request) => request.body),
+    agentPostRequests(requests, namespace.id).map(({ body }) => {
+      const { idempotencyKey, ...agentBody } = body;
+      assert.match(idempotencyKey, /^[0-9a-f-]{36}$/);
+      return agentBody;
+    }),
     [
       {
         name: "Unsupported Dedicated Agent",
@@ -2358,9 +2413,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   const savedConfiguration = await (await configurationResponse).json();
   assert.equal((await deniedAgentResponse).status(), 409);
-  await page
-    .getByText(`Configuration saved: ${savedConfiguration.data.id}.`, { exact: false })
-    .waitFor();
+  await page.getByText("Your saved settings will be reused.", { exact: true }).waitFor();
   await page.getByText(/conflicts with the saved state/i).waitFor();
   assert.equal(
     await page
@@ -2392,7 +2445,11 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Reset template" }).isDisabled(), true);
   assert.deepEqual(
-    configurationPostRequests(requests, namespace.id).map((request) => request.body),
+    configurationPostRequests(requests, namespace.id).map(({ body }) => {
+      const { idempotencyKey, ...configurationBody } = body;
+      assert.match(idempotencyKey, /^[0-9a-f-]{36}$/);
+      return configurationBody;
+    }),
     [{ kind: "agent", values }],
   );
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
@@ -2433,6 +2490,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   );
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
   const attempts = agentPostRequests(requests, namespace.id);
+  assert.notEqual(attempts[0].body.idempotencyKey, attempts[1].body.idempotencyKey);
   assert.deepEqual(attempts[0].body.harnessAuth, {
     method: "codex_pat",
     source: selectedSecret.ref,
@@ -2454,6 +2512,229 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     assert.equal(request.body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   }
 });
+
+test("Agent creation manually recovers both lost replies without automatic retries or duplicate resources", async (t) => {
+  const { fixture, namespace, page, requests } = await openEmbeddedDraft(t, "Recovered Agent");
+  const configurationLoss = await dropFirstCommittedReply(page, namespace.id, "configurations");
+  const agentLoss = await dropFirstCommittedReply(page, namespace.id, "agents");
+  await page.clock.install();
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await waitForCreationRetry(page);
+  await page.clock.runFor(10_000);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await waitForCreationRetry(page);
+  await page.clock.runFor(10_000);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 2);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await page.waitForURL(new RegExp(`/console/agents/${agentLoss.resource.id}`));
+  await page.getByRole("heading", { name: "Create new version" }).waitFor();
+  const configurations = configurationPostRequests(requests, namespace.id);
+  const agents = agentPostRequests(requests, namespace.id);
+  for (const attempts of [configurations, agents]) {
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts[0].body, attempts[1].body);
+    assert.match(attempts[0].body.idempotencyKey, /^[0-9a-f-]{36}$/);
+  }
+  assert.notEqual(configurations[0].body.idempotencyKey, agents[0].body.idempotencyKey);
+  assert.equal(agentLoss.resource.configurationId, configurationLoss.resource.id);
+  const listed = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.deepEqual(
+    listed.data.map((agent) => agent.id),
+    [agentLoss.resource.id],
+  );
+});
+
+for (const collection of ["configurations", "agents"]) {
+  test(`Agent creation preserves an unknown ${collection} result after a later permission error`, async (t) => {
+    const { fixture, namespace, page, requests } = await openEmbeddedDraft(
+      t,
+      "Permission recovery",
+    );
+    const lost = await dropFirstCommittedReply(page, namespace.id, collection);
+    await openAdvancedSettings(page);
+    await page.getByLabel("SOUL.md", { exact: true }).fill("# Retained draft\n");
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await waitForCreationRetry(page);
+    const selectedRequests = () =>
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/${collection}`);
+    const original = selectedRequests()[0].body;
+    assert.equal(selectedRequests().length, 1);
+    assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+
+    // A denied replay cannot settle whether the earlier, committed write succeeded.
+    fixture.policy.restrictions.push({
+      id: "deny-creation-recovery",
+      namespaceId: namespace.id,
+      resourceKind: collection === "configurations" ? "configuration" : "agent",
+      action: "create",
+      effect: "deny",
+    });
+    const denied = page.waitForResponse((response) => response.status() === 403);
+    await page.getByRole("button", { name: "Try again" }).click();
+    await denied;
+    await waitForCreationRetry(page);
+    assert.equal(selectedRequests().length, 2);
+    assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+    assert.equal(
+      await page.getByLabel("SOUL.md", { exact: true }).inputValue(),
+      "# Retained draft\n",
+    );
+    fixture.policy.restrictions.pop();
+
+    await page.getByRole("button", { name: "Try again" }).click();
+    await page.waitForURL(/\/console\/agents\/agt_/);
+    await page.getByRole("heading", { name: "Create new version" }).waitFor();
+    assert.equal(selectedRequests().length, 3);
+    for (const request of selectedRequests()) {
+      assert.deepEqual(request.body, original);
+    }
+    if (collection === "configurations") {
+      assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+      assert.equal(
+        agentPostRequests(requests, namespace.id)[0].body.configurationId,
+        lost.resource.id,
+      );
+    } else {
+      assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+      assert.match(page.url(), new RegExp(`/agents/${lost.resource.id}`));
+    }
+  });
+}
+
+test("Agent creation stops on a Driver dependency error without retrying the write", async (t) => {
+  const { namespace, page, requests } = await openEmbeddedDraft(t, "Dependency interrupted");
+  // A Driver error can leave an external write uncertain; the form must not retry by itself.
+  await page.route(`**/namespaces/${namespace.id}/configurations`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Configuration Driver unavailable." },
+        meta: { requestId: `req_${randomUUID()}` },
+      }),
+    }),
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await waitForCreationRetry(page);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+});
+
+for (const boundary of ["navigation", "sign-out"]) {
+  test(`Agent creation stops after ${boundary} while its Configuration reply is pending`, async (t) => {
+    const { namespace, page, requests } = await openEmbeddedDraft(t, "Closed creation");
+    const held = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const completed = Promise.withResolvers();
+    t.after(() => release.resolve());
+    await page.route(`**/namespaces/${namespace.id}/configurations`, async (route) => {
+      // The real write commits, but a stale view must not continue with Agent creation.
+      const response = await route.fetch({ maxRetries: 0 });
+      assert.equal(response.status(), 201);
+      held.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+      completed.resolve();
+    });
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await held.promise;
+    if (boundary === "navigation") {
+      await page.getByRole("link", { name: "← Agents" }).click();
+      await page.waitForURL(/\/console\/agents\?namespace=/);
+      await page.getByRole("heading", { name: "No Agents yet" }).waitFor();
+    } else {
+      await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
+      await page.getByRole("menuitem", { name: "Logout" }).click();
+      await page.waitForURL(/\/console\/login$/);
+    }
+    release.resolve();
+    await completed.promise;
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  });
+}
+
+test("Agent creation manually recovers an unknown commit response and an unreadable success reply", async (t) => {
+  const { namespace, page, requests } = await openEmbeddedDraft(t, "Protocol recovery");
+  for (const collection of ["configurations", "agents"]) {
+    let interrupted = false;
+    await page.route(`**/namespaces/${namespace.id}/${collection}`, async (route) => {
+      if (route.request().method() !== "POST" || interrupted) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch({ maxRetries: 0 });
+      assert.equal(response.status(), 201);
+      interrupted = true;
+      // The HTTP boundary loses confirmation of real writes in two different ways.
+      await route.fulfill({
+        status: collection === "configurations" ? 503 : 201,
+        contentType: "application/json",
+        body:
+          collection === "configurations"
+            ? JSON.stringify({
+                error: {
+                  code: "DEPENDENCY_UNAVAILABLE",
+                  message: "The operation outcome is unknown.",
+                },
+                meta: { requestId: `req_${randomUUID()}` },
+              })
+            : "{",
+      });
+    });
+  }
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await waitForCreationRetry(page);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await waitForCreationRetry(page);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 2);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await page.waitForURL(/\/console\/agents\/agt_/);
+  await page.getByRole("heading", { name: "Create new version" }).waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 2);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 2);
+});
+
+for (const boundary of ["refresh", "session expiry"]) {
+  test(`Agent creation loses form recovery on ${boundary} without creating another resource`, async (t) => {
+    const { fixture, namespace, page, requests } = await openEmbeddedDraft(t, "Open form only");
+    await dropFirstCommittedReply(page, namespace.id, "configurations");
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await page.getByRole("alert").filter({ hasText: "Keep this page open." }).waitFor();
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+    if (boundary === "refresh") {
+      await page.reload();
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+      assert.equal(await page.getByLabel("Agent name").inputValue(), "");
+      assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
+      assert.equal(await page.getByRole("button", { name: "Try again" }).count(), 0);
+      assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+    } else {
+      // Expire the real browser session; the rejected replay must discard the private form.
+      for (const session of fixture.memoryDatabase.session) {
+        session.expiresAt = new Date(Date.now() - 1_000);
+      }
+      await page.getByRole("button", { name: "Try again" }).click();
+      await page.getByText("Your session has expired.").waitFor();
+      await page.getByRole("button", { name: "Login" }).waitFor();
+      assert.equal(await page.getByLabel("Agent name").count(), 0);
+      assert.equal(configurationPostRequests(requests, namespace.id).length, 2);
+      assert.deepEqual(
+        configurationPostRequests(requests, namespace.id)[0].body,
+        configurationPostRequests(requests, namespace.id)[1].body,
+      );
+    }
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  });
+}
 
 test("Agent creation retries a denied credential grant without duplicating its saved resources", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2529,7 +2810,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 });
 
-for (const collection of ["secrets", "configurations", "agents"]) {
+for (const collection of ["secrets"]) {
   test(`Agent creation blocks duplicate writes after losing the committed ${collection} response`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
@@ -2553,50 +2834,22 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Agent name").fill(`Uncertain ${collection} Agent`);
-    if (collection === "secrets") {
-      await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-      await openCreateSecretDialog(page, "API key Secret");
-      const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
-      await dialog.getByLabel("Value", { exact: true }).fill("uncertain-artifact-key");
-      await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-      await dialog
-        .getByRole("alert")
-        .filter({ hasText: /outcome could not be confirmed/i })
-        .waitFor();
-      assert.ok(committed?.id);
-      assert.equal((await fixture.request("GET", `${path}/${committed.id}`)).status, 200);
-      assert.equal(pathRequests(requests, "POST", path).length, 1);
-      assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
-      assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-      return;
-    }
-    const selectedSecret = await enterManualModel(page, "uncertain-artifact-key", "gpt-4.1");
-    assert.equal(
-      await page.getByLabel("API key Secret", { exact: true }).inputValue(),
-      secretOptionLabel(selectedSecret),
-    );
-    await page.getByRole("button", { name: "Create Agent" }).click();
+    await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+    await openCreateSecretDialog(page, "API key Secret");
+    const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+    await dialog.getByLabel("Value", { exact: true }).fill("uncertain-artifact-key");
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
     await page
       .getByRole("alert")
-      .filter({ hasText: /Outcome unknown/ })
+      .filter({ hasText: /outcome could not be confirmed/i })
       .waitFor();
     assert.ok(committed?.id);
     assert.equal((await fixture.request("GET", `${path}/${committed.id}`)).status, 200);
-    assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-    assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
-    // Even programmatic form resubmission must respect the unknown-commit boundary.
-    await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
     assert.equal(pathRequests(requests, "POST", path).length, 1);
-    const sequence = ["secrets", "configurations", "agents"];
-    for (const later of sequence.slice(sequence.indexOf(collection) + 1)) {
-      assert.equal(
-        pathRequests(requests, "POST", `/namespaces/${namespace.id}/${later}`).length,
-        0,
-      );
-    }
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   });
 }
-
 test("Agent creation withholds Dedicated OpenClaw unless the Installation reports native worker support", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

@@ -7,6 +7,7 @@ import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
+import type { CreationRequest } from "../creation-requests.ts";
 import {
   validRepositoryBindingSelections,
   normalizedRepositoryAccess,
@@ -3290,6 +3291,49 @@ export class PostgresPlatformState implements PlatformStateStore {
 
     return {
       installations,
+      creationRequests: {
+        find: async (scope) => {
+          const row = rows(
+            (
+              await client.query(
+                `SELECT namespace_id, actor_id, operation, idempotency_key, fingerprint,
+                        resource_id, created_at
+                 FROM occ.creation_requests
+                 WHERE namespace_id = $1 AND actor_id = $2 AND operation = $3
+                   AND idempotency_key = $4`,
+                [scope.namespaceId, scope.actorId, scope.operation, scope.idempotencyKey],
+              )
+            ).rows,
+          )[0];
+          return row === undefined
+            ? undefined
+            : immutableCopy({
+                namespaceId: text(row, "namespace_id"),
+                actorId: text(row, "actor_id"),
+                operation: text(row, "operation") as CreationRequest["operation"],
+                idempotencyKey: text(row, "idempotency_key"),
+                fingerprint: text(row, "fingerprint"),
+                resourceId: text(row, "resource_id"),
+                createdAt: timestamp(row, "created_at"),
+              });
+        },
+        record: async (request) => {
+          await client.query(
+            `INSERT INTO occ.creation_requests
+             (namespace_id, actor_id, operation, idempotency_key, fingerprint, resource_id, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              request.namespaceId,
+              request.actorId,
+              request.operation,
+              request.idempotencyKey,
+              request.fingerprint,
+              request.resourceId,
+              request.createdAt,
+            ],
+          );
+        },
+      },
       namespaces,
       configurations,
       presets,

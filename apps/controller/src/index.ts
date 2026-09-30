@@ -2456,19 +2456,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           "Initial workspace files must use the four allowed names and valid Unicode without NUL, within 16 KiB per file.",
         );
       }
-      if (
-        body?.workspaceDefaultsId !== undefined &&
-        body.workspaceDefaultsId !== WORKSPACE_DEFAULTS_ID
-      ) {
-        throw failure(
-          409,
-          "RESOURCE_CONFLICT",
-          "Workspace defaults changed. Reload the create form before submitting.",
-        );
-      }
       const agent = await controller.transact(async (unit) => {
         const created = await controller!.createAgent(context.actorId, {
           namespaceId,
+          ...(body?.idempotencyKey === undefined
+            ? {}
+            : { idempotencyKey: body.idempotencyKey as string }),
           ...(body?.initialWorkspaceFiles === undefined
             ? {}
             : { initialWorkspaceFiles: body.initialWorkspaceFiles as InitialWorkspaceFiles }),

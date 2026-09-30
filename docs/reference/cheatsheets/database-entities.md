@@ -104,6 +104,21 @@ Stores reusable Agent launch templates and variable definitions within one Names
 - `template`
 - `created_at`
 
+### `creation_requests`
+
+Retains the result identity of keyed Configuration and Agent creates, including
+after individual resource deletion. The composite primary key scopes a request
+to its Namespace, actor, and operation. Native Configuration values remain in
+the selected Driver; this table stores only their request fingerprint.
+
+- `namespace_id`
+- `actor_id`
+- `operation`
+- `idempotency_key`
+- `fingerprint`
+- `resource_id`
+- `created_at`
+
 ### `secrets`
 
 Stores Secret metadata and backend references; Secret values are kept by the selected Driver.

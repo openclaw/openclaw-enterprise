@@ -1486,6 +1486,7 @@ test(
       [39, "preNamespaceDeletionTakeover"],
       [40, "preRepositoryAccess"],
       [41, "preRestrictionReadLogs"],
+      [42, "preCreationRequests"],
     ]) {
       await context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1735,6 +1736,7 @@ test(
       [39, "preNamespaceDeletionTakeover"],
       [40, "preRepositoryAccess"],
       [41, "preRestrictionReadLogs"],
+      [42, "preCreationRequests"],
     ]) {
       await context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1748,7 +1750,7 @@ test(
           history,
         });
         assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
-        // Approver storage appends to either continuation without rewriting existing receipts.
+        // Later canonical migrations append without rewriting existing receipts.
         await assertCompletedHistory(db, receipts);
       });
     }
@@ -1786,25 +1788,26 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const [prefix, history] of [
-      [0, "empty"],
-      [24, "prePresetsMain"],
-      [25, "main"],
-      [27, "repositoryCredentials"],
-      [28, "repositoryRetention"],
-      [29, "workspaceSetup"],
-      [30, "agentProvisioning"],
-      [31, "backendCompleted"],
-      [32, "backendTerminology"],
-      [33, "prePluginApprovers"],
-      [34, "preBrokerReceipts"],
-      [35, "preAgentDeletion"],
-      [36, "preDeploymentProgress"],
-      [37, "preHumanAuthentication"],
-      [38, "preAgentDeletionTakeover"],
-      [39, "preNamespaceDeletionTakeover"],
-      [40, "preRepositoryAccess"],
-      [41, "preRestrictionReadLogs"],
+    for (const [prefix, history, failureTag] of [
+      [0, "empty", "ALTER FUNCTION"],
+      [24, "prePresetsMain", "ALTER FUNCTION"],
+      [25, "main", "ALTER FUNCTION"],
+      [27, "repositoryCredentials", "CREATE FUNCTION"],
+      [28, "repositoryRetention", "CREATE FUNCTION"],
+      [29, "workspaceSetup", "CREATE FUNCTION"],
+      [30, "agentProvisioning", "CREATE FUNCTION"],
+      [31, "backendCompleted", "ALTER TABLE"],
+      [32, "backendTerminology", "ALTER TABLE"],
+      [33, "prePluginApprovers", "ALTER TABLE"],
+      [34, "preBrokerReceipts", "ALTER TABLE"],
+      [35, "preAgentDeletion", "ALTER TABLE"],
+      [36, "preDeploymentProgress", "CREATE INDEX"],
+      [37, "preHumanAuthentication", "CREATE INDEX"],
+      [38, "preAgentDeletionTakeover", "CREATE FUNCTION"],
+      [39, "preNamespaceDeletionTakeover", "CREATE FUNCTION"],
+      [40, "preRepositoryAccess", "CREATE FUNCTION"],
+      [41, "preRestrictionReadLogs", "ALTER TABLE"],
+      [42, "preCreationRequests", "CREATE TRIGGER"],
     ]) {
       await context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -1813,13 +1816,14 @@ test(
         }
         const before = await historySnapshot(db);
         const data = prefix ? await canonicalData(db) : undefined;
-        // A database-local event trigger aborts the real final DDL. Drizzle must
+        // A database-local event trigger aborts real pending DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
+        // Prefix 42 leaves only creation_requests, which creates triggers but alters no tables.
         await historyAdmin(
           db,
           db.name,
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
-        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${prefix >= 41 ? "ALTER TABLE" : prefix >= 38 ? "CREATE FUNCTION" : prefix >= 36 ? "CREATE INDEX" : prefix >= 31 ? "ALTER TABLE" : prefix >= 27 ? "CREATE FUNCTION" : "ALTER FUNCTION"}') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${failureTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
         assert.deepEqual(await historyReceipts(db.migrator), before.receipts);

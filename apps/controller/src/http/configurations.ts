@@ -14,6 +14,9 @@ export const configurationHandlers = {
     const configuration = await controller.transact(async (unit) => {
       const created = await controller.createConfiguration(context.actorId, {
         namespaceId,
+        ...(body?.idempotencyKey === undefined
+          ? {}
+          : { idempotencyKey: body.idempotencyKey as string }),
         kind: body?.kind as "agent",
         values: body?.values as OpenClawConfigurationDocument,
         ...(body?.secretBindings === undefined

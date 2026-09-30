@@ -9,9 +9,10 @@ last_updated_session: authoring-run/c1812a3c-f760-4167-80ca-f4a66d8572e4
 ## Overview
 
 The console reads a Namespace-owned Preset, renders its variables, and saves an
-independent Configuration and Agent through the existing APIs. This flow starts
-with Preset CRUD or selection and stops at a saved Agent draft. Deployment
-continues through [revision admission](configuration-driver/persistence-and-revisions.md).
+independent Configuration and Agent through the existing APIs. This flow follows
+ordinary draft creation from Preset CRUD or selection to a saved Agent draft.
+Supported Dedicated runtimes instead use [first-time provisioning](agent-provisioning.md).
+Draft deployment continues through [revision admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -205,9 +206,10 @@ its persistence boundary; browser validation is not that boundary.
 If Secret creation fails, the masked input remains for correction or retry.
 If a later save fails, its saved Secret reference is reused.
 If Configuration creation succeeds but Agent creation fails, the form retains
-the Configuration ID and locks Configuration-affecting controls. A safe retry
-reuses the saved Configuration. An uncertain response requires inspection before
-another creation attempt. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
+its ID and locks Configuration-affecting controls. **Try again** reuses saved
+resources and request identity while the form stays open; automatic retries and
+refresh recovery are deferred. Follow [creation recovery](../reference/console/create-and-deploy.md#create-an-agent)
+for interrupted replies and failures after partial saves.
 
 ### 5. Hand off to deployment
 
@@ -271,6 +273,14 @@ or an immutable admitted revision.
 - 2026-09-24: Add password variables and reuse the ordinary Secret creation and recovery flow (codex/01a0cfbd-e4cc-7d62-8542-c1358ab1bc5b - b682ffad80e92a9cdee1d265f0b51c735847d503)
 
 - 2026-09-24 00:28: Bind omitted Preset SecretRef scopes to the request Namespace before admission and storage (codex/01a0cfbd-e4cc-7d62-8542-c1358ab1bc5b - 3ca1ead02d47b84fb2c4f13b305cbf263c0612a6)
+
+- 2026-09-23 19:01: Use the current Try again label and link shared creation recovery. (public-pr/299 - 8740e5c4c22f89d781597e6b6ec9ce4ee29f9163)
+
+- 2026-09-23 15:51: Scope manual draft recovery separately from supported Dedicated provisioning. (public-pr/299 - 7e46838b1939b7e98565b68f14fcf9039725d7ca)
+
+- 2026-09-23 15:28: Narrow creation recovery to an explicit retry in the open form, deferring automatic retries and refresh recovery. (public-pr/299 - 8b091276039a3e06dd721954af6f6c33218e4980)
+
+- 2026-09-22 15:47: Link Preset-based creation to bounded request recovery in the accompanying change. (public-pr/299 - 311bc23012d0fd269483168b865adf79df630542)
 
 - 2026-09-21 22:00: Simplify Preset selection to one-time prefill and defer ordinary launch-field validation to creation (codex/01a0b1f2-e696-7232-a439-5b668154bcd9 - f997fca7e7f739a460274c74396afbcfda63f53a)
 

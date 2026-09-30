@@ -1,16 +1,14 @@
 ---
 created: 2026-09-01
-updated: 2026-09-29
-last_updated_session: authoring-run/1ca6a40a-a247-465f-9a83-182dbcb6ff4e
+updated: 2026-09-30
+last_updated_session: authoring-run/53d3e967-a3c2-4592-b6b3-f6dc4a30c8e8
 ---
 
 # Platform console request flow
 
 ## Overview
 
-`/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns user-visible behavior;
-API and IAM authorize access.
+API and IAM authorize [console](../reference/console.md) resources.
 
 ## Entry Points
 
@@ -44,6 +42,7 @@ graph TD
     DBG --> F
     D --> E["Request current page resource"]
     E --> E1["Edit starter JSON and select associations"]
+    E1 -->|draft or optional discovery outage| M0["Keep request keys and inputs in open form"]
     E1 --> S1["Select Secret or open creation modal"]
     S1 -->|select| S3["Stage binding until Apply"]
     S3 -->|apply| E1
@@ -58,10 +57,11 @@ graph TD
     F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
-    E1 -->|draft runtime| M1["POST creates Configuration with staged bindings"]
+    M0 -->|Configuration pending| M1["POST creates or recovers Configuration"]
+    M0 -->|Configuration ID known| M
     E1 -->|supported Dedicated and valid repository selection| M3["POST queues provisioning with inline Configuration"]
     M3 --> M4["Worker creates resources, grants and first deployment"]
-    M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
+    M1 -->|returned Configuration ID| M["POST creates or recovers Agent draft"]
     M --> M2["Console grants Agent use of selected Secrets"]
     E2 --> N["GET draft Configuration or immutable revision"]
     E3 --> O["PATCH Configuration, then grant selected Secret access"]
@@ -69,6 +69,7 @@ graph TD
     E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
+    MU["Lock inputs; show outcome unknown"] -->|user selects Try again| M0
     G --> I["Accept only current navigation response"]
     H --> I
     M2 --> I
@@ -84,6 +85,8 @@ graph TD
     F -->|denied or unavailable| K["Clear rows and show recovery"]
     J -->|Logout| L["Hide private state and confirm sign-out"]
   end
+  M1 -->|interrupted reply| MU
+  M -->|interrupted reply| MU
 ```
 
 ## Execution Trace
@@ -177,6 +180,9 @@ reset incompatible credentials and model choices while retaining unrelated JSON.
 [creation reference](../reference/console/create-and-deploy.md) owns combinations,
 Preset constraints, token handling, permissions, and recovery.
 
+Advanced settings holds Configuration JSON and Preset files; Slack edits
+preserve other Secret bindings.
+
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
@@ -214,11 +220,20 @@ Ordinary drafts post `{kind: "agent", values, secretBindings}` to
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](workspace-files.md).
 
-`create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
+`apps/controller/src/console/agents/create-recovery.mjs:createAgentCreation` retains
+request keys, inputs, and confirmed Configuration while open.
+**Try again** sends pending writes once, including after `503 DEPENDENCY_UNAVAILABLE`
+reports an unknown commit. Later denials preserve uncertainty;
+only initial rejections allow corrected inputs and new keys. Leaving cancels
+requests and loses recovery; inspect unresolved writes before restarting.
+
+`packages/occ/src/index.ts:createConfiguration` and `createAgent` reauthorize
+[creation replay](../reference/configuration.md#recover-an-interrupted-create)
+under the Namespace lock and commit its record with metadata and audit.
+
+`create.mjs:grantConfigurationSecretAccess` grants Secret `operate` for final
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Failed Agent writes retain Configuration ID
-and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
-admit no revision and start no runtime.
+rereads grants without duplication. Drafts start no runtime.
 
 `agents/harness-auth.mjs` edits bindings and shows
 [Secret identities](platform-console/agent-editing.md#4-render-draft-revision-or-channels),
@@ -325,10 +340,81 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-09-30 13:14: Preserve manual creation recovery with the shared unknown-commit response. (authoring-run/53d3e967-a3c2-4592-b6b3-f6dc4a30c8e8 - b00d000f)
+
 - 2026-09-29 20:00: Trace repository descriptions and inherited access. (public-pr/374)
 
 - 2026-09-29 07:19: Guard recovery until session and Namespace reads finish. (authoring-run/1ca6a40a-a247-465f-9a83-182dbcb6ff4e - 90326e6fab11f84fc11b8990b6c8e197a2752c60)
 
 - 2026-09-28 01:39: Move the sharing trace to its child flow. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
 
-[Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
+- 2026-09-26 00:37: Link Secret summary metadata flow. (01a0db1e-7ab2-7bf1-936b-e71c9d6f9911 - e387b38cc259ee4a55936ecb848bbce8210bcd68)
+
+- 2026-09-25 22:32: Reconcile retained navigation and manual creation recovery after merging main. (authoring-run/a9b8b3f5-45dc-4dd2-afbc-90acd01c3bb5 - d92be6adcb0d0ec28aadf01c87b0779c1e94461e)
+
+- 2026-09-25 17:27: Trace scoped return previews and session-aware invalidation in accompanying changes. (01a0d992-db83-7843-b40c-355c0f2c2b9a - 64ab72aed5c4926e4a2080ade91d785e531801a2)
+
+- 2026-09-24 20:53: Merge Console recovery flows. (authoring-run/9d7e4be3-c9f0-4d31-bc25-dc3fdfd99027 - 78fb0387ca86fbc23c321b60b1e70c6c959146fc)
+
+- 2026-09-25 01:15: Trace channel-only Slack reply defaults and explicit DM policy editing. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 919f92c3bb3ea63acf7042b138e9a0c6e1d97719)
+
+- 2026-09-25 00:15: Trace new Slack reply defaults and preservation through gateway rendering. (01a0d5e6-743e-7743-8a5e-2d8c24b78b81 - 29bf7a8681390fe60ced612beeb538101c87bc34)
+
+- 2026-09-25 00:00: Retain repository draft bindings through failed rediscovery. (01a0d557-f6e3-7da2-af52-993d05735554 - 2e0604a2)
+
+- 2026-09-24 22:03: Link shared editor draft capture before tab teardown. (01a0d557-f6e3-7da2-af52-993d05735554 - a91cbfdd37b64c88b7ee48647096ff6bfd993e02)
+
+- 2026-09-24 17:13: Trace the header Namespace selector and preserved navigation scope. (authoring-run/fdba83e7-9f34-4b8b-8af2-625214851f27 - 1a458b227585c572ec0ac70fd10efc3834165075)
+
+- 2026-09-24: Keep Preset bindings internal.
+
+- 2026-09-24 17:20: Expose upstream OpenClaw provenance separately. (01a0c179-19f7-7111-8bb4-fc7680da5545 - bd1a5c46eb069bfa7feedbb99b074dc015c4e9bc)
+
+- 2026-09-24 15:44: Trace opt-in sidebar build metadata and authorized Compute image observations. (01a0c179-19f7-7111-8bb4-fc7680da5545 - 6b5c9093)
+
+- 2026-09-24 06:19: Replace Console model discovery with an intentional static starter list and preserve manual entry. (01a0d20c-dc1b-7d22-a965-60b9c244b29d - 24ecb94b)
+
+- 2026-09-24 05:40: Added Create Agent plugin JSON controls and transient PAT catalog discovery; policy integration remains pending. (01a0d1dd-aa36-7622-9f43-8376f6ff935e - f62e17c)
+
+- 2026-09-23 19:52: Trace channel-scoped Slack sender access and leave direct-message access outside the drawer. (01a0d150-104a-71a3-9e56-6c5e3ee510ea - 77aedc620f443056f9ee859050b8dc657a9c3133)
+
+- 2026-09-23 19:09: Trace image-baked OCC revision metadata and OCE sidebar branding. (01a0cfaa-2b68-7e61-b8ff-a7eb82f1edc5 - 150ec08f059cebc4897b839d8318f7b1e3aba0e3)
+
+- 2026-09-23 11:20: Distinguished worker-owned first-time provisioning and Secret grants from ordinary Console draft creation. (01a0cc7f-028b-7803-acf5-803c3d799d75 - f2dd1d3f)
+
+- 2026-09-23 08:30: Trace pre-Agent Slack Secret selection and creation, staged Configuration bindings, and Agent Secret grants. (01a0cd92-fd3f-7d83-a51e-f6264ef6be09 - 941edc9f6971a24ae29a74a6ca749b6375e6ec01)
+
+- 2026-09-23 07:45: Preserve provider transport across model/key edits and classify model-discovery failures without exposing upstream responses. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - f292aa623335021e3012a3e94f83fc183f93e2e1)
+
+- 2026-09-23 07:20: Discover API-key model choices during Agent creation without saving credentials or selecting a hardcoded model. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - 553423dd2419ec19d2d71a2d1f8de75839a1642b)
+
+- 2026-09-23 06:27: Move two-provider API-key setup into Agent creation using existing Secret and IAM operations. (01a0cce9-23e3-7072-aa3f-a2e26d2dbf11 - a8272f4e2760e5ff06dc09c5658f48bea382c790)
+
+- 2026-09-22 23:19: Enable native Control UI in Console starters with explicit loopback origins; preserve Preset and edited configuration. (01a0ccc0-00fa-7173-ab45-f7a5fb55b3b6 - 6d23cef977270fdf8ced6ea54ac8e1302cf8acd6)
+
+- 2026-09-22 20:56: Rename the deployment-facing Console view to New revision. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 081bccfcf3f5b114588dde1b42a0deb07f326017)
+
+- 2026-09-22 20:43: Trace Console stop confirmation, admission, and state refresh. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 6adfd148a517e84ae064a8e08438b051f80820fb)
+- 2026-09-22 20:32: Remove the deleted Teams editor from current module ownership. (01a0cc48-2eda-7fc2-a19e-096b68fccb7b - 43776d25c5007e017f7d0ffdca6b06f063afcd37)
+
+- 2026-09-23 15:28: Trace explicit retries with form-local request identity and no automatic or refresh recovery. (public-pr/299 - 8b091276039a3e06dd721954af6f6c33218e4980)
+
+- 2026-09-22 15:47: Trace bounded creation retries, durable request identity, and tab recovery in the accompanying change. (public-pr/299 - 311bc23012d0fd269483168b865adf79df630542)
+
+- 2026-09-22 04:31: Trace initial workspace inputs separately from Configuration creation and link setup before execution. (01a0c755-0518-7502-a533-64cd7465de15 - f3dbdd41c8f3b49573d1353a4b06ce510ee43a56)
+
+- 2026-09-22 04:11: Preserve existing Slack policies while editing channel settings. (01a0b1f2-e696-7232-a439-5b668154bcd9 - f3dbdd41)
+
+- 2026-09-22 04:07: Keep Agent tab navigation within the content panel and preserve page state and browser history. (01a0b1f2-e696-7232-a439-5b668154bcd9 - f3dbdd41)
+
+- 2026-09-21 21:46: Trace confirmed Agent deletion, exact readback, and permission or uncertain-outcome recovery. (01a0c76f-2534-7991-932a-345782408759 - b61c3cae6c35e28db4153eaee9b477e8f5637894)
+
+- 2026-09-22 00:47: Mask authentication Secret IDs in forms and omit them from configuration summaries. (01a0b1f2-e696-7232-a439-5b668154bcd9 - ebcdaac25bc3890486badcfadf56cfc7c99bb95e)
+
+- 2026-09-21 19:52: Trace the shared default in dedicated and embedded Agent creation and preserve edited model selection. (01a0c580-9e39-7e21-bb0f-28fcc4752c59 - 4ec004dbefd25070ff1bdeb89cfb16d245296ac9)
+
+- 2026-09-17 19:14: Expose operator-managed credentials without a managed-credential deployment gate. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - b8cabaf9a49e069a7668ccf88b9e71a7484227b7)
+
+- 2026-09-01 19:09: Trace static serving, session resolution, exact collection authorization, Namespace isolation, and logout. (01a05e1d-6dc8-7231-bf58-58c80ef580f3 - 97911d361ac02ddf561e46c8af0864ad66a6df45) (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
+- 2026-09-01 17:47: Add Agent creation, detail revision selection, and saved channel draft editing flow boundaries. (01a05f94-886b-7122-8784-c4b5aa5c5d1d - b02a07f2e575b13260b8792f87975d51c5ef7a61)
+- 2026-09-01 18:07: Trace association discovery and Configuration-first creation from editable starter JSON. (01a05f89-ff1c-7643-a77f-7e1e3aed9e5f - 1dd4b6b)

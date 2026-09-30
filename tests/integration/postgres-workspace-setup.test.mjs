@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 
 const identifier = (prefix) => `${prefix}_${randomUUID()}`;
@@ -88,7 +89,7 @@ async function exerciseSetup(store, reopened = store) {
     "IDENTITY.md": "🦀".repeat(4096),
     "USER.md": "\u0001".repeat(16384),
   };
-  const defaultsId = "a".repeat(64);
+  const defaultsId = WORKSPACE_DEFAULTS_ID;
   const agent = await controller.createAgent("creator", {
     ...input,
     initialWorkspaceFiles: files,

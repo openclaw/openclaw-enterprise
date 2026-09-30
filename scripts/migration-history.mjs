@@ -145,6 +145,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 41) {
         return "preRestrictionReadLogs";
       }
+      if (receipts.length === 42) {
+        return "preCreationRequests";
+      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -209,6 +212,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 41) {
     return "preRestrictionReadLogs";
+  }
+  if (receipts.length === 42) {
+    return "preCreationRequests";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

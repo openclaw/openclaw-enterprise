@@ -55,6 +55,9 @@ siblings remain available. Authorization and strict mutation/runtime validation
 are unchanged. Query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
+For safe creation retries, supply `idempotencyKey`; see the
+[shared recovery contract](configuration.md#recover-an-interrupted-create).
+
 ## Deployment status
 
 The `deploymentId` for status polling is the admitted AgentRevision ID returned
@@ -115,12 +118,11 @@ saved value, while explicit `null` clears the draft reference. A nonnull ID must
 resolve to a configured Backend. No default is inferred. The nullable reference
 is returned on both Agent and AgentRevision responses.
 
-The Backend reference is independent of native model names and Harness
-selection. An Agent using an OpenAI or Anthropic API key, or a directly supplied
-service account token, does not need a Backend. An OCE-issued ChatGPT account
-token requires the matching Backend and account when deployment
-is requested and again before startup; see [Backend deployment checks](backends.md#agent-association-and-immutable-deployment).
-Creating an Agent does not create a provider account or issue credentials.
+The Backend reference is independent of model names and Harness selection.
+API-key and directly supplied service-account credentials need no Backend. An
+OCE-issued ChatGPT account token requires its Backend and account at deployment
+and startup; see [Backend deployment checks](backends.md#agent-association-and-immutable-deployment).
+Agent creation does not create a provider account or issue credentials.
 
 ## Harness authentication
 

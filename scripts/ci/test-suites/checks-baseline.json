@@ -439,6 +439,9 @@
       "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
     },
     {
+      "path": "tests/integration/creation-idempotency-api.test.mjs"
+    },
+    {
       "path": "tests/integration/kubernetes-peer-status.test.mjs",
       "expectedTests": [
         "real peer-status HTTPS transport authenticates its revision and verifies server trust"

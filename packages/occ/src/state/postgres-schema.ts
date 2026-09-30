@@ -1115,6 +1115,43 @@ export const controllerWork = occSchema.table(
   ],
 );
 
+export const creationRequests = occSchema.table(
+  "creation_requests",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    operation: text("operation").notNull(),
+    idempotencyKey: collatedText("idempotency_key").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    resourceId: text("resource_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "creation_requests_pkey",
+      columns: [table.namespaceId, table.actorId, table.operation, table.idempotencyKey],
+    }),
+    foreignKey({
+      name: "creation_requests_namespace_id_fkey",
+      columns: [table.namespaceId],
+      foreignColumns: [namespaces.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    check("creation_requests_actor_length", sql`char_length(${table.actorId}) BETWEEN 1 AND 200`),
+    check(
+      "creation_requests_key_valid",
+      sql`${table.idempotencyKey} ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'`,
+    ),
+    check("creation_requests_fingerprint_valid", sql`${table.fingerprint} ~ '^[a-f0-9]{64}$'`),
+    check(
+      "creation_requests_result_valid",
+      sql`(${table.operation} = 'createConfiguration' AND ${table.resourceId} ~ ${identifierPatterns.configuration})
+       OR (${table.operation} = 'createAgent' AND ${table.resourceId} ~ ${identifierPatterns.agent})`,
+    ),
+  ],
+);
+
 export const agentProvisioningWork = occSchema.table(
   "agent_provisioning_work",
   {

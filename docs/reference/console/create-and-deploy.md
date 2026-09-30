@@ -137,13 +137,19 @@ has no managed Secret storage or model-key delivery. Saving a key does not prove
 provider acceptance or runtime readiness. See
 [harness authentication](../agents.md#harness-authentication).
 
-Each successful draft-save step retains its resource ID and freezes saved inputs,
-including authentication. Correct a conflicting name or restore permission, then
-retry using those resources. If model/Slack Secret grants fail after Agent creation,
-select **Retry credential access** or ask an administrator to check its grants.
-Uncertain responses block another attempt: check displayed IDs and the Agents list;
-give the request ID to your operator if the outcome remains unknown. Leaving the
-form retains saved resources.
+Draft creation saves Configuration and Agent separately. After an interrupted
+reply, **Try again** attempts each pending create once with the same
+[request identity](../configuration.md#recover-an-interrupted-create) and inputs,
+reusing resources. Retries are manual. Uncertain outcomes freeze inputs,
+even after later permission or validation errors; saved settings also stay fixed.
+
+If Agent creation succeeds but model/Slack Secret grants fail, select **Retry
+credential access** or ask an administrator to check its grants. Request keys
+cover Configuration and Agent creates, not Secret saves or IAM grants.
+
+Keep the form open: refresh, navigation, or sign-out loses recovery. Cancellation
+does not prove rollback or delete saved resources. Inspect unresolved writes before
+restarting; share available request IDs with your operator.
 
 If provisioning admission loses its response, **Retry provisioning request** resubmits
 the same request ID and saved Secret references. An acknowledged job is retried through
@@ -182,11 +188,10 @@ Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
 distinct. Each subsequent write rechecks authorization.
 
-If the Configuration saves but Agent creation fails, the form shows its ID and
-keeps its JSON and Secret bindings fixed. After a known rejection of an ordinary
-zero-binding Agent, correct the editable Agent fields and retry directly. The
-retry reuses the saved Configuration and does not depend on repository choices
-or a Repo Driver.
+If the Configuration saves but Agent creation fails, its JSON and Secret bindings
+stay fixed. After an initial rejection without repository bindings, correct the
+editable Agent fields and retry with a new Agent request key. This reuses the
+Configuration without depending on repository choices or a Repo Driver.
 
 After a known rejection of a repository-scoped Agent, **Reload repository choices**
 clears selections and search, resets pagination, reveals results, and refreshes
@@ -195,13 +200,10 @@ one approved repository; an empty catalog cannot turn this attempt into an ordin
 Agent. Failed reloads disable creation and show the Configuration ID. Expiry returns
 to sign-in. **Start a new draft** opens a new form without deleting the Configuration.
 
-If the Agent response is lost or otherwise unknown, the save may have succeeded.
-The form disables further creation and does not expose the known-rejection
-recovery actions. Check the **Agents** list and, if the form showed a
-Configuration ID, the
-[exact Configuration](../configuration.md#create-read-update-and-delete) before
-starting again. If you cannot determine the outcome, give the displayed request
-ID, if available, to your operator.
+An interrupted Agent reply keeps the submitted repository selection fixed and
+offers **Try again** with the same request identity. Repository reload and
+new-draft actions remain unavailable, including after a later permission denial;
+only a confirmed initial rejection permits changing those inputs.
 
 ## Use repositories and Slack on the same Agent
 

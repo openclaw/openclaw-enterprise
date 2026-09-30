@@ -21,7 +21,9 @@ does not extend its lifetime; start a new callback to read or change state.
 ## Ownership and atomicity
 
 One owner controls each transaction. Resource writes, audit records, and queued
-controller work commit together. A failed callback rolls them back and closes
+controller work commit together. Optional creation request records use that same
+transaction and retain the original result identity for later replay. They do
+not store a second copy of native Configuration values. A failed callback rolls them back and closes
 its handles. The memory store publishes its working snapshot only after accepted
 operations finish and audit publication succeeds.
 

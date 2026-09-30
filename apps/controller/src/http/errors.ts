@@ -8,6 +8,8 @@ import {
   ChannelCredentialError,
   ConfigurationHarnessError,
   DependencyUnavailableError,
+  CreationRequestConflictError,
+  WorkspaceDefaultsChangedError,
   ModelDiscoveryError,
   PluginDiscoveryError,
   NamespaceNotEmptyError,
@@ -218,6 +220,12 @@ const RUNTIME_LOG_FAILURES: Readonly<
 export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
+  }
+  if (
+    error instanceof CreationRequestConflictError ||
+    error instanceof WorkspaceDefaultsChangedError
+  ) {
+    return failure(409, "RESOURCE_CONFLICT", error.message);
   }
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];

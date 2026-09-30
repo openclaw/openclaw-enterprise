@@ -1215,6 +1215,8 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     ),
     false,
   );
+  // Applying a Preset starts independent repository discovery before creation is enabled.
+  await page.locator('.repository-options[aria-busy="false"]').waitFor({ state: "attached" });
   assert.equal(await save.isEnabled(), true);
   assert.equal(
     await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),

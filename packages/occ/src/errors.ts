@@ -146,6 +146,13 @@ export class AgentDeletingError extends ResourceConflictError {
   }
 }
 
+export class WorkspaceDefaultsChangedError extends ResourceConflictError {
+  constructor() {
+    super("Workspace defaults changed. Reload the create form before submitting.");
+    this.name = "WorkspaceDefaultsChangedError";
+  }
+}
+
 export class NamespaceNotEmptyError extends ResourceConflictError {
   /** Public resource kinds that still occupy the Namespace, such as "Presets". */
   readonly contents: readonly string[];

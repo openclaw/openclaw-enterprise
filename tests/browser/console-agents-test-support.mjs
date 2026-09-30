@@ -5,7 +5,13 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+import {
+  apiRequests,
+  login,
+  nativeValues,
+  newPage,
+  pathRequests,
+} from "./console-agents-browser-helpers.mjs";
 
 export const STARTER_CONTROL_UI = {
   enabled: true,
@@ -57,6 +63,43 @@ export async function openAdvancedSettings(page) {
   if (await summary.count()) {
     await summary.click();
   }
+}
+
+export async function openEmbeddedDraft(t, name) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await enterManualModel(page, "manual-recovery-test-key", "gpt-4.1");
+  await page.getByLabel("Agent name").fill(name);
+  return { fixture, namespace, page, requests };
+}
+
+export async function dropFirstCommittedReply(page, namespaceId, collection) {
+  const lost = { resource: undefined };
+  await page.route(`**/namespaces/${namespaceId}/${collection}`, async (route) => {
+    if (route.request().method() !== "POST" || lost.resource) {
+      await route.continue();
+      return;
+    }
+    // The real write commits; only the first browser-facing reply is lost.
+    const response = await route.fetch({ maxRetries: 0 });
+    assert.equal(response.status(), 201);
+    lost.resource = (await response.json()).data;
+    await route.abort("connectionreset");
+  });
+  return lost;
+}
+
+export async function waitForCreationRetry(page) {
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Something went wrong. Please try again." })
+    .waitFor();
 }
 
 export async function expectNativeAdminHidden(page) {

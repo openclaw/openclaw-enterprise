@@ -63,6 +63,11 @@ import {
 } from "../errors.ts";
 import type { ControllerWork, ControllerWorkAttempt } from "./controller-work.ts";
 import type {
+  CreationRequest,
+  CreationRequestRepository,
+  CreationRequestScope,
+} from "../creation-requests.ts";
+import type {
   AgentProvisioningReadRepository,
   AgentProvisioningRepository,
 } from "./agent-provisioning.ts";
@@ -666,6 +671,7 @@ export interface PlatformReadView {
 }
 
 export interface PlatformUnitOfWork extends PlatformReadView {
+  readonly creationRequests: CreationRequestRepository;
   readonly installations: InstallationRepository;
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
@@ -734,6 +740,11 @@ interface PlatformSnapshot {
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly audit: Readonly<AuditEvent>[];
   readonly operations: Readonly<PlatformOperation>[];
+  readonly creationRequests: Map<string, Readonly<CreationRequest>>;
+}
+
+function creationRequestKey(scope: CreationRequestScope): string {
+  return JSON.stringify([scope.namespaceId, scope.actorId, scope.operation, scope.idempotencyKey]);
 }
 
 function agentKey(namespaceId: string, agentId: string): string {
@@ -751,6 +762,9 @@ function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string
 
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
+    creationRequests: new Map(
+      Array.from(snapshot.creationRequests, ([key, request]) => [key, immutableCopy(request)]),
+    ),
     installation:
       snapshot.installation === undefined ? undefined : immutableCopy(snapshot.installation),
     namespaces: new Map(
@@ -2289,6 +2303,35 @@ function repositories(
     revisions,
     iamPolicy,
     repositorySessions,
+    creationRequests: {
+      find: async (scope) => snapshot.creationRequests.get(creationRequestKey(scope)),
+      record: async (request) => {
+        const key = creationRequestKey(request);
+        if (snapshot.creationRequests.has(key)) {
+          throw new ResourceConflictError("The creation request identity is already recorded.");
+        }
+        let resource;
+        if (request.operation === "createConfiguration") {
+          resource = await configurations.findConfiguration(
+            request.namespaceId,
+            request.resourceId,
+          );
+        } else if (request.operation === "createAgent") {
+          resource = await agents.findAgent(request.namespaceId, request.resourceId);
+        }
+        if (
+          resource === undefined ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(request.idempotencyKey) ||
+          !/^[a-f0-9]{64}$/.test(request.fingerprint) ||
+          !isNonEmptyString(request.actorId) ||
+          request.actorId.length > 200 ||
+          !Number.isFinite(Date.parse(request.createdAt))
+        ) {
+          throw new ScopeViolationError("The creation request does not identify an owned result.");
+        }
+        snapshot.creationRequests.set(key, immutableCopy(request));
+      },
+    },
     provisioning: {
       findByWorkId: provisioningAbsent,
       hasPendingNamespaceProvisioning: provisioningPendingAbsent,
@@ -2432,6 +2475,7 @@ function repositories(
 /** Process-local, single-writer state. No restart or multi-process durability. */
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
+    creationRequests: new Map(),
     installation: undefined,
     namespaces: new Map(),
     configurations: new Map(),

@@ -1,5 +1,6 @@
 import { element, button } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
+import { createAgentCreation } from "./create-recovery.mjs";
 import { harnessAuthDescription } from "./harness-auth.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
@@ -41,6 +42,8 @@ const MODEL_CHOICES = {
     "claude-mythos-preview",
   ],
 };
+
+const unknownOutcomeMessage = "Something went wrong. Please try again. Keep this page open.";
 
 function field(label, input, hint) {
   return element(
@@ -253,6 +256,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   context.setDiscardOnExit(Boolean(draft.withoutPreset));
   context.drafts.forget("preset");
   const { view, request, namespaceId } = context;
+  const creation = createAgentCreation(context);
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
@@ -1161,7 +1165,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const channels = renderChannels({
       values,
       executionMode: mode.value,
-      readOnly: Boolean(savedConfiguration),
+      readOnly: Boolean(savedConfiguration) || outcomeUnknown,
       drawerContext: {
         drafts: context.drafts,
         baseline: JSON.stringify([values, configurationSecretBindings]),
@@ -1379,7 +1383,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           !repositories.isSettled() ||
           repositories.blocksCreate())) ||
       pending ||
-      outcomeUnknown ||
+      (outcomeUnknown && !creation.uncertain) ||
       !capabilityDiscoveryDone ||
       !nativeWorkersUnavailable.hidden ||
       Boolean(provisioningAttempt);
@@ -1387,19 +1391,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     retryProvisioning.disabled = pending || !provisioningAttempt;
     retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed;
     retryCapabilityDiscovery.disabled = pending;
-    submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
+    if (creation.uncertain) {
+      submit.textContent = "Try again";
+    } else {
+      submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
+    }
   };
   function showSavedStatus() {
     savedStatus.replaceChildren(
       ...[
-        [
-          savedSecret ? `Secret saved: ${savedSecret.id}.` : "",
-          savedConfiguration ? `Configuration saved: ${savedConfiguration.id}.` : "",
-          savedAgent ? `Agent saved: ${savedAgent.id}.` : "",
-          "Retries reuse these resources. Saved provider and Configuration settings are fixed.",
-        ]
-          .filter(Boolean)
-          .join(" "),
+        "Your saved settings will be reused.",
         savedAgent
           ? link(" Open saved Agent", `agents/${savedAgent.id}?revision=draft`, context)
           : null,
@@ -1510,11 +1511,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     event.preventDefault();
     if (
       pending ||
-      outcomeUnknown ||
+      (outcomeUnknown && !creation.uncertain) ||
       provisioningAttempt ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilityDiscoveryDone ||
-      !form.reportValidity()
+      (!creation.uncertain && !form.reportValidity())
     ) {
       return;
     }
@@ -1633,28 +1634,21 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         await submitProvisioningAttempt(provisioningAttempt);
         return;
       }
-      if (!savedConfiguration) {
+      if (!savedAgent) {
         mutationStarted = true;
-        savedConfiguration = await request(`${namespacePath(namespaceId)}/configurations`, {
-          method: "POST",
-          body: {
+        savedAgent = await creation.create(
+          {
             kind: "agent",
             values,
             ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
           },
-        });
-        if (!context.isCurrent()) {
-          return;
-        }
-        showSavedStatus();
-        renderChannelEditor();
-      }
-      if (!savedAgent) {
-        mutationStarted = true;
-        savedAgent = await request(`${namespacePath(namespaceId)}/agents`, {
-          method: "POST",
-          body: { ...body, configurationId: savedConfiguration.id },
-        });
+          body,
+          (saved) => {
+            savedConfiguration = saved;
+            showSavedStatus();
+            renderChannelEditor();
+          },
+        );
         repositories.recordSuccessfulSave();
         if (!context.isCurrent()) {
           return;
@@ -1683,13 +1677,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         context.onExpired();
         return;
       }
-      const detail = savedAgent
-        ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
-        : error.status === 409 && savedConfiguration
-          ? "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-          : message(error, mutationStarted);
-      outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
-      const knownRejection = [400, 403, 404, 409, 429].includes(error.status);
+      outcomeUnknown =
+        mutationStarted &&
+        (creation.uncertain || ![400, 403, 404, 409, 429].includes(error.status));
+      let detail = message(error, mutationStarted);
+      if (savedAgent) {
+        detail = `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`;
+      } else if (creation.uncertain) {
+        detail = unknownOutcomeMessage;
+      } else if (error.status === 409 && savedConfiguration) {
+        detail =
+          "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again.";
+      }
+      const knownRejection = !outcomeUnknown && [400, 403, 404, 409, 429].includes(error.status);
       if (!savedAgent && savedConfiguration && knownRejection) {
         if (repositoryBindings.length) {
           requireRepositoryReload();
@@ -1706,7 +1706,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         rejectedAgentAttempt = undefined;
         recovery.hidden = true;
       }
-      feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      feedback.textContent =
+        detail + (!creation.uncertain && error.requestId ? ` Request ID: ${error.requestId}` : "");
     } finally {
       if (context.isCurrent()) {
         pending = false;

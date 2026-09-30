@@ -116,23 +116,19 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 a separate credential action. Its initial state is not a Stop request; OCC
 generation is simulated.
 
-Choose a Preset, fill its variables, review seeded workspace files, and create
-an Agent with the Codex harness. The Console submits inline Configuration and
-Secret references, then follows simulated provisioning. A separate flow
-starts without a Preset, selects OpenAI with Codex, creates or selects a model
-Secret, selects a model, edits IDENTITY.md, and clears USER.md before creation.
-OpenClaw and unsupported-runtime stories retain the draft workflow: provision
-credentials and deploy from Agent detail.
+Create flows cover Preset variables, workspace files, inline Configuration,
+Secret references, and simulated Codex provisioning. Without a Preset, select
+OpenAI/Codex, a model and Secret; edit IDENTITY.md and clear USER.md.
+OpenClaw and unsupported runtimes create drafts; provision credentials and deploy
+from Agent detail.
 
 DevDay previews SWE, Community, Q&A, Oncall, and standard presets with models,
 workspace templates, six Slack channels, model Secrets, Linear, and repository
 choices. The simulated catalog works with any Preset or Secret choice.
-**Plugins Curated** exercises token-free discovery with simulated Driver responses;
-actual access remains unverified. Hosted discovery requires an eligible Codex
-service-account token. Workspace and Standard OpenClaw stories preview file and
-harness settings. Preset Secret stories cover existing, pending, denied, and
-empty results while retaining new-token entry. Community, Q&A, and Oncall Agents
-remain disabled in the example Installation YAML.
+**Plugins Curated** simulates token-free Driver discovery; hosted discovery needs
+an eligible Codex service-account token. Workspace, OpenClaw, and Secret stories
+cover file/harness settings and existing, pending, denied, empty, or new credentials.
+Community, Q&A, and Oncall Agents remain disabled in the example Installation YAML.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for presenter actions, expected visible states, and fallbacks.
@@ -143,14 +139,20 @@ supports manual entry but does not prove access. Execution mode follows the
 harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
 the runtime-build warning; Embedded OpenClaw does not.
 
-The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
+The fixture supplies a Namespace, Preset, and Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no dedicated console
 pages. New version credentials select existing model Secrets or create new ones
 through the Secret picker. Slack tokens use that picker in both the Credentials
 tab and the Slack drawer under Channels.
 Teams credentials remain operator-managed; the console blocks deployment while Teams is enabled.
 See [Create and deploy in the console](../reference/console/create-and-deploy.md)
-for the supported installation workflow and prerequisites.
+for prerequisites.
+
+In **Draft Configuration retry** and **Draft Agent retry**, a simulated 503 freezes
+draft inputs until **Try again** is clicked; wait first to confirm there is no
+automatic retry. The Agent story reuses its saved Configuration. Leaving or
+refreshing loses recovery. These stories prove UI controls; browser/API and
+PostgreSQL coverage establish lost-response recovery and deduplication.
 
 Repository previews cover shared access levels, empty or pending discovery,
 setup guidance when choices are unavailable, denied or unverified authorization,

@@ -2166,6 +2166,50 @@ export const scenarios = {
     description:
       "The create request was accepted, but provisioning status is temporarily unavailable. Refresh and inspect saved state.",
   },
+  createConfigurationRetry: {
+    group: "Pages/Create Agent",
+    name: "Draft Configuration retry",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations",
+        method: "POST",
+        status: 503,
+        once: true,
+      },
+    ],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "The two-write draft flow receives a simulated uncertain Configuration response. It freezes inputs and waits for an explicit retry. This preview does not prove server persistence or deduplication.",
+    steps: [
+      "Read the message asking you to try again and keep this page open.",
+      "Wait and confirm the form stays uncertain with its original inputs locked.",
+      "Choose Try again to finish the simulated draft creation.",
+    ],
+  },
+  createAgentRetry: {
+    group: "Pages/Create Agent",
+    name: "Draft Agent retry",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 503,
+        once: true,
+      },
+    ],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "The two-write draft flow has saved its Configuration before a simulated uncertain Agent response. It keeps that Configuration and waits for Try again. Backend tests own durable request-identity proof.",
+    steps: [
+      "Inspect the saved settings notice and locked inputs.",
+      "Wait, then choose Try again. The saved Configuration is reused.",
+      "Inspect the resulting Agent draft. Recovery state lasts only while the original form remains open.",
+    ],
+  },
   draft: {
     group: "Pages/Agent detail",
     name: "First version",
