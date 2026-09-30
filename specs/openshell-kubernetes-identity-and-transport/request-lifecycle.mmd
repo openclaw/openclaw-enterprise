@@ -1,0 +1,64 @@
+---
+config:
+  theme: base
+  themeVariables:
+    fontSize: 15px
+    primaryColor: '#edf4fa'
+    primaryBorderColor: '#8799ae'
+    primaryTextColor: '#24364b'
+    noteBkgColor: '#f4f2ed'
+    noteBorderColor: '#a39987'
+  sequence:
+    mirrorActors: true
+    useMaxWidth: false
+    actorMargin: 35
+    messageMargin: 28
+    noteMargin: 12
+---
+sequenceDiagram
+  actor U as Authorized actor
+  participant C as OCC / controller<br/>Compute + Sandbox<br/>libraries
+  participant O as OpenShell gateway<br/>Control + listener
+  participant S as Supervisor Pod<br/>Relay
+  participant A as Agent workload Pod<br/>Launcher / Codex
+  participant G as OCE Gateway Pod
+  Note over U,G: 1. Proposed deployment: operator configures workspace, approved resources, immutable inputs and trust
+  U->>C: deployAgent from saved draft<br/>Exact-Agent and source authority
+  C-->>U: 202: admitted immutable revision<br/>Not runtime success
+  C->>C: Recheck original actor and Agent authority<br/>prepareRevision / provisionHarness
+  alt Unsupported projection or recipients
+    C->>C: Refuse unsupported contract
+    C-->>U: Candidate unavailable, owners close contract
+  else Approved projection and delivery exist
+    C->>O: Exact scope + approved references<br/>Explicit passthrough exposure
+    O->>S: Provision separate supervisor
+    O->>A: Provision approved workload<br/>Kubelet + named child delivery
+    O-->>C: Create receipt + service URL
+  end
+  Note over C,O: Lost create reply: original operation owner retains uncertain attempt,<br/>reconcile authoritative evidence before any recovery effect
+  Note over C,G: 2. Activation: verify scope, effective mode, destination/TLS and applicable peer status
+  C->>C: Reject ignored mode or wrong destination<br/>No bearer release on failed validation
+  C->>G: Verified endpoint and current authority<br/>Approved status path where required
+  G->>A: Request applicable authenticated status<br/>Handoff remains an owner decision
+  A-->>G: Exact revision / Pod / startup binding
+  G->>G: Derive matching startup bearer
+  U->>C: Read durable deployment / supported Pod diagnostics
+  C-->>U: Admission and runtime observations<br/>Not application or provider success
+  Note over O,G: 3. Proposed application exchange: listener TLS/client identity and app authentication are separate
+  G->>O: WebSocket upgrade + application bearer
+  O->>S: Trusted service relay<br/>Credential filtering remains
+  S->>A: Request for exact application endpoint
+  alt Missing or wrong application bearer
+    A-->>G: Refuse before initialization (via relay)
+  else Valid current bearer
+    A-->>G: Upgrade + two-way frames (via relay)
+    Note over A,G: Useful model/GitHub work needs genuine credential suppliers,<br/>initial read-only proof does not complete selected writes or protected target
+  end
+  Note over C,G: Lost app reply: effect remains unknown with original request/effect owner,<br/>records and PVC data do not authorize replay or compensation
+  Note over U,G: 4. Stop / replacement: preserve effect custody while withdrawing old access
+  U->>C: Authorized lifecycle action
+  C->>O: Withdraw old revision access / endpoint
+  C->>G: Withdraw readiness and current authority
+  Note over O,G: Owners must select and prove finite stream closure + bidirectional cancellation,<br/>deletion or revocation records alone do not terminate upgraded streams
+  Note over C,G: Reconnect requires current exact-revision authority
+  C-->>U: Observed closure / cleanup or retained uncertainty

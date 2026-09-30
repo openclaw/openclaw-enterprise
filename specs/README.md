@@ -52,6 +52,9 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 ## Active specifications
 
+[OpenShell Kubernetes identity and transport](openshell-kubernetes-identity-and-transport.md) — Proposed;
+workload projection, identity, and private transport for dedicated Codex on Kubernetes.
+
 [Repository selection and inherited access](37-repository-picker-and-access.md) — Proposed;
 adaptive repository discovery, selected cards, and explicit per-repository overrides.
 [Repository credential recovery](39-repository-credential-recovery.md) — Implementing;
