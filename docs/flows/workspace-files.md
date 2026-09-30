@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-09-29
-last_updated_session: authoring-run/5e3ebbae-97b8-4709-8c03-6a032657e102
+updated: 2026-09-30
+last_updated_session: authoring-run/e062d2c6-e51f-42eb-8046-fd6ec6d6b3c4
 ---
 
 # Agent Workspace Files Flow
@@ -224,9 +224,11 @@ Remote channel menus remain deferred to [#241](https://github.com/openclaw/openc
 
 Only Harness mounts dedicated workspace/generated-image storage. Gateway sessions
 use its private PVC; Codex's existing remote-media reader transfers reply artifacts
-before cleanup. Embedded storage is unchanged. New Harness PVCs use RWO; owned
-existing RWX claims retain their data. The worker stops predecessors before dedicated preparation and suppresses their
-maintenance. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+before cleanup. Embedded storage is unchanged. New and reused Harness PVCs require
+RWO. `KubernetesComputeDriver.verifyPersistentVolumeClaim` rejects RWX during
+reconciliation and final Agent deletion without mutating the unsupported claim.
+The worker still stops predecessors before dedicated preparation and suppresses
+their maintenance. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 owns downtime and recovery limits. These contracts require matching runtime
 images; local checks do not prove deployed acceptance.
 
@@ -317,6 +319,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-30 16:29: Require RWO for new and reused Harness claims, including final deletion. (authoring-run/e062d2c6-e51f-42eb-8046-fd6ec6d6b3c4 - 4baeb8f6d21ff0d73102e0800c4e6cc0ed6a6366)
 
 - 2026-09-29 08:09: Align the documented workspace version. (authoring-run/5e3ebbae-97b8-4709-8c03-6a032657e102 - 395c735c3915135e4d5fe533041b3d2c04e995ea)
 

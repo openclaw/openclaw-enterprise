@@ -36,6 +36,22 @@ own topology.
       and stop all other database writers through recovery. For runtime releases,
       also stop Agent deployments and draft edits and resolve existing deployment work.
 
+## Remove legacy RWX workspaces
+
+Before deploying the RWO-only controller to a development installation:
+
+1. Inventory Harness workspace PVC access modes and confirm with their Agent
+   owners which legacy RWX-backed Agents can be discarded.
+2. Using the current compatible OCE version, delete those Agents through OCE and
+   confirm their workspace PVCs are gone. Deleting an Agent also deletes its
+   Gateway state; this transition does not preserve or migrate its data.
+3. Upgrade only after no legacy RWX Harness claims remain. Recreate any needed
+   Agents with new RWO storage.
+
+Do not change PVC access modes in place. The RWO-only version rejects legacy
+RWX claims during reconciliation and final Agent deletion; upgrading first can
+block both redeployment and cleanup. Existing RWO-backed Agents need no recreation.
+
 ## Record the starting state
 
 Create a private evidence directory and record these values before mutation:

@@ -154,9 +154,10 @@ OCC does not restart a lower revision automatically or roll back filesystem writ
 made by a failed candidate. The last committed active
 revision is not proof that its Pod still runs during replacement.
 
-Existing owned `ReadWriteMany` workspace claims remain usable without changing
-their spec, identity, or data. New claims use RWO; Gateway private claims still
-require RWO. No revision stop or retirement replaces a PVC with ephemeral storage.
+Harness and Gateway claims must use `ReadWriteOnce`; existing RWX claims are
+rejected during reconciliation and final Agent deletion. Follow the
+[upgrade prerequisite](../../../guides/deploy/upgrade-checklist.md#remove-legacy-rwx-workspaces).
+Revision stop and retirement retain PVCs.
 
 RWO does not fence writers on a partitioned node. Pod termination and the storage
 provider's safe detach/attach behavior remain required; the Driver never force

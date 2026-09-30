@@ -323,8 +323,9 @@ kubectl --kubeconfig '<profile-kubeconfig>' --context '<profile-context>' \
 
 Expect the workspace to become `Bound` with access mode `RWO`, followed by a
 running Harness Pod. With `WaitForFirstConsumer`, a pending claim before Pod
-creation is normal. Existing owned RWX claims are retained; do not delete a claim
-or change its access mode to adopt the new default.
+creation is normal. Legacy RWX claims are unsupported; before upgrading an older
+installation, follow the [storage transition prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces).
+Do not change a PVC's access mode in place.
 
 ### Preserve storage across restarts
 
