@@ -96,6 +96,10 @@ create-only Console and API input, applied once before first runtime execution.
 [Agent presets](33-agent-presets.md) — Implementing; reusable, partial Agent launch
 templates with variables, CRUD APIs, and console selection.
 
+[gVisor container support](31-gvisor-container-support.md) — Proposed 1.x discussion,
+not a release commitment or 0.x gate; dedicated Agent isolation, contribution workflow,
+and workspace lifetime.
+
 [Agent egress for 0.x](40-agent-egress-0x.md) — Deferred custom proxy; 0.x uses
 OpenShell, OpenClaw secret proxy and Codex sandbox controls instead.
 

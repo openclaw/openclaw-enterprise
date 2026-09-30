@@ -1,0 +1,102 @@
+---
+title: "Proposed gVisor contribution lifecycle"
+config:
+  theme: base
+  htmlLabels: false
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 24
+    width: 120
+    height: 64
+    diagramMarginX: 18
+    diagramMarginY: 18
+    boxMargin: 12
+    boxTextMargin: 12
+    messageMargin: 30
+    noteMargin: 12
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  actor U as User
+  box rgb(237,243,248) Control plane
+    participant O as OCC<br/>local IAM
+    participant S as State store
+  end
+  box rgb(235,243,240) Worker process
+    participant W as Worker<br/>Compute Driver
+  end
+  participant K as Kubernetes<br/>runtime
+  participant G as Trusted<br/>gateway
+  participant C as Dedicated Codex<br/>gVisor
+  participant M as Model provider
+  participant R as Repository<br/>service
+
+  Note over U,R: 1 · Authorize and admit an immutable revision
+  U->>O: Request deployment with approved repository selection
+  O->>O: Authorize Agent and validate profile
+  O->>S: Persist revision and explicit storage policy in original transaction
+  S-->>O: Admitted revision
+  O-->>U: Accepted deployment
+
+  Note over U,R: 2 · Prepare exact owned resources and observe candidates
+  W->>S: Claim admitted work
+  S-->>W: Immutable revision and owned work
+  W->>W: Reauthorize immutable revision through local IAM
+  Note over W,K: Retained successor path first requires writer exclusion.<br/>See storage and recovery before any writable preparation.
+  W->>K: Prepare original owned resources and role workloads
+  K-->>W: Original identities and complete candidate observation
+  W->>W: Check class and one eligible Ready Pod
+  alt Positive isolation violation
+    W->>K: Conditionally withdraw affected route and request UID-guarded cleanup
+    K-->>W: Observed result or explicit uncertainty
+    Note over W,K: Preserve successor resources and late cleanup custody.<br/>Unavailable evidence alone authorizes no deletion.
+  else Safe observation permits continued preparation
+    W->>R: Open or recover admitted session within original deadline
+    R-->>W: Ephemeral session material or unavailable outcome
+    W->>K: Deliver only to Codex and observe exact material generation
+    K-->>W: No old-generation candidates and one expected Ready Pod
+    W->>W: Reauthorize before activation
+    W->>S: Commit selected revision
+    S-->>W: Selected revision committed
+    W->>K: Activate exact revision route and verify readiness
+    K-->>W: Activation observed or unavailable
+    Note over W,K: Default post-commit activation shown.
+    Note over W,K: beforeCommit Drivers verify activation before selection.
+  end
+
+  Note over U,R: 3 · Complete an ordinary authorized contribution
+  opt Exact revision activated and request authorized
+  U->>G: Submit authenticated repository task
+  G->>C: Invoke dedicated Harness for admitted request
+  C->>M: Dispatch admitted model request
+  M-->>C: Model result
+  C->>R: Managed Git clone through admitted session
+  R-->>C: Repository contents
+  C->>C: Real tool children edit, test and commit
+  C->>R: Managed Git push and approved same-repository PR
+  R-->>C: Provider outcome, subject to independent readback
+  C-->>G: Task result and contribution evidence
+  G-->>U: Authorized result
+  end
+  Note over G,R: Protected profile adds requester, identity and closure gates.<br/>Never blindly replay uncertain remote effects.
+
+  Note over U,R: 4 · Close access, then observe exact runtime stop
+  W->>R: Close session and retain unresolved provider cleanup
+  R-->>W: Local closure and known cleanup disposition
+  W->>K: Withdraw exact revision route and stop its workloads
+  K-->>W: Termination evidence or unavailable / unverified outcome
+  W->>S: Retain observed result and pending cleanup custody
+  Note over W,K: Accepted deletion is not observed physical stop.<br/>Disposal follows admitted policy. Retained stop preserves data.
+  Note over U,R: Entire lifecycle is proposed. Time flows downward.<br/>Solid arrows are requests. Dashed arrows are replies.
