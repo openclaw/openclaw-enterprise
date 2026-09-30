@@ -1,5 +1,7 @@
 # Implementation specifications
 
+[Basic Agent observability](31-basic-observability.md) — Proposed lifecycle History, protected access, recovery and audit retention. Implementation and qualification remain pending.
+
 [Independent image and chart publication](41-independent-image-chart-publication.md) — Implementing;
 default image-only publication with a separate opt-in chart job.
 
