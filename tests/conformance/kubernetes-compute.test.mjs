@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2617,6 +2618,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       requestHeaderModifier: {
         set: [
           { name: "x-occ-identity", value: "occ-workspace-files" },
+          { name: "x-occ-role", value: "oce-service" },
+          {
+            name: "x-occ-role-policy",
+            value: "251a4173dcbf68d2945df11ddf0871a93ae357269ae7bf2b00846fd4173d7677",
+          },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
         remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
@@ -2632,6 +2638,50 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     },
     route.spec.rules[0].filters[1],
   ]);
+
+  // Human ingress preserves only OCC's verified role descriptor; service ingress overwrites it.
+  const humanRevision = {
+    ...revision,
+    configuration: nativeRolesGateway(revision.configuration, "https://native.example.test"),
+  };
+  const human = driver.getAgentRuntimeAccess(
+    humanRevision,
+    "prn_00000000-0000-4000-8000-000000000003",
+    "researcher",
+  );
+  assert.ok(human);
+  assert.equal(human.endpoint, `${driver.getGatewayEndpoint(revision)}/people`);
+  assert.equal(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
+  assert.equal(human.headers["x-occ-role"], "researcher");
+  assert.equal(
+    driver.getAgentRuntimeAccess(
+      humanRevision,
+      "prn_00000000-0000-4000-8000-000000000003",
+      "oce-service",
+    ),
+    undefined,
+  );
+  const humanRoute = driver.gatewayRoute(
+    humanRevision,
+    ownership,
+    { name: namespace, plane: "execution" },
+    service,
+    "people",
+  );
+  assert.equal(humanRoute.metadata.name, `${name}-people`);
+  assert.equal(
+    humanRoute.spec.rules[0].matches[0].path.value,
+    `/namespaces/${tenant.id}/agents/${revision.agentId}/people`,
+  );
+  const humanFilter = humanRoute.spec.rules[0].filters[1].requestHeaderModifier;
+  assert.equal(
+    humanFilter.set.some(
+      (header) => header.name === "x-occ-identity" || header.name === "x-occ-role",
+    ),
+    false,
+  );
+  assert.equal(humanFilter.remove.includes("cookie"), true);
+  assert.equal(humanFilter.remove.includes("x-openclaw-scopes"), false);
 
   // Node enrollment and worker admission authenticate inside OpenClaw, while
   // worker bundles use their own one-time bearer token instead of the administrative API key.

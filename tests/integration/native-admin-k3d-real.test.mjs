@@ -217,6 +217,8 @@ function agentDetailPath(topology) {
   return `${path.pathname}${path.search}`;
 }
 
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
+
 async function nativeAdminStatus(topology) {
   const status = await topology.adminRequest(
     "GET",
@@ -253,22 +255,7 @@ async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomai
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
   );
   assert.equal(current.status, 200, JSON.stringify(current.error));
-  const values = structuredClone(current.data.values);
-  values.gateway = {
-    ...values.gateway,
-    controlUi: {
-      ...(values.gateway?.controlUi ?? {}),
-      enabled: true,
-      allowedOrigins: [targetForStableOrigin.origin],
-    },
-    auth: {
-      ...(values.gateway?.auth ?? {}),
-      trustedProxy: {
-        ...(values.gateway?.auth?.trustedProxy ?? {}),
-        deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-      },
-    },
-  };
+  const values = nativeRolesGateway(current.data.values, targetForStableOrigin.origin);
   const patched = await topology.request(
     "PATCH",
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
@@ -309,6 +296,38 @@ async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomai
       .slice(-8)
       .map(({ event, code, outcome, revisionId }) => ({ event, code, outcome, revisionId }));
     throw new Error(`Native admin revision did not finish: ${JSON.stringify(events)}`, { cause });
+  }
+  const identity = await topology.observerPool.query(
+    `SELECT identity.id FROM occ.iam_identities identity
+    JOIN occ."user" account ON identity.subject = account.id
+    WHERE identity.kind = 'principal' AND account.email = $1`,
+    [topology.credentials.email],
+  );
+  assert.equal(identity.rowCount, 1);
+  const policyPath = `/namespaces/${topology.agent.namespaceId}/iam`;
+  const bindings = await topology.adminRequest("GET", `${policyPath}/access-bindings`);
+  assert.equal(bindings.status, 200);
+  if (
+    !bindings.data.some(
+      (binding) =>
+        binding.subjectId === identity.rows[0].id &&
+        binding.resourceId === topology.agent.id &&
+        binding.runtimeRole !== undefined,
+    )
+  ) {
+    const role = await topology.adminRequest("POST", `${policyPath}/roles`, {
+      permissions: [{ action: "use", resourceKind: "agent" }],
+    });
+    assert.equal(role.status, 201);
+    const assignment = await topology.adminRequest("POST", `${policyPath}/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: identity.rows[0].id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: topology.agent.id,
+      runtimeRole: "administrator",
+    });
+    assert.equal(assignment.status, 201, JSON.stringify(assignment.error));
   }
   topology.revision = deployed.data;
   topology.gatewayPod = await waitForReadyGatewayPod(
@@ -695,10 +714,10 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   for (const [name, permissions] of [
     ["Namespace discovery", [{ action: "read", resourceKind: "namespace" }]],
     [
-      "Shared native administration",
+      "Shared native entry",
       [
         { action: "read", resourceKind: "agent" },
-        { action: "administer", resourceKind: "agent" },
+        { action: "use", resourceKind: "agent" },
       ],
     ],
   ]) {
@@ -734,6 +753,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
         resourceKind,
         resourceId,
         roleId,
+        ...(resourceKind === "agent" ? { runtimeRole: "administrator" } : {}),
       });
       assert.equal(binding.status, 201);
       if (resourceKind === "agent") {
@@ -776,7 +796,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     // Configuration remains denied, but exact Agent administer must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
     const popup = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open OpenClaw" }).click();
     const nativePage = await popup;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
     const terminalFrame = await submitChatTurnWithAssistantProof(
@@ -881,11 +901,11 @@ test(
 
     const unadmittedTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
     assert.match(unadmittedTarget.host, hostSuffixPattern(nativeDomain));
-    const initialStatus = await nativeAdminStatus(topology);
-    assert.notEqual(
+    const initialStatus = await topology.adminRequest("GET", agentPath(topology, "/native-admin"));
+    assert.equal(
       initialStatus.status,
-      "available",
-      "native admin must fail closed before the active runtime admits the exact browser origin and device approval policy",
+      403,
+      "Installation administration alone must not admit native entry",
     );
 
     const expectedTarget = await redeployWithNativeAdminAccess(
@@ -953,7 +973,7 @@ test(
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
     const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open OpenClaw" }).click();
     const nativePage = await popupPromise;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
 

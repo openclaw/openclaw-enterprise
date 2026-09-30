@@ -221,7 +221,7 @@ requires a successful Reload before retrying. See
 ## Conditional native admin panel
 
 When enabled by the Installation and permitted for your account, **Native admin
-UI** provides **Refresh access** and **Open native admin UI**. The latter opens
+UI** provides **Refresh access** and **Open OpenClaw**. The latter opens
 the active gateway in a new tab, even while you view a draft or older revision.
 
 The native UI can change the gateway outside OCE's revision tracking. Use OCE for

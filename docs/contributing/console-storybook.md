@@ -1,7 +1,7 @@
 # Console Storybook
 
 Browse production Console pages, components, and Agent workflows against an
-in-memory fixture. Previews contact no services and run no workloads. Use dummy
+in-memory fixture. Use dummy
 credentials.
 
 ## Run locally
@@ -356,3 +356,5 @@ shows organization-wide policy restrictions. Existing missing-credential,
 read-only, and save-failure stories still cover those surrounding states.
 Capture the final interactions and native values outside the repository;
 attach reviewable screenshots and video to the task and PR.
+
+Role previews: **Sharing Role Changed** and **Sharing Roles Unavailable**.

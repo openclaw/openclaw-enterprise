@@ -295,6 +295,13 @@
       "when": 1787000000041,
       "tag": "0041_restriction_read_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1787000000042,
+      "tag": "0042_agent_runtime_roles",
+      "breakpoints": true
     }
   ]
 }

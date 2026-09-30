@@ -301,7 +301,7 @@ result. For unavailable gateways, follow the
 
 When [Agent native admin UI access](agent-native-admin.md) is enabled, the
 Agent detail tabs, including Configuration and Workspace files, include a
-**Native admin UI** panel for callers with exact Agent `administer` permission.
+**OpenClaw** panel for people with Agent `use` and a runtime assignment.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial.
 Installation administrators can [share an Agent](console/agent-sharing.md)
@@ -310,7 +310,7 @@ including before its first deployment. If a desired-running Agent has no active
 revision yet, the panel asks you to check its deployment and refresh access. It also reports when
 native admin is unsupported.
 
-**Open native admin UI** opens the Agent's active revision in a new tab, even
+**Open OpenClaw** opens the Agent's active revision in a new tab, even
 when you are viewing a draft or an older revision. The visible warning is part
 of the operator contract: the native UI can change the gateway outside OCE, and
 those changes are not recorded in AgentRevisions. Use OCE for durable

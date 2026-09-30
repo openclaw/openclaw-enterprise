@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
-last_updated_session: authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a
+updated: "2026-09-30"
+last_updated_session: "authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874"
 ---
 
 # Console Agent sharing and removal
@@ -27,12 +27,12 @@ See the [parent flow](../platform-console.md) and the
 
 ```mermaid
 graph TD
-  A["Agent detail mounts sharing panel"] --> B["Read Namespace Roles and bindings"]
+  A["Agent detail mounts sharing panel"] --> B["Read Namespace policy and active runtime role catalog"]
   B -->|policy denied| K["Keep other Agent panels available"]
   B --> C["Submit share for an existing Principal"]
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
-  E --> F["Find or create Agent read/administer Role"]
+  E --> F["Find or create Agent read/use Role"]
   F --> G["Bind it to the selected Agent"]
   G -->|confirmed steps| H["Show progress and direct grants"]
   C -->|uncertain| Q["Block writes until policy refresh"]
@@ -48,7 +48,7 @@ graph TD
 Agent detail mounts sharing independently of revision/configuration reads and
 native admission, but not when the console's observability probe already showed
 the person lacks Installation administration: the policy endpoints require it and
-the API audits each denial. The panel reads the selected Namespace's existing
+the API audits each denial. The panel loads `/agents/:agentId/runtime-roles` and the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 sharing panel and leaves the other panels usable; a current `401` retains global
 session expiry.
@@ -59,15 +59,22 @@ session expiry.
 
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
-that response does it find or create the exact Agent read/administer Role and
-bind it to the selected Agent. The panel rejects a subject that is not a `prn_`
+that response does it find or create the exact Agent read/use Role and
+bind it to the selected Agent with the chosen runtime role. The panel rejects a subject that is not a `prn_`
 Principal ID, such as an email, before any request, and reports a `404` during a
 share as an unknown Principal ID. The server validates the supplied subject and
 resource on each write. Confirmed progress survives later failure; unknown
 results disable mutations until an explicit current-policy refresh. Readback is
 configuration evidence, not a historical receipt, and never triggers a write.
 
-### 3. Remove one explicit binding
+### 3. Change the selected runtime role
+
+`apps/controller/src/console/agents/access.mjs:writeRuntimeRole`
+`packages/occ/src/index.ts:updateIAMRuntimeRole`
+
+The selector PATCHes only `runtimeRole` on the existing binding. OCC verifies the active role catalog, holds policy-management authority and commits assignment plus audit in the existing transaction. The binding identity, OCE Role and exact resource remain unchanged. An uncertain response blocks further writes until explicit readback. Runtime and proxy admission resolve the new role on subsequent requests.
+
+### 4. Remove one explicit binding
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
@@ -97,6 +104,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-30 23:38: Trace role catalog selection and atomic assignment changes. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
 
 - 2026-09-28 01:39: Move the sharing trace out of the parent and editing flows to keep them within the length limit. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
 

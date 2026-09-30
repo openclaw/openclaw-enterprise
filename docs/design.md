@@ -26,7 +26,7 @@ The API, console, durable worker, PostgreSQL persistence, and Kubernetes packagi
 are implemented. Dedicated Kubernetes execution separates Gateway and Harness
 namespaces, identities, and storage. External access-gateway admission, workload
 token authentication to OCC, and general credential-free model inference remain
-planned. The two-cluster profile is experimental.
+planned. The two-cluster profile is experimental. Human Gateway entry now uses exact OCE person/Agent assignments and native role enforcement through the Kubernetes Driver and patched runtime; broader checkpoint 3 permission mediation remains planned. See [Agent OpenClaw access](reference/agent-native-admin.md).
 
 <a id="openclaw-as-the-open-enterprise-agent-platform"></a>
 <a id="summary"></a>

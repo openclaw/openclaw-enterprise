@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-09-29"
-last_updated_session: "codex/01a0eb4c-5933-7752-bddc-f787e8da79e7"
+updated: "2026-09-30"
+last_updated_session: "authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874"
 ---
 
 # Namespace IAM Policy Flow
@@ -17,7 +17,7 @@ together in the platform state transaction.
 
 ## Entry Points
 
-- Trigger: `GET`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
+- Trigger: `GET`, `POST`, `PATCH`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/index.ts:requiredPermissions`
 - Source: `apps/controller/src/http/iam.ts:iamHandlers`
@@ -32,7 +32,7 @@ graph TD
   A["Caller invokes Namespace IAM route"] --> B["OCC admits identity and required permissions"]
   B --> C{"Read or mutation?"}
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
-  C -->|create/delete| E["Controller validates Role, subject, and exact target"]
+  C -->|create/change/delete| E["Controller validates Role, subject, and exact target"]
   E --> F["Selected IAM Driver mutates platform IAM policy"]
   F --> G["Controller appends audit event in the same transaction"]
   D --> H["API returns policy metadata"]
@@ -61,9 +61,9 @@ and return policy metadata. Create and delete operations run inside
 `controller.transact`, append an attributable mutation audit event, and return
 only after the transaction commits. The event's authorization records the
 Installation `administer` check. Role events carry the Namespace as resource and
-`roleId` plus `permissions` in details. AccessBinding create and delete events
+`roleId` plus `permissions` in details. AccessBinding create, runtime-role change and delete events
 carry the bound target as resource (the Namespace for a Namespace binding) and
-`bindingId`, `subjectKind`, `subjectId`, and `roleId` in details. Deletion reads
+`bindingId`, `subjectKind`, `subjectId`, `roleId` and the optional `runtimeRole` in details. Deletion reads
 the removed Role or AccessBinding in the same transaction to record it.
 
 ### 3. OCC validates policy ownership
@@ -75,6 +75,8 @@ resource kinds; `namespace` permissions support only `read`. AccessBinding creat
 targets in the same Namespace, including the Namespace itself when the target
 ID matches the path Namespace. OCC verifies the target resource exists and that
 the caller can read it before asking the IAM Driver to create the binding.
+
+The runtime-role change endpoint validates the chosen role through the active revision's Compute catalog and updates only `runtimeRole` on the existing exact human/Agent binding. Native definitions and profile admission are traced in [OpenClaw access](agent-native-admin.md).
 
 ### 4. The IAM Driver persists or reads policy
 
@@ -148,6 +150,8 @@ selected account, session, and policy writers join the same protocol.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-30 23:48: Trace runtime-role updates and assignment audit fields in the accompanying change. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
 
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)

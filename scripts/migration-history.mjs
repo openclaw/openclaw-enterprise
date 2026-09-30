@@ -142,6 +142,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 40) {
         return "preRepositoryAccess";
       }
+      if (receipts.length === 42) {
+        return "preRuntimeRoles";
+      }
       if (receipts.length === 41) {
         return "preRestrictionReadLogs";
       }
@@ -206,6 +209,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 40) {
     return "preRepositoryAccess";
+  }
+  if (receipts.length === 42) {
+    return "preRuntimeRoles";
   }
   if (receipts.length === 41) {
     return "preRestrictionReadLogs";

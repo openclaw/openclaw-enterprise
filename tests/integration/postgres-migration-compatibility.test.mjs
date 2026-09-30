@@ -1051,6 +1051,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.validate_access_binding_scope()", false],
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
+      ["occ.validate_runtime_assignment()", false],
     ].map(([identity, app_execute]) => ({
       identity,
       owner: "occ_migrator",
@@ -1486,6 +1487,7 @@ test(
       [39, "preNamespaceDeletionTakeover"],
       [40, "preRepositoryAccess"],
       [41, "preRestrictionReadLogs"],
+      [42, "preRuntimeRoles"],
     ]) {
       await context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

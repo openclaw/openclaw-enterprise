@@ -357,7 +357,7 @@ const devdayAdminCheckpoint = [
 ];
 
 const shareExistingPerson = [
-  { selector: "#share-principal-id", value: "person-demo" },
+  { selector: "#share-principal-id", value: "prn_00000000-0000-4000-8000-000000000003" },
   { selector: ".agent-access-consent input", click: true },
   click("Share Agent"),
 ];
@@ -2221,9 +2221,9 @@ export const scenarios = {
     name: "Share an Agent",
     path: draft,
     description:
-      "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
+      "Choose any configured OpenClaw role for an existing person. The selected role controls native permissions.",
     steps: [
-      "Enter person-demo as the existing Principal ID.",
+      "Enter prn_00000000-0000-4000-8000-000000000003 as the existing Principal ID.",
       "Review the native-access disclosure, acknowledge it, and share.",
       "Remove the direct binding; Namespace discovery remains available.",
     ],
@@ -2243,6 +2243,47 @@ export const scenarios = {
     actions: [...shareExistingPerson, click("Remove binding")],
     description:
       "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
+  },
+  agentSharingRoleChanged: {
+    group: "Pages/Agent detail",
+    name: "Change OpenClaw role",
+    path: draft,
+    actions: [
+      ...shareExistingPerson,
+      { selector: ".agent-access-grant select", value: "reviewer" },
+    ],
+    description:
+      "Change an existing assignment atomically. Active connections close within thirty seconds and reconnect with the new role.",
+  },
+  agentSharingRolesUnavailable: {
+    group: "Pages/Agent detail",
+    name: "OpenClaw roles unavailable",
+    path: draft,
+    runtimeRolesUnavailable: true,
+    sharingRoles: [
+      {
+        id: "role-demo-entry",
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        permissions: [
+          { action: "read", resourceKind: "agent" },
+          { action: "use", resourceKind: "agent" },
+        ],
+      },
+    ],
+    sharingBindings: [
+      {
+        id: "binding-demo-entry",
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        subjectKind: "identity",
+        subjectId: "prn_00000000-0000-4000-8000-000000000003",
+        roleId: "role-demo-entry",
+        resourceKind: "agent",
+        resourceId: "agt_00000000-0000-4000-8000-000000000001",
+        runtimeRole: "reviewer",
+      },
+    ],
+    description:
+      "Sharing remains disabled while the deployed role catalog is unavailable; existing assignments can be removed.",
   },
   agentSharingDenied: {
     group: "Pages/Agent detail",

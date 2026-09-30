@@ -504,6 +504,7 @@ export interface CreateIAMAccessBindingInput {
   readonly subjectKind: "identity";
   readonly subjectId: string;
   readonly roleId: string;
+  readonly runtimeRole?: string;
   readonly resourceKind: ResourceKind;
   readonly resourceId: string;
 }
@@ -1550,6 +1551,15 @@ export class OpenClawController {
       namespaceId: namespace.id,
     });
     await this.verifyNamespacePolicyResource(namespace.id, input.resourceKind, input.resourceId);
+    if (input.runtimeRole !== undefined) {
+      await this.assertAgentRuntimeRole(
+        principalId,
+        namespace.id,
+        input.resourceKind,
+        input.resourceId,
+        input.runtimeRole,
+      );
+    }
     const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
     return this.mutate(async (state) => {
       await this.holdIAMPolicyAuthority(state, principalId, namespace.id, {
@@ -1566,11 +1576,94 @@ export class OpenClawController {
             subjectKind: "identity",
             subjectId: input.subjectId,
             roleId: input.roleId,
+            ...(input.runtimeRole === undefined ? {} : { runtimeRole: input.runtimeRole }),
             resourceKind: input.resourceKind as ManagedIAMResourceKind,
             resourceId: input.resourceId,
           },
         ),
       );
+    });
+  }
+
+  async listAgentRuntimeRoles(principalId: string, namespaceId: string, agentId: string) {
+    await this.admitIAMPolicyOperation(principalId, namespaceId);
+    const { revision } = await this.getReadableActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agentId,
+    );
+    const compute = this.selectedDriver("compute");
+    if (compute.listAgentRuntimeRoles === undefined) {
+      throw new DependencyUnavailableError("The Compute Driver does not support runtime roles.");
+    }
+    return compute.listAgentRuntimeRoles(revision);
+  }
+
+  private async assertAgentRuntimeRole(
+    principalId: string,
+    namespaceId: string,
+    resourceKind: ResourceKind,
+    resourceId: string,
+    runtimeRole: string,
+  ): Promise<void> {
+    if (
+      resourceKind !== "agent" ||
+      !isNonEmptyString(runtimeRole) ||
+      runtimeRole !== runtimeRole.trim() ||
+      runtimeRole.length > 128
+    ) {
+      throw new ScopeViolationError(
+        "A runtime role requires an exact Agent and a normalized role name.",
+      );
+    }
+    const roles = await this.listAgentRuntimeRoles(principalId, namespaceId, resourceId);
+    if (!roles.some((role) => role.id === runtimeRole)) {
+      throw new ScopeViolationError(
+        "The runtime role is not configured in the active Agent revision.",
+      );
+    }
+  }
+
+  async updateIAMRuntimeRole(
+    principalId: string,
+    namespaceId: string,
+    bindingId: string,
+    runtimeRole: string,
+  ): Promise<Readonly<AccessBinding>> {
+    const binding = await this.getIAMAccessBinding(principalId, namespaceId, bindingId);
+    if (
+      binding.runtimeRole === undefined ||
+      binding.resourceKind !== "agent" ||
+      binding.resourceId === undefined
+    ) {
+      throw new ScopeViolationError("The AccessBinding is not a runtime assignment.");
+    }
+    await this.assertAgentRuntimeRole(
+      principalId,
+      namespaceId,
+      "agent",
+      binding.resourceId,
+      runtimeRole,
+    );
+    const driver = this.iamPolicyDriver("updateNamespaceRuntimeRole");
+    return this.mutate(async (state) => {
+      await this.holdIAMPolicyAuthority(state, principalId, namespaceId, {
+        kind: "agent",
+        id: binding.resourceId!,
+        namespaceId,
+      });
+      const updated = await this.iamPolicyOperation(() =>
+        driver.updateNamespaceRuntimeRole!(
+          { policy: state.iamPolicy },
+          namespaceId,
+          bindingId,
+          runtimeRole,
+        ),
+      );
+      if (updated === undefined) {
+        throw new ScopeViolationError("The runtime assignment is unavailable.");
+      }
+      return updated;
     });
   }
 
@@ -2996,6 +3089,49 @@ export class OpenClawController {
     return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "operate");
   }
 
+  async authorizeAgentRuntimeAccess(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<string> {
+    const resource: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+    const driver = this.authorizationAuthority(principalId);
+    if (driver.authorizeRuntimeAccess === undefined) {
+      throw new DependencyUnavailableError("The IAM Driver does not support runtime assignments.");
+    }
+    const result = await driver.authorizeRuntimeAccess({ principalId, action: "use", resource });
+    if (!result.allowed || !isNonEmptyString(result.runtimeRole)) {
+      throw new AuthorizationDeniedError(result.reason, result.evidence, {
+        action: "use",
+        resource,
+      });
+    }
+    return result.runtimeRole;
+  }
+
+  async getUsableAgent(principalId: string, namespaceId: string, agentId: string) {
+    await this.authorizeAgentRuntimeAccess(principalId, namespaceId, agentId);
+    return this.read(async (state) => {
+      await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespaceId, agentId);
+      if (agent === undefined) {
+        throw new ScopeViolationError("The exact Agent is unavailable.");
+      }
+      return agent;
+    });
+  }
+
+  async getUsableActiveAgentRevision(principalId: string, namespaceId: string, agentId: string) {
+    const runtimeRole = await this.authorizeAgentRuntimeAccess(principalId, namespaceId, agentId);
+    const selection = await this.getAuthorizedActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agentId,
+      "use",
+    );
+    return Object.freeze({ ...selection, runtimeRole });
+  }
+
   async getAdministerableActiveAgentRevision(
     principalId: string,
     namespaceId: string,
@@ -3038,7 +3174,10 @@ export class OpenClawController {
         );
       }
       if (!isNonEmptyString(agent.activeRevisionId)) {
-        if (action === "administer" && agent.desiredRuntimeState === "stopped") {
+        if (
+          (action === "administer" || action === "use") &&
+          agent.desiredRuntimeState === "stopped"
+        ) {
           throw new ResourceConflictError("A stopped Agent has no active gateway revision.");
         }
         throw new DependencyUnavailableError("The Agent has no active gateway revision.");

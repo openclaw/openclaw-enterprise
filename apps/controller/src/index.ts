@@ -208,6 +208,8 @@ interface NativeAdminProxyResolution {
   readonly revisionId: string;
   readonly target: NativeAdminTarget;
   readonly gatewayBase: string;
+  readonly runtimeRole: string;
+  readonly runtimeHeaders: Readonly<Record<string, string>>;
 }
 
 interface NativeAdminProxyDenial {
@@ -600,6 +602,8 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "deleteIAMRole" ||
     operation.operationId === "listIAMAccessBindings" ||
     operation.operationId === "getIAMAccessBinding" ||
+    operation.operationId === "updateIAMRuntimeRole" ||
+    operation.operationId === "listAgentRuntimeRoles" ||
     operation.operationId === "deleteIAMAccessBinding"
   ) {
     return [
@@ -1158,10 +1162,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     method: "GET",
     path: "/namespaces/:namespaceId/agents/:agentId/native-admin",
     action: "openclaw.agents.native_admin.read",
-    iamAction: "administer",
+    iamAction: "use",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Resolve native admin UI launch availability for one Agent",
+    summary: "Resolve OpenClaw launch availability with an assigned runtime role",
     tags: ["Agents"],
     schema: {},
   } as unknown as OccApiRoute;
@@ -1200,10 +1204,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operationId: nativeAdminStatusOperation.operationId,
     summary: nativeAdminStatusOperation.summary,
     description:
-      "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+      "Requires a human session, exact Agent use permission and one configured runtime role assignment. Service API keys cannot launch or inspect OpenClaw access.",
     tags: [...nativeAdminStatusOperation.tags],
     security: [{ sessionCookie: [] }],
-    "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+    "x-openclaw-permissions": [{ action: "use", resourceKind: "agent", scope: "requested" }],
     params: nativeAdminParamsSchema,
     response: {
       200: {
@@ -1357,7 +1361,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         iamDriverId: selectedIAMDriver().id,
         authorization: {
           principalId: resolution.actorId,
-          action: "administer",
+          action: "use",
           resource: {
             kind: "agent",
             id: resolution.agentId,
@@ -1380,6 +1384,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               : { closeReason: socketEvent.closeReason }),
             parentSessionId: resolution.parentSessionId,
             revisionId: resolution.revisionId,
+            runtimeRole: resolution.runtimeRole,
             host: resolution.target.host,
           },
         },
@@ -1581,6 +1586,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         gatewayBase: resolution.gatewayBase,
         agentOrigin: resolution.target.origin,
         apiKey,
+        runtimeHeaders: resolution.runtimeHeaders,
       };
     } catch {
       return undefined;
@@ -3078,7 +3084,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   type NativeAdminAvailability =
     | { readonly status: "disabled" | "stopped" | "unavailable" }
     | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
-    | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
+    | ({
+        readonly status: "available";
+        readonly gatewayBase: string;
+        readonly runtimeRole: string;
+        readonly runtimeHeaders: Readonly<Record<string, string>>;
+      } & NativeAdminTargetStatus);
 
   async function resolveNativeAdminAvailability(input: {
     readonly actorId: string;
@@ -3089,7 +3100,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     if (options.nativeAdmin?.enabled !== true) {
-      await controller.getAdministerableAgent(input.actorId, input.namespaceId, input.agentId);
+      await controller.getUsableAgent(input.actorId, input.namespaceId, input.agentId);
       return { status: "disabled" };
     }
     if (publicOrigin === undefined || nativeAdminDomain === undefined) {
@@ -3097,7 +3108,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     let selection;
     try {
-      selection = await controller.getAdministerableActiveAgentRevision(
+      selection = await controller.getUsableActiveAgentRevision(
         input.actorId,
         input.namespaceId,
         input.agentId,
@@ -3132,11 +3143,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } catch {
       throw dependencyUnavailable();
     }
-    const gatewayBase = nativeAdminGatewayHttpBase(compute.getGatewayEndpoint?.(revision) ?? "");
+    const access = compute.getAgentRuntimeAccess?.(revision, input.actorId, selection.runtimeRole);
+    const gatewayBase = nativeAdminGatewayHttpBase(access?.endpoint ?? "");
     if (gatewayBase === undefined) {
       return { status: "unsupported", agent, revision, target };
     }
-    return { status: "available", agent, revision, target, gatewayBase };
+    return {
+      status: "available",
+      agent,
+      revision,
+      target,
+      gatewayBase,
+      runtimeRole: selection.runtimeRole,
+      runtimeHeaders: access!.headers,
+    };
   }
 
   async function resolveNativeAdminAgentHost(
@@ -4618,6 +4638,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         revisionId: resolved.revision.id,
         target: resolved.target,
         gatewayBase: resolved.gatewayBase,
+        runtimeRole: resolved.runtimeRole,
+        runtimeHeaders: resolved.runtimeHeaders,
       };
     } catch (error) {
       if (isAuthorizationDenied(error)) {
@@ -4728,6 +4750,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             return "dependency_failure";
           }
           return renewed.reason;
+        }
+        if (
+          renewed.parentSessionId !== admission.parentSessionId ||
+          renewed.actorId !== admission.actorId
+        ) {
+          return "session_invalid";
+        }
+        if (
+          renewed.runtimeRole !== admission.runtimeRole ||
+          JSON.stringify(renewed.runtimeHeaders) !== JSON.stringify(admission.runtimeHeaders)
+        ) {
+          return "role_changed";
         }
         return undefined;
       },

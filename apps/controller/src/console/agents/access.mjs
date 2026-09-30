@@ -15,7 +15,7 @@ function principalIdProblem(value) {
 }
 const agentPermissions = [
   { action: "read", resourceKind: "agent" },
-  { action: "administer", resourceKind: "agent" },
+  { action: "use", resourceKind: "agent" },
 ];
 
 function matchesRole(role, namespaceId, permissions) {
@@ -49,6 +49,10 @@ export function renderAgentAccess(context, agent) {
     autocomplete: "off",
     "aria-describedby": "share-principal-help",
   });
+  const runtimeRole = element("select", { id: "share-runtime-role", required: true });
+  const roleDetails = element("details", {}, element("summary", {}, "Selected role permissions"));
+  const roleSummary = element("pre", { className: "native-document" });
+  roleDetails.append(roleSummary);
   const acknowledge = element("input", { type: "checkbox", required: true });
   const share = element("button", { type: "submit", className: "primary" }, "Share Agent");
   const refresh = button("Refresh sharing", () => void load());
@@ -67,10 +71,17 @@ export function renderAgentAccess(context, agent) {
       "Use the Principal ID returned when the person was provisioned in this Installation. This does not create an account.",
     ),
     element(
+      "div",
+      { className: "form-field" },
+      element("label", { for: "share-runtime-role" }, "OpenClaw role"),
+      runtimeRole,
+    ),
+    roleDetails,
+    element(
       "label",
       { className: "agent-access-consent" },
       acknowledge,
-      "I understand this grants full native administration of this Agent.",
+      "I understand the selected role controls access to this Gateway’s shared data and tools.",
     ),
     element("div", { className: "form-actions" }, share),
   );
@@ -80,6 +91,8 @@ export function renderAgentAccess(context, agent) {
     needsRefresh: false,
     roles: [],
     bindings: [],
+    runtimeRoles: [],
+    catalogError: null,
     progress: [],
     error: null,
   };
@@ -88,12 +101,12 @@ export function renderAgentAccess(context, agent) {
     element(
       "p",
       { className: "notice" },
-      "Recipients can access and administer this Agent’s native conversations, settings, tools and accessible credentials. This is not restricted chat and does not give each chat an automatic personal identity.",
+      "Each person connects with their own verified identity. OpenClaw enforces the selected role’s permissions, including its conversation and agent limits. This Gateway remains a shared trust domain.",
     ),
     element(
       "p",
       { className: "muted" },
-      "Sharing adds read access to this Namespace for discovery and read plus native administration for this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
+      "Sharing adds Namespace discovery, Agent read and OpenClaw entry access. The selected OpenClaw role defines runtime permissions; OCE deployment administration is separate.",
     ),
     feedback,
     form,
@@ -101,7 +114,7 @@ export function renderAgentAccess(context, agent) {
     element(
       "p",
       { className: "hint" },
-      "These are explicit bindings to this Agent, not all effective access. Groups, other grants and Installation administration can still provide access. Removing a binding keeps Namespace discovery access.",
+      "These are direct grants to this Agent. OpenClaw entry requires one explicit person/Agent role assignment. Removing that assignment keeps Namespace discovery access.",
     ),
     grants,
     refresh,
@@ -111,7 +124,20 @@ export function renderAgentAccess(context, agent) {
     const blocked = state.pending || !state.loaded || state.needsRefresh;
     principal.disabled = blocked;
     acknowledge.disabled = blocked;
-    share.disabled = blocked;
+    share.disabled = blocked || state.runtimeRoles.length === 0;
+    runtimeRole.disabled = blocked || state.runtimeRoles.length === 0;
+    const selected = runtimeRole.value;
+    runtimeRole.replaceChildren(
+      ...state.runtimeRoles.map((role) => element("option", { value: role.id }, role.id)),
+    );
+    if (state.runtimeRoles.some((role) => role.id === selected)) {
+      runtimeRole.value = selected;
+    }
+    roleSummary.textContent = JSON.stringify(
+      state.runtimeRoles.find((role) => role.id === runtimeRole.value)?.permissions ?? {},
+      null,
+      2,
+    );
     refresh.disabled = state.pending;
     form.hidden = !state.loaded;
     feedback.replaceChildren(
@@ -124,6 +150,7 @@ export function renderAgentAccess(context, agent) {
             ),
           ]
         : []),
+      ...(state.catalogError ? [element("p", { className: "notice" }, state.catalogError)] : []),
       ...(state.error ? [element("p", { className: "error", role: "alert" }, state.error)] : []),
     );
     grants.replaceChildren();
@@ -164,6 +191,30 @@ export function renderAgentAccess(context, agent) {
       const remove = button("Remove binding", () => void removeBinding(binding), {
         disabled: blocked,
       });
+      const change =
+        binding.runtimeRole === undefined
+          ? null
+          : element(
+              "select",
+              {
+                "aria-label": `OpenClaw role for ${binding.subjectId}`,
+                disabled: blocked || state.runtimeRoles.length === 0,
+              },
+              ...state.runtimeRoles.map((role) => element("option", { value: role.id }, role.id)),
+            );
+      if (change) {
+        if (!state.runtimeRoles.some((role) => role.id === binding.runtimeRole)) {
+          change.append(
+            element(
+              "option",
+              { value: binding.runtimeRole },
+              `${binding.runtimeRole} (unavailable)`,
+            ),
+          );
+        }
+        change.value = binding.runtimeRole;
+        change.addEventListener("change", () => void changeRole(binding, change.value));
+      }
       grants.append(
         element(
           "div",
@@ -173,8 +224,12 @@ export function renderAgentAccess(context, agent) {
             {},
             element("p", {}, `${binding.subjectKind}: ${binding.subjectId}`),
             element("p", { className: "hint" }, permissions),
+            ...(binding.runtimeRole === undefined
+              ? []
+              : [element("p", {}, `OpenClaw role: ${binding.runtimeRole}`)]),
             element("p", { className: "resource-id" }, binding.id),
           ),
+          ...(change ? [element("div", { className: "form-field" }, change)] : []),
           remove,
         ),
       );
@@ -186,6 +241,25 @@ export function renderAgentAccess(context, agent) {
       context.request(`${path}/roles`),
       context.request(`${path}/access-bindings`),
     ]);
+    if (!context.isCurrent()) {
+      throw new DOMException("View closed", "AbortError");
+    }
+    try {
+      state.runtimeRoles = await context.request(
+        `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agent.id)}/runtime-roles`,
+      );
+      state.catalogError =
+        state.runtimeRoles.length === 0
+          ? "Configure gateway.roles and deploy this Agent before assigning OpenClaw access."
+          : null;
+    } catch (error) {
+      if (error.status !== 503 && error.status !== 409) {
+        throw error;
+      }
+      state.runtimeRoles = [];
+      state.catalogError =
+        "The deployed OpenClaw role catalog is unavailable. Existing assignments can still be removed.";
+    }
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
@@ -244,7 +318,14 @@ export function renderAgentAccess(context, agent) {
     }
   }
 
-  async function ensureGrant(subjectId, resourceKind, resourceId, permissions, label) {
+  async function ensureGrant(
+    subjectId,
+    resourceKind,
+    resourceId,
+    permissions,
+    label,
+    selectedRuntimeRole,
+  ) {
     let role = state.roles.find((candidate) => matchesRole(candidate, namespaceId, permissions));
     if (!role) {
       role = await context.request(`${path}/roles`, {
@@ -268,12 +349,36 @@ export function renderAgentAccess(context, agent) {
             candidate.id === binding.roleId && matchesRole(candidate, namespaceId, permissions),
         ),
     );
-    if (existing) {
+    const assignment =
+      selectedRuntimeRole === undefined
+        ? existing
+        : state.bindings.find(
+            (binding) =>
+              binding.subjectKind === "identity" &&
+              binding.subjectId === subjectId &&
+              binding.resourceKind === "agent" &&
+              binding.resourceId === resourceId &&
+              binding.runtimeRole !== undefined,
+          );
+    if (assignment) {
+      if (selectedRuntimeRole !== undefined && assignment.runtimeRole !== selectedRuntimeRole) {
+        await writeRuntimeRole(assignment, selectedRuntimeRole);
+      }
+      return;
+    }
+    if (existing && selectedRuntimeRole === undefined) {
       return;
     }
     const binding = await context.request(`${path}/access-bindings`, {
       method: "POST",
-      body: { subjectKind: "identity", subjectId, roleId: role.id, resourceKind, resourceId },
+      body: {
+        subjectKind: "identity",
+        subjectId,
+        roleId: role.id,
+        resourceKind,
+        resourceId,
+        ...(selectedRuntimeRole === undefined ? {} : { runtimeRole: selectedRuntimeRole }),
+      },
     });
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -307,6 +412,28 @@ export function renderAgentAccess(context, agent) {
     }
   }
 
+  async function writeRuntimeRole(binding, selectedRole) {
+    const updated = await context.request(
+      `${path}/access-bindings/${encodeURIComponent(binding.id)}/runtime-role`,
+      { method: "PATCH", body: { runtimeRole: selectedRole } },
+    );
+    if (!context.isCurrent()) {
+      return;
+    }
+    state.bindings = state.bindings.map((candidate) =>
+      candidate.id === updated.id ? updated : candidate,
+    );
+  }
+
+  function changeRole(binding, selectedRole) {
+    return mutate(async () => {
+      await writeRuntimeRole(binding, selectedRole);
+      state.progress.push(
+        "OpenClaw role changed. Existing connections close within 30 seconds; reconnect to use the new role.",
+      );
+    });
+  }
+
   function removeBinding(binding) {
     return mutate(async () => {
       await context.request(`${path}/access-bindings/${encodeURIComponent(binding.id)}`, {
@@ -323,10 +450,12 @@ export function renderAgentAccess(context, agent) {
     });
   }
 
+  runtimeRole.addEventListener("change", render);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const subjectId = principal.value.trim();
-    if (!subjectId || !acknowledge.checked) {
+    const selectedRole = runtimeRole.value;
+    if (!subjectId || !acknowledge.checked || !selectedRole) {
       return;
     }
     const problem = principalIdProblem(subjectId);
@@ -352,7 +481,8 @@ export function renderAgentAccess(context, agent) {
         "agent",
         agent.id,
         agentPermissions,
-        "Agent native administration",
+        "Agent OpenClaw access",
+        selectedRole,
       );
       state.progress.push(
         "Agent access is shared. Effective access remains subject to current IAM policy.",

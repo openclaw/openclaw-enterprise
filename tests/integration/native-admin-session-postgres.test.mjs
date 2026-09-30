@@ -28,6 +28,12 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
+import {
+  configuredRuntimeRoles,
+  humanRuntimeAccess,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-access.ts";
+
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
@@ -54,23 +60,7 @@ function nativeOriginForAgent(installationId, namespaceId, agentId) {
 }
 
 function nativeAdminHarnessConfiguration(nativeOrigin) {
-  const configuration = createHarnessConfiguration("openclaw", "gpt-4.1");
-  return {
-    ...configuration,
-    gateway: {
-      ...configuration.gateway,
-      controlUi: { enabled: true, allowedOrigins: [nativeOrigin] },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: { "occ-workspace-files": ["operator.admin"] },
-      },
-    },
-  };
+  return nativeRolesGateway(createHarnessConfiguration("openclaw", "gpt-4.1"), nativeOrigin);
 }
 
 function nativeComputeDriver(upstreamPort) {
@@ -94,6 +84,17 @@ function nativeComputeDriver(upstreamPort) {
       };
     },
     async retireRevision() {},
+    listAgentRuntimeRoles(revision) {
+      return configuredRuntimeRoles(revision.configuration);
+    },
+    getAgentRuntimeAccess(revision, principalId, runtimeRole) {
+      return humanRuntimeAccess(
+        revision,
+        this.getGatewayEndpoint(revision),
+        principalId,
+        runtimeRole,
+      );
+    },
     getGatewayEndpoint(revision) {
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
@@ -367,6 +368,28 @@ async function createNativeAgent(api, session, upstream) {
   await api.state.transact((unit) =>
     unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
   );
+  const roleResponse = await inject(api.app, "POST", `/namespaces/${namespace.id}/iam/roles`, {
+    session,
+    body: { permissions: [{ action: "use", resourceKind: "agent" }] },
+  });
+  assert.equal(roleResponse.statusCode, 201, roleResponse.body);
+  const bindingResponse = await inject(
+    api.app,
+    "POST",
+    `/namespaces/${namespace.id}/iam/access-bindings`,
+    {
+      session,
+      body: {
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: roleResponse.json().data.id,
+        resourceKind: "agent",
+        resourceId: agent.id,
+        runtimeRole: "administrator",
+      },
+    },
+  );
+  assert.equal(bindingResponse.statusCode, 201, bindingResponse.body);
   const status = await inject(
     api.app,
     "GET",
@@ -377,7 +400,14 @@ async function createNativeAgent(api, session, upstream) {
   assert.equal(status.json().data.status, "available");
   assert.match(status.json().data.host, new RegExp(`\\.${nativeDomain.replaceAll(".", "\\.")}$`));
   assert.equal(upstream.requests.length, 0);
-  return { namespace, agent, revision, native: status.json().data, principal };
+  return {
+    namespace,
+    agent,
+    revision,
+    native: status.json().data,
+    principal,
+    runtimeBinding: bindingResponse.json().data,
+  };
 }
 
 async function nativeGet(api, native, cookie, path = "/settings/profile?tab=devices") {
@@ -678,7 +708,7 @@ async function openNativeAdminSocketScenario(t, label) {
   t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
   const session = await signIn(apiA.app);
   const parentSession = await parentSessionRow(apiA);
-  const { namespace, agent, revision, native, principal } = await createNativeAgent(
+  const { namespace, agent, revision, native, principal, runtimeBinding } = await createNativeAgent(
     apiA,
     session,
     upstream,
@@ -690,7 +720,7 @@ async function openNativeAdminSocketScenario(t, label) {
   assert.equal(upstream.upgrades.length, 1);
   assert.equal(
     upstream.upgrades[0].url,
-    `/namespaces/${namespace.id}/agents/${agent.id}/session/socket`,
+    `/namespaces/${namespace.id}/agents/${agent.id}/people/session/socket`,
   );
   assert.equal(upstream.upgrades[0].headers.origin, native.origin);
   assert.equal(upstream.upgrades[0].headers["x-api-key"], nativeGatewayApiKey);
@@ -709,6 +739,7 @@ async function openNativeAdminSocketScenario(t, label) {
     native,
     nativeCookie,
     principal,
+    runtimeBinding,
     port,
     socket,
   };
@@ -745,7 +776,7 @@ test(
     assert.equal(upstream.requests.length, 1);
     assert.equal(
       upstream.requests[0].url,
-      `/namespaces/${namespace.id}/agents/${agent.id}/settings/profile?tab=devices`,
+      `/namespaces/${namespace.id}/agents/${agent.id}/people/settings/profile?tab=devices`,
     );
     assert.equal(upstream.requests[0].headers.origin, native.origin);
     assert.equal(upstream.requests[0].headers["x-api-key"], nativeGatewayApiKey);
@@ -829,7 +860,7 @@ test(
 );
 
 test(
-  "PostgreSQL native admin WebSocket lease closes within thirty seconds after IAM administer restriction",
+  "PostgreSQL native admin WebSocket lease closes within thirty seconds after IAM use restriction",
   { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "iam-restriction");
@@ -837,12 +868,12 @@ test(
       const restricted = await scenario.apiA.pool.query(
         `INSERT INTO occ.iam_restrictions
            (id, namespace_id, action, resource_kind, resource_id, effect)
-         VALUES ($1, $2, 'administer', 'agent', $3, 'deny')`,
+         VALUES ($1, $2, 'use', 'agent', $3, 'deny')`,
         [`restriction-native-admin-${randomUUID()}`, scenario.namespace.id, scenario.agent.id],
       );
       assert.equal(restricted.rowCount, 1);
     });
-    t.diagnostic(`IAM administer restriction closed native admin WebSocket in ${closedAfterMs}ms`);
+    t.diagnostic(`IAM use restriction closed native admin WebSocket in ${closedAfterMs}ms`);
     await assertSocketAuditCloseReason(scenario, "authorization_denied");
     const leaseDenial = await waitForAuthorizationDenialAudit(
       scenario.apiA.pool,
@@ -966,5 +997,100 @@ test(
     t.after(() => disabledApi.app.close());
     const denied = await nativeGet(disabledApi, scenario.native, scenario.nativeCookie);
     assert.equal(denied.statusCode, 403, denied.body);
+  },
+);
+
+test(
+  "PostgreSQL role changes and revocation close existing proxy leases across replicas",
+  { ...requiresPostgres, timeout: 75_000 },
+  async (t) => {
+    const scenario = await openNativeAdminSocketScenario(t, "role-change");
+    await assertSocketClosesAfterMutation(scenario.socket, async () => {
+      const changed = await inject(
+        scenario.apiA.app,
+        "PATCH",
+        `/namespaces/${scenario.namespace.id}/iam/access-bindings/${scenario.runtimeBinding.id}/runtime-role`,
+        { session: scenario.session, body: { runtimeRole: "reviewer" } },
+      );
+      assert.equal(changed.statusCode, 200, changed.body);
+      assert.equal(changed.json().data.runtimeRole, "reviewer");
+    });
+    await assertSocketAuditCloseReason(scenario, "role_changed");
+    // A new request receives the new role immediately; no broad administrator fallback remains.
+    assert.equal(
+      (await nativeGet(scenario.apiB, scenario.native, scenario.nativeCookie)).statusCode,
+      200,
+    );
+    assert.equal(scenario.upstream.requests.at(-1).headers["x-occ-role"], "reviewer");
+    const nextSocket = await openNativeWebSocket(
+      scenario.port,
+      scenario.native,
+      scenario.nativeCookie,
+    );
+    t.after(() => nextSocket.destroy());
+    await assertSocketClosesAfterMutation(nextSocket, async () => {
+      const removed = await inject(
+        scenario.apiA.app,
+        "DELETE",
+        `/namespaces/${scenario.namespace.id}/iam/access-bindings/${scenario.runtimeBinding.id}`,
+        { session: scenario.session },
+      );
+      assert.equal(removed.statusCode, 204, removed.body);
+    });
+    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+  },
+);
+
+test(
+  "PostgreSQL persists only one exact human assignment and limits updates to the runtime role",
+  requiresPostgres,
+  async (t) => {
+    await ensureBootstrap(t);
+    const upstream = await startNativeHttpsUpstream(t);
+    const api = await createApi(t, "constraints", upstream.port);
+    t.after(() => api.app.close());
+    const session = await signIn(api.app);
+    const scenario = await createNativeAgent(api, session, upstream);
+    const copy = (id, subjectId, resourceId) =>
+      api.pool.query(
+        `
+    INSERT INTO occ.iam_access_bindings
+      (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id, runtime_role)
+    SELECT $1, namespace_id, $2, role_id, resource_kind, $3, runtime_role
+      FROM occ.iam_access_bindings WHERE id = $4`,
+        [id, subjectId, resourceId, scenario.runtimeBinding.id],
+      );
+    await assert.rejects(
+      copy(`binding-${randomUUID()}`, scenario.principal.id, scenario.agent.id),
+      (error) =>
+        error.code === "23505" && error.constraint === "iam_access_bindings_runtime_assignment",
+    );
+    await assert.rejects(
+      copy(`binding-${randomUUID()}`, scenario.agent.servicePrincipalId, scenario.agent.id),
+      (error) => error.code === "23514",
+    );
+    await assert.rejects(
+      copy(`binding-${randomUUID()}`, scenario.principal.id, null),
+      (error) => error.code === "23514",
+    );
+    await assert.rejects(
+      api.pool.query(
+        "UPDATE occ.iam_access_bindings SET runtime_role = ' reviewer ' WHERE id = $1",
+        [scenario.runtimeBinding.id],
+      ),
+      (error) => error.code === "23514",
+    );
+    // The application may change only the native assignment; OCE Role replacement remains immutable.
+    await assert.rejects(
+      api.pool.query("UPDATE occ.iam_access_bindings SET role_id = role_id WHERE id = $1", [
+        scenario.runtimeBinding.id,
+      ]),
+      (error) => error.code === "42501",
+    );
+    const persisted = await api.pool.query(
+      "SELECT runtime_role FROM occ.iam_access_bindings WHERE id = $1",
+      [scenario.runtimeBinding.id],
+    );
+    assert.equal(persisted.rows[0].runtime_role, "administrator");
   },
 );
