@@ -53,6 +53,7 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `harness_auth_secret_id`
 - `harness_auth_service_account_id`
 - `harness_auth_credential_source_id`
+- `credential_sources` (non-model credential source bindings)
 - `active_revision_id`
 - `desired_runtime_state`
 - `status`
@@ -130,6 +131,14 @@ Stores credential sources registered with the selected Credential Gateway; the g
 - `driver_id`
 - `state`
 - `created_at`
+
+### `agent_credential_sources`
+
+Mirrors each Agent draft's `credential_sources` through a trigger, so the database refuses to delete a source an Agent still binds.
+
+- `namespace_id`
+- `agent_id`
+- `credential_source_id`
 
 ### `credential_source_secrets`
 

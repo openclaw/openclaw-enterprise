@@ -1796,6 +1796,93 @@ async function verifyCredentialSourceContract(
     }),
   );
 
+  // A non-model source binds through the Agent's credentialSources list. The draft and the
+  // active revision each retain it, and a revision freezes exactly the draft's list.
+  const tokenSource = {
+    ...source,
+    id: identifier("cs"),
+    name: "Registry token " + randomUUID(),
+    type: "bearer-token",
+    config: { host: "registry.example.com", env_var: "REGISTRY_TOKEN" },
+    secrets: { token: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id } },
+  };
+  const toolAgent = {
+    ...sourceAgent,
+    id: identifier("agt"),
+    name: "Credential source tool agent " + randomUUID(),
+    harnessAuth: { method: "runtime" },
+    credentialSources: [{ sourceId: tokenSource.id }],
+    servicePrincipalId: identifier("service-agent"),
+  };
+  const toolRevision = {
+    ...sourceRevision,
+    id: identifier("rev"),
+    agentId: toolAgent.id,
+    servicePrincipalId: toolAgent.servicePrincipalId,
+    harnessAuth: { method: "runtime" },
+    credentialSources: [
+      {
+        sourceId: tokenSource.id,
+        credentialGatewayId: "openshell-contract",
+        sourceType: tokenSource.type,
+      },
+    ],
+  };
+  const tokenReferences = (transaction) =>
+    transaction.credentialSources.hasReferences(sourceNamespace.id, tokenSource.id);
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.createCredentialSource(tokenSource);
+    await transaction.agents.createAgent(toolAgent);
+    assert.deepEqual(
+      (await transaction.agents.findAgent(sourceNamespace.id, toolAgent.id)).credentialSources,
+      [{ sourceId: tokenSource.id }],
+    );
+    assert.equal(await tokenReferences(transaction), true);
+  });
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.revisions.createRevision({ ...toolRevision, credentialSources: undefined }),
+    ),
+    "A revision must freeze the Agent's non-model sources.",
+  );
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.credentialSources.deleteCredentialSource(sourceNamespace.id, tokenSource.id),
+    ),
+    "An Agent draft's non-model source cannot be deleted.",
+  );
+  await store.transact(async (transaction) => {
+    assert.deepEqual(await transaction.revisions.createRevision(toolRevision), toolRevision);
+    await transaction.agents.compareAndSetActiveRevision(
+      sourceNamespace.id,
+      toolAgent.id,
+      undefined,
+      toolRevision.id,
+    );
+    // An empty list removes the draft binding; the active revision still retains the source.
+    const cleared = await transaction.agents.updateConfiguration(
+      sourceNamespace.id,
+      toolAgent.id,
+      sourceConfiguration.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+    );
+    assert.equal(cleared.credentialSources, undefined);
+    assert.equal(await tokenReferences(transaction), true);
+    await transaction.agents.compareAndClearActiveRevision(
+      sourceNamespace.id,
+      toolAgent.id,
+      toolRevision.id,
+    );
+    assert.equal(await tokenReferences(transaction), false);
+  });
+
   // Deletion is two-phase: a deleting source stays recorded and blocks Namespace
   // teardown, but new bindings refuse it.
   await store.transact(async (transaction) => {

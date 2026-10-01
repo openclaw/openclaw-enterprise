@@ -3315,6 +3315,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       context,
       this.controlNamespace(revision.namespaceId),
     );
+    const credentialSources = this.credentialSourcesForRevision(admittedRevision, context);
+    if (credentialSources.length > 0 && sandboxDriver?.provisionHarness === undefined) {
+      throw new ConfigurationFailure(
+        "Agent credential sources require a SandboxDriver that provisions the Harness.",
+      );
+    }
     const gatewayNamespace = await this.requireGatewayNamespace(revision, namespace);
     const nativeRuntime = nativeRuntimeSnapshot(admittedRevision);
     const tenantOwnership = { namespaceId: revision.namespaceId };
@@ -3876,13 +3882,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         );
+        const sources = [
+          ...(harnessAuth.credentialSource === undefined ? [] : [harnessAuth.credentialSource]),
+          ...credentialSources,
+        ];
         const credentialContext =
-          harnessAuth.credentialSource === undefined
+          sources.length === 0
             ? undefined
             : {
                 namespace: sandboxContext.namespace,
                 revision,
-                sources: [harnessAuth.credentialSource],
+                sources,
                 signal: sandboxContext.signal,
               };
         const attachments =
@@ -9723,6 +9733,34 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }),
       ...statusPolicies,
     ];
+  }
+
+  /**
+   * Non-model sources resolved at dispatch must match the revision's admitted snapshots. The
+   * worker omits withdrawn ones, so the resolved list may be shorter than the admitted one.
+   */
+  private credentialSourcesForRevision(
+    revision: AgentRevision,
+    context: ComputeRevisionContext | undefined,
+  ): readonly Readonly<CredentialSource>[] {
+    const resolved = context?.credentialSources ?? [];
+    const admitted = revision.credentialSources ?? [];
+    const seen = new Set<string>();
+    for (const source of resolved) {
+      const snapshot = admitted.find(({ sourceId }) => sourceId === source.id);
+      if (
+        snapshot === undefined ||
+        seen.has(source.id) ||
+        source.namespaceId !== revision.namespaceId ||
+        source.driverId !== snapshot.credentialGatewayId ||
+        source.type !== snapshot.sourceType ||
+        source.state !== "ready"
+      ) {
+        throw new OwnershipFailure("A credential source does not match the admitted source.");
+      }
+      seen.add(source.id);
+    }
+    return resolved;
   }
 
   private harnessAuthForRevision(

@@ -20,6 +20,7 @@ const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
 const zeroGrant = "principal-source-zero-grant";
 const updater = "principal-source-updater";
+const editor = "principal-agent-editor";
 const installation = Object.freeze({
   id: "installation-credential-source-occ",
   name: "Credential source OCC conformance",
@@ -138,7 +139,7 @@ function createTestSandbox() {
 
 async function fixture(options = {}) {
   const iamState = {
-    identities: [administrator, deployer, zeroGrant, updater].map((id) => ({
+    identities: [administrator, deployer, zeroGrant, updater, editor].map((id) => ({
       kind: "principal",
       id,
       issuer: "credential-source-occ",
@@ -185,6 +186,16 @@ async function fixture(options = {}) {
         permissions: [{ action: "operate", resourceKind: "credential_source" }],
       },
       {
+        // May edit Agents but may not operate on any credential source.
+        id: "agent-editor-role",
+        permissions: [
+          { action: "read", resourceKind: "namespace" },
+          { action: "read", resourceKind: "configuration" },
+          { action: "read", resourceKind: "agent" },
+          { action: "update", resourceKind: "agent" },
+        ],
+      },
+      {
         // May update sources but may not operate on the Secret material an update reads.
         id: "source-updater-role",
         permissions: [
@@ -206,6 +217,12 @@ async function fixture(options = {}) {
         subjectKind: "identity",
         subjectId: deployer,
         roleId: "source-deployer-role",
+      },
+      {
+        id: "agent-editor-binding",
+        subjectKind: "identity",
+        subjectId: editor,
+        roleId: "agent-editor-role",
       },
       {
         id: "source-updater-binding",
@@ -286,15 +303,17 @@ async function fixture(options = {}) {
     });
   }
 
-  function grantAgentSourceOperate(agent, source) {
-    iamState.identities.push({
-      kind: "service_principal",
-      id: agent.servicePrincipalId,
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-    });
+  function grantAgentSourceOperate(agent, source, suffix) {
+    if (!iamState.identities.some(({ id }) => id === agent.servicePrincipalId)) {
+      iamState.identities.push({
+        kind: "service_principal",
+        id: agent.servicePrincipalId,
+        namespaceId: agent.namespaceId,
+        agentId: agent.id,
+      });
+    }
     iamState.bindings.push({
-      id: `source-agent-binding-${agent.id}`,
+      id: `source-agent-binding-${agent.id}${suffix === undefined ? "" : `-${suffix}`}`,
       namespaceId: agent.namespaceId,
       subjectKind: "identity",
       subjectId: agent.servicePrincipalId,
@@ -983,7 +1002,7 @@ test("withdrawal is recorded for the active revision and queued for the worker o
   );
   assert.equal(withdrawalWork().length, 1);
 
-  // Only the source the active revision authenticates with can be withdrawn.
+  // Only a source the active revision was admitted with can be withdrawn.
   const other = await controller.createCredentialSource(administrator, {
     namespaceId: namespace.id,
     name: "other",
@@ -1046,6 +1065,112 @@ test("deploy admission freezes the source and requires the Agent principal to op
     sourceType: "openai",
     loginMode: "api_key",
   });
+});
+
+test("non-model sources bind with operate, freeze at admission, and stay referenced", async () => {
+  const {
+    controller,
+    dedicatedAgent,
+    gateway,
+    grantAgentSourceOperate,
+    makeReady,
+    modelSecret,
+    namespace,
+  } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const model = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const otherModel = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai-other",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  // A type without Harness authentication is a non-model source, such as a registry token.
+  const registry = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "registry",
+    type: "registry",
+    config: { host: "registry.example.com" },
+  });
+  const agent = await dedicatedAgent();
+  const update = (principalId, fields) =>
+    controller.updateAgent(principalId, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      ...fields,
+    });
+
+  // The model source binds only through harnessAuth; a list cannot repeat it or a source.
+  await assert.rejects(
+    update(administrator, {
+      harnessAuth: { method: "credential_source", sourceId: model.id },
+      credentialSources: [{ sourceId: model.id }],
+    }),
+    ScopeViolationError,
+  );
+  await assert.rejects(
+    update(administrator, {
+      credentialSources: [{ sourceId: registry.id }, { sourceId: registry.id }],
+    }),
+    ScopeViolationError,
+  );
+  // Binding needs operate on the exact source, which an Agent editor alone lacks.
+  await assert.rejects(
+    update(editor, { credentialSources: [{ sourceId: registry.id }] }),
+    AuthorizationDeniedError,
+  );
+  const bound = await update(administrator, {
+    harnessAuth: { method: "credential_source", sourceId: model.id },
+    credentialSources: [{ sourceId: registry.id }],
+  });
+  assert.deepEqual(bound.credentialSources, [{ sourceId: registry.id }]);
+
+  // Admission rechecks each source for the Agent principal, as for the model source.
+  const deploy = () =>
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  grantAgentSourceOperate(agent, model);
+  await assert.rejects(deploy(), AuthorizationDeniedError);
+  grantAgentSourceOperate(agent, registry, "registry");
+  const revision = await deploy();
+  assert.deepEqual(revision.credentialSources, [
+    { sourceId: registry.id, credentialGatewayId: gateway.id, sourceType: "registry" },
+  ]);
+  await controller.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
+  );
+
+  // Both the draft and the active revision keep the source referenced.
+  await assert.rejects(
+    controller.deleteCredentialSource(administrator, namespace.id, registry.id),
+    ResourceConflictError,
+  );
+  // A non-model source on the active revision can be withdrawn like the model source.
+  const withdrawal = await controller.withdrawAgentCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    credentialSourceId: registry.id,
+  });
+  assert.equal(withdrawal.revisionId, revision.id);
+
+  // A model type listed as a non-model source fails at admission, before any revision.
+  await update(administrator, { credentialSources: [{ sourceId: otherModel.id }] });
+  grantAgentSourceOperate(agent, otherModel, "other-model");
+  await assert.rejects(deploy(), ResourceConflictError);
+
+  // An empty list removes the binding from the draft.
+  const cleared = await update(administrator, { credentialSources: [] });
+  assert.equal(cleared.credentialSources, undefined);
 });
 
 test("Namespace IAM delegates operate on an exact credential source to an Agent principal", async () => {

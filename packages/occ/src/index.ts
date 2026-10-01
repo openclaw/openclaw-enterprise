@@ -8,6 +8,7 @@ import {
 } from "./device-authorization.ts";
 import type {
   Agent,
+  AgentCredentialSourceBinding,
   AgentRead,
   AgentRevisionRead,
   InitialWorkspaceFiles,
@@ -27,6 +28,7 @@ import type {
   CredentialGatewayDriver,
   CredentialSource,
   CredentialSourceMetadata,
+  CredentialSourceSnapshot,
   CredentialSourceStatus,
   CredentialWithdrawal,
   CredentialSourceType,
@@ -433,6 +435,7 @@ export interface CreateAgentInput {
   readonly configurationId: string;
   readonly backendId?: string | null;
   readonly harnessAuth?: HarnessAuthBinding | null;
+  readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
@@ -446,6 +449,8 @@ export interface UpdateAgentInput {
   readonly configurationId: string;
   readonly backendId?: string | null;
   readonly harnessAuth?: HarnessAuthBinding | null;
+  /** Replaces the Agent's non-model sources; an empty list removes them. */
+  readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode?: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers | null;
@@ -603,6 +608,7 @@ type DriverFor<Capability extends DriverCapability> = DriverByCapability[Capabil
 
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 /**
@@ -4697,6 +4703,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The initial workspace setup input is invalid.");
     }
     const harnessAuth = this.harnessAuthBinding(input.harnessAuth ?? null);
+    const credentialSources = this.agentCredentialSources(input.credentialSources);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
@@ -4731,6 +4738,13 @@ export class OpenClawController {
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, harnessAuth);
+      await this.authorizeAgentCredentialSources(
+        state,
+        principalId,
+        namespace.id,
+        credentialSources ?? [],
+        harnessAuth,
+      );
       this.validatePluginPolicies(plugins, pluginApprovers);
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
@@ -4748,6 +4762,9 @@ export class OpenClawController {
         configurationId: input.configurationId,
         backendId,
         harnessAuth,
+        ...(credentialSources === undefined || credentialSources.length === 0
+          ? {}
+          : { credentialSources }),
         executionMode,
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
@@ -4781,6 +4798,7 @@ export class OpenClawController {
     }
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : this.harnessAuthBinding(input.harnessAuth);
+    const requestedSources = this.agentCredentialSources(input.credentialSources);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
@@ -4824,6 +4842,25 @@ export class OpenClawController {
       if (requestedAuth !== undefined) {
         await this.authorizeHarnessAuthSource(state, principalId, namespace.id, requestedAuth);
       }
+      // Changing either binding needs operate on the sources it removes and adds.
+      await this.authorizeAgentCredentialSources(
+        state,
+        principalId,
+        namespace.id,
+        agent.credentialSources ?? [],
+        undefined,
+      );
+      if (requestedSources !== undefined) {
+        await this.authorizeAgentCredentialSources(
+          state,
+          principalId,
+          namespace.id,
+          requestedSources,
+          requestedAuth === undefined ? previousAuth : requestedAuth,
+        );
+      } else if (requestedAuth !== undefined) {
+        this.assertDistinctCredentialSources(agent.credentialSources ?? [], requestedAuth);
+      }
       const secretBindings = this.bindings(configuration.secretBindings);
       await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const backendId = this.backendId(input.backendId, agent.backendId);
@@ -4849,6 +4886,7 @@ export class OpenClawController {
         repositoryBindings,
         pluginApprovers,
         repositoryAccess,
+        requestedSources,
       );
       if (!updated) {
         throw new ResourceConflictError("The Agent Configuration changed during its update.");
@@ -5057,6 +5095,12 @@ export class OpenClawController {
       requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers);
       const harnessAuth = await this.admitHarnessAuth(state, principalId, lockedAgent);
       const credentialSourceType = await this.admittedCredentialSourceType(harnessAuth, sandbox);
+      const credentialSources = await this.admitCredentialSources(
+        state,
+        principalId,
+        lockedAgent,
+        sandbox,
+      );
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
         state,
@@ -5202,6 +5246,7 @@ export class OpenClawController {
             : { pluginApprovers: lockedAgent.pluginApprovers }),
           ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
           harnessAuth,
+          ...(credentialSources.length === 0 ? {} : { credentialSources }),
           servicePrincipalId: lockedAgent.servicePrincipalId,
           createdAt,
         }),
@@ -5314,7 +5359,7 @@ export class OpenClawController {
     });
   }
 
-  /** The active revision must hold the source as its frozen Harness authentication. */
+  /** The active revision must hold the source as its Harness authentication or a non-model source. */
   private async activeCredentialSourceRevision(
     state: PlatformUnitOfWork,
     agent: Readonly<Agent>,
@@ -5328,11 +5373,13 @@ export class OpenClawController {
       agent.id,
       agent.activeRevisionId,
     );
-    if (
-      revision === undefined ||
-      revision.harnessAuth.method !== "credential_source" ||
-      revision.harnessAuth.sourceId !== input.credentialSourceId
-    ) {
+    const harnessSource =
+      revision?.harnessAuth.method === "credential_source" &&
+      revision.harnessAuth.sourceId === input.credentialSourceId;
+    const nonModelSource = (revision?.credentialSources ?? []).some(
+      ({ sourceId }) => sourceId === input.credentialSourceId,
+    );
+    if (revision === undefined || (!harnessSource && !nonModelSource)) {
       throw new ScopeViolationError(
         "The Agent's active revision does not use this credential source.",
       );
@@ -6102,6 +6149,126 @@ export class OpenClawController {
       });
       await this.exactServiceAccount(state, namespaceId, binding.serviceAccountId);
     }
+  }
+
+  private agentCredentialSources(
+    value: unknown,
+  ): readonly AgentCredentialSourceBinding[] | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    const seen = new Set<string>();
+    if (!Array.isArray(value) || value.length > MAX_AGENT_CREDENTIAL_SOURCES) {
+      throw new ScopeViolationError("The Agent credential sources are invalid.");
+    }
+    return Object.freeze(
+      value.map((entry: unknown) => {
+        if (
+          typeof entry !== "object" ||
+          entry === null ||
+          Object.keys(entry).length !== 1 ||
+          !isNonEmptyString((entry as { sourceId?: unknown }).sourceId) ||
+          seen.has((entry as { sourceId: string }).sourceId)
+        ) {
+          throw new ScopeViolationError("The Agent credential sources are invalid.");
+        }
+        const sourceId = (entry as { sourceId: string }).sourceId;
+        seen.add(sourceId);
+        return Object.freeze({ sourceId });
+      }),
+    );
+  }
+
+  /** A source is either the Agent's model credential or one of its non-model sources. */
+  private assertDistinctCredentialSources(
+    bindings: readonly AgentCredentialSourceBinding[],
+    harnessAuth: HarnessAuthBinding | null | undefined,
+  ): void {
+    if (
+      harnessAuth?.method === "credential_source" &&
+      bindings.some(({ sourceId }) => sourceId === harnessAuth.sourceId)
+    ) {
+      throw new ScopeViolationError(
+        "The Harness credential source cannot also be a non-model credential source.",
+      );
+    }
+  }
+
+  /** Namespace lock serializes binding, source deletion, and admission. */
+  private async authorizeAgentCredentialSources(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    namespaceId: string,
+    bindings: readonly AgentCredentialSourceBinding[],
+    harnessAuth: HarnessAuthBinding | null | undefined,
+  ): Promise<void> {
+    this.assertDistinctCredentialSources(bindings, harnessAuth);
+    for (const { sourceId } of bindings) {
+      await this.authorize(principalId, "operate", {
+        kind: "credential_source",
+        namespaceId,
+        id: sourceId,
+      });
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (source === undefined || source.state !== "ready") {
+        throw new ScopeViolationError(
+          "The credential source is unavailable in the exact Namespace.",
+        );
+      }
+      this.credentialGatewayDriver(source.driverId);
+    }
+  }
+
+  /**
+   * Freezes the Agent's non-model sources. Each needs the Agent principal's `operate`, a ready
+   * record and a catalog type without Harness authentication, which binds through `harnessAuth`.
+   */
+  private async admitCredentialSources(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sandbox: SandboxDriver | undefined,
+  ): Promise<readonly CredentialSourceSnapshot[]> {
+    const bindings = agent.credentialSources ?? [];
+    if (bindings.length === 0) {
+      return [];
+    }
+    if (sandbox === undefined) {
+      throw new ResourceConflictError(
+        "Agent credential sources require a selected Sandbox Driver.",
+      );
+    }
+    await this.authorizeAgentCredentialSources(
+      state,
+      principalId,
+      agent.namespaceId,
+      bindings,
+      agent.harnessAuth,
+    );
+    const snapshots: CredentialSourceSnapshot[] = [];
+    for (const { sourceId } of bindings) {
+      await this.authorizeAgentPrincipal(agent.servicePrincipalId, "operate", {
+        kind: "credential_source",
+        namespaceId: agent.namespaceId,
+        id: sourceId,
+      });
+      const source = await state.credentialSources.lockCredentialSource(
+        agent.namespaceId,
+        sourceId,
+      );
+      if (source === undefined || source.state !== "ready") {
+        throw new ScopeViolationError("The credential source is unavailable.");
+      }
+      const gateway = this.credentialGatewayDriver(source.driverId);
+      const type = await this.credentialSourceType(gateway, source.type);
+      if (type.harnessAuth !== undefined) {
+        throw new ResourceConflictError(
+          "A model credential source binds through Harness authentication, not credentialSources.",
+        );
+      }
+      snapshots.push({ sourceId, credentialGatewayId: gateway.id, sourceType: source.type });
+    }
+    return immutableCopy(snapshots);
   }
 
   private async authorizeProvisioningRecord(

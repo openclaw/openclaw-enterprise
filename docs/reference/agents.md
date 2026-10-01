@@ -158,6 +158,7 @@ an account does not issue its credential or change the model, Harness, or Backen
 For dedicated Codex with a Credential Gateway, use
 `{ "method": "credential_source", "sourceId": "cs_…" }`; see
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
+Non-model sources bind through `credentialSources`.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor

@@ -43,6 +43,8 @@ drivers:
     configuration:
       binaries:
         - /path/to/codex
+      toolBinaries:
+        - /usr/bin/curl
 ```
 
 `binaries` is required and closed: a nonempty list of absolute executable paths
@@ -50,12 +52,17 @@ inside the Harness image. OpenShell releases a credential only to requests made
 by those binaries. Use the exact native Codex executable, not a wrapper script.
 A stale path fails closed at the Codex startup model probe.
 
+`toolBinaries` is optional: a nonempty list of absolute paths inside the Sandbox
+image that may carry [non-model sources](../credential-sources.md#bind-a-source-to-an-agent)
+to their endpoints, such as `/usr/bin/curl`. Without it the catalog omits
+`bearer-token`.
+
 Startup rejects the selection when:
 
 - the Installation does not select the bundled Kubernetes Compute Driver;
 - no `openshell` Backend exists, or its `drivers.credential_gateway` or
   `drivers.sandbox` differs from the selected IDs; or
-- the configuration has any key other than `binaries`.
+- the configuration has any key other than `binaries` and `toolBinaries`.
 
 Both the API and the worker connect to the gateway with the Backend's
 credentials. The API registers and deletes providers; the worker creates
@@ -63,9 +70,26 @@ Sandboxes and reads attachment status. Allow both to reach the gateway.
 
 ## Source-type catalog
 
-| Type     | Secret fields        | Config fields | Rotation | Harness authentication |
-| -------- | -------------------- | ------------- | -------- | ---------------------- |
-| `openai` | `api_key` (required) | None          | `none`   | `openai` / `api_key`   |
+| Type           | Secret fields        | Config fields                                | Rotation | Harness authentication |
+| -------------- | -------------------- | -------------------------------------------- | -------- | ---------------------- |
+| `openai`       | `api_key` (required) | None                                         | `none`   | `openai` / `api_key`   |
+| `bearer-token` | `token` (required)   | `host`, `env_var` (required); `port`, `path` | `none`   | None (non-model)       |
+
+`bearer-token` config is checked before any gateway call:
+
+- `host` is an exact lowercase DNS name, not an IP address or wildcard.
+- `port` is 1 to 65535 and defaults to `443`.
+- `path` is an absolute path pattern and defaults to `/**`.
+- `env_var` names the Sandbox variable that holds the placeholder. It is upper
+  case and cannot be `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, or
+  `LANG`, or start with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
+
+The workload sends the placeholder itself, for example
+`curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com/v1/items`.
+The proxy substitutes the token only on requests from `toolBinaries` to the
+source's endpoint. Never put a placeholder, or its `openshell:resolve:env:` prefix, into the model conversation:
+OpenShell refuses a model request whose body carries one, so the Agent's turns
+fail until that history is gone.
 
 Other OpenShell provider types are not in the catalog, so registration rejects
 them.
@@ -82,6 +106,10 @@ Workspace:
   protocol and path `/v1/**`, for the configured binaries only. A digest
   annotation records the profile content; a configuration change updates the
   profile on the next registration.
+- **Provider profile per `bearer-token` source.** Its ID equals the source's
+  provider name. It exposes the token as the source's `env_var` and binds it to
+  the source's `host`, `port`, and `path` with `rest` protocol, for
+  `toolBinaries` only. `removeSource` deletes it with the provider.
 - **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
   characters of the SHA-256 digest of the source ID. Labels record OCC
   ownership, the source ID, and the Namespace ID. The provider's
@@ -105,7 +133,9 @@ keeps the previous value until it restarts.
 provider of the profile's type remains, it also deletes the profile, because
 OpenShell cannot delete a Workspace that still holds profiles.
 
-For a revision, `attachForRevision` returns each source's provider name. The
+For a revision, `attachForRevision` returns each source's provider name. It
+fails when two of the revision's sources would use the same environment
+variable. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
@@ -164,31 +194,40 @@ revision:
 
 ## Limits
 
-- `rotateSource` fails with "not supported yet": the `openai` type is static,
-  with nothing for the gateway to refresh. A running Agent uses an updated key
-  only after its next deployment.
-- Only the `openai` API-key type exists. ChatGPT-account sign-in and other
-  OpenShell source types remain unavailable.
+- `rotateSource` fails with "not supported yet": both types are static, with
+  nothing for the gateway to refresh. A running Agent uses an updated value only
+  after its next deployment.
+- Only the `openai` API-key and static `bearer-token` types exist. OAuth2
+  refresh, ChatGPT-account sign-in, and other OpenShell source types remain
+  unavailable.
+- A `bearer-token` source binds one endpoint, and the workload must place the
+  placeholder in the request itself.
 - Only one OpenShell Backend can be configured.
 
 ## Verification
 
 The [OpenShell real Sandbox suite](../../testing/openshell.md#openshell-sandbox)
 registers a source through the API, deploys a dedicated Codex Agent that uses it,
-and checks that every Harness process sees only the placeholder. The Sandbox
+and checks that every Harness process sees only the placeholder. It also binds a
+`bearer-token` source to an in-cluster endpoint, proves the substituted token
+arrives, and withdraws it from the running Agent while model turns continue. The Sandbox
 Driver startup integration covers Backend membership and selection rules.
 
 ## Troubleshooting
 
-| Symptom or message                                                                 | Cause and fix                                                                                     |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `drivers.credential_gateway requires an owning backend entry with type openshell.` | Add the `openshell` Backend.                                                                      |
-| `backend[…].drivers.credential_gateway must match …`                               | Make the Backend member IDs match the selected Driver IDs.                                        |
-| `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.` | Correct `binaries`.                                                                               |
-| Registration returns `503`                                                         | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.      |
-| Registration returns `404` for a name conflict                                     | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry. |
-| The revision stays inactive with a `failed` or `withheld` attachment               | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.              |
-| Codex startup fails its model probe                                                | Confirm `binaries` names the exact Codex executable and that Codex trusts the Sandbox CA.         |
+| Symptom or message                                                                                | Cause and fix                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                     |
+| `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                       |
+| `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                              |
+| Registering `bearer-token` returns `404` for an unsupported type                                  | Configure `toolBinaries`.                                                                                        |
+| A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                            |
+| Deployment fails because two sources use the same environment variable                            | Give each source bound to the Agent a distinct `env_var`.                                                        |
+| Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables. |
+| Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                     |
+| Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                |
+| The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                             |
+| Codex startup fails its model probe                                                               | Confirm `binaries` names the exact Codex executable and that Codex trusts the Sandbox CA.                        |
 
 ## Related
 

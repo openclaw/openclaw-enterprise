@@ -3,13 +3,15 @@
 A credential source registers a Namespace Secret with the Installation's
 selected [Credential Gateway](drivers/credential-gateway.md). The gateway keeps
 its own copy of the value and applies it outside the Agent workload, so the
-Harness never receives the real credential. An Agent uses a source through
-[`harnessAuth`](agents.md#harness-authentication).
+Harness never receives the real credential. An Agent uses a model source through
+[`harnessAuth`](agents.md#harness-authentication) and other sources through its
+`credentialSources` list.
 
 Credential sources require a selected Credential Gateway. The only
-implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md),
-which supports one source type, `openai`, for dedicated Codex model
-authentication. OpenShell is not a supported production Agent path; see its
+implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
+Its `openai` type authenticates dedicated Codex models, and its `bearer-token`
+type carries a static token to one API endpoint. OpenShell is not a supported
+production Agent path; see its
 [remaining blockers](drivers/openshell-sandbox.md#current-upstream-preconditions).
 
 ## Register a source
@@ -75,10 +77,16 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set the Agent's binding to
-`{ "method": "credential_source", "sourceId": "cs_…" }`. The caller needs
-`credential_source:operate` on the exact source. Deployment also requires the
-Agent's service principal to have `operate` on it; grant it with a
+Bind a model source, one whose catalog type has `harnessAuth`, as the Agent's
+Harness authentication: `{ "method": "credential_source", "sourceId": "cs_…" }`.
+Bind any other source through the Agent's `credentialSources` list, up to eight
+entries of `{ "sourceId": "cs_…" }`, on create or update. An update replaces the
+list, and `[]` removes it. A source cannot appear in both places or twice in the
+list, and deployment rejects a model source in `credentialSources` with `409`.
+
+For either binding, the caller needs `credential_source:operate` on each exact
+source, including any the update removes. Deployment also requires the Agent's
+service principal to have `operate` on each source; grant it with a
 [Namespace IAM](authorization.md#manage-namespace-policy) Role and an exact
 `credential_source` AccessBinding. The principal needs no permission on the
 underlying Secret. The worker rechecks both grants before it
@@ -129,8 +137,9 @@ gateway gives updated values only to new processes. To rotate a key:
 Withdrawal revokes a source from an Agent's active revision while the revision
 keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
-The caller needs `agent:operate`, and the active revision must authenticate with
-that source. The request returns `202` with the withdrawal in state `pending`.
+The caller needs `agent:operate`, and the active revision must have been
+admitted with that source, as its Harness authentication or in
+`credentialSources`. The request returns `202` with the withdrawal in state `pending`.
 A replay returns the same withdrawal. It queues another attempt only if no
 attempt is already queued or running.
 
@@ -146,12 +155,18 @@ worker's latest attempt. A `pending` withdrawal with reason
 running process never confirms revocation. `AUTHORIZATION_DENIED` or
 `ACTOR_REVOKED` means the requester lost `agent:operate`.
 
-A withdrawn source never re-attaches to that revision; if its Sandbox is
-recreated, provisioning fails with `CREDENTIAL_WITHDRAWN`. Maintenance of the
-revision stops preparing it. While the withdrawal is `pending`, each
-maintenance pass queues another attempt if none is outstanding. Once it is
-`revoked`, maintenance stops, so Compute no longer repairs the revision until a
-redeploy replaces it.
+A withdrawn source never re-attaches to that revision. If its Sandbox is
+recreated, a withdrawn non-model source is left out and the revision keeps
+running without it. A withdrawn model source instead fails provisioning with
+`CREDENTIAL_WITHDRAWN`, and maintenance of the revision stops preparing it. While any
+withdrawal is `pending`, each maintenance pass queues another attempt if none is
+outstanding. Once a model source is `revoked`, maintenance stops, so Compute no
+longer repairs the revision until a redeploy replaces it.
+
+Withdrawals of different sources on one revision share one worker attempt, but
+each is authorized by its own `requestedBy`. A requester who lost
+`agent:operate` leaves only their withdrawal `pending` with
+`AUTHORIZATION_DENIED`; the others are still revoked.
 
 The revision still references the source, so the source cannot be deleted until
 a redeploy replaces the revision. Redeploy the Agent with a replacement source

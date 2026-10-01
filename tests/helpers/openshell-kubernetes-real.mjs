@@ -987,7 +987,9 @@ export function createOpenShellKubernetesFixture({
           clearTimeout(timeout);
           process.stdout.write(JSON.stringify({ assistant, items }));
           socket.close();
-        } else if (message.method === "error") {
+        } else if (message.method === "error" && message.params?.willRetry !== true) {
+          // Codex reports retried model reconnects as errors; only a final error ends the turn,
+          // and turn/completed still requires a completed status.
           fail(new Error(message.params?.error?.message || "Codex harness turn failed"));
         }
       });

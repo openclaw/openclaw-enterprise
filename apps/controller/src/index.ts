@@ -56,6 +56,7 @@ import {
   type ComputeDriver,
   type HarnessExecutionMode,
   type HarnessAuthBinding,
+  type AgentCredentialSourceBinding,
   type IAMDriver,
   type Installation,
   type OccApiRoute,
@@ -916,6 +917,9 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
       : { repositoryBindings: agent.repositoryBindings }),
     ...(agent.repositoryAccess === undefined ? {} : { repositoryAccess: agent.repositoryAccess }),
     harnessAuth: agent.harnessAuth,
+    ...(agent.credentialSources === undefined || agent.credentialSources.length === 0
+      ? {}
+      : { credentialSources: agent.credentialSources }),
     ...(agent.activeRevisionId === undefined ? {} : { activeRevisionId: agent.activeRevisionId }),
     desiredRuntimeState: agent.desiredRuntimeState,
     status: agent.status,
@@ -982,6 +986,11 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
           },
         }),
     harnessAuth: harnessAuthBindingFromSnapshot(revision.harnessAuth),
+    ...(revision.credentialSources === undefined
+      ? {}
+      : {
+          credentialSources: revision.credentialSources.map(({ sourceId }) => ({ sourceId })),
+        }),
     createdAt: revision.createdAt,
   };
 }
@@ -2577,6 +2586,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.harnessAuth === undefined
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
+          ...(body?.credentialSources === undefined
+            ? {}
+            : {
+                credentialSources:
+                  body.credentialSources as readonly AgentCredentialSourceBinding[],
+              }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
           ...(body?.pluginApprovers === undefined
             ? {}
@@ -2688,6 +2703,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ...(body?.harnessAuth === undefined
             ? {}
             : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
+          ...(body?.credentialSources === undefined
+            ? {}
+            : {
+                credentialSources:
+                  body.credentialSources as readonly AgentCredentialSourceBinding[],
+              }),
           ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
           ...(body?.pluginApprovers === undefined
             ? {}

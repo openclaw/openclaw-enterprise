@@ -1683,7 +1683,7 @@ List authorized Agents in one exact Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth. |
+| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -1720,6 +1720,8 @@ Create a Namespace-owned Agent
 | --- | --- | --- | --- |
 | `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `harnessAuth` | `object or object or object or object or object or object or null` | No | — |
 | `initialWorkspaceFiles` | `object` | No | — |
@@ -1766,6 +1768,8 @@ Create a Namespace-owned Agent
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.harnessAuth` | `object or object or object or object or object or object or null` | Yes | — |
@@ -2450,6 +2454,8 @@ Begin or retry deletion of an exact Namespace-owned Agent and its AgentRevisions
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.harnessAuth` | `object or object or object or object or object or object or null` | Yes | — |
@@ -2510,7 +2516,7 @@ Get an exact Namespace-owned Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth. |
+| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -2548,6 +2554,8 @@ Replace an exact Namespace-owned Agent's editable draft
 | --- | --- | --- | --- |
 | `backendId` | `string or null` | No | — |
 | `configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `harnessAuth` | `object or object or object or object or object or object or null` | No | — |
 | `pluginApprovers` | `PluginApprovers or null` | No | — |
@@ -2585,6 +2593,8 @@ Replace an exact Namespace-owned Agent's editable draft
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.harnessAuth` | `object or object or object or object or object or object or null` | Yes | — |
@@ -2767,6 +2777,8 @@ Admit an immutable revision from the Agent's saved draft
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.configurationKind` | `"agent"` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.harness` | `object` | Yes | — |
 | `data.harness.id` | `string` | Yes | min length: 1 |
 | `data.harness.mode` | `"embedded" or "dedicated"` | Yes | — |
@@ -3472,6 +3484,8 @@ Stop one Agent while retaining its revision and persistent state
 | `data.backendId` | `string or null` | Yes | — |
 | `data.configurationId` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.credentialSources` | `array<object>` | No | max items: 8; Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `data.credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
 | `data.executionMode` | `"embedded" or "dedicated"` | Yes | — |
 | `data.harnessAuth` | `object or object or object or object or object or object or null` | Yes | — |

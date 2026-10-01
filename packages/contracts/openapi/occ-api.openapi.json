@@ -6744,7 +6744,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
                       "items": {
                         "anyOf": [
                           {
@@ -6773,6 +6773,23 @@
                                 "format": "date-time",
                                 "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                                 "type": "string"
+                              },
+                              "credentialSources": {
+                                "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "sourceId": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["sourceId"],
+                                  "type": "object"
+                                },
+                                "maxItems": 8,
+                                "type": "array",
+                                "uniqueItems": true
                               },
                               "desiredRuntimeState": {
                                 "anyOf": [
@@ -7048,6 +7065,7 @@
                                       { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
+                                      { "const": "credentialSources", "type": "string" },
                                       { "const": "secretBindings", "type": "string" },
                                       { "const": "repositoryCredentials", "type": "string" },
                                       { "const": "configuration", "type": "string" }
@@ -7116,7 +7134,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
                       },
                       "type": "array"
                     },
@@ -7217,6 +7235,23 @@
                   "configurationId": {
                     "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
+                  },
+                  "credentialSources": {
+                    "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "sourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["sourceId"],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "executionMode": {
                     "anyOf": [
@@ -7475,6 +7510,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "desiredRuntimeState": {
                           "anyOf": [
@@ -9930,6 +9982,23 @@
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
                         },
+                        "credentialSources": {
+                          "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
                         "desiredRuntimeState": {
                           "anyOf": [
                             { "const": "running", "type": "string" },
@@ -10292,6 +10361,23 @@
                               "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
                             },
+                            "credentialSources": {
+                              "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "sourceId": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["sourceId"],
+                                "type": "object"
+                              },
+                              "maxItems": 8,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
                             "desiredRuntimeState": {
                               "anyOf": [
                                 { "const": "running", "type": "string" },
@@ -10566,6 +10652,7 @@
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
+                                    { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
                                     { "const": "repositoryCredentials", "type": "string" },
                                     { "const": "configuration", "type": "string" }
@@ -10634,7 +10721,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, and harnessAuth."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -10741,6 +10828,23 @@
                   "configurationId": {
                     "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
+                  },
+                  "credentialSources": {
+                    "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "sourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["sourceId"],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "executionMode": {
                     "anyOf": [
@@ -10968,6 +11072,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "desiredRuntimeState": {
                           "anyOf": [
@@ -11692,6 +11813,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "harness": {
                           "additionalProperties": false,
@@ -14851,6 +14989,23 @@
                                 "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                                 "type": "string"
                               },
+                              "credentialSources": {
+                                "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "sourceId": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["sourceId"],
+                                  "type": "object"
+                                },
+                                "maxItems": 8,
+                                "type": "array",
+                                "uniqueItems": true
+                              },
                               "harness": {
                                 "additionalProperties": false,
                                 "properties": {
@@ -15134,6 +15289,7 @@
                                       { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
+                                      { "const": "credentialSources", "type": "string" },
                                       { "const": "secretBindings", "type": "string" },
                                       { "const": "repositoryCredentials", "type": "string" },
                                       { "const": "configuration", "type": "string" }
@@ -15327,6 +15483,23 @@
                               "format": "date-time",
                               "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
+                            },
+                            "credentialSources": {
+                              "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "sourceId": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["sourceId"],
+                                "type": "object"
+                              },
+                              "maxItems": 8,
+                              "type": "array",
+                              "uniqueItems": true
                             },
                             "harness": {
                               "additionalProperties": false,
@@ -15609,6 +15782,7 @@
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
+                                    { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
                                     { "const": "repositoryCredentials", "type": "string" },
                                     { "const": "configuration", "type": "string" }
@@ -16133,6 +16307,23 @@
                           "format": "date-time",
                           "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                           "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Non-model credential sources the Agent's Harness may use at each source's endpoints. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
                         },
                         "desiredRuntimeState": {
                           "anyOf": [

@@ -1048,6 +1048,8 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
+      // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
+      ["occ.sync_agent_credential_sources()", false],
       ["occ.validate_access_binding_scope()", false],
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
@@ -1417,6 +1419,7 @@ async function canonicalData(db) {
               "repository_access",
               "harness_auth_credential_source_id",
               "plugin_approvers",
+              "credential_sources",
             ]
           : table === "controller_work"
             ? ["work_kind"]
@@ -1488,6 +1491,7 @@ test(
       [41, "preRestrictionReadLogs"],
       [42, "preOAuth"],
       [43, "preCredentialWithdrawals"],
+      [44, "preAgentCredentialSources"],
     ]) {
       await context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1739,6 +1743,7 @@ test(
       [41, "preRestrictionReadLogs"],
       [42, "preOAuth"],
       [43, "preCredentialWithdrawals"],
+      [44, "preAgentCredentialSources"],
     ]) {
       await context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1811,6 +1816,7 @@ test(
       [41, "preRestrictionReadLogs"],
       [42, "preOAuth"],
       [43, "preCredentialWithdrawals"],
+      [44, "preAgentCredentialSources"],
     ]) {
       await context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

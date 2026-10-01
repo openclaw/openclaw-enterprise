@@ -332,6 +332,18 @@ export interface CredentialWithdrawal {
   readonly lastAttemptAt?: string;
 }
 
+/** A non-model credential source the Agent's Harness may use at its source's endpoints. */
+export interface AgentCredentialSourceBinding {
+  readonly sourceId: string;
+}
+
+/** Private admission metadata for one non-model source frozen into a revision. */
+export interface CredentialSourceSnapshot {
+  readonly sourceId: string;
+  readonly credentialGatewayId: string;
+  readonly sourceType: string;
+}
+
 export type HarnessAuthBinding =
   | { readonly method: "api_key"; readonly source: SecretReference }
   | { readonly method: "codex_pat"; readonly source: SecretReference }
@@ -390,6 +402,8 @@ export type ResolvedHarnessAuth =
 export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
+  /** Non-model sources resolved again at dispatch, in admission order. */
+  readonly credentialSources?: readonly Readonly<CredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
@@ -613,6 +627,7 @@ export interface Agent extends Scope {
   readonly configurationId: string;
   readonly backendId: BackendRef;
   readonly harnessAuth: HarnessAuthBinding | null;
+  readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode: HarnessExecutionMode;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
@@ -632,6 +647,7 @@ export interface ConfigurationReadError {
     | "repositoryBindings"
     | "repositoryAccess"
     | "harnessAuth"
+    | "credentialSources"
     | "secretBindings"
     | "repositoryCredentials"
     | "configuration";
@@ -639,7 +655,12 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
-  "plugins" | "pluginApprovers" | "repositoryBindings" | "repositoryAccess" | "harnessAuth"
+  | "plugins"
+  | "pluginApprovers"
+  | "repositoryBindings"
+  | "repositoryAccess"
+  | "harnessAuth"
+  | "credentialSources"
 >;
 
 export type AgentRead =
@@ -696,6 +717,7 @@ export interface AgentRevision extends Scope {
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryCredentials?: RepositoryRevisionState;
   readonly harnessAuth: HarnessAuthSnapshot;
+  readonly credentialSources?: readonly CredentialSourceSnapshot[];
   readonly servicePrincipalId: string;
   readonly createdAt: string;
 }
@@ -726,6 +748,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     harness: Object.freeze({ ...revision.harness }),
     compute: Object.freeze({ ...revision.compute }),
     harnessAuth: immutableCopy(revision.harnessAuth),
+    ...(revision.credentialSources === undefined
+      ? {}
+      : { credentialSources: immutableCopy(revision.credentialSources) }),
   });
 }
 
