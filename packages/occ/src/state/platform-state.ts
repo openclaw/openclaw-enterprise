@@ -2440,10 +2440,17 @@ function repositories(
           "The IAM AccessBinding subject does not belong to the exact Namespace.",
         );
       }
+      // A binding without a target is Namespace-wide; a partial target is invalid.
+      const namespaceWide = binding.resourceKind === undefined && binding.resourceId === undefined;
       if (
-        binding.resourceKind === undefined ||
-        binding.resourceId === undefined ||
-        !(await managedPolicyResourceExists(namespace.id, binding.resourceKind, binding.resourceId))
+        !namespaceWide &&
+        (binding.resourceKind === undefined ||
+          binding.resourceId === undefined ||
+          !(await managedPolicyResourceExists(
+            namespace.id,
+            binding.resourceKind,
+            binding.resourceId,
+          )))
       ) {
         throw new ScopeViolationError(
           "The IAM AccessBinding target does not belong to the exact Namespace.",

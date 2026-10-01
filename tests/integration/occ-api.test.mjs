@@ -1063,6 +1063,43 @@ test("Namespace IAM routes bind existing humans to the exact Namespace and Agent
   assert.equal(bindings.data.length, 2, "rejected grants must leave policy unchanged");
 });
 
+test("Namespace IAM routes create Namespace-wide AccessBindings without a target", async () => {
+  const fixture = await createInjectedFixture();
+  const member = await fixture.createAuthPrincipal("namespace-wide-member");
+  fixture.state.identities.push(member.principal);
+  const controller = {
+    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+  };
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "namespace-wide-iam");
+  const role = await controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+    body: { permissions: [{ action: "create", resourceKind: "agent" }] },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const bindings = `/namespaces/${namespace.id}/iam/access-bindings`;
+  const body = { subjectKind: "identity", subjectId: member.principal.id, roleId: role.data.id };
+
+  // A partial target is neither exact nor Namespace-wide.
+  for (const partial of [{ resourceKind: "agent" }, { resourceId: namespace.id }]) {
+    const rejected = await controller.request("POST", bindings, { body: { ...body, ...partial } });
+    assert.equal(rejected.status, 404, JSON.stringify(rejected.body));
+  }
+
+  const binding = await controller.request("POST", bindings, { body });
+  assert.equal(binding.status, 201, JSON.stringify(binding.body));
+  assert.deepEqual(binding.data, { id: binding.data.id, namespaceId: namespace.id, ...body });
+  const listed = await controller.request("GET", bindings);
+  assert.deepEqual(listed.data, [binding.data]);
+  const recorded = fixture.auditSink.events.find(
+    (event) => event.kind === "mutation" && event.action === "openclaw.iam.access_bindings.create",
+  );
+  assert.deepEqual(recorded.resource, {
+    kind: "namespace",
+    id: namespace.id,
+    namespaceId: namespace.id,
+  });
+});
+
 test("credential withdrawal routes authorize the Agent, not the credential source", async () => {
   const fixture = await createInjectedFixture();
   const controller = {
@@ -1518,20 +1555,6 @@ test("Namespace IAM read routes serialize broad native policy without widening m
   );
   assert.equal(groupBindingCreate.status, 400);
   assert.equal(groupBindingCreate.body.error.code, "INVALID_REQUEST");
-
-  const broadBindingCreate = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-    {
-      body: {
-        subjectKind: "identity",
-        subjectId: fixture.principal.id,
-        roleId: role.id,
-      },
-    },
-  );
-  assert.equal(broadBindingCreate.status, 400);
-  assert.equal(broadBindingCreate.body.error.code, "INVALID_REQUEST");
 });
 
 test("Namespace IAM routes fail closed without policy management and roll back audit failures", async () => {

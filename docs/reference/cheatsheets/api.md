@@ -122,7 +122,7 @@
 
 - [`listIAMAccessBindings`](../api.md#get-namespacesnamespaceidiamaccessbindings): List exact Namespace IAM AccessBindings.
 - [`getIAMAccessBinding`](../api.md#get-namespacesnamespaceidiamaccessbindingsbindingid): Get an exact Namespace IAM AccessBinding.
-- [`createIAMAccessBinding`](../api.md#post-namespacesnamespaceidiamaccessbindings): Create an immutable exact-resource Namespace IAM AccessBinding.
+- [`createIAMAccessBinding`](../api.md#post-namespacesnamespaceidiamaccessbindings): Create an immutable Namespace-wide or exact-resource IAM AccessBinding.
 - [`deleteIAMAccessBinding`](../api.md#delete-namespacesnamespaceidiamaccessbindingsbindingid): Delete one exact Namespace IAM AccessBinding.
 
 ### IAM roles

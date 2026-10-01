@@ -75,6 +75,9 @@ resource kinds; `namespace` permissions support only `read`. AccessBinding creat
 targets in the same Namespace, including the Namespace itself when the target
 ID matches the path Namespace. OCC verifies the target resource exists and that
 the caller can read it before asking the IAM Driver to create the binding.
+A request with neither `resourceKind` nor `resourceId` creates a Namespace-wide
+binding (no target columns), which native IAM already evaluates as covering every
+resource in that Namespace; a partial target is rejected.
 
 ### 4. The IAM Driver persists or reads policy
 
@@ -149,6 +152,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-10-01: Accept Namespace-wide AccessBindings without a target (RFC-0044 draft). (fix-rfc-d92)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)
 - 2026-09-27 19:15: Clarify unknown commit handling and the unregistered authority barrier. (codex/01a0b3bf-83a8-7392-ae2d-1a369b54ab3f - 181b0472f9a5a9d422035edf5121d3a15c200cb5)

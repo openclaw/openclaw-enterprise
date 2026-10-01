@@ -1059,8 +1059,9 @@ export interface IAMManagedAccessBindingInput {
   readonly subjectKind: "identity";
   readonly subjectId: string;
   readonly roleId: string;
-  readonly resourceKind: ManagedIAMResourceKind;
-  readonly resourceId: string;
+  /** Both present: one exact resource. Both absent: every resource in the Namespace. */
+  readonly resourceKind?: ManagedIAMResourceKind;
+  readonly resourceId?: string;
 }
 
 export interface ServiceAccountDriver extends Driver {

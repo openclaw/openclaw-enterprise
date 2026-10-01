@@ -4536,7 +4536,7 @@ Push current or replacement Secret values to the Credential Gateway copy
 | Operation | Summary |
 | --- | --- |
 | [`GET /namespaces/{namespaceId}/iam/access-bindings`](#get-namespacesnamespaceidiamaccessbindings) | List exact Namespace IAM AccessBindings |
-| [`POST /namespaces/{namespaceId}/iam/access-bindings`](#post-namespacesnamespaceidiamaccessbindings) | Create an immutable exact-resource Namespace IAM AccessBinding |
+| [`POST /namespaces/{namespaceId}/iam/access-bindings`](#post-namespacesnamespaceidiamaccessbindings) | Create an immutable Namespace-wide or exact-resource IAM AccessBinding |
 | [`DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#delete-namespacesnamespaceidiamaccessbindingsbindingid) | Delete one exact Namespace IAM AccessBinding |
 | [`GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#get-namespacesnamespaceidiamaccessbindingsbindingid) | Get an exact Namespace IAM AccessBinding |
 | [`GET /namespaces/{namespaceId}/iam/roles`](#get-namespacesnamespaceidiamroles) | List exact Namespace IAM Roles |
@@ -4589,7 +4589,7 @@ List exact Namespace IAM AccessBindings
 
 <span id="post-namespacesnamespaceidiamaccessbindings"></span>
 
-Create an immutable exact-resource Namespace IAM AccessBinding
+Create an immutable Namespace-wide or exact-resource IAM AccessBinding
 
 **Operation ID:** `createIAMAccessBinding`
 
@@ -4620,8 +4620,8 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `resourceId` | `string` | Yes | min length: 1; max length: 200 |
-| `resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "preset" or "secret" or "service_account"` | Yes | — |
+| `resourceId` | `string` | No | min length: 1; max length: 200 |
+| `resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "preset" or "secret" or "service_account"` | No | — |
 | `roleId` | `string` | Yes | min length: 1; max length: 200 |
 | `subjectId` | `string` | Yes | min length: 1; max length: 200 |
 | `subjectKind` | `"identity"` | Yes | — |

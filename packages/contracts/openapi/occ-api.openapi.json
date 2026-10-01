@@ -18568,7 +18568,7 @@
                   "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
                   "subjectKind": { "const": "identity", "type": "string" }
                 },
-                "required": ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"],
+                "required": ["subjectKind", "subjectId", "roleId"],
                 "type": "object"
               }
             }
@@ -18722,7 +18722,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Create an immutable exact-resource Namespace IAM AccessBinding",
+        "summary": "Create an immutable Namespace-wide or exact-resource IAM AccessBinding",
         "tags": ["IAM"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },

@@ -112,8 +112,10 @@ export const iamHandlers = {
         subjectKind: body?.subjectKind as "identity",
         subjectId: body?.subjectId as string,
         roleId: body?.roleId as string,
-        resourceKind: body?.resourceKind as ResourceKind,
-        resourceId: body?.resourceId as string,
+        ...(body?.resourceKind === undefined
+          ? {}
+          : { resourceKind: body.resourceKind as ResourceKind }),
+        ...(body?.resourceId === undefined ? {} : { resourceId: body.resourceId as string }),
       });
       await unit.audit.append(
         mutationEvent(bindingAuditResource(created, namespaceId), bindingAuditDetails(created)),

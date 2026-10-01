@@ -40,7 +40,11 @@ and how denials work.
 If a request returns `401`, check the session or service key. A `403` means the
 current identity, scope, grant, or a Restriction did not permit the operation.
 Have an administrator check the exact resource and action; access to a Namespace
-does not give access to every resource in it.
+does not give access to every resource in it. To let a person create Agents,
+Configurations, or Secrets in a Namespace, an administrator binds a Role
+[across that Namespace](../../reference/authorization.md#manage-namespace-policy).
+The console's Create Agent page also reads Installation capabilities, so it
+additionally needs Installation `read`; the HTTP API does not.
 
 ## Add a person
 

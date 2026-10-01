@@ -359,15 +359,11 @@ function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBindin
   assertCondition(
     typeof input === "object" &&
       input !== null &&
-      exactKeys(input, [
-        "id",
-        "namespaceId",
-        "subjectKind",
-        "subjectId",
-        "roleId",
-        "resourceKind",
-        "resourceId",
-      ]),
+      exactOptionalKeys(
+        input,
+        ["id", "namespaceId", "subjectKind", "subjectId", "roleId"],
+        ["resourceKind", "resourceId"],
+      ),
     "managed AccessBinding input contains unsupported fields",
   );
   assertCondition(isNonEmptyString(input.id), "managed AccessBinding identity is invalid");
@@ -381,8 +377,18 @@ function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBindin
   );
   assertCondition(isNonEmptyString(input.subjectId), "managed AccessBinding subject is invalid");
   assertCondition(isNonEmptyString(input.roleId), "managed AccessBinding Role is invalid");
+  // Without a target, the binding grants its Namespace Role across that Namespace.
+  if (input.resourceKind === undefined && input.resourceId === undefined) {
+    return Object.freeze({
+      id: input.id,
+      namespaceId: input.namespaceId,
+      subjectKind: "identity",
+      subjectId: input.subjectId,
+      roleId: input.roleId,
+    });
+  }
   assertCondition(
-    MANAGED_RESOURCE_KINDS.includes(input.resourceKind),
+    input.resourceKind !== undefined && MANAGED_RESOURCE_KINDS.includes(input.resourceKind),
     "managed AccessBinding resource kind is invalid",
   );
   assertCondition(isNonEmptyString(input.resourceId), "managed AccessBinding resource is invalid");

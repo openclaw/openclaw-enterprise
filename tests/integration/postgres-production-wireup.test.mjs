@@ -884,6 +884,98 @@ test(
           );
         },
       );
+
+      await t.test("a Namespace-wide binding delegates creation within its Namespace", async () => {
+        // An exact Namespace binding carries only Namespace read. Omitting the target binds
+        // the Role across the Namespace, so its child-kind permissions include creation.
+        const email = `creator-${randomUUID()}@example.test`;
+        const personPassword = `creator-${randomUUID()}`;
+        const created = await request("POST", "/api/auth/accounts", {
+          email,
+          password: personPassword,
+          name: "creator",
+        });
+        assert.equal(created.status, 201);
+        const creator = await signInWithEmailPassword({
+          origin: endpoint,
+          email,
+          password: personPassword,
+        });
+        const namespaceId = defaultNamespace[0].id;
+        const namespacePath = `/namespaces/${namespaceId}`;
+        const configuration = { kind: "agent", values: {} };
+        assert.equal(
+          (await request("POST", `${namespacePath}/configurations`, configuration, creator)).status,
+          403,
+        );
+        const role = await request("POST", `${namespacePath}/iam/roles`, {
+          name: "Agent creator",
+          permissions: [
+            { action: "read", resourceKind: "namespace" },
+            ...["create", "read", "update"].flatMap((action) =>
+              ["agent", "configuration", "secret"].map((resourceKind) => ({
+                action,
+                resourceKind,
+              })),
+            ),
+          ],
+        });
+        assert.equal(role.status, 201);
+        const binding = await request("POST", `${namespacePath}/iam/access-bindings`, {
+          subjectKind: "identity",
+          subjectId: created.data.principalId,
+          roleId: role.data.id,
+        });
+        assert.equal(binding.status, 201);
+        assert.equal(Object.hasOwn(binding.data, "resourceKind"), false);
+
+        assert.deepEqual(
+          (await request("GET", "/namespaces", undefined, creator)).data.map(({ id }) => id),
+          [namespaceId],
+        );
+        const secret = await request(
+          "POST",
+          `${namespacePath}/secrets`,
+          { name: `Delegated key ${randomUUID()}`, value: "delegated-secret-value" },
+          creator,
+        );
+        assert.equal(secret.status, 201);
+        const ownConfiguration = await request(
+          "POST",
+          `${namespacePath}/configurations`,
+          configuration,
+          creator,
+        );
+        assert.equal(ownConfiguration.status, 201);
+        const agent = await request(
+          "POST",
+          `${namespacePath}/agents`,
+          { name: `delegated-${randomUUID()}`, configurationId: ownConfiguration.data.id },
+          creator,
+        );
+        assert.equal(agent.status, 201);
+        assert.equal(
+          (await request("GET", `${namespacePath}/agents/${agent.data.id}`, undefined, creator))
+            .status,
+          200,
+        );
+        // The grant confers neither Installation access nor policy administration.
+        assert.equal((await request("GET", "/installation", undefined, creator)).status, 403);
+        assert.equal(
+          (await request("GET", `${namespacePath}/iam/roles`, undefined, creator)).status,
+          403,
+        );
+
+        const revoked = await request(
+          "DELETE",
+          `${namespacePath}/iam/access-bindings/${binding.data.id}`,
+        );
+        assert.equal(revoked.status, 204);
+        assert.equal(
+          (await request("POST", `${namespacePath}/configurations`, configuration, creator)).status,
+          403,
+        );
+      });
     } finally {
       if (app !== undefined) {
         await app.close();

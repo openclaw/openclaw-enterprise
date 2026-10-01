@@ -579,7 +579,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "namespace_iam",
-    summary: "Create an immutable exact-resource Namespace IAM AccessBinding",
+    summary: "Create an immutable Namespace-wide or exact-resource IAM AccessBinding",
     tags: ["IAM"],
     schema: {
       querystring: EmptyQuery,

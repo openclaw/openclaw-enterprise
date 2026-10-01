@@ -498,13 +498,15 @@ export const CreateIAMRoleBody = Type.Object(
   { additionalProperties: false },
 );
 
+// Give both resourceKind and resourceId to grant on one exact resource, or omit both to
+// grant the Role across the exact Namespace; OCC rejects a partial target.
 export const CreateIAMAccessBindingBody = Type.Object(
   {
     subjectKind: Type.Literal("identity"),
     subjectId: Type.String({ minLength: 1, maxLength: 200 }),
     roleId: IAMRoleId,
-    resourceKind: NamespacePolicyResourceKindSchema,
-    resourceId: Type.String({ minLength: 1, maxLength: 200 }),
+    resourceKind: Type.Optional(NamespacePolicyResourceKindSchema),
+    resourceId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   },
   { additionalProperties: false },
 );

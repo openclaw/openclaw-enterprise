@@ -533,8 +533,9 @@ export interface CreateIAMAccessBindingInput {
   readonly subjectKind: "identity";
   readonly subjectId: string;
   readonly roleId: string;
-  readonly resourceKind: ResourceKind;
-  readonly resourceId: string;
+  /** Both present: one exact resource. Both absent: every resource in the Namespace. */
+  readonly resourceKind?: ResourceKind;
+  readonly resourceId?: string;
 }
 
 export interface UpdateConfigurationInput {
@@ -1198,24 +1199,30 @@ export class OpenClawController {
     if (!isNonEmptyString(input.roleId)) {
       throw new ScopeViolationError("The IAM AccessBinding Role is invalid.");
     }
-    this.assertNamespacePolicyResourceKind(input.resourceKind);
-    if (!isNonEmptyString(input.resourceId)) {
-      throw new ScopeViolationError("The IAM AccessBinding resource is invalid.");
+    // Without a target the binding is Namespace-wide; the policy authority check below
+    // already requires Installation administer and read on the exact Namespace.
+    const namespaceWide = input.resourceKind === undefined && input.resourceId === undefined;
+    if (!namespaceWide) {
+      this.assertNamespacePolicyResourceKind(input.resourceKind as ResourceKind);
+      if (!isNonEmptyString(input.resourceId)) {
+        throw new ScopeViolationError("The IAM AccessBinding resource is invalid.");
+      }
     }
     const namespace = await this.admitIAMPolicyOperation(principalId, input.namespaceId);
-    await this.authorize(principalId, "read", {
-      kind: input.resourceKind,
-      id: input.resourceId,
-      namespaceId: namespace.id,
-    });
-    await this.verifyNamespacePolicyResource(namespace.id, input.resourceKind, input.resourceId);
+    const target: ResourceRef | undefined = namespaceWide
+      ? undefined
+      : {
+          kind: input.resourceKind as ResourceKind,
+          id: input.resourceId as string,
+          namespaceId: namespace.id,
+        };
+    if (target !== undefined) {
+      await this.authorize(principalId, "read", target);
+      await this.verifyNamespacePolicyResource(namespace.id, target.kind, target.id);
+    }
     const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
     return this.mutate(async (state) => {
-      await this.holdIAMPolicyAuthority(state, principalId, namespace.id, {
-        kind: input.resourceKind,
-        id: input.resourceId,
-        namespaceId: namespace.id,
-      });
+      await this.holdIAMPolicyAuthority(state, principalId, namespace.id, target);
       return this.iamPolicyOperation(() =>
         driver.createNamespaceAccessBinding!(
           { policy: state.iamPolicy },
@@ -1225,8 +1232,9 @@ export class OpenClawController {
             subjectKind: "identity",
             subjectId: input.subjectId,
             roleId: input.roleId,
-            resourceKind: input.resourceKind as ManagedIAMResourceKind,
-            resourceId: input.resourceId,
+            ...(target === undefined
+              ? {}
+              : { resourceKind: target.kind as ManagedIAMResourceKind, resourceId: target.id }),
           },
         ),
       );

@@ -219,7 +219,7 @@ equal the Namespace ID in the path. A binding applies only the Role permissions
 whose kind equals its target kind: an `agent_revision` permission bound to an
 Agent target grants nothing, so revision `read` is bound per AgentRevision. A ServiceAccount
 resource is not an IAM identity. Caller IDs, scope, wildcard targets, Groups, unknown permissions,
-and extra fields are rejected. Native IAM commits validated policy and its
+extra fields, and a `resourceKind` without `resourceId` (or the reverse) are rejected. Native IAM commits validated policy and its
 attributable audit event together; later requests on other replicas see it
 without a restart.
 
@@ -227,6 +227,13 @@ For human discovery, grant `read` on that exact Namespace and separately grant
 the required actions on each exact Agent. A Namespace target grants only
 Namespace actions; it does not grant access to its Agents or permission to
 create child resources. Human enrollment and grant creation are separate steps.
+
+To let someone create and manage resources in one Namespace, omit both
+`resourceKind` and `resourceId`. The binding is then Namespace-wide: every Role
+permission applies to every resource of that kind in the path Namespace,
+including creation (for example `create` on `agent`, `configuration`, or
+`secret`). It never applies in another Namespace, and it grants no Installation
+access or policy administration. Grant only the kinds and actions needed.
 
 Roles and bindings cannot be updated. Create replacements and explicitly
 remove old bindings. A referenced Role cannot be deleted (`409`), and deleting
@@ -331,6 +338,8 @@ For a working authenticated request, see the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01: Document Namespace-wide AccessBindings created without a target.
 
 - 2026-09-19 20:53: Document Namespace Role and exact identity AccessBinding management. (codex/01a0bce5-9f29-7110-85fd-6b140674d362 - 06c23b9cf60915ba58baa38b23cf304562e674a1)
 

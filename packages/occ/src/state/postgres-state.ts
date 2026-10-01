@@ -3384,8 +3384,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (namespace.status !== "provisioning" && namespace.status !== "ready") ||
           binding.namespaceId !== namespace.id ||
           binding.subjectKind !== "identity" ||
-          binding.resourceKind === undefined ||
-          binding.resourceId === undefined
+          (binding.resourceKind === undefined) !== (binding.resourceId === undefined)
         ) {
           throw new ScopeViolationError(
             "The IAM AccessBinding must belong to an available Namespace.",
@@ -3420,7 +3419,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (binding.resourceKind === "namespace" && namespaceRoleGrantsBeyondRead(role)) {
           throw new ScopeViolationError("Namespace IAM Roles support only Namespace read.");
         }
-        if (!(await lockTarget(namespace.id, binding.resourceKind, binding.resourceId))) {
+        // A binding without a target is Namespace-wide and locks only its Namespace.
+        if (
+          binding.resourceKind !== undefined &&
+          binding.resourceId !== undefined &&
+          !(await lockTarget(namespace.id, binding.resourceKind, binding.resourceId))
+        ) {
           throw new ScopeViolationError(
             "The IAM AccessBinding target does not belong to the exact Namespace.",
           );
@@ -3435,8 +3439,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             namespace.id,
             binding.subjectId,
             binding.roleId,
-            binding.resourceKind,
-            binding.resourceId,
+            binding.resourceKind ?? null,
+            binding.resourceId ?? null,
           ],
         );
         return immutableCopy(binding);
