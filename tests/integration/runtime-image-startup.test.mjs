@@ -1754,7 +1754,36 @@ test(
           headers: { "x-route": "owner" },
           models: codexProvider.models,
         },
+        // Another provider with a credential would give a built-in run a model.
+        anthropic: {
+          baseUrl: "https://model.example.test/v1",
+          api: "anthropic-messages",
+          apiKey: "owner-model-key",
+          models: [{ id: "claude-test", name: "claude-test" }],
+        },
       },
+    };
+    // Agent and model params would make Codex hand its turns to the built-in
+    // runtime; an allowlisted provider without a row would keep its default transport.
+    const codexModel = configuration.agents.defaults.model;
+    configuration.agents.defaults = {
+      ...configuration.agents.defaults,
+      params: { temperature: 0 },
+      models: {
+        ...configuration.agents.defaults.models,
+        [codexModel]: {
+          ...configuration.agents.defaults.models?.[codexModel],
+          params: { thinking: "high", temperature: 0 },
+        },
+        "google/gemini-test": {},
+      },
+      // A tool model's provider skips the allowlist, so it gets a stub row too.
+      imageModel: { primary: "mistral/pixtral-test" },
+    };
+    // A channel model override skips the allowlist as well, so it is removed.
+    configuration.channels = {
+      ...configuration.channels,
+      modelByChannel: { slack: { "*": "google/gemini-test" } },
     };
     const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
@@ -1844,6 +1873,13 @@ process.stdout.write(JSON.stringify({
   triggers: config.cron.triggers,
   codexProvider: config.models.providers.codex,
   openaiProvider: config.models.providers.openai,
+  anthropicProvider: config.models.providers.anthropic,
+  googleProvider: config.models.providers.google,
+  mistralProvider: config.models.providers.mistral,
+  modelByChannel: config.channels?.modelByChannel ?? null,
+  defaultParams: config.agents.defaults.params ?? null,
+  modelPolicy: config.agents.defaults.modelPolicy,
+  modelParams: config.agents.defaults.models[${JSON.stringify(codexModel)}].params,
   valid: JSON.parse(validation.stdout).valid,
 }));`,
     ]);
@@ -1872,6 +1908,17 @@ process.stdout.write(JSON.stringify({
         baseUrl: "http://127.0.0.1:9",
         api: "openai-responses",
       },
+      anthropicProvider: {
+        models: [{ id: "claude-test", name: "claude-test" }],
+        baseUrl: "http://127.0.0.1:9",
+        api: "openai-responses",
+      },
+      googleProvider: { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [] },
+      mistralProvider: { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [] },
+      modelByChannel: null,
+      defaultParams: null,
+      modelPolicy: { allow: Object.keys(configuration.agents.defaults.models) },
+      modelParams: { thinking: "high" },
       valid: true,
     });
     t.diagnostic(`workspace node ack after ${result.ackMs} ms: ${JSON.stringify(result)}`);

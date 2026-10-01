@@ -396,6 +396,7 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { env: { ANTHROPIC_API_KEY: sentinel } },
     { env: { vars: { ANTHROPIC_AUTH_TOKEN: sentinel } } },
     { env: { vars: { CODEX_ACCESS_TOKEN: sentinel } } },
+    { env: { vars: { CODEX_API_KEY: sentinel } } },
   ];
   for (const values of valuesWithCredential) {
     const unsafe = { ...configuration, values };

@@ -51,6 +51,7 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
           "ANTHROPIC_API_KEY",
           "ANTHROPIC_AUTH_TOKEN",
           "CODEX_ACCESS_TOKEN",
+          "CODEX_API_KEY",
         ].includes(name)
       ) {
         validateReference(value);

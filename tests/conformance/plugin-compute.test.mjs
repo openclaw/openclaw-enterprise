@@ -3579,6 +3579,7 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
           gateway: { port: 8080 },
           plugins: { installs: { keep: { source: "npm" } }, load: { paths: ["existing"] } },
           tools: { alsoAllow: ["existing-tool"] },
+          agents: { defaults: { model: "openai/gpt-5" } },
         }),
       ],
     ]),

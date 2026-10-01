@@ -2199,9 +2199,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     for (const values of [env, asRecord(env?.vars)]) {
       if (
         Object.keys(values ?? {}).some((name) =>
-          /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i.test(
-            name,
-          ),
+          /^(?:OPENAI_|ANTHROPIC_|CODEX_)/i.test(name.trim()),
         )
       ) {
         throw conflictingAuth();

@@ -613,6 +613,8 @@ const codexGatewayConfig = () => ({
     },
   },
   tools: { alsoAllow: ["existing-tool"] },
+  // Admission requires a Codex model selection.
+  agents: { defaults: { model: "openai/gpt-5" } },
 });
 
 test("a running Gateway hot-applies its workspace node under plugins.* and acks only OpenClaw's reload", async () => {
@@ -880,6 +882,7 @@ test("a Gateway given its node in the environment configures it at start and arm
   const intervals = [];
   const kills = [];
   const { files, calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: { gateway: { port: 8080 }, agents: { defaults: { model: "openai/gpt-5" } } },
     env: {
       APP_SERVER_URL: "ws://harness.example.test:18790",
       OPENCLAW_WORKSPACE_NODE_ID: "environment-node",
@@ -899,7 +902,7 @@ test("a Gateway given its node in the environment configures it at start and arm
   assert.deepEqual(kills, []);
 });
 
-test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex provider, and refuses malformed settings", async () => {
+test("a workspace-node Gateway keeps owner Codex tool excludes, pins every model provider, and refuses malformed settings", async () => {
   const withExcludes = (codexDynamicToolsExclude) => {
     const config = codexGatewayConfig();
     config.plugins.entries.codex.config.codexDynamicToolsExclude = codexDynamicToolsExclude;
@@ -942,8 +945,49 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
         request: { proxy: { mode: "explicit-proxy", url: "http://proxy.example.test:3128" } },
         models: [{ id: "gpt-5", headers: { "x-model": "d" }, contextWindow: 400000 }],
       },
-      anthropic: { baseUrl: "https://api.anthropic.com", models: [] },
+      // Any other provider with a credential would give a built-in run a model.
+      " Anthropic ": {
+        baseUrl: "https://api.anthropic.com",
+        api: "anthropic-messages",
+        apiKey: { source: "env", provider: "default", id: "MODEL_KEY" },
+        auth: "api-key",
+        headers: { "x-api-key": "owner-key" },
+        models: [{ id: "claude-test", api: "anthropic-messages", contextWindow: 200000 }],
+      },
+      bedrock: { auth: "aws-sdk", region: "us-east-1", api: "bedrock-converse-stream", models: [] },
     },
+  };
+  // Agent and model params are provider request params to OpenClaw, which would
+  // make Codex hand its turns to the built-in runtime; only run controls stay.
+  ownerConfig.agents = {
+    defaults: {
+      model: { primary: "codex/gpt-test", fallbacks: ["Google/gemini-test"] },
+      params: { thinking: "high", temperature: 0 },
+      models: {
+        "codex/gpt-test": {
+          agentRuntime: { id: "codex" },
+          params: { thinking: "high", fastMode: true, fastSeconds: 30, store: false },
+        },
+        // A value OpenClaw does not take as a run control is a request param.
+        "openai/gpt-5": { params: { temperature: 1, thinking: "deep", fastMode: "turbo" } },
+        "openrouter/*": { params: { thinking: " Extra-High ", fastMode: "Auto" } },
+      },
+    },
+    list: [
+      {
+        id: "main",
+        model: "groq/llama-test",
+        params: { cacheRetention: "long" },
+        models: { "codex/gpt-test": { params: { thinking: 3 } } },
+      },
+    ],
+  };
+  // OpenClaw copies env entries into the Gateway process environment, where its
+  // bundled openai provider reads CODEX_API_KEY or OPENAI_API_KEY.
+  ownerConfig.env = {
+    OPENAI_API_KEY: "owner-key",
+    LOG_LEVEL: "debug",
+    vars: { CODEX_API_KEY: "owner-key", " anthropic_api_key ": "owner-key", TZ: "UTC" },
   };
   const { files } = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: ownerConfig,
@@ -956,6 +1000,7 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
     "web_search",
     ...GATEWAY_LOCAL_CODEX_TOOLS,
   ]);
+  assert.deepEqual(effective.env, { LOG_LEVEL: "debug", vars: { TZ: "UTC" } });
   // Timed automations stay; an owner cannot turn triggers back on in the Gateway Pod.
   assert.deepEqual(effective.cron, { enabled: true, triggers: { enabled: false } });
   // The codex row keeps its models but not a transport a built-in run could reach,
@@ -974,9 +1019,126 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
         baseUrl: "http://127.0.0.1:9",
         api: "openai-responses",
       },
-      anthropic: ownerConfig.models.providers.anthropic,
+      " Anthropic ": {
+        models: [{ id: "claude-test", contextWindow: 200000 }],
+        baseUrl: "http://127.0.0.1:9",
+        api: "openai-responses",
+      },
+      bedrock: { models: [], baseUrl: "http://127.0.0.1:9", api: "openai-responses" },
+      // Providers a selection names get a stub row, so OpenClaw's default
+      // transport cannot use a credential from the environment; openai keeps
+      // its default as above.
+      google: { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [] },
+      openrouter: { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [] },
+      groq: { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [] },
     },
   });
+  assert.deepEqual(effective.agents, {
+    defaults: {
+      model: ownerConfig.agents.defaults.model,
+      models: {
+        "codex/gpt-test": {
+          agentRuntime: { id: "codex" },
+          params: { thinking: "high", fastMode: true, fastSeconds: 30 },
+        },
+        "openai/gpt-5": {},
+        "openrouter/*": { params: { thinking: " Extra-High ", fastMode: "Auto" } },
+      },
+      // The allowlist OpenClaw applied, made explicit.
+      modelPolicy: { allow: ["codex/gpt-test", "openai/gpt-5", "openrouter/*"] },
+    },
+    list: [{ id: "main", model: "groq/llama-test", models: { "codex/gpt-test": {} } }],
+  });
+  // A policy that allows any model would let a session pick a bundled provider,
+  // which reads its credential from the environment: it gets the selected models.
+  const selectedOnly = { allow: ["codex/gpt-test", "codex/gpt-other"] };
+  for (const [agents, meta, expectedAgents, stubbed] of [
+    [{ defaults: { modelPolicy: {} } }, undefined, { defaults: { modelPolicy: selectedOnly } }, []],
+    [
+      { defaults: {} },
+      { migrations: { modelPolicyAllowlist: true } },
+      { defaults: { modelPolicy: selectedOnly } },
+      [],
+    ],
+    [
+      // A bare ref is dropped: OpenClaw would infer its provider from its catalog.
+      {
+        defaults: { modelPolicy: { allow: ["claude-test", "Anthropic/*"] } },
+        entries: {
+          ops: { modelPolicy: { allow: [] } },
+          research: { modelPolicy: { allow: ["mistral/m"] } },
+        },
+      },
+      undefined,
+      {
+        defaults: { modelPolicy: { allow: ["Anthropic/*"] } },
+        entries: {
+          ops: { modelPolicy: { allow: ["Anthropic/*"] } },
+          research: { modelPolicy: { allow: ["mistral/m"] } },
+        },
+      },
+      ["anthropic", "mistral"],
+    ],
+  ]) {
+    const config = codexGatewayConfig();
+    config.agents = structuredClone(agents);
+    config.agents.defaults.model = { primary: "codex/gpt-test", fallbacks: ["codex/gpt-other"] };
+    config.agents.defaults.models = { "codex/gpt-test": {}, "codex/gpt-other": {} };
+    if (meta !== undefined) {
+      config.meta = meta;
+    }
+    const run = await runOpenClawRuntimeHelper(undefined, [], {
+      baseConfig: config,
+      env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+      workspaceNodeId: "enrolled-node",
+    });
+    const result = JSON.parse(run.files.get("/home/node/.openclaw/openclaw.json"));
+    assert.deepEqual(result.agents.defaults.modelPolicy, expectedAgents.defaults.modelPolicy);
+    assert.deepEqual(result.agents.entries, expectedAgents.entries);
+    assert.deepEqual(Object.keys(result.models.providers).sort(), ["codex", ...stubbed].sort());
+  }
+  // A selection made only on an agent entry still yields an allowlist, held by
+  // the defaults that an entry without its own allowlist uses.
+  for (const defaults of [undefined, {}, { models: {} }]) {
+    const entriesOnly = codexGatewayConfig();
+    entriesOnly.agents = {
+      ...(defaults === undefined ? {} : { defaults }),
+      entries: {
+        main: {
+          model: { primary: "openai/gpt-5", fallbacks: ["google/gemini-test"] },
+          models: { "groq/llama-test": {} },
+        },
+      },
+    };
+    const run = await runOpenClawRuntimeHelper(undefined, [], {
+      baseConfig: entriesOnly,
+      env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+      workspaceNodeId: "enrolled-node",
+    });
+    const result = JSON.parse(run.files.get("/home/node/.openclaw/openclaw.json"));
+    assert.deepEqual(result.agents.defaults.modelPolicy, {
+      allow: ["openai/gpt-5", "google/gemini-test", "groq/llama-test"],
+    });
+    assert.deepEqual(Object.keys(result.models.providers).sort(), ["codex", "google", "groq"]);
+  }
+  // Without any qualified selection the Gateway would allow any model: it does not start.
+  for (const agents of [undefined, { defaults: { model: "gpt-5" } }]) {
+    const unselected = codexGatewayConfig();
+    if (agents === undefined) {
+      delete unselected.agents;
+    } else {
+      unselected.agents = agents;
+    }
+    await assert.rejects(
+      () =>
+        runOpenClawRuntimeHelper(undefined, [], {
+          baseConfig: unselected,
+          env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+          workspaceNodeId: "enrolled-node",
+        }),
+      /needs a model selection with a provider/,
+    );
+  }
   // An openai row that names no transport keeps OpenClaw's default (no credential
   // in the Gateway) so Codex keeps owning its account's models; overrides still go.
   // APP_SERVER_URL marks a Codex Gateway, so the pin holds without the plugin entry.
@@ -1089,6 +1251,69 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
   assert.deepEqual(localConfig.models, localBase.models);
 });
 
+test("a workspace-node Codex Gateway drops channel model overrides and stubs tool, utility and hook model providers", async () => {
+  const config = codexGatewayConfig();
+  // OpenClaw applies a channel override to the turn's primary without the agent
+  // allowlist; the image, PDF, utility and hook models skip it too.
+  config.channels = {
+    slack: { enabled: true },
+    modelByChannel: { slack: { "*": "google/gemini-test" } },
+  };
+  config.agents = {
+    defaults: {
+      model: "openai/gpt-5",
+      imageModel: { primary: "Mistral/pixtral-test", fallbacks: ["xai/grok-vision-test"] },
+      pdfModel: "deepseek/pdf-test",
+      utilityModel: "groq/llama-test",
+    },
+    list: [
+      {
+        id: "main",
+        utilityModel: "cerebras/utility-test",
+        imageModel: { primary: "together/vision-test" },
+        pdfModel: { fallbacks: ["fireworks/pdf-test"] },
+      },
+    ],
+  };
+  config.hooks = {
+    gmail: { model: "openrouter/hook-test" },
+    mappings: [{ match: { path: "inbox" }, model: "perplexity/hook-test" }, null],
+  };
+  const run = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: config,
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+    workspaceNodeId: "enrolled-node",
+  });
+  const effective = JSON.parse(run.files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.channels, { slack: { enabled: true } });
+  const stub = { baseUrl: "http://127.0.0.1:9", api: "openai-responses", models: [] };
+  assert.deepEqual(effective.models.providers, {
+    codex: { baseUrl: "http://127.0.0.1:9", api: "openai-responses" },
+    mistral: stub,
+    xai: stub,
+    deepseek: stub,
+    groq: stub,
+    cerebras: stub,
+    together: stub,
+    fireworks: stub,
+    openrouter: stub,
+    perplexity: stub,
+  });
+  // These models stay out of the session allowlist; only the selection is in it.
+  assert.deepEqual(effective.agents.defaults.modelPolicy, { allow: ["openai/gpt-5"] });
+  assert.deepEqual(effective.agents.defaults.imageModel, config.agents.defaults.imageModel);
+  // A Gateway without a workspace node keeps its channel overrides.
+  const local = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: config,
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+  });
+  const localConfig = JSON.parse(
+    local.files.get("/home/node/.openclaw/openclaw.json") ??
+      local.files.get("/etc/openclaw/openclaw.json"),
+  );
+  assert.deepEqual(localConfig.channels, config.channels);
+});
+
 test("Gateway launch binds the enrolled node without expanding owner writes or changing its snapshot", async () => {
   const baseConfig = {
     gateway: { nodes: { commands: { allow: ["existing.command"] } } },
@@ -1101,6 +1326,7 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
         },
       },
     },
+    agents: { defaults: { model: "openai/gpt-5" } },
     hooks: {
       internal: {
         entries: {

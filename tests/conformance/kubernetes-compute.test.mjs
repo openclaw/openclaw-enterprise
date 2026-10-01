@@ -7784,6 +7784,9 @@ test("revision lifecycle rejects another driver or missing identity before clust
     { auth: { profiles: { alternate: { provider: "openai", mode: "api_key" } } } },
     { env: { OPENAI_API_KEY: "plaintext-fixture" } },
     { env: { vars: { OPENAI_API_KEY: "plaintext-fixture" } } },
+    // OpenClaw's bundled openai provider also reads CODEX_API_KEY.
+    { env: { vars: { CODEX_API_KEY: "plaintext-fixture" } } },
+    { env: { " codex_api_key ": "plaintext-fixture" } },
     { models: { providers: { openai: { headers: { Authorization: "Bearer fixture" } } } } },
   ]) {
     await assert.rejects(

@@ -2025,7 +2025,7 @@ function excludeGatewayLocalCodexTools(config) {
     // APP_SERVER_URL names a remote Codex Harness: pin its providers even when
     // the Gateway config lacks the plugin entry. A dedicated OpenClaw Gateway
     // (no APP_SERVER_URL) runs its turns with these rows, so it keeps them.
-    if (process.env.APP_SERVER_URL !== undefined) pinCodexProviderTransport(config);
+    if (process.env.APP_SERVER_URL !== undefined) pinGatewayModelProviders(config);
     return;
   }
   const codexConfig = codex.config ??= {};
@@ -2046,29 +2046,221 @@ function excludeGatewayLocalCodexTools(config) {
     throw new Error("The cron.triggers setting must be an object.");
   }
   triggers.enabled = false;
-  pinCodexProviderTransport(config);
+  pinGatewayModelProviders(config);
 }
 
 // OpenClaw's built-in runtime runs in the Gateway process with Gateway-local
-// tools. An operator's "/model codex/<model> --runtime openclaw" selects it for
-// a session, and Codex hands a turn to it when the row of one of its providers
-// (codex, openai) carries request transport overrides. The Harness reaches the
-// model itself, so here those rows only name models: fields that override the
-// transport, start a local service, or make Codex declare that fallback are
-// dropped, and an authored transport becomes the unreachable stub. A built-in
-// run then has no model to call.
+// tools. An operator's "/model <ref> --runtime openclaw" selects it for a
+// session, and Codex hands a turn to it when its route carries request
+// overrides (provider row fields or authored model params). The Harness reaches
+// the model itself, so here every provider row only names models: fields that
+// carry a credential, override the transport, start a local service, or make
+// Codex declare that fallback are dropped, and each row's transport becomes the
+// unreachable stub. A provider a model selection names gets a stub row too, so
+// OpenClaw's default transport cannot pick up a credential from the environment.
+// A built-in run then has no model to call.
 const CODEX_PROVIDER_STUB_URL = "http://127.0.0.1:9";
 const CODEX_PROVIDER_KEPT_KEYS = new Set(["models", "maxTokens", "agentRuntime"]);
 const CODEX_MODEL_KEPT_KEYS = new Set([
   "id", "name", "reasoning", "input", "cost", "contextWindow", "contextTokens",
   "maxTokens", "thinkingLevelMap", "agentRuntime", "mediaInput", "metadataSource",
 ]);
+// Model params Codex takes as run controls rather than provider request params,
+// with the values OpenClaw recognizes (isAgentRuntimeModelParam). Any other
+// value stays a provider request param and would move Codex turns off the
+// Harness, so it is dropped.
+const THINKING_PARAM_VALUES = new Set([
+  "disabled", "off", "none", "low", "on", "enable", "enabled", "thinkhard",
+  "think-hard", "think_hard", "minimal", "min", "think", "medium", "mid", "med",
+  "thinkharder", "think-harder", "harder", "high", "ultrathink", "thinkhardest",
+  "highest",
+]);
+const THINKING_PARAM_COLLAPSED_VALUES = new Set([
+  "adaptive", "auto", "max", "maximum", "ultra", "xhigh", "extrahigh",
+]);
+const FAST_MODE_PARAM_VALUES = new Set([
+  "off", "false", "no", "0", "disable", "disabled", "normal",
+  "on", "true", "yes", "1", "enable", "enabled", "fast", "auto", "automatic",
+]);
+
+function isThinkingParam(value) {
+  if (value === false) return true;
+  if (typeof value !== "string") return false;
+  const key = value.trim().toLowerCase();
+  return THINKING_PARAM_VALUES.has(key) ||
+    THINKING_PARAM_COLLAPSED_VALUES.has(key.replace(/[\s_-]+/g, ""));
+}
+
+function isFastModeParam(value) {
+  return typeof value === "boolean" ||
+    (typeof value === "string" && FAST_MODE_PARAM_VALUES.has(value.trim().toLowerCase()));
+}
+
+const RUNTIME_MODEL_PARAMS = {
+  thinking: isThinkingParam,
+  fastMode: isFastModeParam,
+  fast_mode: isFastModeParam,
+  fastAutoOnSeconds: (value) => Number.isInteger(value) && value > 0,
+  fastSeconds: (value) => Number.isInteger(value) && value > 0,
+  fast_auto_on_seconds: (value) => Number.isInteger(value) && value > 0,
+  fast_seconds: (value) => Number.isInteger(value) && value > 0,
+};
 
 function keepKeys(value, kept) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => kept.has(key)));
 }
 
-function pinCodexProviderTransport(config) {
+// OpenClaw matches provider keys after trimming and lowercasing.
+function modelProviderId(key) {
+  return key.trim().toLowerCase();
+}
+
+function modelRefProvider(ref) {
+  if (typeof ref !== "string" || !ref.includes("/")) return undefined;
+  const id = modelProviderId(ref.slice(0, ref.indexOf("/")));
+  return id.length > 0 ? id : undefined;
+}
+
+function agentModelScopes(config) {
+  const agents = config.agents;
+  if (!isPlainObject(agents)) return [];
+  const entries = [
+    ...(Array.isArray(agents.list) ? agents.list : []),
+    ...(isPlainObject(agents.entries) ? Object.values(agents.entries) : []),
+  ];
+  return [agents.defaults, ...entries].filter(isPlainObject);
+}
+
+function selectionRefs(selection) {
+  const refs = isPlainObject(selection)
+    ? [selection.primary, ...(Array.isArray(selection.fallbacks) ? selection.fallbacks : [])]
+    : [selection];
+  return refs.filter((ref) => typeof ref === "string" && ref.trim().length > 0);
+}
+
+function hasModelPolicyAllow(scope) {
+  return isPlainObject(scope.modelPolicy) && hasOwn(scope.modelPolicy, "allow");
+}
+
+// A model policy that allows any model would let a session pick one of
+// OpenClaw's bundled providers, which reads its credential from the
+// environment. Here every agent gets an explicit allowlist of qualified refs,
+// so each provider it names can get a stub row. An allowlist OpenClaw already
+// applies is kept; a bare ref is dropped, because OpenClaw infers its provider,
+// and so is a selector without a provider prefix (for example
+// "openrouter:auto"). Otherwise the list is every agent's model selection and
+// models keys. The defaults hold it, since an agent without its own allowlist
+// uses theirs.
+function restrictModelPolicy(config) {
+  const agents = config.agents ??= {};
+  if (!isPlainObject(agents)) {
+    throw new Error("The agents setting must be an object.");
+  }
+  const defaults = agents.defaults ??= {};
+  if (!isPlainObject(defaults)) {
+    throw new Error("The agents.defaults setting must be an object.");
+  }
+  const qualified = (refs) =>
+    Array.isArray(refs) ? refs.filter((ref) => modelRefProvider(ref) !== undefined) : [];
+  const legacyIgnored = config.meta?.migrations?.modelPolicyAllowlist === true;
+  const modelKeys = (scope) => isPlainObject(scope.models) ? Object.keys(scope.models) : [];
+  let allow;
+  if (hasModelPolicyAllow(defaults)) allow = qualified(defaults.modelPolicy.allow);
+  else if (!isPlainObject(defaults.modelPolicy) && !legacyIgnored) allow = qualified(modelKeys(defaults));
+  if (allow === undefined || allow.length === 0) {
+    const selected = agentModelScopes(config).flatMap((scope) =>
+      [...selectionRefs(scope.model), ...modelKeys(scope)]);
+    allow = [...new Set(qualified(selected))];
+  }
+  if (allow.length === 0) {
+    throw new Error("A Gateway with a workspace node needs a model selection with a provider.");
+  }
+  defaults.modelPolicy = { ...(isPlainObject(defaults.modelPolicy) ? defaults.modelPolicy : {}), allow };
+  for (const scope of agentModelScopes(config).slice(1)) {
+    if (!hasModelPolicyAllow(scope)) continue;
+    const own = qualified(scope.modelPolicy.allow);
+    scope.modelPolicy.allow = own.length > 0 ? own : [...allow];
+  }
+}
+
+// OpenClaw copies the config's env entries into the Gateway process
+// environment, where its bundled providers read their credentials (openai reads
+// CODEX_API_KEY and OPENAI_API_KEY). The Harness gets its model credential
+// through its authentication binding, so the Gateway config carries none.
+const MODEL_CREDENTIAL_ENV_PATTERN = /^(?:OPENAI_|CODEX_|ANTHROPIC_)/i;
+
+function dropModelCredentialEnv(config) {
+  const env = config.env;
+  if (!isPlainObject(env)) return;
+  for (const values of [env, env.vars]) {
+    if (!isPlainObject(values)) continue;
+    for (const key of Object.keys(values)) {
+      if (MODEL_CREDENTIAL_ENV_PATTERN.test(key.trim())) delete values[key];
+    }
+  }
+}
+
+// Every provider a model selection, model allowlist, tool or utility model, or
+// hook model names. OpenClaw calls the image, PDF and utility models and the
+// hook models without the agent allowlist, so each of their providers needs a
+// stub row too, or its default transport would use a credential from the
+// environment.
+const AGENT_TOOL_MODEL_KEYS = ["utilityModel", "imageModel", "pdfModel"];
+
+function selectedModelProviders(config) {
+  const providers = new Set();
+  const refs = [];
+  for (const scope of agentModelScopes(config)) {
+    refs.push(...selectionRefs(scope.model));
+    for (const key of AGENT_TOOL_MODEL_KEYS) refs.push(...selectionRefs(scope[key]));
+    if (isPlainObject(scope.models)) refs.push(...Object.keys(scope.models));
+    if (hasModelPolicyAllow(scope) && Array.isArray(scope.modelPolicy.allow)) {
+      refs.push(...scope.modelPolicy.allow);
+    }
+  }
+  const hooks = config.hooks;
+  if (isPlainObject(hooks)) {
+    if (isPlainObject(hooks.gmail)) refs.push(...selectionRefs(hooks.gmail.model));
+    if (Array.isArray(hooks.mappings)) {
+      for (const mapping of hooks.mappings) {
+        if (isPlainObject(mapping)) refs.push(...selectionRefs(mapping.model));
+      }
+    }
+  }
+  for (const ref of refs) {
+    const provider = modelRefProvider(ref);
+    if (provider !== undefined) providers.add(provider);
+  }
+  return providers;
+}
+
+// OpenClaw reads agent and model params as provider request params; any of them
+// makes Codex hand its turns to the built-in runtime.
+function stripProviderRequestParams(config) {
+  for (const scope of agentModelScopes(config)) {
+    delete scope.params;
+    if (!isPlainObject(scope.models)) continue;
+    for (const entry of Object.values(scope.models)) {
+      if (!isPlainObject(entry) || entry.params === undefined) continue;
+      const kept = isPlainObject(entry.params)
+        ? Object.entries(entry.params).filter(([key, value]) =>
+            hasOwn(RUNTIME_MODEL_PARAMS, key) && RUNTIME_MODEL_PARAMS[key](value))
+        : [];
+      if (kept.length > 0) entry.params = Object.fromEntries(kept);
+      else delete entry.params;
+    }
+  }
+}
+
+// OpenClaw applies a channel's model override to a turn's primary model without
+// the agent allowlist, so it could pick a provider with a credential. On these
+// Gateways the Harness owns the model, so the overrides go.
+function dropChannelModelOverrides(config) {
+  if (isPlainObject(config.channels)) delete config.channels.modelByChannel;
+}
+
+function pinGatewayModelProviders(config) {
+  dropChannelModelOverrides(config);
   const models = config.models ??= {};
   if (!isPlainObject(models)) {
     throw new Error("The models setting must be an object.");
@@ -2077,16 +2269,8 @@ function pinCodexProviderTransport(config) {
   if (!isPlainObject(providers)) {
     throw new Error("The models.providers setting must be an object.");
   }
-  // OpenClaw matches provider keys after trimming and lowercasing.
-  const providerId = (key) => key.trim().toLowerCase();
-  const keys = Object.keys(providers).filter((key) => ["codex", "openai"].includes(providerId(key)));
-  if (!keys.some((key) => providerId(key) === "codex")) {
-    // "codex" is a bundled provider: without a row it would keep its own transport.
-    providers.codex = {};
-    keys.push("codex");
-  }
-  for (const key of keys) {
-    const id = providerId(key);
+  for (const key of Object.keys(providers)) {
+    const id = modelProviderId(key);
     const provider = providers[key];
     if (!isPlainObject(provider)) {
       throw new Error("The " + id + " model provider setting must be an object.");
@@ -2100,12 +2284,24 @@ function pinCodexProviderTransport(config) {
     }
     // An openai row that names no transport keeps OpenClaw's default, which has
     // no credential in the Gateway, and Codex keeps owning its account's models.
-    const authoredTransport =
-      id === "codex" || provider.baseUrl !== undefined || provider.api !== undefined;
-    providers[key] = authoredTransport
-      ? { ...pinned, baseUrl: CODEX_PROVIDER_STUB_URL, api: "openai-responses" }
-      : pinned;
+    const defaultOpenAI = id === "openai" && provider.baseUrl === undefined && provider.api === undefined;
+    providers[key] = defaultOpenAI
+      ? pinned
+      : { ...pinned, baseUrl: CODEX_PROVIDER_STUB_URL, api: "openai-responses" };
   }
+  restrictModelPolicy(config);
+  // "codex" is a bundled provider: without a row it would keep its own transport.
+  const configured = new Set(Object.keys(providers).map(modelProviderId));
+  for (const id of ["codex", ...selectedModelProviders(config)]) {
+    if (id === "openai" || configured.has(id)) continue;
+    // Only a custom provider needs a models list; codex is bundled.
+    providers[id] = id === "codex"
+      ? { baseUrl: CODEX_PROVIDER_STUB_URL, api: "openai-responses" }
+      : { baseUrl: CODEX_PROVIDER_STUB_URL, api: "openai-responses", models: [] };
+    configured.add(id);
+  }
+  stripProviderRequestParams(config);
+  dropModelCredentialEnv(config);
 }
 
 const WORKSPACE_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
