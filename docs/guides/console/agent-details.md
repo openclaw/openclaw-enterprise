@@ -6,8 +6,8 @@ and workspace. For initial setup, use
 
 Available actions depend on your Installation and permissions. When your access
 does not include an action, the console disables **Create new version**, **Deploy
-new version**, **Stop Agent**, or **Delete Agent** and says why; the API still
-checks every request. Stored settings do not confirm that an Agent or its Slack
+new version**, **Stop Agent**, or **Delete Agent** and says why (reload after
+your access changes); the API still checks every request. Stored settings do not confirm that an Agent or its Slack
 connection is currently healthy.
 
 ## Navigation and Agent identity

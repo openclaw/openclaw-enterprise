@@ -940,11 +940,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   function renderVersions(revisions, snapshot, historyError = null) {
     revisionControls.clear();
-    const newVersion = button("Create new version", () => change("draft", "configuration"), {
-      className: "revision-create",
-      ...(selected === "draft" ? { "aria-current": "page" } : {}),
-    });
-    newVersion.disabled = callerPermissions?.update === false;
+    // Without update the draft can still be read, so the entry stays as a view link.
+    const newVersion = button(
+      callerPermissions?.update === false ? "View draft" : "Create new version",
+      () => change("draft", "configuration"),
+      {
+        className: "revision-create",
+        ...(selected === "draft" ? { "aria-current": "page" } : {}),
+      },
+    );
     trackRevisionControl(newVersion);
     const list = element("div", { className: "version-list" });
     for (const revision of revisions) {
@@ -1198,8 +1202,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         headerNewVersion.disabled = true;
       }
       for (const control of selector.querySelectorAll(".revision-create")) {
-        control.disabled = true;
-        revisionControls.set(control, true);
+        control.textContent = "View draft";
       }
     }
     refreshDeployControls();

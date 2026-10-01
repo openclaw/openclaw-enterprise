@@ -2,13 +2,13 @@
 status: Proposed
 ---
 
-# Proposal: Caller permission summaries for Console control gating
+# Proposal: Explain unavailable Agent actions before a caller confirms them
 
 - **ID:** RFC-0043
 - **Owner:** Console and IAM maintainers (proposal; needs human review)
 - **Created:** 2026-10-01
-- **Last updated:** 2026-10-01
-- **RFC PR:** this document's PR, which also carries a draft implementation
+- **Last updated:** 2026-10-15
+- **RFC PR:** [#836](https://github.com/openclaw/openclaw-enterprise/pull/836), including a draft implementation
 - **Related:** [Basic RBAC](31-basic-rbac/index.md), [Agent access](36-agent-access.md),
   [Agent deletion](../plans/28-agent-deletion.md), [Agent stop](../plans/29-agent-stop.md)
 
@@ -16,153 +16,111 @@ status: Proposed
 
 ## Summary
 
-Add two read-only API operations that report which mutating operations the caller may attempt:
-`GET /namespaces/{namespaceId}/agents/{agentId}/permissions` returns `update`, `deploy`,
-`operate` and `delete` flags for one Agent, and `GET /namespaces/{namespaceId}/permissions`
-returns `agents.create` for the Namespace. The Console reads them and disables Create Agent,
-Create new version, Deploy new version, Stop Agent and Delete Agent, with a short reason, when
-the flag is `false`. The API keeps authorizing every request; the flags only gate controls.
+Someone with read-only access can select **Delete Agent**, confirm **Permanently delete Agent**,
+and only then learn that they lack permission. The controller correctly refuses the request. We
+want the Console to explain “Your access does not include deleting this Agent” beside the
+disabled action, before asking someone to consider a deletion they cannot perform.
 
-## Motivation
-
-A principal with read-only access to an Agent sees every mutation control enabled. Selecting
-Delete Agent opens the confirmation and only then reports a 403; Stop and Deploy behave the
-same way. Server enforcement is correct, and #725 already hides the sharing card for
-non-administrators. The remaining gap is that the Console cannot learn the caller's effective
-permissions before it renders controls:
-
-- `GET /api/auth/session` returns only the user's ID, name and email.
-- Namespace and Agent reads return the resource, not the caller's access to it.
-- `x-openclaw-permissions` in the OpenAPI contract lists what each operation _requires_, not
-  what the caller _holds_.
-- `/namespaces/{namespaceId}/iam/access-bindings` and `/iam/roles` require Installation
-  administration, so an ordinary user cannot read their own grants, and evaluating bindings,
-  group membership and resource scoping in the browser would duplicate the IAM Driver.
-
-Probing a mutating operation is not an option: it either performs the operation or records an
-audited authorization denial.
-
-<a id="scope"></a>
-
-## Goals
-
-- A read-only Agent viewer sees Create new version, Deploy new version, Stop Agent and Delete
-  Agent disabled with a reason, before attempting any of them.
-- A Namespace reader without Agent create sees Create Agent disabled with a reason.
-- A principal holding the permission sees the same controls as today.
-- The summaries add no authorization-denial audit records for a `false` answer.
-- If a summary is unavailable (older controller, 503, network), controls stay enabled and the
-  existing 403 feedback still applies.
-
-## Non-goals
-
-- Replacing server-side authorization. Every gated operation is still authorized in full.
-- Reporting conditional permissions (Secret operate for bound Secrets, Configuration read,
-  service-account read). A `true` flag means the primary action is held; the operation can
-  still be denied on a condition, and the Console keeps its existing denial feedback.
-- A general "check any permission on any resource" endpoint.
-- Gating the Configuration, Credentials, Plugins and Workspace editors inside the draft view.
+**Decision for API and IAM maintainers:** expose two reads that report the caller’s *primary*
+permission for a few named actions. A `false` lets the Console explain an unavailable action. A
+`true` can go stale or omit another required permission. If the read fails, preserve the control’s
+usual behavior. The controller still authorizes the actual request. Before adopting the draft,
+Console maintainers should make sure that `delete: false` arriving *during* confirmation means
+no `DELETE` is sent, and decide whether Agent update is the right test for opening a draft.
 
 <a id="design"></a>
 
-## Proposal
+## What the controller would promise
 
-**Owner.** The controller HTTP layer owns both operations. Each is an ordinary route in
-`packages/contracts/src/api/routes.ts` with `iamAction: "read"`, so route authorization,
-audit of a denied read, and 404 for a missing resource work as for any read.
+The controller authorizes the read, checks that the resource exists, then asks the selected IAM
+Driver about the signed-in caller. There is no parameter for asking about someone else, and the
+response contains no grants, roles or binding IDs. The examples show the `data` field; the draft
+also returns the usual `meta.requestId`.
 
-**Evaluation.** After route authorization, the handler reads the resource (proving it exists)
-and asks the selected IAM Driver's `authorize()` once per reported action, using the same
-target `operationTarget()` builds for the real operation (`agent/<id>` for update, deploy,
-operate and delete; `agent/<namespaceId>` for create). A decision with an invalid shape, a
-mismatched Driver ID or a Driver error returns 503, as `requireInstallationAdmin` does today.
-A `false` decision is returned as data and is not appended to the audit log.
+| Read and required access | Example `data` | What the controller asks IAM |
+| --- | --- | --- |
+| `GET /namespaces/{namespaceId}/agents/{agentId}/permissions` · read that Agent | `{ "update": false, "deploy": true, "operate": false, "delete": false }` | Evaluate each named action against `agent/<agentId>` in that Namespace. |
+| `GET /namespaces/{namespaceId}/permissions` · read that Namespace | `{ "agents": { "create": false } }` | Evaluate Agent create against `agent/<namespaceId>`, the target used by the create operation. |
 
-**Responses.**
+A caller denied the *read* gets the usual audited `403`; a missing resource yields `404`. In a
+successful read, `delete: false` is an answer, not an attempted deletion to audit as a denial.
+Each flag comes from its own `authorize()` call, against the same target as `operationTarget()`
+for that action. If the Driver fails, the decision names a different Driver, or the decision or
+its evidence is invalid, return `503` for the summary. Do not turn uncertainty into four false answers.
 
-```json
-{ "data": { "update": false, "deploy": true, "operate": false, "delete": false } }
-{ "data": { "agents": { "create": false } } }
-```
+Agent detail adds one request. The controller authorizes the read, then checks update, deploy,
+operate and delete separately. Request metadata (`x-openclaw-permissions`) says what an operation
+*requires*, not what this caller *has*.
+Learning from a failed delete comes too late; trying a delete to discover permission might
+actually delete the Agent. Dedicated reads avoid adding these evaluations to every Agent in a
+list, exposing administrator-only access bindings, or introducing a general `POST /iam/check`
+policy probe. [#725](https://github.com/openclaw/openclaw-enterprise/pull/725) addressed related
+Console feedback. The existing administrator check is `requireInstallationAdmin` in
+`apps/controller/src/index.ts`; the sharing card is in `console/agents/access.mjs`.
 
-**Console.** Agent detail starts the Agent summary read alongside its other reads. Stop and
-deletion panels take a promise of their flag; on `false` they disable the button and show
-"Your access does not include stopping/deleting this Agent." Deploy treats `deploy === false`
-as a disabling reason with its own status text. Both Create new version buttons are disabled
-and a note is shown on `update === false`. The Agent list does the same for Create Agent.
-Any failure of the summary read is ignored.
+<a id="request-lifecycle"></a>
 
-**Trust and disclosure.** The Agent summary requires Agent read and the Namespace summary
-requires Namespace read, so a caller learns only their own access to a resource they can
-already see. No grant, role or binding ID is returned.
-
-### Request lifecycle
-
-The sequence shows the proposed, now drafted, Agent summary read.
+**Proposed request flow.** Both branches start with a read. In the second, the caller learns they
+cannot delete the Agent, even if they opened the confirmation while the read was pending.
 
 ```mermaid
 sequenceDiagram
   participant Console
   participant API as Controller API
   participant IAM as IAM Driver
-  Console->>API: GET .../agents/{agentId}/permissions
-  API->>IAM: authorize(read, agent)
-  alt read denied
-    IAM-->>API: denied
-    API-->>Console: 403 (audited, as for any read)
-  else read allowed
-    API->>IAM: authorize(update | deploy | operate | delete, agent)
-    IAM-->>API: four decisions
-    API-->>Console: 200 flags (no denial audit)
-    Console->>Console: disable controls whose flag is false
+  Console->>API: Get my permissions on this Agent
+  API->>IAM: Authorize Agent read
+  alt Read denied
+    API-->>Console: 403, denial audited
+  else Read allowed and Agent exists
+    API->>IAM: Check update, deploy, operate and delete separately
+    IAM-->>API: Caller lacks delete permission
+    API-->>Console: 200 with delete: false, no denial audit
+    Note over Console: Explain why Delete is unavailable. Send no DELETE.
   end
 ```
 
-## Delivery and verification
+<a id="scope"></a>
 
-The draft implementation in the same PR covers all of the above:
+## How the Console would use the answer
 
-1. Contracts and generated OpenAPI/API reference for both routes.
-2. Controller handlers using a `callerMay()` helper beside `requireInstallationAdmin`.
-3. Console gating in `agents/list.mjs`, `agents/detail.mjs`, `agents/stop.mjs` and
-   `agents/deletion.mjs`.
+Fetch the relevant summary alongside the page reads. On the Agent list, `agents.create` informs
+**Create Agent**. On Agent detail, `deploy`, `operate` and `delete` inform **Deploy new version**,
+**Stop Agent** and **Delete Agent**, respectively. Existing reasons to disable an action, such as
+the Agent’s state, still apply. An older controller, a network failure or a `503` leaves the
+Console without this advice; preserve the actual operation’s success or useful `403` feedback.
 
-Evidence in the PR:
-
-- `tests/integration/console-api.test.mjs`: administrator gets every flag; a principal with
-  Namespace read plus exact Agent read and deploy gets only `deploy`; no denial is audited for
-  those answers; an unshared Agent returns an audited 403; a missing Agent returns 404.
-- `tests/browser/console-agent-detail.test.mjs`: a read-only principal sees Create Agent,
-  both Create new version buttons, Stop, Delete and Deploy disabled with reasons, sends no
-  write and records no denial for them; the existing Stop and Delete denial tests withhold the
-  summary and still show the 403 feedback.
-
-Not verified: behaviour against an external (non-native) IAM Driver.
+The example caller above has Agent deploy but lacks Agent operate. A first deployment can still
+require operate to provision connection credentials; admission can also depend on Configuration
+read, access to a bound Secret or service account access. The summary is read once per page
+load. If access is revoked while the page is open, the controller still checks the request. If
+access is granted while the action is disabled, reload the page to see it.
 
 <a id="alternatives-and-open-decisions"></a>
 
-## Rationale and alternatives
+## What to settle in the draft
 
-- **Keep current behaviour.** Correct, but readers discover missing access only after confirming.
-- **Embed flags in Agent and Namespace reads.** Saves a request but changes two widely used
-  response shapes and makes every list read do four extra IAM evaluations per Agent.
-- **Let users read their own access bindings.** Exposes policy structure and requires the
-  browser to reimplement scope, group and restriction evaluation.
-- **Learn from denials.** Remembering a 403 per control still shows the first denial after
-  confirmation and records it in the audit log.
-- **Generic check endpoint** (`POST /iam/check` with arbitrary action and resource). More
-  flexible, but becomes a policy oracle across resource kinds; not needed for the Console.
+1. **`delete: false` arrives while confirmation is open.** Open Delete while the summary is
+   pending, deliver `delete: false`, then try to confirm. The draft disables the button *behind*
+   the dialog, but the open dialog can still send `DELETE`. Stop has the same gap. Once a false
+   answer is known, explain it in the dialog and send no write. Exercise the submit path, not just
+   the initial disabled button. This is a Console behavior requirement. The controller remains the
+   authority.
+2. **Opening a draft is not updating an Agent.** The header’s **Create new version** opens the
+   draft Configuration view. The draft disables that header on `update: false`, yet correctly
+   leaves **View draft** in the version list. A caller can have Configuration update, Agent deploy
+   and the other necessary grants without Agent update. Decide the navigation separately from
+   permissions to edit Configuration, Credentials, Plugins or Workspace; this RFC does not gate
+   those editors.
+3. **Published meaning and names.** API and IAM maintainers should confirm primary permission is
+   sufficient, especially for deploy, and choose IAM names such as `operate` or Console terms
+   such as `stop`. Put the advisory meaning in OpenAPI and the API reference before clients depend
+   on either spelling.
 
-## Unresolved questions
+<a id="delivery-and-verification"></a>
 
-- Should the summaries carry conditional permissions (for example `deploy` with bound
-  Secrets)? Deciding owner: IAM maintainers. Until then, `true` means primary action only.
-- Should the draft editors also be gated on `update`? Deciding owner: Console maintainers.
-- Should the action names stay as booleans keyed by IAM action, or by Console operation
-  (`stop` instead of `operate`)? Deciding owner: API maintainers.
-
-## References
-
-- Route requirements: `x-openclaw-permissions` in `packages/contracts/openapi/occ-api.openapi.json`.
-- Existing administrator probe: `requireInstallationAdmin` in `apps/controller/src/index.ts`.
-- Sharing card gating: `apps/controller/src/console/agents/access.mjs`.
+The draft reports API tests for the example caller, false answers without a denial audit, and
+the `403` and `404` read paths. Its browser tests cover known false answers and a failed summary
+followed by an actual denial; they do not resolve the open-dialog case. External IAM Driver and
+live installation behavior remain unverified. Storybook loading, permission and error states,
+final screenshots and a walkthrough are also outstanding.

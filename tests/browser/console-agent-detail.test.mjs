@@ -2161,11 +2161,11 @@ test("a read-only principal sees Agent mutation controls disabled before any den
   await page
     .getByText("Your access does not include creating new versions of this Agent.")
     .waitFor();
+  // The header action is disabled; the version list keeps a read-only draft entry.
   const newVersion = page.getByRole("button", { name: "Create new version" });
-  assert.equal(await newVersion.count(), 2);
-  for (const control of await newVersion.all()) {
-    assert.equal(await control.isDisabled(), true);
-  }
+  assert.equal(await newVersion.count(), 1);
+  assert.equal(await newVersion.isDisabled(), true);
+  await page.getByRole("button", { name: "View draft" }).waitFor();
   await page.getByText("Your access does not include stopping this Agent.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
   await page.getByText("Your access does not include deleting this Agent.").waitFor();
@@ -3099,6 +3099,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
     },
   });
   assert.equal(operateBinding.status, 201);
+  // The permission summary is read with the page, so a new grant applies after a reload.
+  await recipient.reload();
+  await recipient.getByRole("heading", { name: "Configuration unavailable" }).waitFor();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")
@@ -3828,7 +3831,8 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  // This reader lacks Agent update, so the draft entry is a view link.
+  await page.getByRole("button", { name: "View draft", exact: true }).click();
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
