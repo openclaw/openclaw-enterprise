@@ -2650,9 +2650,50 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     "researcher",
   );
   assert.ok(human);
-  assert.equal(human.endpoint, `${driver.getGatewayEndpoint(revision)}/people`);
+  // With no human route installed, neither its root nor any suffix can match
+  // the service route and acquire the privileged service identity.
+  const admittedHumanPath = new URL(human.endpoint).pathname;
+  for (const rule of route.spec.rules) {
+    for (const { path } of rule.matches) {
+      const servicePath = path.value.replace(/\/$/u, "");
+      assert.notEqual(admittedHumanPath, servicePath);
+      assert.equal(`${admittedHumanPath}/`.startsWith(`${servicePath}/`), false);
+    }
+  }
+  const humanPath = `/people/namespaces/${tenant.id}/agents/${revision.agentId}`;
+  assert.equal(human.endpoint, `wss://${gatewayRouting.hostname}${humanPath}`);
   assert.equal(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
   assert.equal(human.headers["x-occ-role"], "researcher");
+  // Native device pairing intersects these scope names literally. An admin-only
+  // approval cap cannot admit a fresh browser with the researcher's read/write cap.
+  for (const approval of [
+    undefined,
+    { enabled: false, scopes: ["operator.read", "operator.write", "operator.admin"] },
+    { enabled: true },
+    { enabled: true, scopes: ["operator.admin"] },
+    { enabled: true, scopes: ["operator.read"] },
+  ]) {
+    const configuration = structuredClone(humanRevision.configuration);
+    configuration.gateway.auth.trustedProxy.deviceAutoApprove = approval;
+    assert.equal(
+      driver.getAgentRuntimeAccess(
+        { ...humanRevision, configuration },
+        "prn_00000000-0000-4000-8000-000000000003",
+        "researcher",
+      ),
+      undefined,
+    );
+  }
+  const administratorOnly = structuredClone(humanRevision.configuration);
+  administratorOnly.gateway.auth.trustedProxy.deviceAutoApprove.scopes = ["operator.admin"];
+  assert.equal(
+    driver.getAgentRuntimeAccess(
+      { ...humanRevision, configuration: administratorOnly },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "administrator",
+    ).headers["x-openclaw-scopes"],
+    "operator.admin",
+  );
   assert.equal(
     driver.getAgentRuntimeAccess(
       humanRevision,
@@ -2669,9 +2710,19 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     "people",
   );
   assert.equal(humanRoute.metadata.name, `${name}-people`);
+  assert.deepEqual(humanRoute.spec.rules[0].matches, [
+    { path: { type: "Exact", value: humanPath } },
+  ]);
+  assert.deepEqual(humanRoute.spec.rules[1].matches, [
+    { path: { type: "PathPrefix", value: `${humanPath}/` } },
+  ]);
   assert.equal(
-    humanRoute.spec.rules[0].matches[0].path.value,
-    `/namespaces/${tenant.id}/agents/${revision.agentId}/people`,
+    alternateEndpointDriver.getAgentRuntimeAccess(
+      { ...humanRevision, compute: alternateEndpointRevision.compute },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "researcher",
+    ).endpoint,
+    `wss://${gatewayRouting.hostname}:18443${humanPath}`,
   );
   const humanFilter = humanRoute.spec.rules[0].filters[1].requestHeaderModifier;
   assert.equal(

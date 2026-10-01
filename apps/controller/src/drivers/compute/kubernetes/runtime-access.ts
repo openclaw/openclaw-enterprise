@@ -94,13 +94,16 @@ export function humanRuntimeAccess(
   runtimeRole: string,
 ): AgentRuntimeAccess | undefined {
   const gateway = asRecord(revision.configuration.gateway);
-  const proxy = asRecord(asRecord(gateway?.auth)?.trustedProxy);
+  const auth = asRecord(gateway?.auth);
+  const proxy = asRecord(auth?.trustedProxy);
   const role = configuredRuntimeRoles(revision.configuration).find(
     (candidate) => candidate.id === runtimeRole,
   );
   if (
     endpoint === undefined ||
     role === undefined ||
+    auth?.mode !== "trusted-proxy" ||
+    proxy?.userHeader !== "x-occ-identity" ||
     proxy?.roleHeader !== RUNTIME_ROLE_HEADER ||
     proxy.rolePolicyHashHeader !== RUNTIME_ROLE_POLICY_HEADER ||
     !/^prn_[A-Za-z0-9-]{1,196}$/u.test(principalId)
@@ -111,8 +114,20 @@ export function humanRuntimeAccess(
   if (!Array.isArray(scopes) || scopes.some((scope) => typeof scope !== "string")) {
     return undefined;
   }
+  const approval = asRecord(proxy.deviceAutoApprove);
+  const approvalScopes = approval?.scopes;
+  // Native first-device approval intersects scope names literally; an admin
+  // scope in this cap does not stand in for a limited role's read/write scopes.
+  if (
+    approval?.enabled !== true ||
+    !Array.isArray(approvalScopes) ||
+    approvalScopes.some((scope) => typeof scope !== "string") ||
+    scopes.some((scope) => !approvalScopes.includes(scope))
+  ) {
+    return undefined;
+  }
   return {
-    endpoint: `${endpoint.replace(/\/$/u, "")}/people`,
+    endpoint,
     headers: {
       "x-occ-identity": `oce:${principalId}`,
       [RUNTIME_ROLE_HEADER]: encodeURIComponent(runtimeRole),

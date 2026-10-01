@@ -3270,21 +3270,33 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The IAM AccessBinding target does not belong to the exact Namespace.",
           );
         }
-        await client.query(
-          `INSERT INTO occ.iam_access_bindings
+        try {
+          await client.query(
+            `INSERT INTO occ.iam_access_bindings
            (id, namespace_id, identity_subject_id, group_subject_id, role_id,
             resource_kind, resource_id, runtime_role)
            VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)`,
-          [
-            binding.id,
-            namespace.id,
-            binding.subjectId,
-            binding.roleId,
-            binding.resourceKind,
-            binding.resourceId,
-            binding.runtimeRole ?? null,
-          ],
-        );
+            [
+              binding.id,
+              namespace.id,
+              binding.subjectId,
+              binding.roleId,
+              binding.resourceKind,
+              binding.resourceId,
+              binding.runtimeRole ?? null,
+            ],
+          );
+        } catch (error) {
+          // Preserve known assignment conflicts before the IAM boundary wraps unknown failures.
+          if (
+            error instanceof DatabaseError &&
+            error.code === "23505" &&
+            error.constraint === "iam_access_bindings_runtime_assignment"
+          ) {
+            throw databaseError(error);
+          }
+          throw error;
+        }
         return immutableCopy(binding);
       },
       updateRuntimeRole: async (namespaceId, bindingId, runtimeRole) => {

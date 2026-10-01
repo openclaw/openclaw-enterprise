@@ -43,30 +43,33 @@ index c895a08d..dc02a28c 100644
      if (!ingress) {
        return;
 diff --git a/src/gateway/server/ws-connection/connect-user-profile.ts b/src/gateway/server/ws-connection/connect-user-profile.ts
-index d987e9a5..ef5335d7 100644
+index d987e9a5..b1687bc8 100644
 --- a/src/gateway/server/ws-connection/connect-user-profile.ts
 +++ b/src/gateway/server/ws-connection/connect-user-profile.ts
-@@ -6,7 +6,9 @@ import {
-   ensureCanonicalGatewayOwnerProfile,
-   ensureCanonicalUserProfileForEmail,
-   ensureCanonicalUserProfileForTailscaleIdentity,
-+  setCanonicalUserProfileRole,
- } from "../../../state/user-profile-writes.js";
-+import { getUserProfileRole } from "../../../state/user-profiles.js";
- import type { GatewayAuthResult } from "../../auth.js";
- import { prepareGatewayRecipientProfile } from "../../expected-profile.js";
- import type { createAuthenticatedGitHubIdentitySync } from "../../github-user-identity.js";
-@@ -15,7 +17,9 @@ import {
-   type prepareGatewayLocalUserIngress,
+@@ -16,6 +16,10 @@ import {
  } from "../../local-user-ingress.js";
  import { hasGatewayOperatorAccessPolicies } from "../../operator-access-policy.js";
-+import { invalidateOperatorRolePolicy } from "../../operator-role-policy.js";
  import { WEBSOCKET_OPEN_READY_STATE } from "../../server-constants.js";
-+import { resolveVerifiedProxyRole } from "../../trusted-proxy-role.js";
++import {
++  prepareVerifiedProxyRoleProfile,
++  resolveVerifiedProxyRole,
++} from "../../trusted-proxy-role.js";
  import { formatForLog } from "../../ws-log.js";
  import type { GatewayWsClient } from "../ws-types.js";
  import {
-@@ -116,12 +120,14 @@ async function resolveGatewayConnectUserProfile(params: {
+@@ -91,9 +95,10 @@ async function resolveAuthenticatedProfile(
+   profileId: string,
+   updatedAt: number,
+   assertCurrent?: () => void,
++  preparedAuthority?: NonNullable<Awaited<ReturnType<typeof prepareUserProfileRoleAuthority>>>,
+ ) {
+   assertCurrent?.();
+-  const authority = await prepareUserProfileRoleAuthority(profileId);
++  const authority = preparedAuthority ?? (await prepareUserProfileRoleAuthority(profileId));
+   assertCurrent?.();
+   if (!authority?.isCurrent()) {
+     throw new Error("Gateway profile changed during acquisition");
+@@ -116,6 +121,8 @@ async function resolveGatewayConnectUserProfile(params: {
    authResult: GatewayAuthResult;
    resolveAuthenticatedGitHubIdentity: ReturnType<typeof createAuthenticatedGitHubIdentitySync>;
    assertCurrent?: () => void;
@@ -75,32 +78,30 @@ index d987e9a5..ef5335d7 100644
  }) {
    params.assertCurrent?.();
    const options = { assertCurrent: params.assertCurrent };
-   const ownerDisplayName = params.ownerProfileExpected ? await resolveHostAccountName() : undefined;
-   params.assertCurrent?.();
--  const profile = params.ownerProfileExpected
-+  let profile = params.ownerProfileExpected
-     ? await ensureCanonicalGatewayOwnerProfile(ownerDisplayName ?? null, options)
-     : params.resolveAuthenticatedGitHubIdentity
-       ? await params.resolveAuthenticatedGitHubIdentity()
-@@ -133,6 +139,17 @@ async function resolveGatewayConnectUserProfile(params: {
+@@ -133,10 +140,21 @@ async function resolveGatewayConnectUserProfile(params: {
          : await ensureCanonicalUserProfileForEmail(params.authenticatedUserId!, options);
    params.assertCurrent?.();
    const profileId = "profileId" in profile ? profile.profileId : profile.id;
-+  if (params.proxyRole !== undefined && getUserProfileRole(profileId) !== params.proxyRole) {
-+    // Apply the verified assignment before admitting the human connection.
-+    // Acquire role authority after publication, so concurrent role/alias changes fail admission.
-+    profile = await setCanonicalUserProfileRole(profileId, params.proxyRole, {
-+      assertCurrent: params.assertCurrent,
-+      onCommitted: (canonicalProfileId) => {
-+        invalidateOperatorRolePolicy(canonicalProfileId);
-+        params.onRoleCommitted?.(canonicalProfileId);
-+      },
-+    });
-+  }
++  const verified =
++    params.proxyRole !== undefined
++      ? await prepareVerifiedProxyRoleProfile({
++          profileId,
++          user: params.authenticatedUserId!,
++          role: params.proxyRole,
++          assertCurrent: params.assertCurrent,
++          onRoleCommitted: params.onRoleCommitted,
++        })
++      : undefined;
    const resolved = await resolveAuthenticatedProfile(
      profileId,
-     profile.updatedAt,
-@@ -146,31 +163,52 @@ async function resolveGatewayConnectUserProfile(params: {
+-    profile.updatedAt,
++    verified?.updatedAt ?? profile.updatedAt,
+     params.assertCurrent,
++    verified?.authority,
+   );
+   params.assertCurrent?.();
+   return resolved;
+@@ -146,7 +164,10 @@ async function resolveGatewayConnectUserProfile(params: {
  export async function resolveGatewayConnectProfileAdmission(params: {
    context: Pick<GatewayConnectPhaseContext, "configSnapshot"> &
      Parameters<typeof rejectUnavailableProfileConnect>[0] & {
@@ -110,19 +111,18 @@ index d987e9a5..ef5335d7 100644
 +        "connId" | "logWsControl" | "upgradeReq" | "buildRequestContext"
 +      >;
      };
--  state: Pick<DeviceAuthorizedGatewayConnect, "authResult" | "role" | "authMethod">;
-+  state: Pick<
-+    DeviceAuthorizedGatewayConnect,
-+    "authResult" | "role" | "authMethod" | "trustedProxyAuthOk"
-+  >;
+   state: Pick<DeviceAuthorizedGatewayConnect, "authResult" | "role" | "authMethod">;
    ownerProfileExpected: boolean;
-   authenticatedUserId: string | undefined;
-   resolveAuthenticatedGitHubIdentity: ReturnType<typeof createAuthenticatedGitHubIdentitySync>;
+@@ -155,22 +176,40 @@ export async function resolveGatewayConnectProfileAdmission(params: {
    assertCurrent?: () => void;
  }): Promise<{ ok: true; prepared?: PreparedConnectProfile } | { ok: false }> {
    const { context, state, ownerProfileExpected, authenticatedUserId } = params;
 +  const proxy = context.configSnapshot.gateway?.auth?.trustedProxy;
-+  const proxyRoleRequired = Boolean(proxy?.roleHeader) && state.role === "operator";
++  const proxyRoleRequired =
++    Boolean(proxy?.roleHeader) &&
++    state.role === "operator" &&
++    state.authMethod !== "token" &&
++    state.authMethod !== "password";
    const profileRequired =
      Boolean(context.configSnapshot.gateway?.roles) ||
      hasGatewayOperatorAccessPolicies(context.configSnapshot);
@@ -134,15 +134,14 @@ index d987e9a5..ef5335d7 100644
      return { ok: true };
    }
    try {
-+    const proxyRole =
-+      state.role === "operator"
-+        ? resolveVerifiedProxyRole(
-+            context.configSnapshot,
-+            context.handler.upgradeReq.headers,
-+            state.trustedProxyAuthOk && !ownerProfileExpected,
-+            authenticatedUserId,
-+          )
-+        : undefined;
++    const proxyRole = proxyRoleRequired
++      ? resolveVerifiedProxyRole(
++          context.configSnapshot,
++          context.handler.upgradeReq.headers,
++          state.authResult.ok && state.authResult.method === "trusted-proxy",
++          authenticatedUserId,
++        )
++      : undefined;
      const prepared = await resolveGatewayConnectUserProfile({
        ownerProfileExpected,
        authenticatedUserId,
@@ -155,7 +154,7 @@ index d987e9a5..ef5335d7 100644
      });
      params.assertCurrent?.();
      if (!prepared.authority.isCurrent()) {
-@@ -182,11 +220,12 @@ export async function resolveGatewayConnectProfileAdmission(params: {
+@@ -182,11 +221,12 @@ export async function resolveGatewayConnectProfileAdmission(params: {
        `user profile resolution failed conn=${context.handler.connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
      );
      if (
@@ -174,7 +173,7 @@ index d987e9a5..ef5335d7 100644
        await rejectUnavailableProfileConnect(context, error);
        return { ok: false };
 diff --git a/src/gateway/server.auth.identity-scopes.test.ts b/src/gateway/server.auth.identity-scopes.test.ts
-index d994ebe6..c2045f9f 100644
+index d994ebe6..dec41931 100644
 --- a/src/gateway/server.auth.identity-scopes.test.ts
 +++ b/src/gateway/server.auth.identity-scopes.test.ts
 @@ -1,3 +1,4 @@
@@ -182,7 +181,26 @@ index d994ebe6..c2045f9f 100644
  import path from "node:path";
  import {
    createPluginRegistryFixture,
-@@ -755,3 +756,133 @@ describe("gateway identity scope grants", () => {
+@@ -23,8 +24,10 @@ import { seedOriginDeviceToken } from "../infra/device-auth-store.test-support.j
+ import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+ import { getPairedDevice, listDevicePairing } from "../infra/device-pairing.js";
+ import { connectUserModelAccount } from "../state/user-model-accounts.js";
++import { onUserProfilesChanged } from "../state/user-profile-events.js";
+ import {
+   ensureProfileForEmail,
++  getUserProfileRole,
+   linkEmail,
+   setDisplayName,
+   setUserProfileRole,
+@@ -32,6 +35,7 @@ import {
+ import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
+ import type { OperatorScope } from "./operator-scopes.js";
+ import {
++  BACKEND_GATEWAY_CLIENT,
+   connectReq,
+   CONTROL_UI_CLIENT,
+   installGatewayTestHooks,
+@@ -755,3 +759,226 @@ describe("gateway identity scope grants", () => {
      );
    });
  });
@@ -206,7 +224,7 @@ index d994ebe6..c2045f9f 100644
 +        : value !== null && typeof value === "object"
 +          ? Object.fromEntries(
 +              Object.entries(value)
-+                .sort(([a], [b]) => a.localeCompare(b, "en"))
++                .toSorted(([a], [b]) => a.localeCompare(b, "en"))
 +                .map(([key, item]) => [key, canonical(item)]),
 +            )
 +          : value;
@@ -217,11 +235,16 @@ index d994ebe6..c2045f9f 100644
 +  const setup = () =>
 +    configureGatewayAuth(
 +      {
-+        ...proxyAuth(),
++        ...proxyAuth({ "occ-workspace-files": ["operator.admin"] }),
++        password: "proxy-owner-password",
 +        trustedProxy: {
 +          ...proxyAuth().trustedProxy!,
 +          roleHeader: "x-occ-role",
 +          rolePolicyHashHeader: "x-occ-role-policy",
++          deviceAutoApprove: {
++            enabled: true,
++            scopes: ["operator.admin", "operator.read", "operator.write"],
++          },
 +        },
 +      },
 +      { roles: { default: "denied", definitions } },
@@ -231,29 +254,47 @@ index d994ebe6..c2045f9f 100644
 +    await setup();
 +    await withGatewayServer(async ({ port }) => {
 +      const sockets: Awaited<ReturnType<typeof openWs>>[] = [];
-+      const connect = async (identity: string, role: keyof typeof definitions) => {
-+        const ws = await openWs(port, {
++      const connect = async (identity: string, role: keyof typeof definitions, backend = false) => {
++        const headers: Record<string, string> = {
 +          ...TRUSTED_PROXY_HEADERS,
 +          "x-forwarded-user": identity,
++          "x-openclaw-scopes": definitions[role].scopes.join(","),
 +          "x-occ-role": encodeURIComponent(role),
 +          "x-occ-role-policy": roleHash(role),
-+        });
++        };
++        if (backend) {
++          delete headers.origin;
++        }
++        const ws = await openWs(port, headers);
 +        sockets.push(ws);
-+        const connected = await connectIdentity(ws, {
++        const connected = await (backend ? connectReq : connectIdentity)(ws, {
 +          skipDefaultAuth: true,
-+          scopes: ["operator.admin", "operator.read", "operator.write"],
++          prePairDevice: false,
++          scopes: backend ? [] : ["operator.admin", "operator.read", "operator.write"],
++          ...(backend ? { client: BACKEND_GATEWAY_CLIENT, device: null } : {}),
 +          deviceIdentityPath: deviceIdentityPath(`proxy-${sockets.length}`),
 +        });
 +        expect(connected.ok).toBe(true);
 +        return { ws, connected };
 +      };
 +      try {
-+        // The configured default grants nothing; admission must commit the assignment first.
++        // Fresh human devices use the proxy's real scope cap and autoapproval,
++        // without pre-pairing. The default role grants nothing before assignment.
 +        const joe = await connect("oce:prn_joe", "researcher");
 +        const jo = await connect("oce:prn_jo", "réviseur");
-+        const service = await connect("occ-workspace-files", "administrator");
++        // Match the workspace-files caller: backend client, no device or requested scopes.
++        const service = await connect("occ-workspace-files", "administrator", true);
 +        expect(responseAuth(joe.connected)?.scopes).toEqual(["operator.read", "operator.write"]);
 +        expect(responseAuth(jo.connected)?.scopes).toEqual(["operator.read"]);
++        expect((await rpcReq(joe.ws, "status", {})).ok).toBe(true);
++        expect(
++          (
++            await rpcReq(joe.ws, "sessions.patch", {
++              key: "agent:main:permitted",
++              label: "allowed",
++            })
++          ).ok,
++        ).toBe(true);
 +        const joeProfile = await rpcReq<UsersSelfResult>(joe.ws, "users.self", {});
 +        const joProfile = await rpcReq<UsersSelfResult>(jo.ws, "users.self", {});
 +        expect(joeProfile.ok).toBe(true);
@@ -276,19 +317,88 @@ index d994ebe6..c2045f9f 100644
 +          (await rpcReq(jo.ws, "sessions.patch", { key: "agent:main:denied", label: "denied" })).ok,
 +        ).toBe(false);
 +        // Reconnecting with a changed assignment updates the persisted native profile and closes its old authority.
-+        const closed = waitForWsClose(joe.ws);
++        const closed = waitForWsClose(joe.ws, 5_000);
 +        const changed = await connect("oce:prn_joe", "reviewer");
-+        await closed;
++        expect(await closed).toBe(true);
 +        expect(responseAuth(changed.connected)?.scopes).toEqual(["operator.read"]);
 +        const changedProfile = await rpcReq<UsersSelfResult>(changed.ws, "users.self", {});
 +        expect(changedProfile.payload?.profile.id).toBe(joeProfile.payload?.profile.id);
++
++        const owner = await openWs(port, { origin: BROWSER_ORIGIN });
++        sockets.push(owner);
++        const ownerConnected = await connectIdentity(owner, {
++          skipDefaultAuth: true,
++          password: "proxy-owner-password",
++          scopes: ["operator.admin"],
++          deviceIdentityPath: deviceIdentityPath("proxy-owner"),
++        });
++        expect(ownerConnected.ok).toBe(true);
++        expect(responseAuth(ownerConnected)?.scopes).toEqual(["operator.admin"]);
++        expect((await rpcReq<UsersSelfResult>(owner, "users.self", {})).payload?.profile.id).toBe(
++          GATEWAY_OWNER_PROFILE_ID,
++        );
++        expect((await rpcReq(owner, "config.get", {})).ok).toBe(true);
 +      } finally {
-+        for (const ws of sockets) ws.close();
++        for (const ws of sockets) {
++          ws.close();
++        }
 +      }
 +    });
 +  });
 +
-+  test.each([
++  test("rejects a competing role publication and ambiguous managed identities before admission", async () => {
++    await setup();
++    await withGatewayServer(async ({ port }) => {
++      const profile = ensureProfileForEmail("oce:prn_raced");
++      setUserProfileRole(profile.id, "administrator");
++      let raced = false;
++      const stop = onUserProfilesChanged(() => {
++        if (!raced && getUserProfileRole(profile.id) === "researcher") {
++          raced = true;
++          // A native administrator's committed mutation wins before the connecting
++          // researcher acquires authority. Admission must not adopt that wider role.
++          setUserProfileRole(profile.id, "administrator");
++        }
++      });
++      const connect = async (identity: string) => {
++        const ws = await openWs(port, {
++          ...TRUSTED_PROXY_HEADERS,
++          "x-forwarded-user": identity,
++          "x-occ-role": "researcher",
++          "x-occ-role-policy": roleHash("researcher"),
++        });
++        try {
++          await expect(
++            connectIdentity(ws, {
++              skipDefaultAuth: true,
++              scopes: ["operator.read", "operator.write"],
++              deviceIdentityPath: deviceIdentityPath(`binding-${identity}`),
++            }),
++          ).rejects.toThrow("closed");
++        } finally {
++          ws.close();
++        }
++      };
++      try {
++        await connect("oce:prn_raced");
++        expect(raced).toBe(true);
++      } finally {
++        stop();
++      }
++      const ambiguous = ensureProfileForEmail("oce:prn_ambiguous");
++      setUserProfileRole(ambiguous.id, "administrator");
++      linkEmail("oce:prn_other", ambiguous.id);
++      await connect("oce:prn_ambiguous");
++      expect(getUserProfileRole(ambiguous.id)).toBe("administrator");
++      const service = ensureProfileForEmail("occ-workspace-files");
++      setUserProfileRole(service.id, "administrator");
++      linkEmail("oce:prn_service_alias", service.id);
++      await connect("oce:prn_service_alias");
++      expect(getUserProfileRole(service.id)).toBe("administrator");
++    });
++  });
++
++  const rejectedAssignments: Array<{ label: string; headers: Record<string, string> }> = [
 +    { label: "missing assignment", headers: {} },
 +    {
 +      label: "unknown role",
@@ -298,7 +408,8 @@ index d994ebe6..c2045f9f 100644
 +      label: "changed native policy",
 +      headers: { "x-occ-role": "reviewer", "x-occ-role-policy": "0".repeat(64) },
 +    },
-+  ])("rejects $label before admission", async ({ headers }) => {
++  ];
++  test.each(rejectedAssignments)("rejects $label before admission", async ({ headers }) => {
 +    await setup();
 +    await withGatewayServer(async ({ port }) => {
 +      const ws = await openWs(port, { ...TRUSTED_PROXY_HEADERS, ...headers });
@@ -317,83 +428,97 @@ index d994ebe6..c2045f9f 100644
 +  });
 +});
 diff --git a/src/gateway/http-auth-user-profile.ts b/src/gateway/http-auth-user-profile.ts
-index a2265ef5..5221b641 100644
+index a2265ef5..b171aa99 100644
 --- a/src/gateway/http-auth-user-profile.ts
 +++ b/src/gateway/http-auth-user-profile.ts
-@@ -12,8 +12,13 @@ import {
-   ensureCanonicalGatewayOwnerProfile,
-   ensureCanonicalUserProfileForEmail,
-   ensureCanonicalUserProfileForTailscaleIdentity,
-+  setCanonicalUserProfileRole,
- } from "../state/user-profile-writes.js";
--import { getUserProfileDisplay, getUserProfileListItem } from "../state/user-profiles.js";
-+import {
-+  getUserProfileDisplay,
-+  getUserProfileListItem,
-+  getUserProfileRole,
-+} from "../state/user-profiles.js";
- import type { GatewayAuthResult } from "./auth.js";
- import { shouldUseGatewayOwnerProfile } from "./gateway-owner-profile.js";
- import { createAuthenticatedGitHubIdentitySync } from "./github-user-identity.js";
-@@ -24,11 +29,13 @@ import {
- } from "./operator-access-policy.js";
- import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
- import {
-+  invalidateOperatorRolePolicy,
-   resolveOperatorRolePolicyForAssignment,
-   resolveOperatorRolePolicyForProfile,
+@@ -29,6 +29,7 @@ import {
  } from "./operator-role-policy.js";
  import { resolveBrowserOriginPolicy } from "./origin-check.js";
  import type { GatewayClient } from "./server-methods/shared-types.js";
-+import { resolveVerifiedProxyRole } from "./trusted-proxy-role.js";
++import { prepareVerifiedProxyRoleProfile, resolveVerifiedProxyRole } from "./trusted-proxy-role.js";
  import { formatForLog } from "./ws-log.js";
  
  const profileLog = createSubsystemLogger("gateway/user-profiles");
-@@ -131,6 +138,12 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+@@ -131,6 +132,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
    assertCurrent();
    const options = { assertCurrent };
    const authenticatedUserId = normalizeOptionalString(params.authResult.user);
-+  const proxyRole = resolveVerifiedProxyRole(
-+    params.cfg,
-+    params.req.headers,
-+    params.authResult.ok && params.authResult.method === "trusted-proxy",
-+    authenticatedUserId,
-+  );
++  const proxyRole = usesSharedSecretGatewayMethod(params.authResult.method)
++    ? undefined
++    : resolveVerifiedProxyRole(
++        params.cfg,
++        params.req.headers,
++        params.authResult.ok && params.authResult.method === "trusted-proxy",
++        authenticatedUserId,
++      );
    const rolesConfigured = Boolean(params.cfg.gateway?.roles);
    const accessPoliciesConfigured = hasGatewayOperatorAccessPolicies(params.cfg);
    if (!authenticatedUserId) {
-@@ -163,7 +176,7 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
-       requestHeaders: params.req.headers,
-       assertCurrent,
-     });
--    const profile = syncGitHubIdentity
-+    let profile = syncGitHubIdentity
-       ? await syncGitHubIdentity()
-       : params.authResult.tailscaleIdentity
-         ? await ensureCanonicalUserProfileForTailscaleIdentity(
-@@ -172,6 +185,12 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+@@ -172,11 +181,21 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
            )
          : await ensureCanonicalUserProfileForEmail(authenticatedUserId, options);
      const profileId = "profileId" in profile ? profile.profileId : profile.id;
-+    if (proxyRole !== undefined && getUserProfileRole(profileId) !== proxyRole) {
-+      profile = await setCanonicalUserProfileRole(profileId, proxyRole, {
-+        assertCurrent,
-+        onCommitted: invalidateOperatorRolePolicy,
-+      });
-+    }
++    const verified =
++      proxyRole !== undefined
++        ? await prepareVerifiedProxyRoleProfile({
++            profileId,
++            user: authenticatedUserId,
++            role: proxyRole,
++            assertCurrent,
++          })
++        : undefined;
      return await prepareHttpProfile(
        profileId,
-       profile.updatedAt,
+-      profile.updatedAt,
++      verified?.updatedAt ?? profile.updatedAt,
+       assertCurrent,
+       usesSharedSecretGatewayMethod(params.authResult.method) ? undefined : params.cfg,
++      verified?.authority,
+     );
+   } catch (error) {
+     assertCurrent();
+@@ -194,9 +213,10 @@ async function prepareHttpProfile(
+   updatedAt: number,
+   assertCurrent: () => void,
+   cfg?: OpenClawConfig,
++  preparedAuthority?: NonNullable<Awaited<ReturnType<typeof prepareUserProfileRoleAuthority>>>,
+ ) {
+   assertCurrent();
+-  const authority = await prepareUserProfileRoleAuthority(profileId);
++  const authority = preparedAuthority ?? (await prepareUserProfileRoleAuthority(profileId));
+   assertCurrent();
+   if (!authority?.isCurrent()) {
+     throw new Error("HTTP profile authority changed during acquisition");
 diff --git a/src/gateway/server.plugin-http-role-scopes.test.ts b/src/gateway/server.plugin-http-role-scopes.test.ts
-index aacb5b89..89ba4d4a 100644
+index aacb5b89..db528da1 100644
 --- a/src/gateway/server.plugin-http-role-scopes.test.ts
 +++ b/src/gateway/server.plugin-http-role-scopes.test.ts
-@@ -1,3 +1,4 @@
+@@ -1,16 +1,23 @@
 +import { createHash } from "node:crypto";
  // Exercise named-role ceilings through real HTTP auth and plugin runtime dispatch.
  import { once } from "node:events";
  import type { IncomingMessage, ServerResponse } from "node:http";
-@@ -353,3 +354,105 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
+ import { PassThrough } from "node:stream";
+ import { describe, expect, it } from "vitest";
+ import { WebSocketServer } from "ws";
++import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+ import { createDeferred } from "../../test/helpers/promise.js";
+ import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+ import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import { createSubsystemLogger } from "../logging/subsystem.js";
+ import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+-import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
++import {
++  ensureProfileForEmail,
++  getUserProfileRole,
++  linkEmail,
++  setUserProfileRole,
++} from "../state/user-profiles.js";
+ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+ import { resolveGatewayAuth } from "./auth.js";
+ import { authorizeOperatorScopesForMethod, CLI_DEFAULT_OPERATOR_SCOPES } from "./method-scopes.js";
+@@ -353,3 +360,144 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
      invalidateOperatorRolePolicy(profile.id);
    });
  });
@@ -402,8 +527,10 @@ index aacb5b89..89ba4d4a 100644
 +  await withOpenClawTestState({ scenario: "minimal" }, async () => {
 +    const auth = {
 +      ...proxyAuth,
++      password: "proxy-http-owner-password",
 +      trustedProxy: {
 +        ...proxyAuth.trustedProxy,
++        allowLoopback: true,
 +        roleHeader: "x-occ-role",
 +        rolePolicyHashHeader: "x-occ-role-policy",
 +      },
@@ -412,10 +539,14 @@ index aacb5b89..89ba4d4a 100644
 +      administrator: { sessions: { others: "write" }, agents: "*", scopes: ["operator.admin"] },
 +      reviewer: { sessions: { others: "view" }, agents: ["main"], scopes: ["operator.read"] },
 +      denied: { sessions: { others: "none" }, agents: [], scopes: [] },
-+    } as const;
++    } satisfies Record<string, GatewayOperatorRoleDefinition>;
 +    const cfg = {
-+      gateway: { auth, trustedProxies: [proxyAddress], roles: { default: "denied", definitions } },
-+    } as OpenClawConfig;
++      gateway: {
++        auth,
++        trustedProxies: [proxyAddress, "127.0.0.1"],
++        roles: { default: "denied", definitions },
++      },
++    } satisfies OpenClawConfig;
 +    let calls = 0;
 +    const registry = createGatewayTestRegistry({
 +      httpRoutes: [
@@ -452,7 +583,7 @@ index aacb5b89..89ba4d4a 100644
 +            : value !== null && typeof value === "object"
 +              ? Object.fromEntries(
 +                  Object.entries(value)
-+                    .sort(([a], [b]) => a.localeCompare(b, "en"))
++                    .toSorted(([a], [b]) => a.localeCompare(b, "en"))
 +                    .map(([key, item]) => [key, canonical(item)]),
 +                )
 +              : value;
@@ -482,8 +613,11 @@ index aacb5b89..89ba4d4a 100644
 +          const current = JSON.parse(response.getBody());
 +          expect(current.adminAllowed).toBe(role === "administrator");
 +          expect(current.writeAllowed).toBe(role === "administrator");
-+          if (profileId) expect(current.profileId).toBe(profileId);
-+          else profileId = current.profileId;
++          if (profileId) {
++            expect(current.profileId).toBe(profileId);
++          } else {
++            profileId = current.profileId;
++          }
 +          const before = calls;
 +          expect(
 +            (
@@ -495,19 +629,54 @@ index aacb5b89..89ba4d4a 100644
 +          ).toBe(401);
 +          expect(calls).toBe(before);
 +        }
++        const owner = await sendRequest(server, {
++          path: routePath,
++          remoteAddress: "127.0.0.1",
++          authorization: "Bearer proxy-http-owner-password",
++        });
++        expect(owner.res.statusCode).toBe(200);
++        expect(JSON.parse(owner.getBody())).toMatchObject({
++          profileId: GATEWAY_OWNER_PROFILE_ID,
++          adminAllowed: true,
++        });
++
++        // Native linking is an administrator-owned API, but it must never let
++        // one proxy principal overwrite another principal's single native role.
++        linkEmail("oce:prn_http_other", profileId!);
++        const beforeAmbiguous = calls;
++        const ambiguous = await sendRequest(server, {
++          path: routePath,
++          remoteAddress: proxyAddress,
++          headers: {
++            "x-forwarded-user": "oce:prn_http_person",
++            "x-forwarded-for": "198.51.100.20",
++            "x-occ-role": "administrator",
++            "x-occ-role-policy": createHash("sha256")
++              .update(JSON.stringify(canonical(definitions.administrator)))
++              .digest("hex"),
++          },
++        });
++        expect(ambiguous.res.statusCode).toBe(401);
++        expect(calls).toBe(beforeAmbiguous);
++        expect(getUserProfileRole(profileId!)).toBe("reviewer");
 +      },
 +    });
 +  });
 +});
 diff --git a/src/gateway/trusted-proxy-role.ts b/src/gateway/trusted-proxy-role.ts
 new file mode 100644
-index 00000000..04f116f9
+index 00000000..0b815c63
 --- /dev/null
 +++ b/src/gateway/trusted-proxy-role.ts
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,111 @@
 +import { createHash } from "node:crypto";
 +import type { IncomingHttpHeaders } from "node:http";
 +import type { OpenClawConfig } from "../config/types.openclaw.js";
++import { prepareUserProfileRoleAuthority } from "../state/user-channel-identity-operations.js";
++import { normalizeProfileEmail } from "../state/user-profile-email.kernel.js";
++import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
++import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
++import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 +
 +export function resolveVerifiedProxyRole(
 +  cfg: OpenClawConfig,
@@ -516,7 +685,9 @@ index 00000000..04f116f9
 +  user: string | undefined,
 +): string | undefined {
 +  const proxy = cfg.gateway?.auth?.trustedProxy;
-+  if (!proxy?.roleHeader) return undefined;
++  if (!proxy?.roleHeader) {
++    return undefined;
++  }
 +  const encoded = headers[proxy.roleHeader];
 +  const role = typeof encoded === "string" ? decodeURIComponent(encoded) : undefined;
 +  const policyHash = proxy.rolePolicyHashHeader && headers[proxy.rolePolicyHashHeader];
@@ -537,13 +708,75 @@ index 00000000..04f116f9
 +      : value !== null && typeof value === "object"
 +        ? Object.fromEntries(
 +            Object.entries(value)
-+              .sort(([a], [b]) => a.localeCompare(b, "en"))
++              .toSorted(([a], [b]) => a.localeCompare(b, "en"))
 +              .map(([key, item]) => [key, canonical(item)]),
 +          )
 +        : value;
 +  const digest = createHash("sha256")
 +    .update(JSON.stringify(canonical(definitions[role])))
 +    .digest("hex");
-+  if (policyHash !== digest) throw new Error("Verified proxy role differs from runtime policy");
++  if (policyHash !== digest) {
++    throw new Error("Verified proxy role differs from runtime policy");
++  }
 +  return role;
++}
++
++/** Bind proxy admission to one canonical principal and its exact verified assignment. */
++export async function prepareVerifiedProxyRoleProfile(params: {
++  profileId: string;
++  user: string;
++  role: string;
++  assertCurrent?: () => void;
++  onRoleCommitted?: (profileId: string) => void;
++}) {
++  params.assertCurrent?.();
++  const identity = await prepareUserProfileIdentity(params.profileId);
++  try {
++    const email = normalizeProfileEmail(params.user);
++    const bindingIds = identity.emailBindingIds;
++    const readCurrent = () => {
++      params.assertCurrent?.();
++      // These facts belong to the retained async catalog owner; guards do not read SQLite.
++      const { profile } = identity.readCurrentFacts(bindingIds);
++      const managed = profile.emails.filter(
++        (candidate) => candidate.startsWith("oce:") || candidate === "occ-workspace-files",
++      );
++      if (
++        !profile.emails.includes(email) ||
++        managed.length > 1 ||
++        (managed.length === 1 && managed[0] !== email)
++      ) {
++        throw new Error("Verified proxy identity has an ambiguous native profile");
++      }
++      return profile;
++    };
++    const assertCurrent = () => {
++      readCurrent();
++    };
++    let updatedAt: number | undefined;
++    if (readCurrent().assignedRole !== params.role) {
++      const committed = await setCanonicalUserProfileRole(params.profileId, params.role, {
++        assertCurrent,
++        onCommitted: (profileId) => {
++          invalidateOperatorRolePolicy(profileId);
++          params.onRoleCommitted?.(profileId);
++        },
++      });
++      updatedAt = committed.updatedAt;
++    }
++    assertCurrent();
++    const authority = await prepareUserProfileRoleAuthority(params.profileId);
++    const current = readCurrent();
++    if (
++      !authority?.isCurrent() ||
++      authority.profileId !== current.profileId ||
++      authority.role !== params.role ||
++      current.assignedRole !== params.role
++    ) {
++      throw new Error("Verified proxy assignment changed during profile acquisition");
++    }
++    return { authority, updatedAt };
++  } finally {
++    identity.release();
++  }
 +}

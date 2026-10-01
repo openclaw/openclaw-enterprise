@@ -218,10 +218,12 @@ access needs an active revision with a reachable gateway. An uncertain save
 requires a successful Reload before retrying. See
 [Workspace Files](../topics/workspace-files.md).
 
-## Conditional native admin panel
+<a id="conditional-native-admin-panel"></a>
 
-When enabled by the Installation and permitted for your account, **Native admin
-UI** provides **Refresh access** and **Open OpenClaw**. The latter opens
+## Conditional OpenClaw panel
+
+When enabled by the Installation and permitted for your account, **OpenClaw**
+provides **Refresh access** and **Open OpenClaw**. The latter opens
 the active gateway in a new tab, even while you view a draft or older revision.
 
 The native UI can change the gateway outside OCE's revision tracking. Use OCE for

@@ -24,7 +24,7 @@ Agent into native admin access:
    if it changed, refresh and review the current Configuration again.
 4. Save the Configuration and select **Deploy new version**. Once it is active,
    request status again and expect `available` with the same origin. Open
-   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
+   **OpenClaw** on the Agent detail page. For stale drafts or uncertain
    saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
 
 The [first-Agent command](../first-agent.md) creates a separate Agent with native UI
@@ -172,7 +172,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
         "allowUsers": [],
         "deviceAutoApprove": {
           "enabled": true,
-          "scopes": ["operator.admin"]
+          "scopes": ["operator.read", "operator.write", "operator.admin"]
         }
       },
       "identityScopes": {
@@ -201,6 +201,8 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
   }
 }
 ```
+
+Device auto-approval must include the scopes used by each assigned role. It approves the device; the assigned role still limits the person's permissions.
 
 Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
 

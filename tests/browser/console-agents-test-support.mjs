@@ -61,7 +61,10 @@ export async function openAdvancedSettings(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
-  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("heading", { name: "OpenClaw", exact: true }).isVisible(),
+    false,
+  );
   assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 }
 

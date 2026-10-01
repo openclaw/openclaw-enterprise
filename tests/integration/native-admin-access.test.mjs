@@ -71,7 +71,7 @@ function nativeComputeDriver(upstreamPort) {
     getAgentRuntimeAccess(revision, principalId, runtimeRole) {
       return humanRuntimeAccess(
         revision,
-        this.getGatewayEndpoint(revision),
+        `wss://localhost:${upstreamPort}/people/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`,
         principalId,
         runtimeRole,
       );
@@ -569,7 +569,7 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   const observed = context.upstream.requests[0];
   assert.equal(
     observed.url,
-    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/people/settings/profile?tab=devices`,
+    `/people/namespaces/${context.namespace.id}/agents/${context.agent.id}/settings/profile?tab=devices`,
   );
   assert.equal(observed.headers.origin, status.data.origin);
   assert.equal(observed.headers["x-safe-client-header"], "preserved");

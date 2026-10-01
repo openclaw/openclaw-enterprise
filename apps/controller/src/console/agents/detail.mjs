@@ -1,7 +1,7 @@
 import { element, button } from "../dom.mjs";
 import { createHarnessAuthFields, renderHarnessAuthSummary } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
-import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { renderRuntimeAccess } from "./runtime-access.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
@@ -819,7 +819,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     currentSummary,
     statusLine,
     deploymentStatus,
-    renderNativeAdminAccess(context, path),
+    renderRuntimeAccess(context, path),
     // Sharing policy reads need Installation administration and a denial is audited, so
     // skip the panel when the session probe already showed that access is missing.
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),

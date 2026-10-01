@@ -22,9 +22,10 @@ override grants, and one action never implies another. See
 
 ## Resources and scopes
 
-This is the set checked by current public operations. Fresh native IAM bootstrap
-grants these pairs to the human administrator and the non-Agent bootstrap service
-principal. Rerunning bootstrap does not add missing permissions to existing Roles.
+This is the set checked by current public operations. See
+[bootstrap policy](../authorization.md#supported-policy-surface) for the grants
+given to the human administrator and non-Agent bootstrap service principal.
+Rerunning bootstrap does not add missing permissions to existing Roles.
 
 | Resource kind                                   | Actions                                                                                     | Scope checked                                                                                                                                                                                            |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -35,7 +36,7 @@ principal. Rerunning bootstrap does not add missing permissions to existing Role
 | [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                                                            |
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                             | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.     |
 | [`credential_source`](../credential-sources.md) | `create`, `read`, `delete`, `operate`                                                       | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. |
-| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `use` | Namespace for create; exact Agent otherwise. Native admin requires a human session. Bootstrap does not grant `read_logs`.                                                                                |
+| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `use` | Namespace for create; exact Agent otherwise. OpenClaw entry requires a human session and an exact runtime-role assignment. Bootstrap does not grant `read_logs` or `use`.                                |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                      | Exact AgentRevision; deployment-status reads use this permission too.                                                                                                                                    |
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential

@@ -2479,7 +2479,7 @@ assert.equal(provenance.commit, "9d9c8568c51e340540f634f71bd7c7582a70debc");
 assert.equal(provenance.sourceArchiveSha256, "175260a3e26e6de4c1225ff27d8c2b17b01b700640db915a8bac9ee3d4cf903f");
 assert.equal(provenance.openclawBridgePatchSha256, "705b21a67f344de66a5468a07b35f6fec01635331d99cb85d9254c56bccc0c7d");
 assert.equal(provenance.openclawConnectPatchSha256, "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f");
-assert.equal(provenance.openclawTrustedProxyRolePatchSha256, "0ffcda99b8ee70990817dc5285f42f3f4f9763c9d37d37f9152deda8366a64de");
+assert.equal(provenance.openclawTrustedProxyRolePatchSha256, "798f183d0c2840aa0ced9d94984e2baad407dc4581bf2d86725b36ccf9462df0");
 assert.equal(provenance.codex.version, "0.158.0");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);

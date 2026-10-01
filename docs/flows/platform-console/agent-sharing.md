@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-09-30"
-last_updated_session: "authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874"
+updated: "2026-10-01"
+last_updated_session: "authoring-run/6a494c30-770d-4d46-98d6-434af8c87997"
 ---
 
 # Console Agent sharing and removal
@@ -29,6 +29,7 @@ See the [parent flow](../platform-console.md) and the
 graph TD
   A["Agent detail mounts sharing panel"] --> B["Read Namespace policy and active runtime role catalog"]
   B -->|policy denied| K["Keep other Agent panels available"]
+  B -->|catalog unavailable| L["Disable role selection; retain removal"]
   B --> C["Submit share for an existing Principal"]
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
@@ -63,7 +64,7 @@ that response does it find or create the exact Agent read/use Role and
 bind it to the selected Agent with the chosen runtime role. The panel rejects a subject that is not a `prn_`
 Principal ID, such as an email, before any request, and reports a `404` during a
 share as an unknown Principal ID. The server validates the supplied subject and
-resource on each write. Confirmed progress survives later failure; unknown
+resource on each write. When the person already has a runtime assignment, the panel preserves it and grants exact Agent read separately if missing. Confirmed progress survives later failure; unknown
 results disable mutations until an explicit current-policy refresh. Readback is
 configuration evidence, not a historical receipt, and never triggers a write.
 
@@ -78,7 +79,7 @@ The selector PATCHes only `runtimeRole` on the existing binding. OCC verifies th
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
-Removal addresses only the selected Agent binding. The request client's existing
+Removal rereads current IAM policy without loading the role catalog and addresses only the selected Agent binding. The request client's existing
 success envelope handling also accepts the API's empty `204` deletion response.
 The panel retains discovery grants and explains other possible access sources.
 
@@ -104,6 +105,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 01:02: Trace read grants on reused assignments and catalog-independent removal. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
 
 - 2026-09-30 23:38: Trace role catalog selection and atomic assignment changes. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
 

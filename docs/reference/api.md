@@ -2839,12 +2839,13 @@ List assignable runtime roles from the active Agent revision
 
 **Operation ID:** `listAgentRuntimeRoles`
 
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the requested Agent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `administer` | `installation` | `requested` |
 | `read` | `namespace` | `requested` |
+| `read` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -4114,12 +4115,13 @@ Change the runtime role on an exact human Agent access grant
 
 **Operation ID:** `updateIAMRuntimeRole`
 
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the Agent targeted by the AccessBinding.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `administer` | `installation` | `requested` |
 | `read` | `namespace` | `requested` |
+| `read` | `agent` | `requested` |
 
 ##### Parameters
 

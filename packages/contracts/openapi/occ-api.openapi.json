@@ -13969,7 +13969,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/runtime-roles": {
       "get": {
-        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.",
+        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the requested Agent.",
         "operationId": "listAgentRuntimeRoles",
         "parameters": [
           {
@@ -14062,7 +14062,8 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
-          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
@@ -16861,7 +16862,7 @@
     },
     "/namespaces/{namespaceId}/iam/access-bindings/{bindingId}/runtime-role": {
       "patch": {
-        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.",
+        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the Agent targeted by the AccessBinding.",
         "operationId": "updateIAMRuntimeRole",
         "parameters": [
           {
@@ -17052,7 +17053,13 @@
         "tags": ["IAM"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
-          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "runtime_assignment_target",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       }
     },

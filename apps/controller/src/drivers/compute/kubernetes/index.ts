@@ -2209,12 +2209,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   getAgentRuntimeAccess(revision: AgentRevision, principalId: string, runtimeRole: string) {
+    const endpoint = this.getGatewayEndpoint(revision);
+    const humanEndpoint = endpoint === undefined ? undefined : new URL(endpoint);
+    if (humanEndpoint !== undefined) {
+      humanEndpoint.pathname = this.gatewayRoutePath(revision, "people");
+    }
     return humanRuntimeAccess(
       {
         ...revision,
         configuration: this.kubernetesGatewayConfigurationDocument(revision.configuration),
       },
-      this.getGatewayEndpoint(revision),
+      humanEndpoint?.toString(),
       principalId,
       runtimeRole,
     );
@@ -8280,8 +8285,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `gateway-${sha256Hex(agentId, 12)}`;
   }
 
-  private gatewayRoutePath(revision: AgentRevision): string {
-    return `/namespaces/${required(revision.namespaceId, "AgentRevision Namespace ID")}/agents/${required(
+  private gatewayRoutePath(
+    revision: AgentRevision,
+    access: "operator" | "people" = "operator",
+  ): string {
+    // Human routes must remain outside the privileged service prefix even when
+    // their HTTPRoute is missing or has not been accepted by Envoy.
+    return `${access === "people" ? "/people" : ""}/namespaces/${required(revision.namespaceId, "AgentRevision Namespace ID")}/agents/${required(
       revision.agentId,
       "Agent ID",
     )}`;
@@ -8505,7 +8515,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                     {
                       path: {
                         type: "Exact",
-                        value: `${this.gatewayRoutePath(revision)}${access === "node" ? "/node" : access === "people" ? "/people" : ""}`,
+                        value: `${this.gatewayRoutePath(revision, access === "people" ? "people" : "operator")}${access === "node" ? "/node" : ""}`,
                       },
                     },
                   ],
@@ -8575,7 +8585,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                           {
                             path: {
                               type: "PathPrefix",
-                              value: `${this.gatewayRoutePath(revision)}${access === "people" ? "/people" : ""}/`,
+                              value: `${this.gatewayRoutePath(revision, access)}/`,
                             },
                           },
                         ],

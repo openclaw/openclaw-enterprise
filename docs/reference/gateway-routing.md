@@ -246,12 +246,12 @@ then strips browser cookies and credentials before forwarding to Envoy.
 The human Compute descriptor selects:
 
 ```text
-wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>/people
+wss://<private-host>/people/namespaces/<namespaceId>/agents/<agentId>
 ```
 
 OCC converts that endpoint to `https:` for native UI HTTP traffic and forwards
 its verified human identity, assigned role and policy digest. Workspace-file
-traffic uses the original WSS base without `/people`, with its separate privileged
+traffic uses the original `/namespaces` WSS base, with its separate privileged
 service identity. Native-host requests are
 intercepted before the normal API not-found path, resolved to the exact Agent
 represented by the host, and checked against the current active revision before

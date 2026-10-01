@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-09-30"
-last_updated_session: "authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874"
+updated: "2026-10-01"
+last_updated_session: "authoring-run/6a494c30-770d-4d46-98d6-434af8c87997"
 ---
 
 # Agent Native Admin UI Flow
@@ -18,7 +18,7 @@ WebSocket traffic through the API process. Live runtime proof remains separate.
 ## Entry Points
 
 - Trigger: Console renders an Agent detail tab, calls the native admin availability API, and opens the returned Agent URL.
-- Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
+- Source: `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 - Source: `apps/controller/src/index.ts:resolveNativeAdminAvailability`
 - Source: `apps/controller/src/index.ts:handleNativeAdminUpgrade`
 - Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getAgentRuntimeAccess` value.
@@ -61,7 +61,7 @@ graph TD
 
 ### 1. Console renders native admin availability
 
-`apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
+`apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
 The Agent detail page inserts the OpenClaw panel on its tabs, including Configuration and Workspace files. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped, unavailable, or unsupported states, and shows the **Open OpenClaw** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
 
@@ -81,7 +81,7 @@ The route is `GET /namespaces/:namespaceId/agents/:agentId/native-admin`. Its op
 
 The status handler validates the human session, preserves the OCC exact-Agent `use` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getUsableActiveAgentRevision`. That controller method authorizes exact Agent `use` and loads the Agent before inspecting its state. If the Agent is stopped and has no `activeRevisionId`, it raises `ResourceConflictError`; the resolver returns only `status: "stopped"`. This covers new Agents and completed stops. If active-revision selection instead raises `DependencyUnavailableError`, as for a desired-running Agent awaiting activation, the resolver returns `unavailable` in a successful status envelope. The console asks the operator to check the Agent's deployment and refresh access; private gateway routing has not been evaluated. The panel always reports the Agent's active revision, independently of the viewed snapshot. Authorization denial remains a protected-route `403` and preserves the human IAM denial audit.
 
-After active revision selection succeeds, OCC derives the native target. If the Agent's desired runtime state is not `running`, the resolver returns `stopped` with the derived host and origin. If the Compute Driver cannot supply a qualified human descriptor or `nativeAdminConfigurationSupported` rejects `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. If the selected Compute Driver cannot provide a gateway endpoint or the endpoint is not a clean private `wss:` URL, it also returns `unsupported`. Only the `available` result carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits that value from the browser API response.
+After active revision selection succeeds, OCC derives the native target. If the Agent's desired runtime state is not `running`, the resolver returns `stopped` with the derived host and origin. Compute qualifies trusted-proxy identity and role headers, enabled device approval, and approval scopes covering the selected role. If it cannot supply that descriptor or `nativeAdminConfigurationSupported` rejects `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. A missing endpoint or one that is not a clean private `wss:` URL also returns `unsupported`. Only `available` carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits it from the browser response.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -147,7 +147,9 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 `apps/controller/src/drivers/compute/kubernetes/runtime-access.ts:humanRuntimeAccess`
 `deploy/runtime/openclaw-trusted-proxy-role.patch`
 
-The Driver selects the private `/people` route and `oce:<Principal ID>` identity, assigned role and canonical policy digest. The proxy strips all incoming role/identity headers before injecting these verified values. The patched Gateway authenticates its trusted proxy, requires a matching configured role and digest, creates or finds the canonical human profile, commits the role through native profile writes and acquires native role authority before Hello admission. The same verified role is committed before native HTTP profile authorization, including first-login plugin requests and role reduction without a WebSocket reconnect. Publication retires the HTTP authority captured before profile acquisition, so the first such request returns `401` without running its handler; a separate request captures the committed role. OCC does not replay the request. Existing profile connections retire on a changed role. Native scopes, session ownership, agent limits and other configured native policy continue to use OpenClaw's permission engine. The retained server route assigns `oce-service` to the separate service identity.
+The Driver selects `/people/namespaces/<namespaceId>/agents/<agentId>` and supplies `oce:<Principal ID>`, the assigned role and its policy digest. Service traffic uses a disjoint `/namespaces` route, so a missing human route rejects entry. OCC replaces browser role/identity headers with verified values.
+
+The patched Gateway verifies trusted-proxy authentication and the configured role digest. It finds the human profile, checks identity authority asynchronously, commits the selected role and requires matching authority before admission. Linked OCE people cannot share one profile. The same checks precede HTTP authorization; native role publication retires the request's earlier authority, returning `401` before its handler runs. A separate request uses the committed role; OCC never replays it. OpenClaw enforces its configured permissions. Backend service connections retain `oce-service`; independently authenticated local owners retain their existing access.
 
 The proxy renews OCE entry authority every 25 seconds with a five-second check deadline. A changed assignment or descriptor closes the old connection within 30 seconds; new HTTP requests and upgrades resolve current policy immediately. Native profile updates occur at reconnect, not as an OCE database side effect.
 
@@ -203,6 +205,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 01:02: Trace disjoint human routing and verified native profile authority in the accompanying fixes. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
 
 - 2026-09-30 23:38: Trace per-person runtime assignment, human routing and native admission in the accompanying change. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
 

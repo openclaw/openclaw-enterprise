@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-09-30"
-last_updated_session: "authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874"
+updated: "2026-10-01"
+last_updated_session: "authoring-run/6a494c30-770d-4d46-98d6-434af8c87997"
 ---
 
 # Namespace IAM Policy Flow
@@ -103,7 +103,7 @@ fence against concurrent policy invalidation.
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 
 The PostgreSQL state implementation writes Roles and AccessBindings through the
-same unit of work used by the API audit append. If commit outcome is unknown,
+same unit of work used by the API audit append. A duplicate person/Agent runtime assignment becomes the existing `ResourceConflictError` before the IAM wrapper handles unknown failures. The transaction rolls back without a success audit, and the API returns `409`. If commit outcome is unknown,
 State discards the connection without another query. OCC reports dependency
 failure; a caller must not infer rollback or replay the mutation from that
 result. Later authorization requests read the current policy through the IAM
@@ -150,6 +150,8 @@ selected account, session, and policy writers join the same protocol.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 01:02: Preserve duplicate runtime-assignment conflicts before the IAM error boundary. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
 
 - 2026-09-30 23:48: Trace runtime-role updates and assignment audit fields in the accompanying change. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
 

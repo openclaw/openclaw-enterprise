@@ -1,8 +1,7 @@
 # Console Storybook
 
-Browse production Console pages, components, and Agent workflows against an
-in-memory fixture. Use dummy
-credentials.
+Production Console previews use in-memory fixtures. They contact no services and
+run no workloads. Use dummy credentials.
 
 ## Run locally
 

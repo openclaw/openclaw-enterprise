@@ -1,6 +1,6 @@
 # Agent native admin UI
 
-Agent OpenClaw access lets an explicitly assigned person open a deployed Gateway with their own native profile. OCE decides who may enter and which configured OpenClaw role they receive. OpenClaw defines and enforces that role's permissions; an OCE Agent remains one shared Gateway trust domain.
+Agent OpenClaw access lets an explicitly assigned person open a deployed Gateway with their own native profile. OCE decides who may enter and which configured OpenClaw role they receive. OpenClaw defines and enforces that role's permissions; each Agent's files, plugins and provider accounts remain shared.
 
 The feature is disabled by default. When enabled, the console shows **OpenClaw** on the Agent detail tabs only for callers with exact Agent `use` permission and a direct person/Agent `runtimeRole` assignment. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
 
@@ -15,7 +15,7 @@ The feature is disabled by default. When enabled, the console shows **OpenClaw**
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
 - The Agent must be running, have an active revision, and provide the Compute Driver's human-access descriptor for the selected role and active revision.
 - The runtime must include the verified proxy-role admission bridge from the [runtime recipe](../../deploy/runtime/README.md). An unpatched runtime rejects its configuration. Configure `gateway.roles` with a default and named definitions, and deploy them before assigning access. Role definitions must use canonical native agent IDs and de-duplicated scope/agent arrays; any normalization mismatch fails admission through the policy digest check.
-- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval with every scope used by the selected role. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
 ## Authorization and availability
 
@@ -45,10 +45,10 @@ https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 
 The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
 
-The Kubernetes human route adds `/people` to the private gateway base:
+The Kubernetes human route uses a separate `/people` path:
 
 ```text
-wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>/people
+wss://<private-host>/people/namespaces/<namespaceId>/agents/<agentId>
 ```
 
 For browser proxying, OCC maps that value to the same authority and Agent path over `https:`. Workspace-file access continues to use the original `wss:` endpoint. Native admin HTTP requests and WebSocket upgrades both pass through the OCC API process before reaching the private gateway. The HTTP proxy blocks native service-worker script requests and appends `worker-src 'none'` to proxied Content Security Policy so Agent content cannot register a browser service worker on the isolated Agent origin.
@@ -65,7 +65,7 @@ The native Gateway sees `oce:<Principal ID>`, a stable account identifier verifi
 
 For native authenticated HTTP, creating a profile or changing its role retires the authority captured before acquisition. That request returns `401` before the handler runs; a separate request uses the committed role. OCC never automatically replays an HTTP write. WebSocket admission acquires authority after role publication.
 
-Role definitions live in the admitted `gateway.roles` Configuration. The person-to-role mapping lives in the exact Agent's OCE AccessBinding `runtimeRole` field. `GET /namespaces/:namespaceId/agents/:agentId/runtime-roles` lists assignable names and permission summaries from the active revision. An Installation administrator changes an assignment with `PATCH /namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role`; deleting that binding revokes entry. There is at most one assignment per person/Agent. Groups, service identities, broad bindings and Installation administration do not select a native role.
+Role definitions live in the admitted `gateway.roles` Configuration. The person-to-role mapping lives in the exact Agent's OCE AccessBinding `runtimeRole` field. A native role edit does not change that assignment; the next proxied admission reapplies the OCE role. Profiles linked to different OCE people cannot admit them as one person. `GET /namespaces/:namespaceId/agents/:agentId/runtime-roles` lists assignable names and permission summaries from the active revision. An Installation administrator changes an assignment with `PATCH /namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role`; deleting that binding revokes entry. There is at most one assignment per person/Agent. Groups, service identities, broad bindings and Installation administration do not select a native role.
 
 Kubernetes retains the separate `occ-workspace-files` identity with the reserved `oce-service` role for server operations. The role catalog excludes that reserved role. OCE core consumes opaque role names and Compute descriptors; native profile details stay in the runtime and Driver.
 

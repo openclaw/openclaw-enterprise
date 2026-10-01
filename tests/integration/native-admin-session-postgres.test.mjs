@@ -90,7 +90,7 @@ function nativeComputeDriver(upstreamPort) {
     getAgentRuntimeAccess(revision, principalId, runtimeRole) {
       return humanRuntimeAccess(
         revision,
-        this.getGatewayEndpoint(revision),
+        `wss://localhost:${upstreamPort}/people/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`,
         principalId,
         runtimeRole,
       );
@@ -547,10 +547,12 @@ async function assertNativeWebSocketRejected(port, native, cookie, options = {})
 }
 
 async function assertSocketClosesAfterMutation(socket, mutate, timeoutMs = 31_000) {
+  assert.equal(socket.destroyed, false, "the lease must be open before policy mutation");
   const started = Date.now();
-  const closed = socket.destroyed
-    ? Promise.resolve(true)
-    : Promise.race([once(socket, "close").then(() => true), delay(timeoutMs).then(() => false)]);
+  const closed = Promise.race([
+    once(socket, "close").then(() => true),
+    delay(timeoutMs).then(() => false),
+  ]);
   await mutate();
   assert.equal(await closed, true, `socket remained open after ${timeoutMs}ms`);
   const closedAfterMs = Date.now() - started;
@@ -654,22 +656,44 @@ function nativeAdminAuditDetails(row, action) {
   return details;
 }
 
-async function assertSocketAuditCloseReason(scenario, closureReason) {
-  const rows = await waitForAuditActions(
-    scenario.apiA.pool,
-    scenario.namespace.id,
-    scenario.agent.id,
-    [
-      "openclaw.agents.native_admin.websocket.connect",
-      "openclaw.agents.native_admin.websocket.close",
-    ],
+async function assertSocketAuditCloseReason(scenario, closureReason, options = {}) {
+  const { connect, close } = await waitFor(
+    "the same socket's connect and close audits",
+    async () => {
+      const result = await scenario.apiA.pool.query(
+        `SELECT action, actor_id, outcome, details
+         FROM occ.audit_events
+        WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2
+          AND action = ANY($3::text[])
+        ORDER BY occurred_at, id`,
+        [
+          scenario.namespace.id,
+          scenario.agent.id,
+          [
+            "openclaw.agents.native_admin.websocket.connect",
+            "openclaw.agents.native_admin.websocket.close",
+          ],
+        ],
+      );
+      const connect = result.rows.find(
+        (row) =>
+          row.action === "openclaw.agents.native_admin.websocket.connect" &&
+          row.details?.nativeAdmin?.connectionId !== options.excludeConnectionId,
+      );
+      const close =
+        connect &&
+        result.rows.find(
+          (row) =>
+            row.action === "openclaw.agents.native_admin.websocket.close" &&
+            row.details?.nativeAdmin?.connectionId === connect.details?.nativeAdmin?.connectionId,
+        );
+      return close ? { connect, close } : undefined;
+    },
   );
-  const connect = rows.find(
-    (row) => row.action === "openclaw.agents.native_admin.websocket.connect",
-  );
-  const close = rows.find((row) => row.action === "openclaw.agents.native_admin.websocket.close");
-  assert.ok(connect, "native admin WebSocket connect audit row must exist");
-  assert.ok(close, "native admin WebSocket close audit row must exist");
+  for (const row of [connect, close]) {
+    assert.equal(row.outcome, "success");
+    assert.equal(row.actor_id, scenario.principal.id);
+  }
   const connectDetails = nativeAdminAuditDetails(connect, connect.action);
   const closeDetails = nativeAdminAuditDetails(close, close.action);
   assert.equal(typeof connectDetails.connectionId, "string");
@@ -681,6 +705,7 @@ async function assertSocketAuditCloseReason(scenario, closureReason) {
     assert.equal(details.revisionId, scenario.revision.id);
     assert.equal(details.host, scenario.native.host);
   }
+  return connectDetails.connectionId;
 }
 
 async function parentSessionRow(api) {
@@ -720,7 +745,7 @@ async function openNativeAdminSocketScenario(t, label) {
   assert.equal(upstream.upgrades.length, 1);
   assert.equal(
     upstream.upgrades[0].url,
-    `/namespaces/${namespace.id}/agents/${agent.id}/people/session/socket`,
+    `/people/namespaces/${namespace.id}/agents/${agent.id}/session/socket`,
   );
   assert.equal(upstream.upgrades[0].headers.origin, native.origin);
   assert.equal(upstream.upgrades[0].headers["x-api-key"], nativeGatewayApiKey);
@@ -745,9 +770,23 @@ async function openNativeAdminSocketScenario(t, label) {
   };
 }
 
-async function assertRevokedHttp(api, native, nativeCookie) {
-  const denied = await nativeGet(api, native, nativeCookie, "/after-revocation");
-  assert.notEqual(denied.statusCode, 200);
+async function assertRevokedHttp(scenario) {
+  const requestsBefore = scenario.upstream.requests.length;
+  const upgradesBefore = scenario.upstream.upgrades.length;
+  const denied = await nativeGet(
+    scenario.apiB,
+    scenario.native,
+    scenario.nativeCookie,
+    "/after-revocation",
+  );
+  assert.equal(denied.statusCode, 403, denied.body);
+  assert.equal(denied.json().error.code, "FORBIDDEN");
+  assert.equal(
+    scenario.upstream.requests.length,
+    requestsBefore,
+    "denied HTTP must not reach the gateway",
+  );
+  assert.equal(scenario.upstream.upgrades.length, upgradesBefore);
   return denied;
 }
 
@@ -776,7 +815,7 @@ test(
     assert.equal(upstream.requests.length, 1);
     assert.equal(
       upstream.requests[0].url,
-      `/namespaces/${namespace.id}/agents/${agent.id}/people/settings/profile?tab=devices`,
+      `/people/namespaces/${namespace.id}/agents/${agent.id}/settings/profile?tab=devices`,
     );
     assert.equal(upstream.requests[0].headers.origin, native.origin);
     assert.equal(upstream.requests[0].headers["x-api-key"], nativeGatewayApiKey);
@@ -834,7 +873,7 @@ test(
     });
     t.diagnostic(`parent logout closed native admin WebSocket in ${closedAfterMs}ms`);
     await assertSocketAuditCloseReason(scenario, "session_invalid");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    await assertRevokedHttp(scenario);
   },
 );
 
@@ -855,7 +894,7 @@ test(
     });
     t.diagnostic(`parent session expiry closed native admin WebSocket in ${closedAfterMs}ms`);
     await assertSocketAuditCloseReason(scenario, "session_invalid");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    await assertRevokedHttp(scenario);
   },
 );
 
@@ -882,7 +921,7 @@ test(
       "openclaw.agents.native_admin.proxy.authorize",
       scenario.principal.id,
     );
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    await assertRevokedHttp(scenario);
     await waitForAuthorizationDenialAudit(
       scenario.apiA.pool,
       scenario.namespace.id,
@@ -910,7 +949,7 @@ test(
     });
     t.diagnostic(`Agent stop closed native admin WebSocket in ${closedAfterMs}ms`);
     await assertSocketAuditCloseReason(scenario, "agent_unavailable");
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    await assertRevokedHttp(scenario);
   },
 );
 
@@ -1005,6 +1044,47 @@ test(
   { ...requiresPostgres, timeout: 75_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "role-change");
+    const policyPath = `/namespaces/${scenario.namespace.id}/iam/access-bindings`;
+    // The duplicate must surface as a conflict and roll back without replacing the assignment.
+    const duplicate = await inject(scenario.apiA.app, "POST", policyPath, {
+      session: scenario.session,
+      body: {
+        subjectKind: "identity",
+        subjectId: scenario.principal.id,
+        roleId: scenario.runtimeBinding.roleId,
+        resourceKind: "agent",
+        resourceId: scenario.agent.id,
+        runtimeRole: "reviewer",
+      },
+    });
+    assert.equal(duplicate.statusCode, 409, duplicate.body);
+    assert.equal(duplicate.json().error.code, "RESOURCE_CONFLICT");
+    const retained = await inject(
+      scenario.apiA.app,
+      "GET",
+      `${policyPath}/${scenario.runtimeBinding.id}`,
+      {
+        session: scenario.session,
+      },
+    );
+    assert.equal(retained.statusCode, 200, retained.body);
+    assert.deepEqual(retained.json().data, scenario.runtimeBinding);
+    const bindings = await inject(scenario.apiA.app, "GET", policyPath, {
+      session: scenario.session,
+    });
+    assert.equal(bindings.statusCode, 200, bindings.body);
+    assert.deepEqual(
+      bindings
+        .json()
+        .data.filter(
+          (binding) =>
+            binding.subjectId === scenario.principal.id &&
+            binding.resourceId === scenario.agent.id &&
+            binding.runtimeRole !== undefined,
+        )
+        .map((binding) => binding.id),
+      [scenario.runtimeBinding.id],
+    );
     await assertSocketClosesAfterMutation(scenario.socket, async () => {
       const changed = await inject(
         scenario.apiA.app,
@@ -1015,7 +1095,7 @@ test(
       assert.equal(changed.statusCode, 200, changed.body);
       assert.equal(changed.json().data.runtimeRole, "reviewer");
     });
-    await assertSocketAuditCloseReason(scenario, "role_changed");
+    const previousConnectionId = await assertSocketAuditCloseReason(scenario, "role_changed");
     // A new request receives the new role immediately; no broad administrator fallback remains.
     assert.equal(
       (await nativeGet(scenario.apiB, scenario.native, scenario.nativeCookie)).statusCode,
@@ -1028,6 +1108,7 @@ test(
       scenario.nativeCookie,
     );
     t.after(() => nextSocket.destroy());
+    assert.equal(scenario.upstream.upgrades.at(-1).headers["x-occ-role"], "reviewer");
     await assertSocketClosesAfterMutation(nextSocket, async () => {
       const removed = await inject(
         scenario.apiA.app,
@@ -1037,7 +1118,25 @@ test(
       );
       assert.equal(removed.statusCode, 204, removed.body);
     });
-    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+    await assertSocketAuditCloseReason(scenario, "authorization_denied", {
+      excludeConnectionId: previousConnectionId,
+    });
+    const leaseDenial = await waitForAuthorizationDenialAudit(
+      scenario.apiA.pool,
+      scenario.namespace.id,
+      scenario.agent.id,
+      "openclaw.agents.native_admin.proxy.authorize",
+      scenario.principal.id,
+    );
+    await assertRevokedHttp(scenario);
+    await waitForAuthorizationDenialAudit(
+      scenario.apiA.pool,
+      scenario.namespace.id,
+      scenario.agent.id,
+      "openclaw.agents.native_admin.proxy.authorize",
+      scenario.principal.id,
+      { excludeId: leaseDenial.id },
+    );
   },
 );
 

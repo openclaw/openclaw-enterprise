@@ -240,6 +240,7 @@ interface RequiredPermission {
     | "directory_lookup"
     | "selected_secret"
     | "iam_binding_target"
+    | "runtime_assignment_target"
     | "provisioning_work"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
@@ -596,14 +597,30 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   }
 
   if (
+    operation.operationId === "updateIAMRuntimeRole" ||
+    operation.operationId === "listAgentRuntimeRoles"
+  ) {
+    return [
+      { action: "administer", resourceKind: "installation", scope: "requested" },
+      { action: "read", resourceKind: "namespace", scope: "requested" },
+      {
+        action: "read",
+        resourceKind: "agent",
+        scope: "requested",
+        ...(operation.operationId === "updateIAMRuntimeRole"
+          ? { condition: "runtime_assignment_target" as const }
+          : {}),
+      },
+    ];
+  }
+
+  if (
     operation.operationId === "listIAMRoles" ||
     operation.operationId === "createIAMRole" ||
     operation.operationId === "getIAMRole" ||
     operation.operationId === "deleteIAMRole" ||
     operation.operationId === "listIAMAccessBindings" ||
     operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "updateIAMRuntimeRole" ||
-    operation.operationId === "listAgentRuntimeRoles" ||
     operation.operationId === "deleteIAMAccessBinding"
   ) {
     return [
@@ -834,6 +851,9 @@ function permissionDescription(
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
+      }
+      if (condition === "runtime_assignment_target") {
+        return `Requires ${action} permission on the ${name} targeted by the AccessBinding.`;
       }
       switch (scope) {
         case "installation":

@@ -24,7 +24,10 @@ export function nativeRolesGateway(configuration, origin) {
           allowUsers: [],
           roleHeader: "x-occ-role",
           rolePolicyHashHeader: "x-occ-role-policy",
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+          deviceAutoApprove: {
+            enabled: true,
+            scopes: ["operator.read", "operator.write", "operator.admin"],
+          },
         },
         identityScopes: { "occ-workspace-files": ["operator.admin"] },
       },

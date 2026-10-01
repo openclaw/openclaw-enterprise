@@ -2,7 +2,7 @@ import { button, element } from "../dom.mjs";
 import { message } from "./list.mjs";
 
 const warning =
-  "OpenClaw uses your assigned role to control conversations, tools and settings. Administrators should keep durable configuration in OCE; native changes may be overwritten by deployment.";
+  "OpenClaw uses your assigned role to control conversations, tools and settings. Use OCE for durable configuration; native changes are not recorded in AgentRevisions and may be overwritten by deployment.";
 
 function unavailableText(status) {
   switch (status) {
@@ -17,7 +17,7 @@ function unavailableText(status) {
   }
 }
 
-export function renderNativeAdminAccess(context, path) {
+export function renderRuntimeAccess(context, path) {
   const statusPath = `${path}/native-admin`;
   const status = element("p", { className: "hint", role: "status" }, "Checking access…");
   const error = element("p", { className: "error", role: "alert" });

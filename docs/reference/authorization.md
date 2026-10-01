@@ -31,14 +31,14 @@ Fresh native-IAM bootstrap provisions the human administrator and one
 Installation-scoped, non-Agent ServicePrincipal. Each receives its own binding
 to the same administrator Role, with no Namespace or resource filter:
 
-| Resource kind                                | Actions                                                                                     |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `installation`                               | `administer`, `read`                                                                        |
-| `namespace`                                  | `create`, `read`, `delete`                                                                  |
-| `configuration`, `preset`, `service_account` | `create`, `read`, `update`, `delete`                                                        |
-| `secret`                                     | `create`, `read`, `update`, `delete`, `operate`                                             |
-| `agent`                                      | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `use` |
-| `agent_revision`                             | `read`                                                                                      |
+| Resource kind                                | Actions                                                                 |
+| -------------------------------------------- | ----------------------------------------------------------------------- |
+| `installation`                               | `administer`, `read`                                                    |
+| `namespace`                                  | `create`, `read`, `delete`                                              |
+| `configuration`, `preset`, `service_account` | `create`, `read`, `update`, `delete`                                    |
+| `secret`                                     | `create`, `read`, `update`, `delete`, `operate`                         |
+| `agent`                                      | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer` |
+| `agent_revision`                             | `read`                                                                  |
 
 These grants cover existing and future Namespaces in this Installation, subject
 to exact authorization and matching Restrictions. They confer no Kubernetes or
@@ -102,6 +102,11 @@ endpoint yet. `read_logs` on an Agent delegates reading its runtime log text
 without `administer`; fresh bootstrap does not grant it. Any of
 these actions can be granted to either a human Principal or an Agent-owned
 ServicePrincipal through an appropriately scoped Role and AccessBinding.
+
+Agent runtime entry requires `agent:use` plus one exact direct person/Agent
+runtime assignment. Installation administration and management grants do not
+imply native permissions. See
+[Agent OpenClaw access](agent-native-admin.md#native-authority-and-drift).
 
 Resource kinds currently include `installation`, `namespace`, `configuration`,
 `preset`, `agent`, `agent_revision`, `secret`, `credential_source`, and
@@ -333,5 +338,3 @@ For a working authenticated request, see the
 - 2026-08-31 17:43: Document fresh human/service administrator bootstrap, private key delivery, and operator recovery. (codex/01a05a69-3fbe-7441-9e6d-20394758cf94 - 0797098646028ac00cb26cd4afcbc9b2cf8bcb24)
 
 - [2026-08-28 17:54]: Reorganize as a current feature reference; move procedural setup to the shared guides. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
-
-Agent runtime entry requires `agent:use` plus one exact direct person/Agent runtime assignment. Installation administration and management grants do not imply native permissions. See [Agent OpenClaw access](agent-native-admin.md#native-authority-and-drift).
