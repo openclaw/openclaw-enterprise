@@ -6,7 +6,9 @@ Namespaces, Agents, revision history, Secrets, and Agent workspace and gateway
 PersistentVolumeClaims (PVCs). Take verified backups first: retaining a volume is
 not a backup, and migrations or runtime changes can make rollback unsafe.
 Complete the [upgrade migration checklist](upgrade-checklist.md) before using
-this procedure.
+this procedure. Its [legacy RWX prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces)
+is an exception: explicitly discarded Agents lose their workspace and Gateway
+state and must be recreated if needed. Retention checks apply to the remaining Agents.
 
 This path requires the production Helm chart, Kubernetes Compute, and a trusted
 HTTPS OCC endpoint. The [production image upgrade](production-upgrade.md) owns
