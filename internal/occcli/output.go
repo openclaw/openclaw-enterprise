@@ -62,6 +62,17 @@ func (app *application) printCredentialSource(value any, collection bool) error 
 	})
 }
 
+func (app *application) printCredentialWithdrawal(value any) error {
+	return app.printItems(value, false, []column{
+		{title: "AGENT", key: "agentId"},
+		{title: "REVISION", key: "revisionId"},
+		{title: "CREDENTIAL SOURCE", key: "credentialSourceId"},
+		{title: "STATE", key: "state"},
+		{title: "REQUESTED BY", key: "requestedBy"},
+		{title: "REASON", key: "reason"},
+	})
+}
+
 func (app *application) printIAMRole(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
@@ -94,14 +105,75 @@ func (app *application) printAgent(value any, collection bool) error {
 	})
 }
 
-func (app *application) printAgentRevision(value any, collection bool) error {
-	return app.printItems(value, collection, []column{
+// printAgentRevisionList prints rows from describeAgentRevisions. Structured
+// output keeps every field, including active and deploymentStatus.
+func (app *application) printAgentRevisionList(rows []any) error {
+	if app.output != "table" {
+		return app.printStructured(rows)
+	}
+	table := make([]any, 0, len(rows))
+	for _, item := range rows {
+		row := maps.Clone(item.(map[string]any))
+		if active, _ := row["active"].(bool); active {
+			row["active"] = "*"
+		} else {
+			row["active"] = ""
+		}
+		table = append(table, row)
+	}
+	return printTable(app.out, table, []column{
+		{title: "ACTIVE", key: "active"},
 		{title: "ID", key: "id"},
 		{title: "REVISION", key: "revision"},
-		{title: "AGENT", key: "agentId"},
+		{title: "GENERATION", key: "configurationGeneration"},
+		{title: "STATUS", key: "deploymentStatus"},
 		{title: "CONFIGURATION", key: "configurationId"},
 		{title: "CREATED", key: "createdAt"},
 	})
+}
+
+// printDeploymentStatus shows startup warnings in the table too: a succeeded
+// deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
+// PLUGIN_INSTALL_FAILED). Structured output keeps the full warnings array.
+func (app *application) printDeploymentStatus(value any) error {
+	if app.output == "table" {
+		if resource, ok := value.(map[string]any); ok {
+			row := maps.Clone(resource)
+			row["warnings"] = deploymentWarningsText(resource["warnings"])
+			value = row
+		}
+	}
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "deploymentId"},
+		{title: "AGENT", key: "agentId"},
+		{title: "STATUS", key: "status"},
+		{title: "ERROR", key: "error"},
+		{title: "WARNINGS", key: "warnings"},
+	})
+}
+
+// deploymentWarningsText renders warnings as "pluginId (CODE)" pairs, or nil
+// (shown as "-") when there are none.
+func deploymentWarningsText(value any) any {
+	warnings, ok := value.([]any)
+	if !ok || len(warnings) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(warnings))
+	for _, item := range warnings {
+		warning, ok := item.(map[string]any)
+		if !ok {
+			parts = append(parts, displayValue(item))
+			continue
+		}
+		code := displayValue(warning["code"])
+		if plugin, ok := warning["pluginId"].(string); ok && plugin != "" {
+			parts = append(parts, plugin+" ("+code+")")
+		} else {
+			parts = append(parts, code)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (app *application) printRuntimeCredentials(value any) error {

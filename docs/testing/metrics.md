@@ -244,4 +244,4 @@ so that path must instead be visible to both macOS and the VM; its single-node
 bootstrap volume stays inside the k3d container.
 Do not weaken permission checks to accommodate a shared mount. The local baseline
 was verified with rootful Podman and VM-native storage; Docker remains the hosted
-CI path. See [the baseline report](../../specs/reports/36-production-observability-baseline.md).
+CI path. See [the baseline report](../../specs/plans/36-production-observability/baseline.md).

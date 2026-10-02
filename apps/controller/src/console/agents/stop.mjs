@@ -229,7 +229,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
       element(
         "p",
         { id: "agent-stop-confirm-description" },
-        "This interrupts the current runtime gateway. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
+        "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
       ),
       element("div", { className: "form-actions" }, cancel, confirm),
     );

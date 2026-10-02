@@ -119,6 +119,10 @@ changes. It requires creating or updating a source-backed flow doc for non-trivi
 runtime changes and defines when trivial maintenance needs no new flow doc.
 Update the existing behavior owner under `docs/flows/` whenever possible.
 
+Use [spec](.agents/skills/spec/SKILL.md) to draft or update RFCs and implementation
+plans. Its `rfc` and `plan` commands follow the
+[specification process](docs/contributing/specifications.md).
+
 Use [test-audit](.agents/skills/test-audit/SKILL.md) when authoring or reviewing
 tests, and [enterprise-testing](.agents/skills/enterprise-testing/SKILL.md) to
 select proof or diagnose CI. For requested diff cleanup, use
@@ -174,8 +178,10 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - Use short Title Case sidebar labels and descriptive sentence-case article
   titles. Use nested groups when they clarify the reader's task; give menus a
   useful overview and list prerequisite steps before actions that need them.
-- Top-level `specs/` records implementation proposals, milestones, and delivery
-  history. Completed specifications do not override current feature reference.
+- `specs/rfcs/` records architectural proposals and decisions. `specs/plans/`
+  holds all implementation plans and historical delivery records. Plans link
+  relevant RFCs through `rfc` frontmatter. Completed specifications do not
+  override current feature reference.
 
 Keep `docs/design.md` and its chapters about system structure, ownership,
 trust boundaries, and major interactions; update them for architectural changes
@@ -246,6 +252,8 @@ an ordinary document does not exempt that document.
 Use [technical-writing](.agents/skills/technical-writing/SKILL.md) when creating,
 editing, or reviewing documentation and specifications. It bundles the relevant
 writing guidance locally; no personal skill installation is required.
+Follow its [page-scope guidance](.agents/skills/technical-writing/SKILL.md#choose-the-smallest-useful-page)
+to keep main guides focused and route edge-case diagnostics to troubleshooting.
 
 - Give each fact one owning page: concepts define terms, references define
   behavior, guides give procedures, and flows explain implementation. Other pages
@@ -270,8 +278,22 @@ boundaries or intentional architecture as temporary.
 
 ## Implementation specifications
 
-Write implementation and milestone specifications under `specs/`, following the
-authoritative platform design.
+Follow the [specification process](docs/contributing/specifications.md) for
+document choice, numbering, status, and preservation. Write architectural RFCs
+under `specs/rfcs/` and all implementation plans directly under `specs/plans/`.
+Link a relevant RFC through the plan's `rfc` frontmatter field, using a path
+relative to the plan file. Preserve RFC-linked and independent task numbering.
+Use one Markdown file by default. When companions are needed, use
+`<number>-<topic>/index.md` for the main document and keep supporting
+files in that folder, without a separate top-level Markdown file.
+A larger feature with an RFC needs a separate implementation plan;
+an independent plan can build on the existing architecture without a new RFC.
+Keep verification in the owning document or its supporting pages, not a separate
+reports area. Keep completed and superseded records in place.
+
+RFC entry points require `status` in YAML frontmatter. Companion notes link to
+their parent through `rfc` frontmatter instead of duplicating its decision
+status. Follow the specification process for historical status uncertainty.
 
 Implementation specifications are point-in-time records. When a later spec
 changes or supersedes an implementation described by an earlier spec, document
@@ -279,8 +301,11 @@ the change in the later spec and the affected current documentation. Do not
 retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
-Use stable feature names in `docs/reference/` and retain existing numbered
-implementation-spec paths under `specs/`. A behavior-changing implementation PR
+Use stable feature names in `docs/reference/` and preserve grandfathered
+specification names and IDs when grouping companions under `index.md`.
+This first organization phase preserves `specs/.archive/` content and placement;
+only the removed console-image links change to a preserved Git revision. Do not
+add new records to it. A behavior-changing implementation PR
 updates its affected reference, guides, and flows together. Record completion
 and the owning current reference when a specification ships.
 Keep Manual Notes unchanged. Link maintenance after document moves is permitted
@@ -377,6 +402,10 @@ and PostgreSQL, tenant-local RoleBindings, model turns before and after revision
 cutover, and allowed/denied NetworkPolicy checks. Configure API egress for its
 actual translated `/32` endpoint and port. The fixture suite's scoped RBAC does
 not verify shared-cluster admission guardrails.
+
+## Browser automation
+
+On a devbox without an X server, run Playwright with `headless: true`.
 
 ## Console Storybook
 

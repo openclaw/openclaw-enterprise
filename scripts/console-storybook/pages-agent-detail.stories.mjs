@@ -1,5 +1,7 @@
 import { story } from "./story.mjs";
 
+export const PluginsOAuthRevision = story("pluginsOAuthRevision");
+
 export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");

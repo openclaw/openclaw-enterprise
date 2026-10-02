@@ -31,8 +31,8 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
   [credential service](../flows/repository-credentials.md), and
   [repository configuration](../flows/repository-credential-configuration.md)
 - [Repository credential tests](../testing/repository-credentials.md); the
-  [original RFC](../../specs/31-repository-credentials.md) and
-  [qualification record](../../specs/31-repository-credentials/qualification.md)
+  [original RFC](../../specs/rfcs/31-repository-credentials/index.md) and
+  [qualification record](../../specs/rfcs/31-repository-credentials/qualification.md)
   preserve proposal and historical evidence separately from current support
 
 - [Namespace IAM policy](../flows/namespace-iam-policy.md): authorized Role and AccessBinding changes and audit commit
@@ -52,4 +52,5 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 ## Continuous integration
 
 - [GitHub Actions testing](../flows/github-actions-testing.md) and [test preparation](../flows/github-actions-testing/preparation.md)
+- [ClawSweeper dispatch](../flows/clawsweeper-dispatch.md): hosted admission and review handoff
 - [Run and diagnose CI checks](../testing/ci.md)

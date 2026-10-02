@@ -717,19 +717,9 @@ export class DockerComputeDriver implements ComputeDriver {
     const ownership = this.gatewayOwnership(revision);
     const mounts = this.workspaceMounts(ownership);
     for (const mount of new Map(mounts.map((mount) => [mount.Source, mount])).values()) {
-      let volume: { Labels?: Readonly<Record<string, string>> } | undefined;
-      try {
-        volume = (await this.request(
-          "GET",
-          `/volumes/${encodeURIComponent(mount.Source)}`,
-          undefined,
-          [200],
-        )) as typeof volume;
-      } catch (error) {
-        if (statusCode(error) !== 404) {
-          throw error;
-        }
-      }
+      let volume = await this.inspect<{ Labels?: Readonly<Record<string, string>> }>(
+        `/volumes/${encodeURIComponent(mount.Source)}`,
+      );
       if (volume === undefined) {
         if (setup.completed) {
           throw new ConfigurationFailure("Initialized workspace storage is missing.");
@@ -1264,19 +1254,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   private async network(name: string): Promise<DockerNetworkInspect | undefined> {
-    try {
-      return (await this.request(
-        "GET",
-        `/networks/${encodeURIComponent(name)}`,
-        undefined,
-        [200],
-      )) as DockerNetworkInspect;
-    } catch (error) {
-      if (statusCode(error) === 404) {
-        return undefined;
-      }
-      throw error;
-    }
+    return this.inspect<DockerNetworkInspect>(`/networks/${encodeURIComponent(name)}`);
   }
 
   private async removeNetwork(name: string): Promise<void> {
@@ -1284,13 +1262,12 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {
+    return this.inspect<DockerContainerInspect>(`/containers/${encodeURIComponent(name)}/json`);
+  }
+
+  private async inspect<T>(path: string): Promise<T | undefined> {
     try {
-      return (await this.request(
-        "GET",
-        `/containers/${encodeURIComponent(name)}/json`,
-        undefined,
-        [200],
-      )) as DockerContainerInspect;
+      return (await this.request("GET", path, undefined, [200])) as T;
     } catch (error) {
       if (statusCode(error) === 404) {
         return undefined;

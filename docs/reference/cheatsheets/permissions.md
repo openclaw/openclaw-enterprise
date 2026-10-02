@@ -27,17 +27,17 @@ This is the set checked by current public operations. See
 given to the human administrator and non-Agent bootstrap service principal.
 Rerunning bootstrap does not add missing permissions to existing Roles.
 
-| Resource kind                                   | Actions                                                                                     | Scope checked                                                                                                                                                                                            |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`installation`](../api.md#installation)        | `read`, `administer`                                                                        | Singleton Installation.                                                                                                                                                                                  |
-| [`namespace`](../api.md#namespaces)             | `create`, `read`, `delete`                                                                  | Installation for create; exact Namespace otherwise.                                                                                                                                                      |
-| [`configuration`](../api.md#configurations)     | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact Configuration otherwise.                                                                                                                                                     |
-| [`preset`](../presets.md)                       | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact Preset otherwise.                                                                                                                                                            |
-| [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                                                            |
-| [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                             | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.     |
-| [`credential_source`](../credential-sources.md) | `create`, `read`, `delete`, `operate`                                                       | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. |
-| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `use` | Namespace for create; exact Agent otherwise. OpenClaw entry requires a human session and an exact runtime-role assignment. Bootstrap does not grant `read_logs` or `use`.                                |
-| [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                      | Exact AgentRevision; deployment-status reads use this permission too.                                                                                                                                    |
+| Resource kind                                   | Actions                                                                                     | Scope checked                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`installation`](../api.md#installation)        | `read`, `administer`                                                                        | Singleton Installation.                                                                                                                                                                                                                                                                                                                                    |
+| [`namespace`](../api.md#namespaces)             | `create`, `read`, `delete`                                                                  | Installation for create; exact Namespace otherwise.                                                                                                                                                                                                                                                                                                        |
+| [`configuration`](../api.md#configurations)     | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact Configuration otherwise.                                                                                                                                                                                                                                                                                                       |
+| [`preset`](../presets.md)                       | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact Preset otherwise.                                                                                                                                                                                                                                                                                                              |
+| [`service_account`](../api.md#service-accounts) | `create`, `read`, `update`, `delete`                                                        | Namespace for create; exact ServiceAccount otherwise. Credential creation also uses `update`.                                                                                                                                                                                                                                                              |
+| [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                             | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.                                                                                                                                                       |
+| [`credential_source`](../credential-sources.md) | `create`, `read`, `update`, `delete`, `operate`                                             | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. `update` also needs `secret:operate` on each Secret it reads; Roles from an Installation bootstrapped before `update` existed must be granted it. |
+| [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `use` | Namespace for create; exact Agent otherwise. OpenClaw entry requires a human session and an exact runtime-role assignment. Bootstrap does not grant `read_logs` or `use`.                                                                                                                                                                                  |
+| [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                      | Exact AgentRevision; deployment-status reads use this permission too.                                                                                                                                                                                                                                                                                      |
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
 source lists check each returned resource. Listing Agents or ServiceAccounts also requires `namespace:read`;
@@ -55,6 +55,13 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
 
 ## Additional checks
 
+- [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
+  requires Namespace `agent:create`, or exact `agent:read` and `agent:update` for
+  an existing Agent. Start also requires `secret:create`; polling, cancellation,
+  and discovery require exact `secret:operate` and the initiating actor. The
+  staged login is an ordinary Secret, so other `secret:operate` holders can bind
+  or project it outside these operations.
+
 - [Channel directory lookup](../api.md#post-namespacesnamespaceidchanneldirectorylookup)
   requires `agent:create` in the Namespace, or `agent:update` or
   `configuration:update` on the exact edit target, plus `secret:operate` on the
@@ -68,8 +75,11 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   for a bound credential source. At deployment the Agent’s own service principal
   also needs `secret:operate` on each bound Secret and `credential_source:operate`
   on its source.
-- [Registering a credential source](../api.md#post-namespacesnamespaceidcredentialsources)
-  also requires `secret:operate` on each referenced Secret.
+- [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
+  [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
+  also requires `secret:operate` on each Secret it reads.
+- [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
+  from an Agent requires `agent:operate`; the worker rechecks it before revoking.
 - [Create](../api.md#post-namespacesnamespaceidconfigurations) or
   [update a Configuration](../api.md#patch-namespacesnamespaceidconfigurationsconfigurationid)
   with Secret bindings requires `secret:operate` on each bound Secret.
@@ -95,9 +105,11 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   `installation:administer`. The configured external service enforces its own access.
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
-every action name on `agent`, `agent_revision`, `configuration`,
-`credential_source`, `preset`, `secret`, and `service_account`, including
-combinations no current operation checks. On `namespace` it accepts only `read`.
+the per-kind actions in the table above on `agent`, `agent_revision`,
+`configuration`, `credential_source`, `preset`, `secret`, and `service_account`.
+It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
+checks, such as `secret:read_logs` or `configuration:deploy`, because it would
+grant nothing. On `namespace` it accepts only `read`.
 It can bind an existing human Principal or a Namespace-local ServicePrincipal
 to an existing exact resource, including the path Namespace itself. Exact
 Namespace access does not grant access to child resources.

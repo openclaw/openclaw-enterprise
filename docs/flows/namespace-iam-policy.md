@@ -71,10 +71,15 @@ the removed Role or AccessBinding in the same transaction to record it.
 `packages/occ/src/index.ts:createIAMAccessBinding`
 
 Role creation accepts only nonempty, duplicate-free permissions for Namespace
-resource kinds; `namespace` permissions support only `read`. AccessBinding creation accepts identity subjects and exact
+resource kinds; `namespace` permissions support only `read`. `iamRolePermissions`
+also refuses action/kind pairs outside `SUPPORTED_PERMISSION_ACTIONS` (contracts),
+because no operation checks them. AccessBinding creation accepts identity subjects and exact
 targets in the same Namespace, including the Namespace itself when the target
 ID matches the path Namespace. OCC verifies the target resource exists and that
 the caller can read it before asking the IAM Driver to create the binding.
+`assertAccessBindingRoleApplies` then refuses, with `400`, a Role that has a
+`create` Permission or no Permission for the target's kind, because evaluation
+would drop those grants.
 
 The runtime-role change endpoint validates the chosen role through the active revision's Compute catalog and updates only `runtimeRole` on the existing exact human/Agent binding. Native definitions and profile admission are traced in [OpenClaw access](agent-native-admin.md).
 
@@ -85,7 +90,11 @@ The runtime-role change endpoint validates the chosen role through the active re
 The native IAM Driver implements Namespace policy methods against the
 platform-provided policy repository. It rejects missing Roles, cross-Namespace
 targets, unsupported subjects, duplicate IDs, referenced Role deletion, and
-unknown exact bindings without weakening authorization.
+unknown exact bindings without weakening authorization. Invalid Role or
+binding input (an unsupported Permission, or a subject, Role or target not
+usable in the path Namespace) raises `IAMPolicyValidationError`, which HTTP
+maps to `400 INVALID_REQUEST` with the offending field as the detail path.
+Referenced Role deletion raises `IAMRoleInUseError` (`409 RESOURCE_CONFLICT`).
 Existing human Principals can receive bindings without a Namespace service
 identity. ServicePrincipal subjects must belong to that exact Namespace.
 
@@ -136,8 +145,9 @@ selected account, session, and policy writers join the same protocol.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - A `403` means the caller lacks Installation administration, exact Namespace
-  read, or target read for binding creation. A `409` on Role deletion means a
-  binding still references the Role.
+  read, or target read for binding creation. A `400` names the invalid
+  field in its detail path. A `409` on Role deletion means a binding still
+  references the Role.
 
 ## Related docs
 
@@ -153,6 +163,7 @@ selected account, session, and policy writers join the same protocol.
 
 - 2026-10-02 11:55: Trace atomic runtime-role updates, assignment audit fields and duplicate-assignment conflicts. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 
+- 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)
 - 2026-09-27 19:15: Clarify unknown commit handling and the unregistered authority barrier. (codex/01a0b3bf-83a8-7392-ae2d-1a369b54ab3f - 181b0472f9a5a9d422035edf5121d3a15c200cb5)

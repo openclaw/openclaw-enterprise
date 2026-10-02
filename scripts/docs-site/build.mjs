@@ -9,6 +9,7 @@ import {
   parseFrontmatter,
   resolveDocsFragment,
 } from "./vendor/docs-markdown.mjs";
+import { publicMarkdown } from "./public-markdown.mjs";
 
 if (process.argv.slice(2).some((arg) => arg !== "--check")) {
   throw new Error("Usage: build.mjs [--check]");
@@ -33,83 +34,6 @@ const route = (source) =>
     .replace(/\.md$/, "")
     .replace(/\/$/, "") +
   (source === "README.md" ? "" : "/");
-
-function publicMarkdown(markdown) {
-  const { content } = parseFrontmatter(markdown);
-  const frontmatter = markdown.slice(0, markdown.length - content.length);
-  const lines = content.split("\n");
-  const tokens = md.parse(content, {});
-  const headings = [];
-  const placeholders = [];
-  const placeholder =
-    /^\[keep\s+this\s+for\s+the\s+user\s+to\s+add\s+notes\.\s+do\s+not\s+change\s+between\s+edits\]$/i;
-
-  for (let index = 0; index < tokens.length; index++) {
-    const token = tokens[index];
-    if (token.level !== 0 || !token.map) {
-      continue;
-    }
-    const inline = tokens[index + 1];
-    if (token.type === "heading_open") {
-      const title = inline.children
-        .map((child) => (child.type === "softbreak" ? " " : child.content))
-        .join("")
-        .trim();
-      headings.push({
-        title,
-        depth: Number(token.tag.slice(1)),
-        start: token.map[0],
-        end: token.map[1],
-      });
-    } else if (token.type === "paragraph_open" && placeholder.test(inline.content.trim())) {
-      placeholders.push(token.map);
-    }
-  }
-
-  const hidden = Array(lines.length).fill(false);
-  const sections = headings.flatMap((heading, index) =>
-    heading.depth > 1 && /^(?:change\s*log|manual\s+notes)$/i.test(heading.title)
-      ? [
-          {
-            ...heading,
-            stop:
-              headings.slice(index + 1).find((next) => next.depth <= heading.depth)?.start ??
-              lines.length,
-          },
-        ]
-      : [],
-  );
-  for (const section of sections) {
-    if (/^change\s*log$/i.test(section.title)) {
-      hidden.fill(true, section.start, section.stop);
-    }
-  }
-  for (const section of sections.toReversed()) {
-    if (hidden[section.start]) {
-      continue;
-    }
-    for (const [start, end] of placeholders) {
-      if (start >= section.end && end <= section.stop) {
-        hidden.fill(true, start, end);
-      }
-    }
-    const notes = lines
-      .slice(section.end, section.stop)
-      .filter((_, index) => !hidden[section.end + index])
-      .join("\n")
-      .replace(/<!--[^]*?-->|\{\/\*[^]*?\*\/\}/g, "")
-      .trim();
-    if (!notes) {
-      hidden.fill(true, section.start, section.stop);
-    }
-  }
-
-  let published = lines.filter((_, index) => !hidden[index]).join("\n");
-  if (content.endsWith("\n") && !published.endsWith("\n")) {
-    published += "\n";
-  }
-  return frontmatter + published;
-}
 
 function walk(directory, acceptsFile = (entry) => entry.name.endsWith(".md")) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -153,7 +77,7 @@ for (const file of walk(docs)) {
     unpublished.add(source);
     continue;
   }
-  const text = publicMarkdown(authored);
+  const text = publicMarkdown(authored, md);
   const parsed = parseDocsDocument(text, md, { sourceFile: file, root: docs });
   const githubAliases = new Map();
   const github = new GithubSlugger();
@@ -332,19 +256,21 @@ function resolveLink(page, href) {
 
 let linkCount = 0;
 for (const page of pages.values()) {
+  // Reuse validated targets while rendering this page from the same build inputs.
+  const resolvedLinks = new Map();
   for (const href of page.parsed.links) {
-    resolveLink(page, href);
+    resolvedLinks.set(href, resolveLink(page, href));
     linkCount++;
   }
   const text = renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs });
   page.html = renderMdxish(text, md, { sourceFile: page.file, root: docs }).replace(
     /<(?:a|img|source|span)\b[^>]*>/g,
     (tag) =>
-      tag.replace(
-        /\b(href|src|data-href)=(['"])(.*?)\2/g,
-        (_, name, quote, href) =>
-          name + "=" + quote + escape(resolveLink(page, md.utils.unescapeAll(href))) + quote,
-      ),
+      tag.replace(/\b(href|src|data-href)=(['"])(.*?)\2/g, (_, name, quote, href) => {
+        const sourceHref = md.utils.unescapeAll(href);
+        const resolved = resolvedLinks.get(sourceHref) ?? resolveLink(page, sourceHref);
+        return name + "=" + quote + escape(resolved) + quote;
+      }),
   );
 }
 const deploymentExamples = path.join(root, "deploy/examples");

@@ -407,23 +407,77 @@ function signInProvider(source, name, diagnostics) {
   return rendered;
 }
 
-// Mirrors the chart's auth.github/auth.google checks. Activation is one-way, so every
+// The OIDC URLs as the chart and API accept them: https on 443, a DNS host, and no
+// userinfo, query or fragment. Returns the lowercase host, or undefined.
+function oidcEndpointHost(value) {
+  if (/[?#]/.test(value)) {
+    return undefined;
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  return url.protocol === "https:" &&
+    url.port === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    isIP(url.hostname.replace(/^\[|\]$/g, "")) === 0 &&
+    dnsHostname.test(url.hostname)
+    ? url.hostname
+    : undefined;
+}
+
+function renderOidc(source, diagnostics) {
+  const path = ["controlPlane", "oidc"];
+  const rendered = signInProvider(source, "oidc", diagnostics);
+  const issuer = asString(source, [...path, "issuer"], diagnostics, {
+    validate: (value) => oidcEndpointHost(value) !== undefined,
+    description: "an https URL on port 443 with a DNS host name and no query or fragment",
+  });
+  rendered.issuer = issuer;
+  const host = oidcEndpointHost(issuer);
+  for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"]) {
+    rendered[key] = asString(source, [...path, key], diagnostics, {
+      validate: (value) => host === undefined || oidcEndpointHost(value) === host,
+      description: "an https URL on port 443 on the issuer's host, with no query or fragment",
+    });
+  }
+  const tokenAuth = optionalString(source, [...path, "tokenAuth"], diagnostics, {
+    validate: (value) => ["client_secret_post", "client_secret_basic"].includes(value),
+    description: "client_secret_post or client_secret_basic",
+  });
+  if (tokenAuth !== undefined) {
+    rendered.tokenAuth = tokenAuth;
+  }
+  const displayName = optionalString(source, [...path, "displayName"], diagnostics, {
+    validate: (value) => /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u.test(value.trim()),
+    description: "1 to 40 printable characters",
+  });
+  if (displayName !== undefined) {
+    rendered.displayName = displayName;
+  }
+  return rendered;
+}
+
+// Mirrors the chart's auth.github/auth.google/auth.oidc checks. Activation is one-way, so every
 // profile rerender after activation must keep rendering these values.
-function renderExternalSignIn(controlPlane, github, google, authBaseUrl, diagnostics) {
+function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics) {
   if (!authBaseUrl.startsWith("https://")) {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
   }
   for (const key of ["agentNativeAdminDomain", "sharedCookieDomain"]) {
     if (controlPlane[key] !== undefined) {
       diagnostics.errors.push(
-        `controlPlane.${key} is not consumed with external sign-in: GitHub and Google sign-in disable native admin.`,
+        `controlPlane.${key} is not consumed with external sign-in: GitHub, Google and OIDC sign-in disable native admin.`,
       );
     }
   }
   let recoveryUserId;
   if (controlPlane.recoveryUserId === undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId is required with controlPlane.github or controlPlane.google.",
+      "controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc.",
     );
   } else {
     recoveryUserId = asString(controlPlane, ["controlPlane", "recoveryUserId"], diagnostics, {
@@ -449,6 +503,7 @@ function renderExternalSignIn(controlPlane, github, google, authBaseUrl, diagnos
     ...(controlPlane.google === undefined
       ? {}
       : { google: signInProvider(google, "google", diagnostics) }),
+    ...(controlPlane.oidc === undefined ? {} : { oidc: renderOidc(oidc, diagnostics) }),
   };
 }
 
@@ -549,6 +604,7 @@ function buildInput(rawInput, diagnostics) {
       "passwordSignIn",
       "github",
       "google",
+      "oidc",
       "trustedProxy",
     ],
     diagnostics,
@@ -618,6 +674,24 @@ function buildInput(rawInput, diagnostics) {
     ["secretName", "clientIdKey", "clientSecretKey", "allowedDomains", "egressCidrs"],
     diagnostics,
   );
+  const oidc = section(controlPlane, "oidc", diagnostics, false);
+  closed(
+    oidc,
+    "controlPlane.oidc",
+    [
+      "issuer",
+      "authorizationUrl",
+      "tokenUrl",
+      "jwksUrl",
+      "secretName",
+      "clientIdKey",
+      "clientSecretKey",
+      "tokenAuth",
+      "displayName",
+      "egressCidrs",
+    ],
+    diagnostics,
+  );
   const trustedProxy = section(controlPlane, "trustedProxy", diagnostics, false);
   closed(
     trustedProxy,
@@ -647,6 +721,7 @@ function buildInput(rawInput, diagnostics) {
     presets,
     github,
     google,
+    oidc,
     trustedProxy,
   };
 }
@@ -666,6 +741,7 @@ function buildRendered(profile, parsed, diagnostics) {
     presets,
     github,
     google,
+    oidc,
     trustedProxy,
   } = parsed;
   const releaseName = asString(controlPlane, ["controlPlane", "releaseName"], diagnostics);
@@ -680,30 +756,33 @@ function buildRendered(profile, parsed, diagnostics) {
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics);
-  const externalSignIn = controlPlane.github !== undefined || controlPlane.google !== undefined;
+  const externalSignIn =
+    controlPlane.github !== undefined ||
+    controlPlane.google !== undefined ||
+    controlPlane.oidc !== undefined;
   const signIn = externalSignIn
-    ? renderExternalSignIn(controlPlane, github, google, authBaseUrl, diagnostics)
+    ? renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics)
     : {};
   // Without a trusted proxy the API sees the ingress as every browser's address. Existing
   // source-preserving setups (such as an NLB) stay valid, so this warns rather than fails.
   if (controlPlane.trustedProxy === undefined) {
     diagnostics.warnings.push(
       externalSignIn
-        ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and GitHub or Google sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address."
+        ? "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, and external sign-in starts have no per-client limit, because every browser behind a proxy shares its address. Set it unless the API sees each client's own address."
         : "controlPlane.trustedProxy is not set: failed password sign-ins are limited per email only, with no per-client-address limit. Set it when a proxy fronts the API.",
     );
   }
   if (!externalSignIn && controlPlane.recoveryUserId !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.recoveryUserId requires controlPlane.github or controlPlane.google.",
+      "controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
     );
   }
   if (!externalSignIn && controlPlane.passwordSignIn !== undefined) {
     diagnostics.errors.push(
-      "controlPlane.passwordSignIn requires controlPlane.github or controlPlane.google.",
+      "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
     );
   }
-  // Helm refuses native admin with GitHub or Google sign-in (host-only cookies only).
+  // Helm refuses native admin with external sign-in (host-only cookies only).
   let agentNativeAdmin = { enabled: false };
   if (!externalSignIn) {
     const agentNativeAdminDomain = asString(
@@ -951,10 +1030,13 @@ function buildRendered(profile, parsed, diagnostics) {
           },
           resources: {
             // Tenant runtimes may burst to four cores; 100m requests keep the
-            // scheduling reservation unchanged.
+            // scheduling reservation unchanged. An OpenClaw Gateway settles
+            // near 1.2 GiB once it has served a few turns; a dedicated Codex
+            // Gateway with native admin chat peaked at 1.9 GiB and was
+            // OOM-killed at 2Gi on its first coding turn.
             gateway: {
-              requests: { cpu: "100m", memory: "128Mi" },
-              limits: { cpu: "4", memory: "2Gi" },
+              requests: { cpu: "100m", memory: "1280Mi" },
+              limits: { cpu: "4", memory: "3Gi" },
             },
             agent: {
               requests: { cpu: "100m", memory: "128Mi" },
@@ -1181,7 +1263,7 @@ function buildRendered(profile, parsed, diagnostics) {
     );
     if (signIn.passwordSignIn === "recovery-only") {
       diagnostics.prerequisites.push(
-        "A GitHub or Google identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
+        "A GitHub, Google or OIDC identity attached to every ordinary account before the helm upgrade that renders passwordSignIn: recovery-only; accounts without one cannot sign in until an administrator attaches it.",
       );
     }
   }

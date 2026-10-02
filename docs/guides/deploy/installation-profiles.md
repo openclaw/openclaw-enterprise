@@ -32,11 +32,18 @@ Both profiles enable:
 
 Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
 tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit, with `128Mi` memory requests and `2Gi` memory limits. The limit only
+CPU limit. Harness Pods and the container default have `2Gi` memory limits.
+Gateway Pods request `1280Mi` of memory and are limited to `3Gi`: an embedded
+OpenClaw Gateway measured about 1 GiB after start, peaked at 1.6 GiB during its
+first turns, and settled near 1.2 GiB; dedicated Gateways used 0.8 to 1.2 GiB
+idle, but a dedicated Codex Gateway serving native admin chat peaked at 1.9 GiB
+and was OOM-killed at a `2Gi` limit on its first coding turn. Denying the 11 bundled plugins an OpenAI-only Agent does not
+use (`plugins.deny`) saved only about 50 MiB. Harness Pods and the container
+default request `128Mi`. The CPU limit only
 permits bursts: an embedded OpenClaw Gateway runs a full agent turn as its
 startup model probe, about 16 CPU-seconds of local work, and was ready 24 to 30
 seconds after start at one core against 51 to 72 seconds at `500m`. The probe
-uses about one core, so cores beyond the first serve later work, not startup. The request
+uses about one core, so cores beyond the first serve later work, not startup. The CPU request
 sets the scheduling reservation, so the higher limit reserves no node capacity.
 The trade-off is overcommit: several busy runtimes on one node can each take up
 to four cores from their neighbors, and a `limits.cpu` namespace quota counts
@@ -48,7 +55,7 @@ Seeding both Presets does not change the profile's PluginDriver. An Agent
 created from the other profile's Preset still needs a compatible driver,
 runtime, harness mode, credentials, and channel support.
 
-To seed additional Presets, add `"presets": { "files": ["/app/deploy/presets/devday.json"] }`
+To seed additional Presets, add `"presets": { "files": ["/app/deploy/presets/swe-preset.json"] }`
 to the input JSON and rerender. This example adds **SWE Agent** alongside the
 standard Presets. Both controller processes must be able to read the files at
 startup; the renderer validates the list but does not read container files. See
@@ -144,9 +151,11 @@ and rejects URLs the controller would reject at startup.
 
 ### External sign-in and trusted proxies
 
-Activation of GitHub or Google sign-in is one-way, so keep these inputs in every
+Activation of GitHub, Google or OIDC sign-in is one-way, so keep these inputs in every
 later rerender. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
-the chart's Secret defaults) renders `auth.github` or `auth.google` with
+the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
+`authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
+`auth.github`, `auth.google` or `auth.oidc` with
 `enabled: true` and `agentNativeAdmin.enabled: false`; remove
 `agentNativeAdminDomain` and `sharedCookieDomain`. `recoveryUserId` and an HTTPS
 `authBaseUrl` are required. Optional `passwordSignIn: "recovery-only"` renders
@@ -173,7 +182,8 @@ as behind a source-preserving NLB, needs none.
 }
 ```
 
-`github` and `google` also accept `clientIdKey` and `clientSecretKey`;
+`github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
+and `egressCidrs`; `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 
 If you opt in to repositories, add the broker inputs:

@@ -1386,7 +1386,7 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
   // Only the binding on a live resource still holds the Role.
   await assert.rejects(
     store.transact((transaction) => transaction.iamPolicy.deleteRole(namespace.id, role.id)),
-    /referenced by an AccessBinding/,
+    /referenced by AccessBindings/,
   );
   await store.transact(async (transaction) => {
     assert.equal(await transaction.iamPolicy.deleteAccessBinding(namespace.id, surviving.id), true);
@@ -1650,6 +1650,151 @@ async function verifyCredentialSourceContract(
       false,
     );
   });
+
+  // A withdrawal is keyed by revision and source: replays return the recorded request, and
+  // revocation is recorded once.
+  const withdrawal = {
+    namespaceId: sourceNamespace.id,
+    agentId: sourceAgent.id,
+    revisionId: sourceRevision.id,
+    credentialSourceId: source.id,
+    state: "pending",
+    requestedBy: "principal-platform-state-contract",
+    requestedAt: new Date().toISOString(),
+  };
+  await store.transact(async (transaction) => {
+    assert.deepEqual(
+      await transaction.credentialSources.requestCredentialWithdrawal(withdrawal),
+      withdrawal,
+    );
+    assert.deepEqual(
+      await transaction.credentialSources.requestCredentialWithdrawal({
+        ...withdrawal,
+        requestedBy: "principal-platform-state-replay",
+        requestedAt: new Date(Date.now() + 1000).toISOString(),
+      }),
+      withdrawal,
+    );
+    // Withdrawal work targets the revision without replacing its deployment work.
+    await transaction.operations.append({
+      kind: "agent_revision",
+      action: "reconcile",
+      target: "credentials_withdrawn",
+      operationId: "withdrawal-contract",
+      namespaceId: sourceNamespace.id,
+      resourceId: sourceRevision.id,
+      actorId: "principal-platform-state-contract",
+    });
+  });
+  await store.read(async (state) => {
+    assert.deepEqual(
+      await state.credentialSources.listCredentialWithdrawals(
+        sourceNamespace.id,
+        sourceRevision.id,
+      ),
+      [withdrawal],
+    );
+    const revisionWork = (await state.operations.list()).filter(
+      (operation) =>
+        operation.kind === "agent_revision" && operation.resourceId === sourceRevision.id,
+    );
+    assert.deepEqual(revisionWork.map(({ target }) => target ?? "deploy").sort(), [
+      "credentials_withdrawn",
+      "deploy",
+    ]);
+    const work = await state.operations.findWork(
+      `agent_revision:${sourceRevision.id}:reconcile:credentials_withdrawn:withdrawal-contract`,
+    );
+    assert.equal(work.agentTarget, "credentials_withdrawn");
+    assert.equal(work.revisionId, sourceRevision.id);
+    const deployment = await state.operations.findWork(
+      `agent_revision:${sourceRevision.id}:reconcile`,
+    );
+    assert.equal(deployment.agentTarget, undefined);
+  });
+  const completedAt = new Date().toISOString();
+  const attempted = {
+    ...withdrawal,
+    lastReason: "CREDENTIAL_WITHDRAWAL_PENDING",
+    lastAttemptAt: completedAt,
+  };
+  await store.transact(async (transaction) => {
+    // The worker's latest outcome is recorded on the pending withdrawal it explains.
+    assert.deepEqual(
+      await transaction.credentialSources.recordCredentialWithdrawalAttempt(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        { reason: "CREDENTIAL_WITHDRAWAL_PENDING", at: completedAt },
+      ),
+      attempted,
+    );
+    assert.deepEqual(
+      await transaction.credentialSources.markCredentialWithdrawalRevoked(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        completedAt,
+      ),
+      { ...attempted, state: "revoked", completedAt },
+    );
+    assert.equal(
+      await transaction.credentialSources.recordCredentialWithdrawalAttempt(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        { reason: "CREDENTIALS_WITHDRAWN", at: completedAt },
+      ),
+      undefined,
+    );
+    assert.equal(
+      await transaction.credentialSources.markCredentialWithdrawalRevoked(
+        sourceNamespace.id,
+        sourceRevision.id,
+        source.id,
+        completedAt,
+      ),
+      undefined,
+    );
+  });
+
+  // An update may point the existing field at a replacement Secret, but never change fields.
+  const replacementSecret = {
+    ...sourceSecret,
+    id: identifier("sec"),
+    name: "Replacement model key " + randomUUID(),
+    backendRef: { ...sourceSecret.backendRef, name: "replacement-model-key", uid: randomUUID() },
+  };
+  const replacementRef = {
+    kind: "secret",
+    namespaceId: sourceNamespace.id,
+    id: replacementSecret.id,
+  };
+  await store.transact(async (transaction) => {
+    await transaction.secrets.createSecret(replacementSecret);
+    assert.deepEqual(
+      await transaction.credentialSources.replaceCredentialSourceSecrets(
+        sourceNamespace.id,
+        source.id,
+        { api_key: replacementRef },
+      ),
+      { ...source, secrets: { api_key: replacementRef } },
+    );
+  });
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.credentialSources.replaceCredentialSourceSecrets(sourceNamespace.id, source.id, {
+        other_key: replacementRef,
+      }),
+    ),
+    "A credential source update cannot change its Secret fields.",
+  );
+  // Restore the original reference so later cases keep their Secret dependency.
+  await store.transact((transaction) =>
+    transaction.credentialSources.replaceCredentialSourceSecrets(sourceNamespace.id, source.id, {
+      api_key: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
+    }),
+  );
 
   // Deletion is two-phase: a deleting source stays recorded and blocks Namespace
   // teardown, but new bindings refuse it.

@@ -69,14 +69,62 @@ func TestResourceRequestStopsWhenCommandContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.T) {
+	type call struct{ method, path, body string }
+	var calls []call
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		calls = append(calls, call{request.Method, request.URL.Path, string(body)})
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":{"id":"cs_1","state":"pending","requestedBy":"admin","reason":"CREDENTIAL_WITHDRAWAL_PENDING"},"meta":{"requestId":"req_1"}}`))
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	keyFile := filepath.Join(directory, "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(directory, "replacement.json")
+	secrets := `{"secrets":{"api_key":{"kind":"secret","namespaceId":"ns_1","id":"sec_2"}}}`
+	if err := os.WriteFile(replacement, []byte(secrets), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		args []string
+		want call
+	}{
+		{[]string{"credential-source", "update", "cs_1"}, call{http.MethodPatch, "/namespaces/ns_1/credential-sources/cs_1", "{}"}},
+		{[]string{"credential-source", "update", "cs_1", "--file", replacement}, call{http.MethodPatch, "/namespaces/ns_1/credential-sources/cs_1", secrets}},
+		{[]string{"agent", "credential-withdrawal", "request", "agt_1", "cs_1"}, call{http.MethodPost, "/namespaces/ns_1/agents/agt_1/credential-sources/cs_1/withdraw", ""}},
+		{[]string{"agent", "credential-withdrawal", "get", "agt_1", "cs_1"}, call{http.MethodGet, "/namespaces/ns_1/agents/agt_1/credential-sources/cs_1/withdrawal", ""}},
+	} {
+		calls = nil
+		command := New(io.Discard, io.Discard)
+		command.SetArgs(append(test.args, "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"))
+		if err := command.Execute(); err != nil {
+			t.Fatalf("%v: %v", test.args, err)
+		}
+		if len(calls) != 1 || calls[0] != test.want {
+			t.Fatalf("%v: got %+v, want %+v", test.args, calls, test.want)
+		}
+	}
+}
+
 type runtimeLogStub struct {
-	t        *testing.T
-	queries  []url.Values
-	pages    []func(http.ResponseWriter, url.Values)
-	activeID string
+	beforeLogPage func(*http.Request)
+	t             *testing.T
+	queries       []url.Values
+	pages         []func(http.ResponseWriter, url.Values)
+	activeID      string
 	// revisions is the JSON revision list; empty means the Agent has none.
 	revisions string
 	paths     []string
+	// podless lists revisions whose runtime description has no Pods.
+	podless []string
+	// forbidden lists revisions whose runtime description is refused with 403.
+	forbidden []string
 }
 
 func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Request) {
@@ -97,9 +145,20 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 			response.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		if stub.beforeLogPage != nil {
+			stub.beforeLogPage(request)
+		}
 		next := stub.pages[0]
 		stub.pages = stub.pages[1:]
 		next(response, query)
+	case strings.HasSuffix(request.URL.Path, "/runtime") && slices.ContainsFunc(stub.forbidden, func(id string) bool {
+		return strings.HasSuffix(request.URL.Path, "/deployments/"+id+"/runtime")
+	}):
+		logError(http.StatusForbidden, "FORBIDDEN", nil)(response, nil)
+	case strings.HasSuffix(request.URL.Path, "/runtime") && slices.ContainsFunc(stub.podless, func(id string) bool {
+		return strings.HasSuffix(request.URL.Path, "/deployments/"+id+"/runtime")
+	}):
+		fmt.Fprint(response, `{"data":{"revisionId":"rev_x","observedAt":"2026-09-30T12:00:00.000Z","pods":[],"sources":[]},"meta":{}}`)
 	case strings.HasSuffix(request.URL.Path, "/runtime"):
 		fmt.Fprint(response, `{"data":{"revisionId":"rev_1","observedAt":"2026-09-30T12:00:00.000Z","pods":[{"role":"gateway","cluster":"control","name":"gw-0","uid":"u","phase":"Running","ready":true,"createdAt":null,"containers":[{"name":"gateway","state":"running","reason":null,"ready":true,"restartCount":2,"startedAt":null,"lastTermination":{"reason":"OOMKilled","exitCode":137,"finishedAt":null}}],"events":[{"type":"Warning","container":"gateway","reason":"Unhealthy","message":"Readiness probe failed","count":146,"lastObservedAt":"2026-09-30T11:59:00.000Z"},{"type":"Normal","container":"prepare-private-state","reason":"Started","message":"Container started","count":1,"lastObservedAt":"2026-09-30T11:00:00.000Z"},{"type":"Normal","container":null,"reason":"Scheduled","message":"Successfully assigned","count":1,"lastObservedAt":null}]}],"sources":[{"id":"gateway","kind":"container","pods":[],"available":true,"retention":"current and previous instance"}]},"meta":{}}`)
 	default:
@@ -109,12 +168,21 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 }
 
 func logPage(cursor string, records ...string) func(http.ResponseWriter, url.Values) {
+	return logPageWithStream(&cursor, `{"source":"gateway","pod":"gw-0"}`, records...)
+}
+
+func logPageWithStream(cursor *string, stream string, records ...string) func(http.ResponseWriter, url.Values) {
+	cursorJSON := "null"
+	if cursor != nil {
+		cursorJSON = fmt.Sprintf("%q", *cursor)
+	}
 	return func(response http.ResponseWriter, _ url.Values) {
 		fmt.Fprintf(
 			response,
-			`{"data":{"revisionId":"rev_1","source":"gateway","stream":{"source":"gateway","pod":"gw-0"},"observedAt":"2026-09-30T12:00:00.000Z","records":[%s],"withheld":0,"truncated":false,"cursor":%q},"meta":{"requestId":"r"}}`,
+			`{"data":{"revisionId":"rev_1","source":"gateway","stream":%s,"observedAt":"2026-09-30T12:00:00.000Z","records":[%s],"withheld":0,"truncated":false,"cursor":%s},"meta":{"requestId":"r"}}`,
+			stream,
 			strings.Join(records, ","),
-			cursor,
+			cursorJSON,
 		)
 	}
 }
@@ -140,18 +208,27 @@ const gapRecord = `{"type":"gap","time":null,"stream":{"source":"gateway"},"reas
 
 func runLogsCommand(t *testing.T, ctx context.Context, stub *runtimeLogStub, args ...string) (string, string, error) {
 	t.Helper()
+	var out, errOut strings.Builder
+	err := runLogsCommandTo(t, ctx, stub, &out, &errOut, args...)
+	return out.String(), errOut.String(), err
+}
+
+func runLogsCommandTo(t *testing.T, ctx context.Context, stub *runtimeLogStub, out, errOut io.Writer, args ...string) error {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(stub.serve))
 	t.Cleanup(server.Close)
 	keyFile := filepath.Join(t.TempDir(), "service-key.json")
 	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var out, errOut strings.Builder
-	command := New(&out, &errOut)
+	command := New(out, errOut)
 	command.SetArgs(append(args, "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"))
-	err := command.ExecuteContext(ctx)
-	return out.String(), errOut.String(), err
+	return command.ExecuteContext(ctx)
 }
+
+type logOutputFunc func([]byte) (int, error)
+
+func (write logOutputFunc) Write(data []byte) (int, error) { return write(data) }
 
 func recordSleeps(t *testing.T) *[]time.Duration {
 	t.Helper()
@@ -170,19 +247,49 @@ func TestAgentLogsBuildsTheQueryAndDefaultsToTheActiveRevision(t *testing.T) {
 		logPage("v1.a.b", logLine(1, "warn", "slow start")),
 	}}
 	out, _, err := runLogsCommand(t, context.Background(), stub,
-		"agent", "logs", "agt_1", "--source", "gateway", "--pod", "gw-0", "--previous", "--tail", "50", "--since", "10m")
+		"agent", "logs", "agt_1", "--source", "gateway", "--pod", "gw-0", "--previous", "--tail", "50", "--since", "10m", "--level", "warn")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := url.Values{
 		"source": {"gateway"}, "pod": {"gw-0"}, "previous": {"true"},
-		"tailLines": {"50"}, "sinceSeconds": {"600"},
+		"tailLines": {"50"}, "sinceSeconds": {"600"}, "minLevel": {"warn"},
 	}
 	if !reflect.DeepEqual(stub.queries[0], want) {
 		t.Fatalf("query = %v, want %v", stub.queries[0], want)
 	}
 	if got := strings.TrimSpace(out); got != `2026-09-30T12:00:01.000000001Z WARN openclaw [gateway] slow start method="GET /x" status=503` {
 		t.Fatalf("text output = %q", got)
+	}
+}
+
+func TestAgentLogsFollowKeepsTheLevelOnCursorPolls(t *testing.T) {
+	recordSleeps(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stub := &runtimeLogStub{t: t, activeID: "rev_1", pages: []func(http.ResponseWriter, url.Values){
+		logPage("v1.first.sig", logLine(1, "info", "ready")),
+		logPage("v1.second.sig", logLine(2, "warn", "slow")),
+	}}
+	stub.beforeLogPage = func(*http.Request) {
+		if len(stub.queries) == 2 {
+			cancel()
+		}
+	}
+	if _, _, err := runLogsCommand(t, ctx, stub,
+		"agent", "logs", "agt_1", "--source", "agent", "--follow", "--level", "info"); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.queries) != 2 {
+		t.Fatalf("queries = %v", stub.queries)
+	}
+	for index, query := range stub.queries {
+		if got := query.Get("minLevel"); got != "info" {
+			t.Fatalf("query %d minLevel = %q, want info", index, got)
+		}
+	}
+	if got := stub.queries[1].Get("cursor"); got != "v1.first.sig" {
+		t.Fatalf("poll cursor = %q", got)
 	}
 }
 
@@ -213,6 +320,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "1001"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "25h"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--follow", "--previous"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--level", "unknown"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "-o", "yaml"},
 		{"agent", "runtime", "agt_1", "-o", "text"},
 	} {
@@ -263,61 +371,186 @@ func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *test
 	}
 }
 
-func TestAgentLogsFollowPollsTheCursorHonoursRetryAfterAndPrintsGapNotices(t *testing.T) {
-	sleeps := recordSleeps(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	stub := &runtimeLogStub{t: t, activeID: "rev_1"}
-	stub.pages = []func(http.ResponseWriter, url.Values){
-		logPage("v1.first.sig", logLine(1, "info", "ready")),
-		logError(http.StatusTooManyRequests, "RUNTIME_LOGS_RATE_LIMITED", map[string]string{"retry-after": "5"}),
-		logPage("v1.second.sig", gapRecord, logLine(2, "error", "after restart")),
-		logError(http.StatusBadRequest, "RUNTIME_LOGS_CURSOR_INVALID", nil),
-		func(response http.ResponseWriter, query url.Values) {
-			cancel() // Ctrl-C while following
-			logPage("v1.third.sig")(response, query)
-		},
-	}
-	out, errOut, err := runLogsCommand(t, ctx, stub,
-		"agent", "logs", "agt_1", "--source", "gateway", "--since", "90s", "--follow", "-o", "json")
-	if err != nil {
-		t.Fatalf("an interrupted follow exits cleanly: %v", err)
-	}
-	cursors := []string{}
-	for _, query := range stub.queries {
-		cursors = append(cursors, query.Get("cursor"))
-	}
-	if want := []string{"", "v1.first.sig", "v1.first.sig", "v1.second.sig", ""}; !reflect.DeepEqual(cursors, want) {
-		t.Fatalf("cursors = %v, want %v", cursors, want)
-	}
-	if stub.queries[1].Get("sinceSeconds") != "" || stub.queries[0].Get("sinceSeconds") != "90" {
-		t.Fatalf("only the first request carries --since: %v", stub.queries)
-	}
-	// A rejected cursor starts a new view at once; an interrupted request ends the loop.
-	if want := []time.Duration{2 * time.Second, 5 * time.Second, 2 * time.Second}; !reflect.DeepEqual(*sleeps, want) {
-		t.Fatalf("sleeps = %v, want %v", *sleeps, want)
-	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("NDJSON lines = %d: %q", len(lines), out)
-	}
-	for _, line := range lines {
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatalf("not NDJSON: %q", line)
-		}
-	}
-	if !strings.Contains(lines[1], `"reason":"stream_replaced"`) {
-		t.Fatalf("gap record missing from NDJSON: %q", lines[1])
-	}
-	for _, notice := range []string{
-		"notice: rate limited; retrying in 5s",
-		"notice: - gap stream_replaced: Container restarted; showing the new instance.",
-		"notice: the cursor was rejected; starting a new view",
+// A failed or still-deploying dedicated replacement leaves the active revision
+// stopped while the newer revision's Pods hold the failure: read the newer one
+// while it has Pods, and always say which revision was read.
+func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T) {
+	revisions := `[{"id":"rev_1","revision":1},{"id":"rev_2","revision":2}]`
+	for _, test := range []struct {
+		name      string
+		podless   []string
+		forbidden []string
+		revision  string
+		notice    string
+	}{
+		{"newer revision has Pods", nil, nil, "rev_2", "notice: reading revision rev_2, newer than the active revision rev_1 and not yet active; pass --revision rev_1 for the active revision"},
+		{"newer revision has no Pods", []string{"rev_2"}, nil, "rev_1", "notice: reading the active revision rev_1\n"},
+		// A log reader without Agent operate cannot read the runtime description;
+		// the notice still names the newer revision it may read with --revision.
+		{"newer revision runtime is refused", nil, []string{"rev_2"}, "rev_1", "notice: reading the active revision rev_1; a newer revision rev_2 exists but its runtime could not be read (OCC operation failed (HTTP 403): FORBIDDEN: fixed message); pass --revision rev_2 to read it"},
 	} {
-		if !strings.Contains(errOut, notice) {
-			t.Errorf("stderr lacks %q:\n%s", notice, errOut)
+		t.Run(test.name, func(t *testing.T) {
+			stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: revisions, podless: test.podless, forbidden: test.forbidden, pages: []func(http.ResponseWriter, url.Values){
+				logPage("", logLine(1, "error", "plugin install failed")),
+			}}
+			out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "agent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "plugin install failed") {
+				t.Fatalf("logs output = %q", out)
+			}
+			if want := "/namespaces/ns_1/agents/agt_1/deployments/" + test.revision + "/runtime/logs"; !slices.Contains(stub.paths, want) {
+				t.Fatalf("requests = %v, want %s", stub.paths, want)
+			}
+			if !strings.Contains(errOut, test.notice) {
+				t.Fatalf("notice = %q, want %q", errOut, test.notice)
+			}
+		})
+	}
+	// `occ agent runtime` reuses the probed description of the newer revision.
+	runtimeStub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: revisions}
+	if _, _, err := runLogsCommand(t, context.Background(), runtimeStub, "agent", "runtime", "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := "/namespaces/ns_1/agents/agt_1/deployments/rev_2/runtime"
+	if got := slices.Index(runtimeStub.paths, runtimePath); got < 0 || slices.Contains(runtimeStub.paths[got+1:], runtimePath) {
+		t.Fatalf("runtime requests = %v, want %s exactly once", runtimeStub.paths, runtimePath)
+	}
+	// The active revision is the latest: no runtime probe, and the notice names it.
+	stub := &runtimeLogStub{t: t, activeID: "rev_2", revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
+		logPage("", logLine(1, "info", "ready")),
+	}}
+	_, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "notice: reading the active revision rev_2") {
+		t.Fatalf("notice = %q", errOut)
+	}
+	for _, path := range stub.paths {
+		if strings.HasSuffix(path, "/runtime") {
+			t.Fatalf("probed runtime %s although the active revision is the latest", path)
 		}
+	}
+	// An explicit --revision skips every lookup.
+	stub = &runtimeLogStub{t: t, activeID: "rev_1", revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
+		logPage("", logLine(1, "info", "ready")),
+	}}
+	if _, _, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway", "--revision", "rev_1"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/namespaces/ns_1/agents/agt_1/deployments/rev_1/runtime/logs"}; !slices.Equal(stub.paths, want) {
+		t.Fatalf("requests = %v, want %v", stub.paths, want)
+	}
+}
+
+func TestAgentLogsFollowPollsTheCursorHonoursRetryAfterAndPrintsGapNotices(t *testing.T) {
+	for _, responseWins := range []bool{false, true} {
+		name := "cancellation wins before response"
+		if responseWins {
+			name = "response wins before cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			sleeps := recordSleeps(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			stub := &runtimeLogStub{t: t, activeID: "rev_1"}
+			requestCanceled := make(chan struct{})
+			if !responseWins {
+				stub.beforeLogPage = func(request *http.Request) {
+					if len(stub.queries) != 5 {
+						return
+					}
+					// Keep the response unwritten until the real HTTP request observes Ctrl-C.
+					cancel()
+					select {
+					case <-request.Context().Done():
+					case <-time.After(5 * time.Second):
+						t.Error("the in-flight log request did not observe cancellation")
+					}
+					close(requestCanceled)
+				}
+			}
+			stub.pages = []func(http.ResponseWriter, url.Values){
+				logPage("v1.first.sig", logLine(1, "info", "ready")),
+				logError(http.StatusTooManyRequests, "RUNTIME_LOGS_RATE_LIMITED", map[string]string{"retry-after": "5"}),
+				logPage("v1.second.sig", gapRecord, logLine(2, "error", "after restart")),
+				logError(http.StatusBadRequest, "RUNTIME_LOGS_CURSOR_INVALID", nil),
+				logPageWithStream(nil, "null"),
+			}
+			var stdout, stderr strings.Builder
+			finalPagePrinted := false
+			const noPodNotice = "notice: revision rev_1 has no running Pod for source gateway"
+			notices := logOutputFunc(func(data []byte) (int, error) {
+				n, err := stderr.Write(data)
+				if strings.Contains(stderr.String(), noPodNotice) {
+					// This real CLI notice is emitted only after decoding the final HTTP page.
+					finalPagePrinted = true
+					cancel()
+				}
+				return n, err
+			})
+			err := runLogsCommandTo(t, ctx, stub, &stdout, notices,
+				"agent", "logs", "agt_1", "--source", "gateway", "--since", "90s", "--follow", "-o", "json")
+			if err != nil {
+				t.Fatalf("an interrupted follow exits cleanly: %v", err)
+			}
+			if !responseWins {
+				select {
+				case <-requestCanceled:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the canceled request handler did not settle")
+				}
+			}
+			if finalPagePrinted != responseWins {
+				t.Fatalf("final page printed = %v, want %v", finalPagePrinted, responseWins)
+			}
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				t.Fatalf("follow context = %v, want cancellation", ctx.Err())
+			}
+			out, errOut := stdout.String(), stderr.String()
+			cursors := []string{}
+			for _, query := range stub.queries {
+				cursors = append(cursors, query.Get("cursor"))
+			}
+			if want := []string{"", "v1.first.sig", "v1.first.sig", "v1.second.sig", ""}; !reflect.DeepEqual(cursors, want) {
+				t.Fatalf("cursors = %v, want %v", cursors, want)
+			}
+			if stub.queries[1].Get("sinceSeconds") != "" || stub.queries[0].Get("sinceSeconds") != "90" {
+				t.Fatalf("only the first request carries --since: %v", stub.queries)
+			}
+			// Resetting a rejected cursor restarts the original --since window.
+			if got := stub.queries[4].Get("sinceSeconds"); got != "90" {
+				t.Fatalf("reset window sinceSeconds = %q, want 90", got)
+			}
+			// Cancellation ends either ordering without scheduling another poll.
+			if want := []time.Duration{2 * time.Second, 5 * time.Second, 2 * time.Second}; !reflect.DeepEqual(*sleeps, want) {
+				t.Fatalf("sleeps = %v, want %v", *sleeps, want)
+			}
+			lines := strings.Split(strings.TrimSpace(out), "\n")
+			if len(lines) != 3 {
+				t.Fatalf("NDJSON lines = %d: %q", len(lines), out)
+			}
+			for _, line := range lines {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("not NDJSON: %q", line)
+				}
+			}
+			if !strings.Contains(lines[1], `"reason":"stream_replaced"`) {
+				t.Fatalf("gap record missing from NDJSON: %q", lines[1])
+			}
+			for _, notice := range []string{
+				"notice: rate limited; retrying in 5s",
+				"notice: - gap stream_replaced: Container restarted; showing the new instance.",
+				"notice: the cursor was rejected; starting a new view",
+			} {
+				if !strings.Contains(errOut, notice) {
+					t.Errorf("stderr lacks %q:\n%s", notice, errOut)
+				}
+			}
+		})
 	}
 }
 

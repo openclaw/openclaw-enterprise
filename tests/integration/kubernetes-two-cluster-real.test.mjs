@@ -385,8 +385,8 @@ test(
         }
       },
     );
-    // Failed startup evidence leaves reconciliation pending until its convergence
-    // deadline. It must not be confused with a successfully activated revision.
+    // Held startup failure evidence fails the deployment; it must never be
+    // confused with a successfully activated revision.
     assert.notEqual(
       (await api("GET", `${agentPath}/deployments/${rejected.id}`)).status,
       "succeeded",

@@ -50,6 +50,8 @@ command prints the API URL, Installation ID, local service-key file, kubeconfig,
 Kubernetes context, and cleanup command. Keep this output; the service-key file
 is an administrator credential and must remain on your machine.
 
+If startup stalls on cert-manager, follow [local startup troubleshooting](operate/troubleshooting.md#local-startup-stalls-on-cert-manager).
+
 ## Open the platform console
 
 Import the printed browser CA certificate into your browser's trusted CA store

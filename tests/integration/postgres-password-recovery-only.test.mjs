@@ -117,6 +117,7 @@ test(
       assert.deepEqual(await providers(app), {
         github: true,
         google: false,
+        oidc: false,
         password: true,
         sessionBinding: true,
       });
@@ -157,6 +158,7 @@ test(
       assert.deepEqual(await providers(app), {
         github: true,
         google: false,
+        oidc: false,
         password: false,
         sessionBinding: true,
       });
@@ -245,6 +247,7 @@ test(
       assert.deepEqual(await providers(app), {
         github: false,
         google: true,
+        oidc: false,
         password: false,
         sessionBinding: true,
       });

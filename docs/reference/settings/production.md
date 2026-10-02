@@ -180,6 +180,25 @@ Google values, a Secret shared with GitHub or any other chart Secret,
 `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed domain that
 is not a DNS name.
 
+### OIDC sign-in
+
+These optional variables also apply to the API only, with the same guarded profile and
+recovery user; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
+
+| Variable                                                     | Helm value                                          | Behavior                                                                                    |
+| ------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `OCC_AUTH_OIDC_ISSUER`                                       | `auth.oidc.issuer`                                  | The exact `iss`; with the client ID it determines the provider instance.                    |
+| `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `_TOKEN_URL`, `_JWKS_URL` | `auth.oidc.authorizationUrl`, `tokenUrl`, `jwksUrl` | `https:` on 443 on the issuer's DNS host, no userinfo, query or fragment. Never discovered. |
+| `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                             | Read from the dedicated `auth.oidc.secretName` Secret. All required values or none.         |
+| `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
+| `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
+
+With `auth.oidc.enabled`, the chart adds the API-only egress policy
+`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
+allows any address except `169.254.0.0/16`. Rendering fails on values the API refuses,
+a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
+with OIDC, or an HTTP base URL.
+
 ### Production Installation bootstrap environment
 
 Both environments run `node scripts/bootstrap-installation.mjs` after migration.

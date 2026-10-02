@@ -12,6 +12,14 @@ using bearer {{JWT}} for upstream
 -----BEGIN PRIVATE KEY-----{{PEM_BODY}}-----END PRIVATE KEY-----
 pushing with {{GITHUB_PAT}} to origin
 HTTP:GET https://files.example.invalid/object?X-Amz-Signature={{SIGNATURE}}&X-Amz-Credential={{API_KEY}}
+curl -sS -u admin:{{ARGV_PASSWORD}} https://api.example.invalid/v1
+hf token {{HF_TOKEN}} loaded
+stripe {{STRIPE_KEY}} rejected
+Proxy auth Basic {{BASIC}}
+machine github.com login bob password {{NETRC_PASSWORD}}
+MY_SERVICE_KEY={{SERVICE_KEY}}
+{"time":"2026-09-30T12:00:00.005+00:00","level":"warn","subsystem":"channels","message":"retry","code":"{{STRIPE_KEY}}","session_id":"curl -u ops:{{ARGV_PASSWORD}}","channel":"{{HF_TOKEN}}"}
+{"time":"2026-09-30T12:00:00.006+00:00","level":"info","message":"{{REPLY}}"}
 {"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"t1","delta":"{{RPC}}"}}
 {"jsonrpc":"2.0","id":7,"result":{"items":[{"type":"message","text":"{{RPC}}"}]}}
 {"timestamp":"2026-09-30T12:00:00.100Z","level":"WARN","target":"codex_core::client","fields":{"message":"retrying model request","prompt":"{{CODEX_PROMPT}}","attempt":2}}

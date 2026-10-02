@@ -87,30 +87,27 @@ contains `logging.level`, matching `logging.consoleLevel`, JSON console style,
 and disabled native OTLP log export. Runtime-owned console and tool redaction
 remain enabled by the gateway and Codex runtime; the admitted native
 Configuration does not carry the retired `logging.redactSensitive` key. Later
-edits to the source Configuration or to OCC startup `logging.level` cannot mutate
-that snapshot; deploy the Agent again to create a new revision with a changed
-runtime level.
+edits cannot mutate that snapshot; redeploy to change the level.
 
 Later edits affect a future explicit deployment. The worker checks the admitted
 combination and exact ownership before runtime effects. Unsupported combinations,
-revoked authority, or a missing required Driver fail closed. See
-[Agents](agents.md), [Configuration](configuration.md), and
-[controller reconciliation](controller.md) for their respective ownership and
-queue guarantees.
+revoked authority, or a missing required Driver fail closed; see
+[controller reconciliation](controller.md).
 
 ## Harness authentication
 
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                        | Topology           | Credential consumer                                                                                               |
-| ------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `api_key` with an OCC Secret   | Embedded OpenClaw  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
-| `api_key` with an OCC Secret   | Dedicated OpenClaw | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
-| `api_key` with an OCC Secret   | Dedicated Codex    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
-| `codex_pat` with an OCC Secret | Dedicated Codex    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
-| `chatgpt_service_account`      | Dedicated Codex    | Only Codex receives the account token and forced workspace.                                                       |
-| `credential_source`            | Dedicated Harness  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
+| Binding                        | Topology                           | Credential consumer                                                                                               |
+| ------------------------------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `api_key` with an OCC Secret   | Embedded OpenClaw                  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
+| `api_key` with an OCC Secret   | Dedicated OpenClaw                 | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
+| `api_key` with an OCC Secret   | Dedicated Codex                    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
+| `codex_pat` with an OCC Secret | Dedicated Codex                    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
+| `oauth` (**Experimental**)     | Dedicated Codex, no Sandbox Driver | Codex owns its credential bundle on [private storage](drivers/kubernetes-compute/codex-oauth-storage.md).         |
+| `chatgpt_service_account`      | Dedicated Codex                    | Only Codex receives the account token and forced workspace.                                                       |
+| `credential_source`            | Dedicated Harness                  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
 
 Kubernetes workload rendering prepares one explicit login mode and exact Secret
 projections. The selected Sandbox consumes the same already-rendered workload
@@ -133,7 +130,7 @@ Kubernetes rejects `runtime`; its managed validation remains unchanged.
 Codex rejects missing or conflicting runtime inputs before starting its app
 server. After login, a bounded native model turn must succeed before the server
 starts; local credential storage alone does not prove provider acceptance.
-Login state stays in its
+API-key and PAT login state stays in its
 bounded ephemeral home. Gateway transport and workload identity credentials
 remain separate. A dedicated gateway receives no model credential. Model auth
 cannot be supplied through Configuration `secretBindings` or the initial runtime
@@ -153,8 +150,10 @@ and model fallback. Codex ignores user configuration and rules, disables executi
 and external tools, and uses read-only filesystem policy without approval grants;
 a tool event cannot satisfy its success check. The Codex probe runs with a minimal
 environment that keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
-`SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Each probe captures
-native output without logging its contents. Dedicated Codex retries a confirmed
+`SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Dedicated Codex
+reaches its model over Responses WebSocket by default (embedded OpenClaw uses
+HTTP streaming), so an egress proxy or firewall in front of the model host must
+allow the WebSocket upgrade. Probes never log native output. Dedicated Codex retries a confirmed
 subprocess timeout once after one second. Each attempt has a 30-second cap within
 one 61-second budget, including the delay. Authentication rejection, malformed
 output, tool events, and external signals without timeout evidence do not retry.
@@ -169,20 +168,19 @@ elapsed milliseconds, exit code, recognized termination signal, and final code
 `UNAVAILABLE`). Logs omit credentials and raw provider output. The existing runtime
 failure status is published only after retries end.
 
-The runtime failure code is `AUTHENTICATION_FAILED` only when the provider
-rejected the credential: an OpenClaw probe result with status `auth` (provider
-401/403 or invalid key), or a Codex probe `turn.failed` event or access-token
-login error reporting HTTP 401 or 403. The worker then fails the deployment with
-`RUNTIME_AUTHENTICATION_FAILED` instead of waiting for the convergence deadline.
-A CPU-starved OpenClaw probe reports `MODEL_PROBE_CPU_STARVED`, failing with
-`RUNTIME_CPU_STARVED`.
-Other timeouts, provider server errors, and transport failures keep `MODEL_PROBE_TIMEOUT`,
-`MODEL_PROBE_FAILED`, or `LOGIN_FAILED` and remain pending.
+`AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
+probe status `auth` (401/403 or invalid key), 401 to OpenClaw's first, empty
+request to a default OpenAI or Anthropic endpoint, or a Codex `turn.failed`
+event or access-token login error reporting 401 or 403. A CPU-starved OpenClaw
+probe reports `MODEL_PROBE_CPU_STARVED`. Timeouts, provider server errors,
+and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
+`LOGIN_FAILED`. The worker fails deployment at once on each held
+[code](drivers/compute.md#startup-failure-evidence); after a timeout, redeploy.
 
 Gateway and Harness startup wrappers also emit one `runtime.startup_phase` log
-per startup phase, such as login, model probe, peer plugin status, plugin
-install, workspace setup, and native process spawn, with its container, phase name, `ok` or `failed` outcome,
-duration, and time since the wrapper started. A Gateway also logs
+per phase (login, model probe, peer plugin status, plugin install, workspace
+setup, process spawn) with its container, phase, outcome (`ok` or `failed`),
+duration, and time since wrapper start. A Gateway also logs
 `peer-status-changed` when its Harness is replaced, then `gateway-respawn` once
 the OpenClaw process it restarts in place serves again. These
 logs carry no provider, model, credential, or path values.
@@ -196,17 +194,17 @@ seconds. The deployment's convergence deadline governs a Harness that never
 reports. A redeploy keeps the Service on the serving revision until activation.
 
 These startup checks make provider requests and may incur model usage charges.
-They do not verify access to other configured models or guarantee continued validity
-after upstream revocation. Embedded probe transport configuration must use
+They verify neither other configured models nor validity after upstream
+revocation. Embedded probe transport configuration must use
 literal metadata rather than additional environment or Secret references. The
-canonical `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` alias for the selected provider remains supported, and unrelated
-gateway/channel configuration bindings remain separate.
+selected provider's `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` alias remains
+supported; gateway/channel configuration bindings stay separate.
 
 The revision freezes the admitted source reference, not historical Secret bytes.
 A managed account snapshot also retains its exact credential and verified private
 Backend/workspace ownership. Later reconciliation cannot substitute a newly
-issued account credential. Source updates require explicit deployment and a real
-model turn to verify consumption; selected metadata does not establish readiness.
+issued account credential. Source updates take effect only through a new deployment
+whose real model turn succeeds; metadata alone does not establish readiness.
 See [renewal and revocation](../guides/deploy/credential-lifecycle.md).
 
 ## Runtime logging

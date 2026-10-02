@@ -117,7 +117,7 @@ writers for the upgrade.
 [recovery-only password sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)
 leaves passwords to the recovery account. Activation is one-way: keep at least one provider configured,
 or startup refuses. To return to password-only sign-in, follow
-[sign-in maintenance](auth-maintenance.md#deactivate-github-sign-in), then set
+[sign-in maintenance](auth-maintenance.md#deactivate-external-sign-in), then set
 `auth.google.enabled: false` as well; without Helm also remove the
 `OCC_AUTH_GOOGLE_*` variables.
 
@@ -159,6 +159,8 @@ Google sessions end and the password keeps working.
 
 The provider instance is derived from the client ID. A new client ID is a new provider
 instance: reattach every Google identity, then detach the old methods by `methodId`.
+Sessions signed in under the old client ID, or with Google once it is removed, end on
+their next request.
 Rotating only the client secret keeps attachments and invalidates pending sign-in
 attempts. Rotating `OCC_AUTH_SECRET` also fails attempts in flight.
 

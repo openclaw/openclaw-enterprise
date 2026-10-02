@@ -15,6 +15,15 @@ const google = {
   OCC_AUTH_GOOGLE_CLIENT_SECRET: "policy-google-secret",
   OCC_AUTH_GITHUB_RECOVERY_USER_ID: "policy-recovery-user",
 };
+const oidc = {
+  OCC_AUTH_OIDC_ISSUER: "https://idp.example.com/realms/policy",
+  OCC_AUTH_OIDC_AUTHORIZATION_URL: "https://idp.example.com/realms/policy/auth",
+  OCC_AUTH_OIDC_TOKEN_URL: "https://idp.example.com/realms/policy/token",
+  OCC_AUTH_OIDC_JWKS_URL: "https://idp.example.com/realms/policy/certs",
+  OCC_AUTH_OIDC_CLIENT_ID: "policy-oidc-client",
+  OCC_AUTH_OIDC_CLIENT_SECRET: "policy-oidc-secret",
+  OCC_AUTH_GITHUB_RECOVERY_USER_ID: "policy-recovery-user",
+};
 
 test("password sign-in defaults to every account and accepts only all or recovery-only", () => {
   assert.equal(passwordSignInPolicy({}), "all");
@@ -33,14 +42,14 @@ test("password sign-in defaults to every account and accepts only all or recover
   }
 });
 
-test("recovery-only password sign-in requires GitHub or Google sign-in", () => {
+test("recovery-only password sign-in requires GitHub, Google or OIDC sign-in", () => {
   // Without a provider it would leave only the recovery account able to sign in.
   assert.throws(
     () => humanLoginConfiguration({ OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" }),
-    /OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub or Google sign-in/,
+    /OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub, Google or OIDC sign-in/,
   );
   assert.deepEqual(humanLoginConfiguration({ OCC_AUTH_PASSWORD_SIGN_IN: "all" }), {});
-  for (const environment of [github, google, { ...github, ...google }]) {
+  for (const environment of [github, google, oidc, { ...github, ...google, ...oidc }]) {
     const all = humanLoginConfiguration(environment);
     assert.equal(all.passwordSignIn, undefined, "the default is not carried");
     assert.equal(

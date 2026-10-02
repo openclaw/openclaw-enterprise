@@ -11,6 +11,8 @@ export {
   RUNTIME_LOG_DEFAULT_TAIL_LINES,
   RUNTIME_LOG_LIMIT_BYTES,
   RUNTIME_LOG_MAX_TAIL_LINES,
+  runtimeLogPageAtLevel,
+  type RuntimeLogMinimumLevel,
   type RuntimeLogPage,
   type RuntimeLogQuery,
   type RuntimeLogViewAdmission,

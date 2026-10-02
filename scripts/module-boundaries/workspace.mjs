@@ -30,7 +30,7 @@ async function walk(directory) {
       return entry.isFile() && sourceExtension.test(entry.name) ? [path] : [];
     }),
   );
-  return nested.flat().sort();
+  return nested.flat();
 }
 
 /** Read a fresh, deterministic source snapshot. Symlinked directories are not traversed. */

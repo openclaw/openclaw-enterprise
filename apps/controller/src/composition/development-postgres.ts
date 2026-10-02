@@ -21,6 +21,7 @@ import {
   createPostgresControllerAuth,
   type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
+  type OidcSignInConfiguration,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
@@ -59,7 +60,8 @@ export interface PostgresDevelopmentConfig {
   readonly authBaseURL: string;
   readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
-  /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub or Google sign-in. */
+  readonly oidc?: OidcSignInConfiguration;
+  /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
   readonly passwordSignIn?: "recovery-only";
   readonly poolMax?: number;
   readonly logger?: OccLogger;
@@ -109,6 +111,9 @@ export async function composePostgresDevelopment(
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
   }
+  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
+    throw new Error("OIDC sign-in does not support native administration.");
+  }
 
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
@@ -148,10 +153,14 @@ export async function composePostgresDevelopment(
       iamDriver,
       ...(config.github === undefined ? {} : { github: config.github }),
       ...(config.google === undefined ? {} : { google: config.google }),
+      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
       ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
       ...(config.logger === undefined
         ? {}
-        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
+        : {
+            onWarning: (warning) => emitOccLogEvent(config.logger!, warning),
+            onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event),
+          }),
       secureCookies: config.nativeAdmin?.enabled === true,
       ...(config.nativeAdmin?.enabled === true
         ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
@@ -180,7 +189,7 @@ export async function composePostgresDevelopment(
     }
     if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
       // Recovery-only password sign-in: these accounts cannot sign in until an
-      // administrator attaches a GitHub or Google identity.
+      // administrator attaches a GitHub, Google or OIDC identity.
       emitOccLogEvent(config.logger, {
         event: "authentication.password-sign-in-warning",
         code: "EXTERNAL_IDENTITY_MISSING",

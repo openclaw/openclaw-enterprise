@@ -11,13 +11,13 @@ Keep the actual references in an operator-local input record outside the
 repository and evidence directory. Record only purpose, selected account, and
 completion status in shared reports.
 
-| Purpose           | Required input                                                                                            | Destination                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Agent model       | Existing Codex-scoped service-account token and selected model                                            | Namespace Secret selected under Console **Service Accounts**                 |
-| Slack Socket Mode | App-level token (`xapp-` prefix)                                                                          | Namespace Secret selected as **Slack app token**                             |
-| Slack bot         | Bot token (`xoxb-` prefix) from the same Slack app/workspace                                              | Namespace Secret selected as **Slack bot token**                             |
-| GitHub broker     | App ID, installation ID, both numeric repository IDs, and RSA private-key reference/file                  | Operator-owned broker registry and Kubernetes input Secrets                  |
-| Linear            | Selected Agent/Codex account with Linear already connected for the workspace, plus a known readable issue | Preexisting account connection; never raw credentials in Agent Configuration |
+| Purpose           | Required input                                                                                                             | Destination                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Agent model       | Existing runtime-compatible model credential and selected model; Codex service-account tokens are not OpenClaw credentials | Namespace Secret bound through the matching runtime authentication control   |
+| Slack Socket Mode | App-level token (`xapp-` prefix)                                                                                           | Namespace Secret selected as **Slack app token**                             |
+| Slack bot         | Bot token (`xoxb-` prefix) from the same Slack app/workspace                                                               | Namespace Secret selected as **Slack bot token**                             |
+| GitHub broker     | App ID, installation ID, both numeric repository IDs, and RSA private-key reference/file                                   | Operator-owned broker registry and Kubernetes input Secrets                  |
+| Linear            | Selected Agent/Codex account with Linear already connected for the workspace, plus a known readable issue                  | Preexisting account connection; never raw credentials in Agent Configuration |
 
 An item name alone does not identify which field to use. A Slack item may contain
 both tokens; do not use its app-level token for the bot field. Do not confuse an
@@ -69,8 +69,23 @@ Do not export model or Slack values to a file just to read them back into chat.
 Follow the current [Console creation flow](../../../../docs/reference/console/create-and-deploy.md)
 and [Credentials tab](../../../../docs/guides/console/agent-details.md#credentials-tab).
 
+The following steps describe the SWE Agent. For the required Standard
+Codex case, select **Standard Codex** with the same supported Codex authentication.
+After its model-only baseline passes, perform steps 3–5 on that Agent too: bind
+both Slack Secrets, select the exact test channel and authorized sender, save,
+and deploy. Verify its real Slack reply before native-session continuity or
+lifecycle checks. Run it sequentially with the SWE Agent when sharing an
+app; preserve any separately authorized external consumers. Configure the
+supported Agent-wide plugin approver identity for the designated human if using
+Slack approval delivery, then verify that human can receive and deny the request.
+For **Standard OpenClaw**, use a separate authorized credential/provider supported
+by that runtime and its matching Plugin Driver installation; leave Slack disabled.
+Do not copy Codex account connections or tokens into OpenClaw. Resolve the selected
+OpenClaw plugin's documented prerequisites independently; lack of a usable model
+credential or plugin blocks that branch rather than excusing it.
+
 1. Sign in as an authorized operator and select the intended OCE Namespace.
-   In **Create Agent**, apply **Community Agent**, choose **OpenAI** and
+   In **Create Agent**, apply **SWE Agent**, choose **OpenAI** and
    **Codex**, and select **Service Accounts** as the authentication method.
 2. In the model credential picker, select an existing appropriate Namespace
    Secret or **Create new Secret...**. Give a new Secret a run-scoped name such
@@ -103,8 +118,9 @@ key. For the configured case, follow the
 This operator installation step is separate from Console-only Agent provisioning.
 
 Bootstrap OCC first to obtain its server-assigned Namespace IDs. Build the
-registry with the supplied App/installation/repository IDs and the scenario's
-approved `git-read` profile for every repository. Prepare the service
+registry with the supplied App/installation/repository IDs and the SWE Agent's
+approved `git-read` profile for every repository and the separately authorized
+contributor profile for its exact positive-write target. Prepare the service
 configuration and certificate/key/CA files using the rendered broker hostname.
 
 Create the operator-owned registry ConfigMap and service/App/TLS/public-CA
@@ -121,7 +137,7 @@ Before provisioning, confirm the selected Agent/Codex account already has the
 intended Linear workspace connected for the selected plugin. Curated discovery
 needs no discovery token, but it does not grant Linear account access. After
 deployment, verify the connection with a real lookup of the chosen issue. The
-Community role's read-only instruction is not a provider-enforced permission;
+configured role's read-only Linear instruction is not a provider-enforced permission;
 record any independently verified Linear account restrictions separately.
 
 After that confirmation, select Linear from the curated catalog in
@@ -136,6 +152,12 @@ For this scenario, an unconnected account blocks Linear acceptance rather than
 prompting a provisioning-time login repair. Do not patch runtime credential
 files. Similarly, model quota/authentication or Slack membership failures block
 their checks; do not silently substitute another account.
+
+For the separate Linear approval case, use a Standard Codex Agent whose task
+permits the bounded attempt. Select the documented write-action approval policy
+and human reviewer through Console. Resolve the reviewer and disposable issue
+title before attempting the write. Preserve the SWE Agent's role
+instructions; they are not an approval-policy test.
 
 During cleanup, remove only temporary exports and run-created Secrets whose
 ownership and lack of remaining consumers are verified. Preserve preexisting

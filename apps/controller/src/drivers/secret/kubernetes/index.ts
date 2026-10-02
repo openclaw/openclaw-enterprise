@@ -22,6 +22,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
+import { OAUTH_PHASE_ANNOTATION } from "../../kubernetes/oauth-seal.ts";
 import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
@@ -118,6 +119,28 @@ function validateBackendRef(reference: SecretBackendRef): void {
   }
 }
 
+function decodedValue(observed: V1Secret): string {
+  const encoded = observed.data?.[SECRET_KEY];
+  try {
+    if (
+      typeof encoded !== "string" ||
+      encoded.length > 4 * Math.ceil(MAX_SECRET_VALUE_BYTES / 3) ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+    ) {
+      throw new Error("Invalid encoding.");
+    }
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") !== encoded) {
+      throw new Error("Invalid encoding.");
+    }
+    const value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    validateValue(value);
+    return value;
+  } catch {
+    throw new SecretBackendUnavailableError("The Kubernetes Secret value is invalid.");
+  }
+}
+
 function sanitizedFailure(error: unknown, action: string): Error {
   const code = numericErrorStatus(error);
   if (code === 404) {
@@ -198,19 +221,42 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async update(secret: Secret, value: string): Promise<void> {
-    validateIdentity(secret);
-    validateBackendRef(secret.backendRef);
     validateValue(value);
-    const client = await this.core();
-    const namespace = await this.readyNamespace(client, secret.namespaceId);
-    if (secret.backendRef.namespaceName !== namespace) {
-      throw new SecretOwnershipError("Secret backend namespace no longer matches placement.");
+    const { observed } = await this.readOwnedSecret(secret);
+    if (observed.metadata?.annotations?.[OAUTH_PHASE_ANNOTATION] !== undefined) {
+      throw new SecretConflictError("The Agent owns this OAuth credential; it cannot be updated.");
     }
-    const existing = await this.request(
-      () => client.readNamespacedSecret({ namespace, name: secret.backendRef.name }),
-      "read",
-    );
-    this.checkedBackendRef(existing, secret, namespace, secret.backendRef);
+    await this.replaceOwnedSecret(secret, observed, value);
+  }
+
+  async compareAndSwap(secret: Secret, expected: string, value: string): Promise<boolean> {
+    validateValue(expected);
+    validateValue(value);
+    const { observed } = await this.readOwnedSecret(secret);
+    if (
+      observed.metadata?.annotations?.[OAUTH_PHASE_ANNOTATION] !== undefined ||
+      decodedValue(observed) !== expected
+    ) {
+      return false;
+    }
+    try {
+      await this.replaceOwnedSecret(secret, observed, value);
+      return true;
+    } catch (error) {
+      if (error instanceof SecretConflictError) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async replaceOwnedSecret(
+    secret: Secret,
+    existing: V1Secret,
+    value: string,
+  ): Promise<void> {
+    const client = await this.core();
+    const namespace = secret.backendRef.namespaceName;
     const desired: V1Secret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -276,30 +322,8 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
-    if (secret.driverId !== this.id) {
-      throw new SecretOwnershipError("Secret Driver identity changed.");
-    }
     const { observed } = await this.readOwnedSecret(secret);
-    const encoded = observed.data?.[SECRET_KEY];
-    let value: string;
-    try {
-      if (
-        typeof encoded !== "string" ||
-        encoded.length > 4 * Math.ceil(MAX_SECRET_VALUE_BYTES / 3) ||
-        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
-      ) {
-        throw new Error("Invalid encoding.");
-      }
-      const bytes = Buffer.from(encoded, "base64");
-      if (bytes.toString("base64") !== encoded) {
-        throw new Error("Invalid encoding.");
-      }
-      value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      validateValue(value);
-    } catch {
-      throw new SecretBackendUnavailableError("The Kubernetes Secret value is invalid.");
-    }
-    return use(value);
+    return use(decodedValue(observed));
   }
 
   private async readOwnedSecret(
@@ -307,6 +331,9 @@ export class KubernetesSecretDriver implements SecretDriver {
   ): Promise<{ observed: V1Secret; reference: SecretBackendRef }> {
     validateIdentity(secret);
     validateBackendRef(secret.backendRef);
+    if (secret.driverId !== this.id) {
+      throw new SecretOwnershipError("Secret Driver identity changed.");
+    }
     const client = await this.core();
     const namespace = await this.readyNamespace(client, secret.namespaceId);
     if (secret.backendRef.namespaceName !== namespace) {
@@ -363,7 +390,7 @@ export class KubernetesSecretDriver implements SecretDriver {
     secret: Secret,
     namespace: string,
   ): V1ObjectMeta {
-    if (existing?.resourceVersion === undefined) {
+    if (existing === undefined || !isNonEmptyString(existing.resourceVersion)) {
       throw new SecretOwnershipError("Secret resource version is required for update.");
     }
     return {

@@ -17,7 +17,7 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` and `cleanup` members, plus four optional methods.
+required `facets` and `cleanup` members, plus five optional methods.
 
 | Member                                   | Contract                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -26,6 +26,7 @@ required `facets` and `cleanup` members, plus four optional methods.
 | `ensureNamespace(context)`               | Optional backend preparation after Compute has prepared baseline Namespace isolation. If absent, Compute continues without a Sandbox setup call.                                                                                                                                                                                |
 | `provisionHarness(context)`              | Optional creation of the dedicated Harness; returns a stable Sandbox resource reference. If absent, Compute creates the ordinary Harness workload.                                                                                                                                                                              |
 | `cleanup(context)`                       | Required for revision stop, retirement, and Namespace cleanup. Revision cleanup receives the immutable revision; Namespace cleanup omits it.                                                                                                                                                                                    |
+| `harnessResource(context)`               | Optional. Returns the exact Sandbox reference `provisionHarness` creates for a revision, without side effects. Compute needs it to [withdraw a credential source](credential-gateway.md#optional-additions) from a running revision.                                                                                            |
 | `readSandboxLogs(context, request)`      | Optional read of the revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source). |
 
 ### Containment facets

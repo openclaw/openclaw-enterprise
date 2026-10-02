@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-30
-last_updated_session: authoring-run/d58e793e-df0f-40de-8f08-5d0ee989927a
+updated: 2026-10-01
+last_updated_session: authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213
 ---
 
 # Bootstrap and human authentication flow
@@ -138,28 +138,27 @@ under the auth secret (`apps/controller/src/auth/session-binding.ts`), alongside
 public user identity. Console compares it to invalidate retained views and drafts
 after a new session, including for the same user. Sign-out revokes the session,
 and public signup is disabled. In both profiles
-`auth/admission.ts:passwordFailureAdmission` limits failed password sign-ins; a
-success within the budget clears the email's failures (a slowed-lane success
-does not), and its `onLimited` hook logs
-`authentication.sign-in-limited` once per lane per minute. `auth/known-device.ts`
-verifies the known-device cookie against the attempt's email and the account's
-password state (user, password method, and its `authentication_version`; with an
-external provider, only while the account is enabled), reading the account only
-for an entry issued for that email, and on success reissues it; a verified entry
-replaces the email lane with a device lane.
-In the password-only profile with PostgreSQL State, `passwordSignInAudit` appends
-`authentication.login` for each accepted password (actor: the account's Principal;
-details: `userId`) and a denied event with `INVALID_CREDENTIALS` and no account for
-each refused one. If the success audit fails, the controller attempts to delete
-the new session and returns `503` without issuing its cookie. A server-side
-session may persist if creation or cleanup cannot be confirmed.
-If the denial audit fails, sign-in returns `503` (`DenialAuditUnavailable`), and
-admission treats the wrong password as a credential failure for any tracked
-entries. The slow lane may instead return `429`; exhausted or untracked lanes
-are paced without necessarily adding a tracked failure entry.
-With an external sign-in provider, `/oce/password` writes the denial itself; if
-that write fails, it answers `503` with `PASSWORD_DENIAL_AUDIT_UNAVAILABLE`, which
-the controller counts the same way.
+`auth/admission.ts:passwordFailureAdmission` counts failures; fast success clears
+the selected identity, not the address. `onLimited` reports
+`authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
+checks the email-bound MAC before controller-bounded password-state reads
+(see [known devices](../reference/authentication.md#known-devices)).
+Verified bindings select the device lane. Failed/refused reads retain signed keys
+as additional email/address constraints, never exemptions or renewed allowances.
+Completed reads rejecting bindings use the shared lane. Reserved passwords remain
+checkable through slow pacing. Password-only admission captures issuance state
+before credentials, preserving reset-race invalidation; success may reissue it.
+In the password-only profile with PostgreSQL State, `passwordSignInAudit` attempts
+`authentication.login`: success names the Principal and `userId`; denial uses
+`INVALID_CREDENTIALS` without an account. A failed success audit returns `503`
+without a session cookie. The controller attempts session deletion; creation or
+cleanup may remain unconfirmed.
+A failed denial audit (`DenialAuditUnavailable`) counts as a credential failure
+against tracked entries, ordinarily returning `503`; the slow lane may return
+`429`. Untracked or exhausted lanes are paced without necessarily adding a
+tracked failure. An unconfirmed audit write has an unknown persistence outcome.
+With an external provider, `/oce/password` marks a failed denial audit with
+`PASSWORD_DENIAL_AUDIT_UNAVAILABLE`; the controller applies the same accounting.
 Better Auth logs only errors, so a wrong password writes no unstructured console
 warning.
 
@@ -198,19 +197,19 @@ email, login name, and tokens do not become identity or policy. Success redirect
 to exactly `/console/`; failure redirects to the fixed
 Console URL with a sanitized error marker.
 
-Start also returns `attemptId`, an HMAC of the attempt's state digest. Success sets
-a signed two-minute `SameSite=Strict` receipt naming the new session and that
-`attemptId`. The Console's same-origin `POST /api/auth/providers/github/result`
-reaches `oceGithubResult`, which checks the receipt signature and expiry, the
-posted `attemptId`, and that the session cookie still resolves to the named
-session. It then records the receipt in a process-local ledger until expiry,
-clears the cookie, and returns the session key, without issuing or extending a
-session. Password sign-in in this profile returns the same key. Callback denials are audited as
+`attemptId` authenticates the attempt-state digest with HMAC. Success sets a signed, two-minute
+`SameSite=Strict` v2 receipt binding provider instance, session and attempt. The
+same-origin result handler verifies signature, expiry and configured provider
+before State lookup; unfinished legacy sign-ins must restart. Wrong-provider refusals
+neither consume nor clear the receipt. Matching attempt and current cookie session
+permit one exchange per process-local ledger: record consumption until expiry,
+clear the receipt; return the session key without issuing or extending sessions. Password sign-in returns
+it. Callback denials are audited as
 `INVALID_ATTEMPT` (malformed, unbound, replayed, or expired), `PROVIDER_UNAVAILABLE`
 (transport failure, deadline, 429/5xx, malformed body), or `EXTERNAL_IDENTITY_REJECTED`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
 
-Google reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
+Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
 Authorization adds scope `openid email` and an auth-secret HMAC of attempt state
 as nonce, without extra storage.
@@ -221,7 +220,7 @@ allowed domains are set), and returns only `sub`. Tokens and email are discarded
 
 Password sign-in is admitted by the controller route before `/oce/password` runs, with the
 recovery email reserved like an administrator's. Start, callback, and result each have
-bounded process-local admission (`keyedAdmission`), shared by GitHub and Google, keyed on
+bounded process-local admission (`keyedAdmission`), shared by GitHub, Google and OIDC, keyed on
 the client address only behind a trusted proxy and otherwise on the browser's cookies. Provider HTTP shares a deadline and
 limits streamed response bytes; State bounds pending attempts and expired cleanup.
 State sets the five-minute attempt and eight-hour session deadlines. Cookie
@@ -324,7 +323,7 @@ Account creation issues no session and infers no grants.
 - [Platform startup flow](platform-startup.md)
 - [Docker Compose development](docker-compose-development.md) and [production startup](production-startup.md)
 - [Service API keys](service-api-keys.md)
-- [Bootstrap specification](../../specs/16-bootstrap-admin-service-account.md)
+- [Bootstrap specification](../../specs/plans/16-bootstrap-admin-service-account/index.md)
 - [Feature spec](../../specs/.archive/10-local-password-authentication.md)
 
 ## Manual Notes
@@ -333,7 +332,15 @@ Account creation issues no session and infers no grants.
 
 ## Changelog
 
+- 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
+
+- 2026-09-30 20:57: Receive landed PR751 while preserving bounded device proofs and both documentation histories. (authoring-run/b38fdf7a-4e45-40ac-a7d7-7da3aa8e0070 - 0e59bf4479aabfa0d00c6940c55be760fa19a200)
+
+- 2026-09-30 20:28: Receive bounded device proofs and clarify audit-failure accounting and cookie delivery. (authoring-run/b84d8248-fb41-44b3-8ed5-30d7fd777926 - 2702a01c6c2136cf9fb5b6808d3972379158f2ff)
+
 - 2026-09-30 20:12: Qualify audit-failure session cleanup and tracked-budget accounting. (authoring-run/d58e793e-df0f-40de-8f08-5d0ee989927a - d7b2e4c0697ace45cf2d4b3ab630ce3976334a16)
+
+- 2026-09-30 17:01: Bound fresh device proofs without reopening spent allowances. (authoring-run/bc25e670-bfac-4568-9e6d-d0104391ed45 - 6b43652ca0792ca1a4be0f8bc628f62c1f72fe17)
 
 - 2026-09-30 12:00: Trace the password-only refusal of account and recovery routes. (fix/dogfood-2)
 

@@ -34,14 +34,19 @@ import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import {
   createHumanLogin,
   githubLoginConfiguration,
+  githubProviderId,
+  googleProviderId,
   type GitHubLoginConfiguration,
   PASSWORD_DENIAL_AUDIT_UNAVAILABLE,
 } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
+import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
   SignInRateLimited,
+  keyedAdmission,
+  admissionKey,
   passwordFailureAdmission,
   passwordFailureBudget,
   type PasswordSignInAdmission,
@@ -60,6 +65,11 @@ export {
   type GoogleLoginConfiguration,
   type GoogleSignInConfiguration,
 } from "./google.ts";
+export {
+  oidcLoginConfiguration,
+  type OidcLoginConfiguration,
+  type OidcSignInConfiguration,
+} from "./oidc.ts";
 
 /**
  * Who may sign in with a password in the guarded profile: every enrolled account
@@ -70,6 +80,7 @@ export type PasswordSignInPolicy = "all" | "recovery-only";
 export interface HumanLoginConfiguration {
   readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
+  readonly oidc?: OidcSignInConfiguration;
   /** Set only for `recovery-only`; absent means every enrolled account keeps its password. */
   readonly passwordSignIn?: "recovery-only";
 }
@@ -99,28 +110,33 @@ export function humanLoginConfiguration(
 ): HumanLoginConfiguration {
   const github = githubLoginConfiguration(environment);
   const google = googleLoginConfiguration(environment);
+  const oidc = oidcLoginConfiguration(environment);
   const recoveryUserId = environment.OCC_AUTH_GITHUB_RECOVERY_USER_ID;
   const passwordSignIn = passwordSignInPolicy(environment);
-  if (github === undefined && google === undefined) {
+  if (github === undefined && google === undefined && oidc === undefined) {
     if (recoveryUserId !== undefined) {
       throw new Error(
-        "External sign-in requires client ID, client secret and recovery user ID for GitHub or Google.",
+        "External sign-in requires client ID, client secret and recovery user ID for GitHub, Google or OIDC.",
       );
     }
     if (passwordSignIn !== "all") {
-      throw new Error("OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub or Google sign-in.");
+      throw new Error(
+        "OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub, Google or OIDC sign-in.",
+      );
     }
     return {};
   }
-  if (
-    google !== undefined &&
-    (recoveryUserId === undefined || recoveryUserId.trim().length === 0)
-  ) {
+  const recoveryMissing = recoveryUserId === undefined || recoveryUserId.trim().length === 0;
+  if (google !== undefined && recoveryMissing) {
     throw new Error("Google sign-in requires client ID, client secret and recovery user ID.");
+  }
+  if (oidc !== undefined && recoveryMissing) {
+    throw new Error("OIDC sign-in requires its provider settings and a recovery user ID.");
   }
   return {
     ...(github === undefined ? {} : { github }),
     ...(google === undefined ? {} : { google: { ...google, recoveryUserId: recoveryUserId! } }),
+    ...(oidc === undefined ? {} : { oidc: { ...oidc, recoveryUserId: recoveryUserId! } }),
     ...(passwordSignIn === "all" ? {} : { passwordSignIn }),
   };
 }
@@ -216,6 +232,7 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly iamDriver?: IAMDriver;
   readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
+  readonly oidc?: OidcSignInConfiguration;
   /** Guarded profile only: `recovery-only` admits only the recovery account's password. */
   readonly passwordSignIn?: "recovery-only";
   /** Receives nonfatal startup conditions as structured log events. */
@@ -273,6 +290,14 @@ export interface ControllerAuth {
   googleStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   googleCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   googleResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  readonly oidcEnabled: boolean;
+  /** Provider-instance key for OIDC identities; set only while OIDC sign-in is configured. */
+  readonly oidcProviderId?: string;
+  /** What the Console needs to offer OIDC sign-in; set only while it is configured. */
+  readonly oidcSignIn?: { readonly label: string; readonly authorizationUrl: string };
+  oidcStart(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  oidcCallback(request: FastifyRequest, reply: FastifyReply): Promise<void>;
+  oidcResult(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   readAccount?(
     userId: string,
     actor: HumanAuthenticationActor,
@@ -284,6 +309,12 @@ export interface ControllerAuth {
     expectedVersion: number,
   ): Promise<unknown>;
   attachGoogle?(
+    userId: string,
+    subject: string,
+    actor: HumanAuthenticationActor,
+    expectedVersion: number,
+  ): Promise<unknown>;
+  attachOidc?(
     userId: string,
     subject: string,
     actor: HumanAuthenticationActor,
@@ -1014,6 +1045,12 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       const passwordHash = createHash("sha256").update(credentials[0]!.password!).digest("hex");
       return `adapter\0${found.user.id}\0${credentials[0]!.id}\0${passwordHash}`;
     });
+  // Bound fresh proof reads before account access. Signed keys constrain resources only;
+  // a refused or failed proof retains those constraints on the ordinary shared lane.
+  const knownDeviceReads = keyedAdmission(
+    { perMinute: 30, concurrent: 2 },
+    { perMinute: 600, concurrent: passwordFailureBudget.slow.evaluating },
+  );
   // Failure-counting admission for password sign-in in both profiles, keyed on email (or a
   // known device) and, behind a trusted proxy, client address. Reserved accounts are slowed,
   // never refused (see admission.ts).
@@ -1228,11 +1265,13 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
 
   // Browser endpoints for one external provider; its absence is a 403 (start/result) or
   // the console error redirect (callback), as before.
-  function externalProviderRoutes(name: "github" | "google", label: string) {
+  function externalProviderRoutes(name: "github" | "google" | "oidc", label: string) {
     const configured =
       name === "github"
         ? humanLogin?.githubProviderId !== undefined
-        : humanLogin?.googleProviderId !== undefined;
+        : name === "google"
+          ? humanLogin?.googleProviderId !== undefined
+          : humanLogin?.oidcProviderId !== undefined;
     return {
       async start(request: FastifyRequest, reply: FastifyReply): Promise<void> {
         await sendAuthEndpoint(
@@ -1289,6 +1328,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   }
   const githubRoutes = externalProviderRoutes("github", "GitHub");
   const googleRoutes = externalProviderRoutes("google", "Google");
+  const oidcRoutes = externalProviderRoutes("oidc", "OIDC");
 
   async function signInEmail(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     await sendAuthEndpoint(
@@ -1305,12 +1345,26 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         const deviceCookie = knownDeviceFromCookieHeader(request.headers.cookie, knownDeviceSecure);
         // The account's state is read only for an entry issued for this email, so a
         // forged or foreign cookie reads nothing; a stale entry just means no exemption.
+        let deviceConstraints: readonly string[] = [];
         const device = await verifyKnownDevice(
           options.secret,
           email,
           deviceCookie,
           Date.now(),
           knownDeviceState,
+          (keys, read) => {
+            deviceConstraints = keys;
+            return knownDeviceReads.admit(
+              keys.map((key) => admissionKey("device", key)),
+              async () => {
+                const state = await read();
+                // A completed fresh read can establish a stale/disabled entry. Only
+                // an unavailable proof retains constraints; it never grants an exemption.
+                deviceConstraints = [];
+                return state;
+              },
+            );
+          },
         );
         // The address lane needs a trusted proxy: without one, browsers behind the ingress
         // share its address, so only the email (or known-device) lane applies.
@@ -1319,7 +1373,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
             ? {}
             : { clientAddress: clientAddressOf(request) }),
           email,
-          ...(device === undefined ? {} : { knownDevice: device.deviceKey }),
+          ...(device === undefined ? { deviceConstraints } : { knownDevice: device.deviceKey }),
         };
         if (humanLogin) {
           // The curated endpoint checks the password, issues the session and marks the
@@ -1509,6 +1563,11 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     googleStart: googleRoutes.start,
     googleCallback: googleRoutes.callback,
     googleResult: googleRoutes.result,
+    oidcEnabled: humanLogin?.oidcProviderId !== undefined,
+    ...(humanLogin?.oidcSignIn === undefined ? {} : { oidcSignIn: humanLogin.oidcSignIn }),
+    oidcStart: oidcRoutes.start,
+    oidcCallback: oidcRoutes.callback,
+    oidcResult: oidcRoutes.result,
     signInEmail,
     signOut,
     session,
@@ -1660,10 +1719,18 @@ export async function createPostgresControllerAuth(
     iamDriver,
     github,
     google,
+    oidc,
     passwordSignIn,
     onWarning,
     ...controllerOptions
   } = options;
+  // Sessions from an external provider instance outside this set (removed, or a changed
+  // issuer or client ID) stop authenticating; password sessions are unaffected.
+  const externalProviderIds = [
+    ...(github === undefined ? [] : [githubProviderId(github)]),
+    ...(google === undefined ? [] : [googleProviderId(google)]),
+    ...(oidc === undefined ? [] : [oidcProviderId(oidc)]),
+  ];
   const persistence =
     state === undefined
       ? undefined
@@ -1671,13 +1738,14 @@ export async function createPostgresControllerAuth(
           state,
           options.installationId,
           betterAuthIssuer(options.installationId),
+          { externalProviderIds },
         );
-  // Either external provider activates the guarded profile; both share its recovery user.
-  const recoveryUserId = github?.recoveryUserId ?? google?.recoveryUserId;
+  // Any external provider activates the guarded profile; all share its recovery user.
+  const recoveryUserId = github?.recoveryUserId ?? google?.recoveryUserId ?? oidc?.recoveryUserId;
   const guarded = recoveryUserId !== undefined;
-  const providerLabel = github === undefined ? "Google" : "GitHub";
+  const providerLabel = github !== undefined ? "GitHub" : google !== undefined ? "Google" : "OIDC";
   if (!guarded && passwordSignIn !== undefined) {
-    throw new Error("Recovery-only password sign-in requires GitHub or Google sign-in.");
+    throw new Error("Recovery-only password sign-in requires GitHub, Google or OIDC sign-in.");
   }
   if (!guarded && persistence && (await persistence.recoveryDesignation())) {
     throw new Error(
@@ -1686,11 +1754,11 @@ export async function createPostgresControllerAuth(
   }
   if (guarded) {
     if (
-      github !== undefined &&
-      google !== undefined &&
-      github.recoveryUserId !== google.recoveryUserId
+      [github, google, oidc].some(
+        (provider) => provider !== undefined && provider.recoveryUserId !== recoveryUserId,
+      )
     ) {
-      throw new Error("GitHub and Google sign-in require the same recovery user ID.");
+      throw new Error("GitHub, Google and OIDC sign-in require the same recovery user ID.");
     }
     if (!persistence || !(iamDriver instanceof NativeIAMDriver)) {
       throw new Error(
@@ -1714,10 +1782,16 @@ export async function createPostgresControllerAuth(
           recoveryUserId,
           ...(github === undefined ? {} : { github }),
           ...(google === undefined ? {} : { google }),
+          ...(oidc === undefined ? {} : { oidc }),
           ...(passwordSignIn === undefined ? {} : { passwordSignIn }),
         },
         options.baseURL,
-        { trustedClientAddress: controllerOptions.clientAddress !== undefined },
+        {
+          trustedClientAddress: controllerOptions.clientAddress !== undefined,
+          ...(controllerOptions.onOperationalEvent === undefined
+            ? {}
+            : { onOperationalEvent: controllerOptions.onOperationalEvent }),
+        },
       );
   const auth = createControllerAuth({
     ...controllerOptions,
@@ -1771,9 +1845,11 @@ export async function createPostgresControllerAuth(
     humanLogin!.designateRecovery(designation.email);
     if (passwordSignIn === "recovery-only") {
       withoutExternalIdentity = await persistence!.accountsWithoutExternalIdentity(
-        [humanLogin!.githubProviderId, humanLogin!.googleProviderId].filter(
-          (providerId): providerId is string => providerId !== undefined,
-        ),
+        [
+          humanLogin!.githubProviderId,
+          humanLogin!.googleProviderId,
+          humanLogin!.oidcProviderId,
+        ].filter((providerId): providerId is string => providerId !== undefined),
       );
     }
   }
@@ -1790,6 +1866,9 @@ export async function createPostgresControllerAuth(
           ...(humanLogin.googleProviderId === undefined
             ? {}
             : { googleProviderId: humanLogin.googleProviderId }),
+          ...(humanLogin.oidcProviderId === undefined
+            ? {}
+            : { oidcProviderId: humanLogin.oidcProviderId }),
           readAccount: (userId: string, actor: HumanAuthenticationActor) =>
             persistence!.readAccount(userId, actor),
           ...(humanLogin.githubProviderId === undefined
@@ -1821,6 +1900,23 @@ export async function createPostgresControllerAuth(
                   persistence!.attachExternal(
                     userId,
                     humanLogin.googleProviderId!,
+                    subject,
+                    actor,
+                    expectedVersion,
+                  ),
+              }),
+          ...(humanLogin.oidcProviderId === undefined
+            ? {}
+            : {
+                attachOidc: (
+                  userId: string,
+                  subject: string,
+                  actor: HumanAuthenticationActor,
+                  expectedVersion: number,
+                ) =>
+                  persistence!.attachExternal(
+                    userId,
+                    humanLogin.oidcProviderId!,
                     subject,
                     actor,
                     expectedVersion,

@@ -208,7 +208,7 @@ ConfigMap-mounted gateway is Running and Ready.
 - [Harness execution topology flow](harness-execution-topology.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
 - [Agent placement and deployment](../reference/agents/deployment.md#execution-mode)
-- [Production interactive TUI specification](../../specs/16-production-tui-end-to-end.md)
+- [Production interactive TUI specification](../../specs/plans/16-production-tui-end-to-end.md)
 - [Production TUI integration test](../../tests/integration/production-tui-k3d-real.test.mjs)
 
 ## Manual Notes

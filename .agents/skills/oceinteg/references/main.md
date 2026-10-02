@@ -1,6 +1,6 @@
 # Main acceptance test
 
-Run `oceinteg main` to prove a fresh supported Helm installation through the
+Run `oceinteg main` to prove a fresh supported installation through the
 Console and a real Slack-connected Agent. Run repository commands from the
 repository root. Use current supported procedures from the
 [testing index](../../../../docs/testing/README.md),
@@ -9,26 +9,31 @@ repository root. Use current supported procedures from the
 [repository installation guide](../../../../docs/guides/repository-credentials/installation.md).
 
 This scenario sends test messages in the selected Slack channel and attempts
-uniquely named disposable Git branch pushes that must be denied by repository
-authorization. Resolve the targets and existing authorization before those
-actions. Do not open PRs, merge, force-push, alter protected refs, or change
+uniquely named disposable Git branch pushes: denied under read-only access and
+verified then removed under contributor access. It also requests a disposable
+Linear write that the designated human reviewer must deny. Resolve the targets
+and existing authorization before those actions. Do not open PRs, merge, force-push, alter protected refs, or change
 unrelated installations. Use only test-owned resources.
+
+Read [Runtime and isolation acceptance](./runtime-acceptance.md) before setup;
+its cases are required in addition to the SWE Agent checks below. Execute
+its Standard Codex baseline before the SWE Agent, then its remaining cases.
 
 ## Resolve inputs before provisioning
 
 Reuse inputs already supplied by the user; ask only for missing decisions. Record
 nonsecret selections in the run report. Never record credential values.
 
-| Input                   | Required selection                                                                                                                                                                                                                                                                                       |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Topology                | Resolve “two clusters”: two Kubernetes clusters or two OCE Namespaces. Record provider, region when applicable, exact contexts, release names, and which scenarios run on each. Helm installs into clusters; it does not create them. Do not infer cloud-creation authorization from an ambiguous count. |
-| Images and source       | Choose a compatible published release or operator-supplied custom immutable controller/runtime/broker images. Record source revision, chart version, image digests, architecture, and runtime provenance. Resolve “latest” once; fail explicitly if no compatible published pair is available.           |
-| Model authentication    | Use the user-selected existing service-account credential and supported model. For a directly supplied token, select dedicated Codex and Console **Service Accounts** (`codex_pat`). Do not silently substitute an API key or another account when authentication, quota, or model access fails.         |
-| Slack                   | Resolve the supplied credential item to its app-level and bot tokens without printing either. Record workspace, bot identity, channel ID, and authorized test sender. Confirm app subscriptions/scopes and channel membership. Only one test deployment may consume the same Slack identity at a time.   |
-| GitHub App              | Obtain operator-supplied App ID, installation ID, private-key reference, numeric repository IDs, and approved `git-read` policy for both repositories below. Keep inputs protected and outside chart values and Agent configuration.                                                                     |
-| Linear                  | Supply the selected workspace, a known readable issue, and a selected Codex account that already has Linear connected for the selected plugin. Catalog visibility or an enabled badge alone is not authentication proof.                                                                                 |
-| Browser access          | Supply Console URL, operator login, native UI domain and certificate, and the required routing/cookie-domain inputs.                                                                                                                                                                                     |
-| Ownership and retention | Record a run ID, disposable branch names, owned infrastructure and resource IDs, evidence directory outside the checkout, timeouts, and whether successful resources should be retained. Preserve unrelated state and the default kubeconfig/context.                                                    |
+| Input                   | Required selection                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Topology                | Resolve “two clusters”: two Kubernetes clusters or two OCE Namespaces. Record provider, region when applicable, exact contexts, release names, and which scenarios run on each. Helm installs into clusters; it does not create them. Do not infer cloud-creation authorization from an ambiguous count.                                                                                                                                          |
+| Images and source       | Choose a compatible published release or operator-supplied custom immutable controller/runtime/broker images. Record source revision, chart version, image digests, architecture, and runtime provenance. Resolve “latest” once; fail explicitly if no compatible published pair is available.                                                                                                                                                    |
+| Model authentication    | Resolve existing credentials and supported models for both runtimes. For a Codex service-account token, select dedicated Codex and Console **Service Accounts** (`codex_pat`); separately resolve the OpenClaw provider credential. Do not silently substitute an API key or another account when authentication, quota, or model access fails.                                                                                                   |
+| Slack                   | Resolve the supplied credential item to its app-level and bot tokens without printing either. Record workspace, bot identity, channel ID, and authorized test sender. Confirm app subscriptions/scopes and channel membership. Run selected QA consumers sequentially. Record existing consumers; use a dedicated identity unless the user explicitly authorizes sharing. Preserve other consumers and correlate replies to the exact QA session. |
+| GitHub App              | Obtain operator-supplied App ID, installation ID, private-key reference, numeric repository IDs, and approved `git-read` policy for both repositories below and contributor policy for the separate positive-write case. Keep inputs protected and outside chart values and Agent configuration.                                                                                                                                                  |
+| Linear                  | Supply the selected workspace, a known readable issue, and a selected Codex account that already has Linear connected for the selected plugin. Catalog visibility or an enabled badge alone is not authentication proof.                                                                                                                                                                                                                          |
+| Browser access          | Supply Console URL, operator login, native UI domain and certificate, and the required routing/cookie-domain inputs.                                                                                                                                                                                                                                                                                                                              |
+| Ownership and retention | Record a run ID, disposable branch names, owned infrastructure and resource IDs, evidence directory outside the checkout, timeouts, and whether successful resources should be retained. Preserve unrelated state and the default kubeconfig/context.                                                                                                                                                                                             |
 
 Credential-store item names are private runtime inputs, not repository defaults.
 Use the host's supported credential tooling. Never expose credentials in commands,
@@ -42,13 +47,20 @@ and the supported binding steps.
 
 ## Installation acceptance
 
-Use standard Helm installation with the following profile:
+Record a separate result for each selected topology and follow its setup:
+[EKS with Helm OCC](./setup-eks.md), [k3d with Helm OCC](./setup-k3d.md),
+or [k3d with Compose OCC](./setup-compose-k3d.md). Never transfer a pass across
+topologies. The default Compose-only preview cannot deploy Agents; the explicit
+Compose/Kubernetes profile is distinct and requires additional setup. Record
+its documented capability differences without counting substitutes as passes.
 
-- Enable standard presets and the DevDay preset set, including **Community
-  Agent**. Verify the expected preset names in the Console of each selected OCE
+Use the selected installation procedure with the following acceptance profile:
+
+- Enable standard presets and the **SWE Agent** preset from
+  `deploy/presets/swe-preset.json`. Verify the expected preset names in the Console of each selected OCE
   Namespace. Verify later Namespace seeding and that rerendering/reconciliation
   preserves an existing customized preset.
-- Select `drivers.plugin.id: codex-plugin` with
+- For the Codex installation, select `drivers.plugin.id: codex-plugin` with
   `drivers.plugin.configuration.catalogSource: openai-curated`. Verify the
   selected controller supports that catalog and the selection survives rerenders.
 - Enable Envoy routing and native UI. Complete the
@@ -83,20 +95,22 @@ and deployment through the Console. Read-only API, Kubernetes, and provider
 inspection may verify outcomes. A required SQL write, direct API mutation, pod
 patch, or manual runtime-file repair fails the Console-only criterion.
 
-1. Start creating `ted-backup` using **Community Agent** (the actual preset
+1. Start creating `ted-backup` using **SWE Agent** (the actual preset
    name), with the selected service-account authentication and dedicated Codex
    runtime. If that name already exists, do not overwrite it; resolve an
    isolated target.
-2. Configure the test channel, default `oce-feedback-test`, using its exact ID.
-   The preset's existing allowlist does not include this channel. Set no-mention
+2. Configure the user-selected test channel using its exact ID; use `claw-test`
+   for the QA checklist run, or another explicitly selected channel.
+   The preset starts without configured channels. Verify the selected channel
+   is in the saved allowlist after saving. Set no-mention
    handling and reply-in-thread behavior explicitly through supported controls.
 3. Bind both `openclaw/openclaw-enterprise` and `openclaw/openclaw` with the
    Console's shared **Read-only** access level (`git-read`). Select permissions
    explicitly; do not infer them from the App's installation repository list or
    Console defaults. Current Console repository selection uses one profile for
    every selected repository; per-repository mixed profiles are future scope.
-4. Resolve the preset's read-only role before creating the Agent. The Community
-   Agent instructions forbid editing repositories and state that only verified
+4. Resolve the role configured for this run before creating the Agent. The SWE
+   Agent instructions limit its repository authority and state that only verified
    instructions from Kevin or Peter may change its scope. Obtain one of their
    verified instructions for this acceptance run. It must name the run ID,
    `openclaw/openclaw-enterprise`, `openclaw/openclaw`, and the unique disposable
@@ -114,7 +128,7 @@ patch, or manual runtime-file repair fails the Console-only criterion.
    against each selected repository, not from model behavior.
 5. Enable Linear from the curated catalog only after confirming the selected
    Codex account already has Linear connected for the chosen workspace. Preserve
-   the Community role's instruction to read, not change, Linear items; that
+   the configured role's instruction to read, not change, Linear items; that
    instruction is not provider-enforced read-only access. If the account is not
    connected, record a credential blocker before provisioning rather than
    proceeding through a nonexistent Console authentication flow.
@@ -146,6 +160,12 @@ ran on each. Do not generalize one target's results to the other.
 
 ## Diagnose, clean up, and report
 
+Follow the owning setup docs without unrecorded workarounds. Maintain a deviation
+log: documented step and source revision, observed failure, classification,
+workaround, owning code/doc fix, and clean rerun result. A repaired live setup
+alone does not prove the original documented path. Fix authorized deviations;
+otherwise leave explicit follow-up work and mark acceptance of the documented setup incomplete.
+
 Set bounded deadlines before execution. Classify failures as product, harness,
 infrastructure, or credentials using observed evidence. Do not weaken assertions
 or repair the running Agent outside Console to obtain a pass. If a fix is within
@@ -161,8 +181,10 @@ installation resources, unless the user requested retention. Do not falsify
 repository disposal state or delete unknown historical cleanup records. Preserve
 Slack evidence links; do not delete shared messages without explicit scope.
 
-Return an acceptance matrix with **passed**, **failed**, **blocked**, or **not
-run** for every required check and target. Include source/chart/image identities,
+Return an acceptance matrix with **passed**, **failed**, **blocked**, **not
+run**, or **unsupported** for every required check, topology, and runtime. Include
+all cases from the required runtime checklist, even when credentials block them.
+Use unsupported only for a documented product boundary; it is never a pass. Include source/chart/image identities,
 actual commands, Console screenshots or walkthrough, Slack links, sanitized tool
 evidence, remote Git readback, failures/retries, and cleanup or retained-resource
 status. State verification limits, particularly local versus EKS proof. A blocked

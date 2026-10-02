@@ -1,146 +1,96 @@
-# Implementation specifications
+# RFCs and implementation plans
 
-[Independent image and chart publication](41-independent-image-chart-publication.md) — Implementing;
-default image-only publication with a separate opt-in chart job.
+Find a decision or delivery record below. Follow the
+[specification process](../docs/contributing/specifications.md) for document
+choice, numbering, lifecycle, and the repository-local spec skill. Current
+supported behavior belongs in [feature references](../docs/reference/README.md),
+and the [platform design](../docs/design.md) owns current architecture.
 
-[Default production observability](36-production-observability.md) — Implemented locally;
-production telemetry defaults, separate demo stack, and local k3d/CI acceptance.
-See the [implementation plan](36-production-observability-plan.md) and
-[qualification report](reports/36-production-observability-implementation.md).
+<a id="implementation-specifications"></a>
+<a id="lifecycle"></a>
 
-[First Enterprise container release](32-first-container-release.md) — Implementing;
-protected marker bootstrap and first private SHA-addressed controller/runtime publication.
+RFCs live in `rfcs/`. All implementation plans live directly in `plans/`, with
+an `rfc` frontmatter link when relevant. RFC-linked plans reuse the RFC number;
+independent plans keep their own numbering sequence.
+New documents use single files by default. Documents with companions use
+`<number>-<topic>/index.md` inside their folder. Store status and verification limits
+in their owning document, rather than repeating them in this index.
+RFC entry points record their decision in `status` frontmatter; companion notes
+link to that entry point through `rfc` frontmatter.
 
-This directory records individual proposals, implementation plans, milestones,
-and delivery decisions. The documents describe work at a point in time. Their
-existing filenames and historical content remain intact in [`.archive/`](.archive/).
-A title containing “Feature Spec” does not make the document the current feature
-specification. Historical records keep their original terminology; current
-documentation uses OCE for OpenClaw Enterprise and OCC for OpenClaw Control Plane.
+Start a new proposal from the [RFC template](../docs/contributing/rfc-template.md)
+or use `$spec rfc <description>`.
 
-For supported behavior at this repository version, use the
-[living feature reference](../docs/reference/README.md). The
-[platform design](../docs/design.md) remains the architectural authority. Source
-execution belongs in [flow docs](../docs/README.md#understand-the-code), and startup
-procedures belong in [quickstart](../docs/guides/quickstart.md) and
-[deployment](../docs/guides/deploy.md).
-
-## Lifecycle
-
-New implementation specifications identify the current reference pages they will
-change. Use `Proposed`, `Accepted`, `Implementing`, `Completed`, `Superseded`, or
-`Rejected` to distinguish discussion, approval, delivery, and historical outcome.
-Acceptance is permission to implement, not evidence of current availability.
-
-Before marking work complete, record the actual outcome and implementation PR or
-commit, verification limitations, and links to updated current reference. Update
-affected guides and flows in the implementation PR. A later substantial change
-gets a new implementation specification; do not rewrite the original decision to
-match it. Small fixes need not create a new specification.
-
-Earlier implementation records are archived, including unfinished proposals
-and records awaiting review. Archive placement preserves filenames, milestone
-directory structure, recorded statuses, and verification limits; it does not mark
-work complete or establish release availability.
-
-Existing status labels are preserved below as recorded. They have not been
-automatically reconciled with implementation or release history and are not
-availability claims. Links in historical documents may be maintained after file
-moves without changing their substantive contract or Manual Notes. Historical
-commands and test paths can describe an older revision; run current verification
-from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
+Existing filenames and recorded statuses are preserved, including duplicate
+numeric prefixes and date-based names. Use full filenames for those historical
+IDs. Mixed design-and-delivery documents remain intact. Historical audit and
+verification evidence now lives beside its owning plan or as an existing delivery
+record under `plans/`; there is no separate reports workflow.
 
 ## Active specifications
 
-[Per-person runtime-role assignments](42-agent-runtime-role-assignments.md) — Implementing;
-per-person OpenClaw role assignments for Agent access.
+This is the non-archived inventory, including completed records. A document's
+recorded status is not proof of current implementation or release availability.
 
-[Repository selection and inherited access](37-repository-picker-and-access.md) — Proposed;
-adaptive repository discovery, selected cards, and explicit per-repository overrides.
-[Repository credential recovery](39-repository-credential-recovery.md) — Implementing;
-explore cleanup evidence across broker loss without retaining provider tokens.
-
-[Installation profiles](2026-09-28-installation-profiles-design.md) — Implementing;
-shared packaging for openclaw and codex, with isolated fresh-cluster qualification.
-
-[Two-cluster Gateway execution](37-two-cluster-gateway-execution-plan.md) — Experimental implementation;
-complete local OCE setup across separate CP and DP clusters, with explicit
-cluster access and TLS transport. Broader runtime and failure-path qualification
-remain pending; see the [validation profile](../docs/testing/two-cluster-local.md).
-
-[Agent access](36-agent-access.md) — Proposed; existing-person sharing for trusted
-full native administration, followed by atomic enrollment and granular permissions.
-
-[Credential Gateway Driver](39-sandbox-credential-injection.md) — Implementing; first slice in #461;
-Namespace credential sources attached to Agent revisions, with OpenShell
-injecting credentials outside the workload; static first (only the `openai` type
-ships), with OAuth2 refresh after real-path verification.
-
-[Dedicated Harness RWO workspace](38-harness-rwo-workspace-plan.md) — Implementing;
-exclusive revision preparation, durable RWO workspaces, and retained existing claims.
-
-[Plugin policy enforcement](37-plugin-policy-enforcement.md) — Proposed for alignment;
-revises the earlier plugin policy proposals with nested defaults and tool overrides,
-Driver extensions, and admission-to-runtime enforcement. Draft implementation
-exists; enforcement delivery awaits alignment. Catalog discovery proceeds in the
-separate Create Agent workstream.
-
-[Independent production image upgrades](36-coordinated-image-upgrade.md) — Proposed;
-release the controller without replacing Agents, or update the runtime image and
-redeploy the running fleet concurrently through OCC.
-
-[Native OpenClaw plugin tool policies](35-native-plugin-tool-policy.md) — Proposed;
-enforce Agent plugin policies through a managed native policy plugin and existing
-approval transport.
-
-[Initial Agent workspace files](34-agent-workspace-files-setup.md) — Proposed;
-create-only Console and API input, applied once before first runtime execution.
-
-[Agent presets](33-agent-presets.md) — Implementing; reusable, partial Agent launch
-templates with variables, CRUD APIs, and console selection.
-
-[Agent egress for 0.x](40-agent-egress-0x.md) — Deferred custom proxy; 0.x uses
-OpenShell, OpenClaw secret proxy and Codex sandbox controls instead.
-
-[GitHub sign-in for existing accounts](31-human-federated-sign-in.md) — Implementing;
-administrator-provisioned password accounts with an optional GitHub identity; M1 to M4
-implemented by #305, #520, #521 and #522; M1.1 (GitHub off) deferred.
-
-[Basic role-based access control](31-basic-rbac.md) — Direction; deferred past 0.x.
-Personal and team Agent access, exact grants, and withdrawal; see the current-source amendment.
-
-[Harness authentication bindings](30-harness-auth-binding.md) — Accepted for implementation;
-one Agent auth binding for supplied OpenAI keys and issued ChatGPT account credentials.
-
-[Gateway–Harness storage split](28-gateway-harness-storage-split.md) — Proposed;
-#76/#89 draft covering storage ownership, live edits and first-start files.
-
-[Storage split integration](30-storage-split-integration.md) — Draft follow-up;
-revises Memory placement, defines the shared candidate interface, and lists the
-remaining Enterprise integration work.
-
-- [Initial OCC Prometheus metrics](28-occ-prometheus-metrics.md) — Implementing;
-  API/worker instrumentation, Agent inventory, private scraping, and replica
-  aggregation. Local proof recorded; runtime/cluster acceptance outstanding.
-
-See the [OpenClaw testing infrastructure report](reports/openclaw-testing-infrastructure.md) for the source audit behind the proposed CI coverage.
-
-| Implementation record                                                            | Recorded status                                                                                                                                                                            | Current reference                                                                                                                                        |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Agent stop without revision mutation](29-agent-stop.md)                         | Implementing                                                                                                                                                                               | [Agents](../docs/reference/agents.md) and [Agent deployment](../docs/reference/agents/deployment.md)                                                     |
-| [Agent deletion and revision teardown](28-agent-deletion.md)                     | Implementing; stages 1-3 landed; sequenced behind Agent stop                                                                                                                               | [Agents](../docs/reference/agents.md) and [API](../docs/reference/api.md); teardown pending                                                              |
-| [SSH Compute Driver](21-ssh-compute-driver.md)                                   | Completed; conformance, startup, and real-host container proof passed 2026-09-05                                                                                                           | [SSH Compute Driver](../docs/reference/drivers/ssh-compute.md)                                                                                           |
-| [Agent workload tags](21-agent-workload-tags.md)                                 | Planning; draft awaiting review and user direction                                                                                                                                         | Proposed; [Agent](../docs/reference/agents.md) and [Sandbox](../docs/reference/drivers/sandbox.md) contracts remain unchanged                            |
-| [Common OpenTelemetry logging](20-common-otel-logging.md)                        | Implemented; Docker, Kubernetes and Helm logging proof passed; OpenShell live proof unavailable                                                                                            | [Settings](../docs/reference/settings.md), [Harness execution](../docs/reference/harness-execution.md)                                                   |
-| [GitHub Actions test coverage](19-github-actions-test-coverage.md)               | Proposed; workflow-edit authorization and external test resources required                                                                                                                 | [Testing](../docs/testing/README.md), [test settings](../docs/reference/settings.md)                                                                     |
-| [Provider and related Drivers](17-provider-driver-abstraction.md)                | Implemented and locally verified in PR #8; live Provider proof pending                                                                                                                     | [Providers](../docs/reference/backends.md), [Agents](../docs/reference/agents.md), [ServiceAccount Driver](../docs/reference/drivers/service-account.md) |
-| [Development end-to-end guide](15-development-end-to-end-guide.md)               | Completed                                                                                                                                                                                  | [Development TUI guide](../docs/guides/deploy/local-operations.md#development-end-to-end-tui); verified in `c208e48`                                     |
-| [Feature Spec: Production interactive TUI](16-production-tui-end-to-end.md)      | Completed                                                                                                                                                                                  | [Deployment guide](../docs/guides/deploy/production-agents.md#attach-with-the-openclaw-tui), [production TUI flow](../docs/flows/production-tui.md)      |
-| [Bootstrap administrator service account](16-bootstrap-admin-service-account.md) | Prior implementation locally verified; [recovery contract superseded](../docs/reference/authentication.md#installation-and-account-ownership); removal locally verified; PR review pending | [Authentication](../docs/reference/authentication.md), [bootstrap flow](../docs/flows/local-password-authentication.md)                                  |
+| Workstream                                                  | RFC                                                         | Implementation plan or delivery record                                          |
+| ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Agent access                                                | [Decision](rfcs/36-agent-access.md)                         | —                                                                               |
+| Agent creation, channels, and revision inspection           | —                                                           | [Plan / record](plans/19-console-agent-management.md)                     |
+| Agent deletion and revision teardown                        | —                                                           | [Plan / record](plans/28-agent-deletion.md)                               |
+| Agent egress for 0.x                                        | [Decision](rfcs/40-agent-egress-0x/index.md)                      | —                                                                               |
+| Agent native admin UI pilot                                 | —                                                           | [Plan / record](plans/31-agent-native-admin-ui.md)                        |
+| Agent plugin drivers                                        | —                                                           | [Plan / record](plans/16-plugin-driver.md)                                |
+| Agent presets                                               | —                                                           | [Plan / record](plans/33-agent-presets.md)                                |
+| Agent stop without revision mutation                        | —                                                           | [Plan / record](plans/29-agent-stop.md)                                   |
+| Agent workload tags                                         | [Decision](rfcs/21-agent-workload-tags.md)                  | —                                                                               |
+| Architecture and security audit                             | —                                                           | [Plan / record](plans/2026-09-01-architecture-security-audit/index.md)          |
+| Asynchronous Agent provisioning                             | —                                                           | [Plan / record](plans/35-agent-provisioning.md)                           |
+| Basic RBAC for personal and team Agents                     | [Decision](rfcs/31-basic-rbac/index.md)                           | —                                                                               |
+| Bootstrap administrator service account                     | —                                                           | [Plan / record](plans/16-bootstrap-admin-service-account/index.md)              |
+| Common OpenTelemetry logging                                | —                                                           | [Plan / record](plans/20-common-otel-logging/index.md)                          |
+| ComputeDriver matrix refresh                                | —                                                           | [Plan / record](plans/2026-09-16-compute-driver-matrix.md)                |
+| Console Agent plugin selection                              | —                                                           | [Plan / record](plans/27-console-agent-plugins.md)                        |
+| Control-plane Gateway placement execution plan              | —                                                           | [Plan / record](plans/36-control-plane-gateways-plan.md)                  |
+| Credential Gateway Driver for Sandbox-injected credentials  | [Decision](rfcs/39-sandbox-credential-injection.md)         | —                                                                               |
+| Dedicated Harness RWO workspace execution plan              | —                                                           | [Plan / record](plans/38-harness-rwo-workspace-plan.md)                   |
+| Default production observability                            | [Decision](rfcs/36-production-observability.md)             | [Plan](plans/36-production-observability/index.md)                          |
+| Deployment Simplification                                   | —                                                           | [Plan / record](plans/18-deployment-simplification/index.md)                    |
+| Development end-to-end guide                                | —                                                           | [Plan / record](plans/15-development-end-to-end-guide.md)                 |
+| First Enterprise container release                          | —                                                           | [Plan / record](plans/32-first-container-release.md)                      |
+| Gateway–Harness storage split                               | [Decision](rfcs/28-gateway-harness-storage-split.md)        | —                                                                               |
+| GitHub Actions integration and test coverage for Enterprise | —                                                           | [Plan / record](plans/19-github-actions-test-coverage/index.md)                 |
+| Generic OIDC sign-in for existing accounts                  | [Decision](rfcs/0042-oidc-sign-in.md)                       | —                                                                               |
+| GitHub sign-in for existing accounts                        | [Decision](rfcs/31-human-federated-sign-in/index.md)              | —                                                                               |
+| Harness authentication bindings                             | [Decision](rfcs/30-harness-auth-binding.md)                 | —                                                                               |
+| Independent image and chart publication                     | —                                                           | [Plan / record](plans/41-independent-image-chart-publication.md)          |
+| Independent production image upgrades                       | [Decision](rfcs/36-coordinated-image-upgrade.md)            | —                                                                               |
+| Initial Agent workspace files                               | —                                                           | [Plan / record](plans/34-agent-workspace-files-setup.md)                  |
+| Initial OCC Prometheus metrics                              | [Decision](rfcs/28-occ-prometheus-metrics.md)               | [Plan](plans/28-occ-prometheus-metrics-plan.md)                            |
+| Installation profiles: openclaw and codex                   | [Decision](rfcs/2026-09-28-installation-profiles-design/index.md) | —                                                                               |
+| Native OpenClaw plugin tool policies                        | [Decision](rfcs/35-native-plugin-tool-policy.md)            | —                                                                               |
+| OCC Gateway Administration and Command Proxy                | —                                                           | [Plan / record](plans/15-occ-gateway-access/index.md)                           |
+| Platform audit                                              | [Decision](rfcs/37-platform-audit/index.md)                       | —                                                                               |
+| Per-person runtime-role assignments | [Decision](rfcs/36-agent-access.md) | [Plan](plans/0042-agent-runtime-role-assignments.md) |
+| Plugin policy enforcement                                   | [Decision](rfcs/37-plugin-policy-enforcement.md)            | —                                                                               |
+| Production interactive TUI                                  | —                                                           | [Plan / record](plans/16-production-tui-end-to-end.md)                    |
+| Provider and related Drivers                                | —                                                           | [Plan / record](plans/17-provider-driver-abstraction/index.md)                  |
+| Recover repository credential cleanup after broker loss     | [Decision](rfcs/39-repository-credential-recovery.md)       | —                                                                               |
+| Repository credentials for ordinary Agents                  | [Decision](rfcs/31-repository-credentials/index.md)               | —                                                                               |
+| Repository selection and inherited access                   | —                                                           | [Plan / record](plans/37-repository-picker-and-access.md)                 |
+| SSH Compute Driver for raw hosts                            | —                                                           | [Plan / record](plans/21-ssh-compute-driver/index.md)                           |
+| Storage split: shared interface and integration             | —                                                           | [Plan / record](plans/30-storage-split-integration.md)                    |
+| Two-cluster dedicated Gateway execution plan                | —                                                           | [Plan / record](plans/37-two-cluster-gateway-execution-plan.md)           |
+| Workspace enrollment without a Harness restart              | —                                                           | [Plan / record](plans/40-workspace-enrollment-without-harness-restart.md) |
 
 ## Archived specifications
 
-Use the linked current references for supported behavior.
+The existing `.archive/` keeps its content and placement; console-image links
+point to a preserved Git revision after removal of `specs/assets/`. The entries below preserve
+its earlier index, including recorded statuses and current-reference links.
+Archive placement does not establish completion. New completed or superseded
+RFCs and plans stay in their own folders. Historical commands and source links
+may describe an older revision; use the [testing guide](../docs/testing/README.md)
+for current verification procedures.
 
 | Implementation record                                                                                                                                    | Recorded status                                                                                           | Current reference                                                                                                                                   |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -171,5 +121,3 @@ Use the linked current references for supported behavior.
 | [Feature Spec: Service API keys](.archive/13-service-api-keys.md)                                                                                        | Implementation complete                                                                                   | [Authentication](../docs/reference/authentication/service-api-keys.md#service-api-keys)                                                             |
 | [Feature Spec: SecretDriver storage and delivery](.archive/14-secret-driver.md)                                                                          | Implemented and verified for Namespace-owned Secret storage and delivery; broader runtime limits recorded | [Kubernetes Secret Driver](../docs/reference/drivers/kubernetes-secret.md)                                                                          |
 | [Basic egress proxy (C0-C3)](.archive/31-basic-egress-proxy/architecture.md)                                                                             | Superseded; deferred for 0.x, no installed behavior                                                       | [Credential Gateway](../docs/reference/drivers/credential-gateway.md)                                                                               |
-
-[Agent native admin UI pilot](31-agent-native-admin-ui.md) — Implementing; trusted pilot operators open the stock full-admin UI through exact-Agent OCC admission.

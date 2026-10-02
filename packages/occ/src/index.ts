@@ -1,6 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { deploymentDiagnostics } from "./deployment-diagnostics.ts";
+import {
+  deviceAuthorizationSession,
+  type DeviceAuthorizationSession,
+} from "./device-authorization.ts";
 import type {
   Agent,
   AgentRead,
@@ -17,18 +22,20 @@ import type {
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
-  ComputeLifecycleHooks,
   Configuration,
   ConfigurationDriver,
   CredentialGatewayDriver,
   CredentialSource,
   CredentialSourceMetadata,
   CredentialSourceStatus,
+  CredentialWithdrawal,
   CredentialSourceType,
   AuditEvent,
   Driver,
   DriverCapability,
   HarnessDescriptor,
+  HarnessDeviceAuthorization,
+  HarnessDeviceAuthorizationResult,
   HarnessExecutionMode,
   IAMDriver,
   Installation,
@@ -47,6 +54,7 @@ import type {
   PluginDesiredState,
   PluginApprovers,
   PluginCatalogEntry,
+  PluginDiscoveryAuthentication,
   PluginCatalogPage,
   PluginDriver,
   ChannelDriver,
@@ -67,7 +75,6 @@ import type {
   ResourceKind,
   ResourceRef,
   Role,
-  RuntimeDiagnosticCheck,
   SandboxDriver,
   SandboxFacet,
   Secret,
@@ -84,10 +91,9 @@ import type {
 import {
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
-  DRIVER_CAPABILITIES,
   PERMISSION_ACTIONS,
+  isSupportedPermission,
   RESOURCE_KINDS,
-  SANDBOX_FACETS,
   admitLoggingConfiguration,
   normalizeLoggingLevel,
   normalizePluginDesiredState,
@@ -100,10 +106,17 @@ import {
   freezeAgentRevision,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import {
+  capability,
+  driverHasCapabilityContract,
+  driverHasValidLifecycleHooks,
+} from "./driver-contract.ts";
 import {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DeletionRetryOwnedError,
   DependencyUnavailableError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -111,6 +124,9 @@ import {
   ChannelDirectoryError,
   ChannelCredentialError,
   ConfigurationHarnessError,
+  CredentialGatewayNotConfiguredError,
+  IAMAccessBindingRoleError,
+  IAMPolicyValidationError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -118,6 +134,7 @@ import {
   PluginPolicyValidationError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
+  ResourceStateConflictError,
   RuntimeLogsError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
@@ -126,6 +143,7 @@ import {
 import {
   readRuntimeLogPage,
   readSandboxLogPage,
+  runtimeLogPageAtLevel,
   RuntimeLogReadError,
   SANDBOX_LOG_RETENTION,
   validRuntimeDescription,
@@ -192,9 +210,11 @@ import type {
 } from "./state/agent-provisioning.ts";
 
 export {
+  ActivationPendingError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DeletionRetryOwnedError,
   DependencyUnavailableError,
   DriverSelectionError,
   ModelDiscoveryError,
@@ -202,6 +222,10 @@ export {
   ChannelDirectoryError,
   ChannelCredentialError,
   ConfigurationHarnessError,
+  CredentialGatewayNotConfiguredError,
+  IAMAccessBindingRoleError,
+  IAMPolicyValidationError,
+  IAMRoleInUseError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -209,12 +233,17 @@ export {
   PluginPolicyValidationError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
+  ResourceStateConflictError,
   RuntimeLogsError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
+  TransientDependencyError,
+  type ActivationPendingCode,
   type RuntimeLogsErrorCode,
+  type TransientDependency,
+  type TransientDependencyReason,
 } from "./errors.ts";
 export {
   createRuntimeLogCursorCodec,
@@ -273,6 +302,7 @@ export {
   type ServiceAccountRepository,
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
+export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
@@ -294,6 +324,7 @@ export type {
   HumanAuthenticationAttemptKey,
   HumanAuthenticationAttempt,
   HumanAuthenticationDenial,
+  PostgresHumanAuthenticationOptions,
 } from "./state/human-authentication.ts";
 export {
   HumanAuthenticationMaintenanceRefusedError,
@@ -344,6 +375,9 @@ export {
   type WorkResult,
 } from "./state/postgres-work-queue.ts";
 export {
+  CREDENTIAL_WITHDRAWAL_TARGET,
+  credentialWithdrawalWorkKey,
+  isCredentialWithdrawalWork,
   validateRuntimeFailureEvidence,
   type DeploymentStatus,
   type DeploymentStatusError,
@@ -480,6 +514,19 @@ export interface CreateCredentialSourceInput {
   readonly secrets?: Readonly<Record<string, SecretReference>>;
 }
 
+export interface AgentCredentialSourceInput {
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly credentialSourceId: string;
+}
+
+export interface UpdateCredentialSourceInput {
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
+  /** Replacement references for the same fields; omit to re-send the current Secret values. */
+  readonly secrets?: Readonly<Record<string, SecretReference>>;
+}
+
 export interface UpdateSecretInput {
   readonly namespaceId: string;
   readonly secretId: string;
@@ -534,6 +581,8 @@ export interface AuthorizedAgentDeployment {
 export interface ActiveAgentRevisionSelection {
   readonly agent: Readonly<Agent>;
   readonly revision: Readonly<AgentRevision>;
+  /** Administering reads only: the newest admitted revision after the active one, if any. */
+  readonly successor?: Readonly<AgentRevision>;
 }
 
 export type ReconciliationOperation = PlatformOperation;
@@ -578,29 +627,6 @@ const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
  */
 const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
 
-const COMPUTE_LIFECYCLE_PHASES = [
-  "afterNamespacePrepared",
-  "beforeWorkloadStart",
-  "beforeWorkloadStop",
-  "beforeNamespaceDelete",
-] as const satisfies readonly (keyof ComputeLifecycleHooks)[];
-
-const RUNTIME_DIAGNOSTIC_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
-const RUNTIME_DIAGNOSTIC_TIMESTAMP =
-  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
-
-function validRuntimeDiagnosticIdentifier(value: unknown): value is string {
-  return typeof value === "string" && RUNTIME_DIAGNOSTIC_IDENTIFIER.test(value);
-}
-
-function validRuntimeDiagnosticTimestamp(value: unknown): value is string {
-  if (typeof value !== "string" || !RUNTIME_DIAGNOSTIC_TIMESTAMP.test(value)) {
-    return false;
-  }
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
-}
-
 /** Rejects unknown and missing catalog fields before any Credential Gateway effect. */
 function credentialSourceFieldsMatch(
   kind: "config" | "secrets",
@@ -628,382 +654,17 @@ function validName(value: unknown): value is string {
   return isNonEmptyString(value) && value.length <= 200;
 }
 
-type PluginDiscoveryCredential =
-  | { readonly accessToken: string; readonly secretRef?: never }
-  | { readonly accessToken?: never; readonly secretRef: SecretReference }
-  | { readonly accessToken?: never; readonly secretRef?: never };
-
-function capability(value: unknown): value is DriverCapability {
-  return typeof value === "string" && DRIVER_CAPABILITIES.some((candidate) => candidate === value);
-}
-
-function driverHasCapabilityContract(driver: Driver): boolean {
-  const candidate = driver as unknown as Record<string, unknown>;
-  if (driver.capability === "iam") {
-    return (
-      typeof candidate.lookupIdentity === "function" &&
-      typeof candidate.authorize === "function" &&
-      [
-        "listNamespaceRoles",
-        "getNamespaceRole",
-        "createNamespaceRole",
-        "deleteNamespaceRole",
-        "listNamespaceAccessBindings",
-        "getNamespaceAccessBinding",
-        "createNamespaceAccessBinding",
-        "deleteNamespaceAccessBinding",
-      ].every(
-        (operation) =>
-          candidate[operation] === undefined || typeof candidate[operation] === "function",
-      )
-    );
-  }
-  if (driver.capability === "configuration") {
-    return ["create", "read", "update", "delete", "validate"].every(
-      (operation) => typeof candidate[operation] === "function",
-    );
-  }
-  if (driver.capability === "secret") {
-    return (
-      ["create", "update", "delete", "resolve"].every(
-        (operation) => typeof candidate[operation] === "function",
-      ) &&
-      (candidate.withValue === undefined || typeof candidate.withValue === "function")
-    );
-  }
-  if (driver.capability === "credential_gateway") {
-    return [
-      "listSourceTypes",
-      "registerSource",
-      "updateSource",
-      "rotateSource",
-      "sourceStatus",
-      "removeSource",
-      "attachForRevision",
-      "attachmentStatus",
-      "withdraw",
-    ].every((operation) => typeof candidate[operation] === "function");
-  }
-  if (driver.capability === "service_account") {
-    return ["create", "createCredential", "delete"].every(
-      (operation) => typeof candidate[operation] === "function",
-    );
-  }
-  if (driver.capability === "sandbox") {
-    return (
-      sandboxFacets(candidate.facets) &&
-      (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
-      (candidate.ensureNamespace === undefined ||
-        typeof candidate.ensureNamespace === "function") &&
-      (candidate.provisionHarness === undefined ||
-        typeof candidate.provisionHarness === "function") &&
-      (candidate.readSandboxLogs === undefined ||
-        typeof candidate.readSandboxLogs === "function") &&
-      typeof candidate.cleanup === "function"
-    );
-  }
-  if (driver.capability === "plugin") {
-    return typeof candidate.listCatalog === "function";
-  }
-  if (driver.capability === "channel") {
-    return (
-      typeof candidate.lookupDirectory === "function" &&
-      (candidate.validateCredentials === undefined ||
-        typeof candidate.validateCredentials === "function")
-    );
-  }
-  if (driver.capability === "repo") {
-    return (
-      ["listOptions", "resolve", "open", "status", "close"].every(
-        (operation) => typeof candidate[operation] === "function",
-      ) &&
-      typeof candidate.maintenanceIntervalMs === "number" &&
-      Number.isFinite(candidate.maintenanceIntervalMs) &&
-      candidate.maintenanceIntervalMs > 0
-    );
-  }
-  return (
-    typeof candidate.ensureNamespace === "function" &&
-    typeof candidate.deleteNamespace === "function" &&
-    typeof candidate.prepareRevision === "function" &&
-    typeof candidate.retireRevision === "function" &&
-    (candidate.getRuntimeImages === undefined ||
-      typeof candidate.getRuntimeImages === "function") &&
-    (candidate.resolveSandboxNamespace === undefined ||
-      typeof candidate.resolveSandboxNamespace === "function") &&
-    (candidate.getAgentRuntimeCredentialStatus === undefined ||
-      typeof candidate.getAgentRuntimeCredentialStatus === "function") &&
-    (candidate.provisionAgentRuntimeCredentials === undefined ||
-      typeof candidate.provisionAgentRuntimeCredentials === "function") &&
-    (candidate.diagnoseAgentDeployment === undefined ||
-      typeof candidate.diagnoseAgentDeployment === "function") &&
-    (candidate.describeAgentRuntime === undefined ||
-      typeof candidate.describeAgentRuntime === "function") &&
-    (candidate.readAgentRuntimeLogs === undefined ||
-      typeof candidate.readAgentRuntimeLogs === "function") &&
-    (candidate.deleteAgentRuntimeCredentials === undefined ||
-      typeof candidate.deleteAgentRuntimeCredentials === "function")
-  );
-}
-
-function sandboxFacets(value: unknown): value is readonly SandboxFacet[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    return false;
-  }
-  const seen = new Set<string>();
-  const allowed = new Set<string>(SANDBOX_FACETS);
-  for (const facet of value) {
-    if (typeof facet !== "string" || !allowed.has(facet) || seen.has(facet)) {
-      return false;
-    }
-    seen.add(facet);
-  }
-  return true;
-}
-
-function driverHasValidLifecycleHooks(driver: Driver): boolean {
-  const hooks: unknown = driver.computeLifecycleHooks;
-  if (hooks === undefined) {
-    return true;
-  }
-  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) {
-    return false;
-  }
-
-  const candidate = hooks as Record<string, unknown>;
-  const phases: readonly string[] = COMPUTE_LIFECYCLE_PHASES;
-  const keys = Object.keys(candidate);
-  return (
-    keys.length > 0 &&
-    keys.every((key) => phases.includes(key) && typeof candidate[key] === "function")
-  );
-}
+type PluginDiscoveryCredential = {
+  readonly accessToken?: string;
+  readonly secretRef?: SecretReference;
+  readonly oauthLogin?: SecretReference;
+};
 
 function frozenValues(value: unknown): Readonly<OpenClawConfigurationDocument> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ScopeViolationError("Configuration values must be a JSON object.");
   }
   return immutableCopy(value as OpenClawConfigurationDocument);
-}
-
-function configuredRuntime(value: unknown): string | undefined {
-  const runtimeValue = asRecord(value)?.agentRuntime;
-  if (runtimeValue === undefined) {
-    return undefined;
-  }
-  const runtime = asRecord(runtimeValue);
-  if (runtime === undefined || (runtime.id !== "openclaw" && runtime.id !== "codex")) {
-    throw new ConfigurationHarnessError(
-      "The configured model Harness runtime identity is unsupported.",
-    );
-  }
-  return runtime.id;
-}
-
-function configuredModels(value: unknown): readonly string[] {
-  if (value === undefined) {
-    return [];
-  }
-  const configured = asRecord(value);
-  const fallbacks = configured?.fallbacks;
-  if (fallbacks !== undefined && !Array.isArray(fallbacks)) {
-    throw new ConfigurationHarnessError("Configured Agent model fallbacks must be an array.");
-  }
-  const model = typeof value === "string" ? value : configured?.primary;
-  const models = [model, ...(fallbacks ?? [])].map((selected) => {
-    if (
-      !isNonEmptyString(selected) ||
-      !selected.includes("/") ||
-      selected.startsWith("/") ||
-      selected.endsWith("/")
-    ) {
-      throw new ConfigurationHarnessError(
-        "The configured Agent model must identify its provider and model.",
-      );
-    }
-    return selected;
-  });
-  if (models.some((selected) => selected.split("/", 2)[0] !== models[0]!.split("/", 2)[0])) {
-    throw new ConfigurationHarnessError(
-      "Configured model fallbacks must retain the primary provider.",
-    );
-  }
-  return models;
-}
-
-function matchingSelectableModels(
-  value: Readonly<Record<string, unknown>> | undefined,
-  selectedModel: string | undefined,
-): boolean {
-  if (value === undefined || selectedModel === undefined) {
-    return false;
-  }
-  const selectedRuntime = configuredRuntime(value[selectedModel]);
-  return Object.entries(value).every(
-    ([model, policy]) =>
-      model === selectedModel ||
-      (selectedRuntime !== undefined &&
-        model.split("/", 2)[0] === selectedModel.split("/", 2)[0] &&
-        configuredRuntime(policy) === selectedRuntime),
-  );
-}
-
-function providerModelEntry(
-  provider: Readonly<Record<string, unknown>>,
-  model: string,
-): Readonly<Record<string, unknown>> | undefined {
-  const configured = provider.models;
-  if (configured === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(configured)) {
-    throw new ConfigurationHarnessError("Configured provider models must be a native model array.");
-  }
-  const matches = configured.filter((candidate) => {
-    const value = asRecord(candidate);
-    return value?.id === model || value?.id === model.split("/", 2)[1];
-  });
-  if (matches.length > 1) {
-    throw new ConfigurationHarnessError("The selected provider model Harness policy is ambiguous.");
-  }
-  return asRecord(matches[0]);
-}
-
-/** Resolve native model policy without treating ignored whole-agent runtime pins as authoritative. */
-export function resolveConfiguredHarnessId(
-  values: Readonly<OpenClawConfigurationDocument>,
-): string {
-  const agents = asRecord(values.agents);
-  const defaults = asRecord(agents?.defaults);
-  const entries = asRecord(agents?.entries);
-  if (agents?.list !== undefined && (!Array.isArray(agents.list) || agents.list.length > 0)) {
-    throw new ConfigurationHarnessError("Configured Agent lists are unsupported.");
-  }
-  const providerConfigurations = asRecord(asRecord(values.models)?.providers);
-  const defaultSelection = configuredModels(defaults?.model);
-  const defaultModels = asRecord(defaults?.models);
-  const candidates: Array<{ model: string; entry?: Readonly<Record<string, unknown>> }> =
-    defaultSelection.map((model) => ({ model }));
-
-  for (const value of Object.values(entries ?? {})) {
-    const entry = asRecord(value);
-    if (entry === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent runtime entry is invalid.");
-    }
-    const selection = entry.model === undefined ? defaultSelection : configuredModels(entry.model);
-    const model = selection[0];
-    if (model === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent runtime model cannot be resolved.");
-    }
-    if (candidates[0] !== undefined && model !== candidates[0].model) {
-      throw new ConfigurationHarnessError("Configured Agent entries must match the primary model.");
-    }
-    const models = asRecord(entry.models);
-    if (entry.models !== undefined && !matchingSelectableModels(models, model)) {
-      throw new ConfigurationHarnessError(
-        "Configured selectable models must match the primary model.",
-      );
-    }
-    candidates.push(...selection.map((model) => ({ model, entry })));
-  }
-
-  if (
-    defaults?.models !== undefined &&
-    !matchingSelectableModels(defaultModels, candidates[0]?.model)
-  ) {
-    throw new ConfigurationHarnessError(
-      "Configured selectable models must match the primary model.",
-    );
-  }
-
-  for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
-    const provider = asRecord(value);
-    if (provider === undefined) {
-      throw new ConfigurationHarnessError("The configured Agent model provider is invalid.");
-    }
-    if (provider.models === undefined) {
-      continue;
-    }
-    if (!Array.isArray(provider.models)) {
-      throw new ConfigurationHarnessError(
-        "Configured provider models must be a native model array.",
-      );
-    }
-    if (
-      provider.models.some((value) => {
-        const model = asRecord(value)?.id;
-        return !candidates.some(
-          (candidate) =>
-            candidate.model.split("/", 2)[0] === providerId &&
-            (model === candidate.model || model === candidate.model.split("/", 2)[1]),
-        );
-      })
-    ) {
-      throw new ConfigurationHarnessError(
-        "Configured selectable provider models must match the primary model.",
-      );
-    }
-  }
-
-  if (candidates.length === 0) {
-    return "openclaw";
-  }
-  const resolved = new Set<string>();
-  const plugins = asRecord(asRecord(values.plugins)?.entries);
-
-  for (const candidate of candidates) {
-    const providerId = candidate.model.split("/", 2)[0]!;
-    const provider = asRecord(providerConfigurations?.[providerId]);
-    const providerModel =
-      provider === undefined ? undefined : providerModelEntry(provider, candidate.model);
-    const entryModels = asRecord(candidate.entry?.models);
-    const policies = new Set(
-      [entryModels?.[candidate.model], defaultModels?.[candidate.model], providerModel, provider]
-        .map(configuredRuntime)
-        .filter((runtime): runtime is string => runtime !== undefined),
-    );
-    if (policies.size > 1) {
-      throw new ConfigurationHarnessError(
-        "The selected model has conflicting Harness runtime policies.",
-      );
-    }
-    const selected = [...policies][0];
-    if (
-      selected === undefined &&
-      (providerId === "openai" ||
-        providerId === "codex" ||
-        provider !== undefined ||
-        plugins?.[providerId] !== undefined)
-    ) {
-      throw new ConfigurationHarnessError(
-        "The configured Agent model requires an explicit supported Harness runtime.",
-      );
-    }
-    const codexPlugin = asRecord(plugins?.codex);
-    const codexPluginConfiguration = asRecord(codexPlugin?.config);
-    const codexAppServer = asRecord(codexPluginConfiguration?.appServer);
-    if (
-      selected === "codex" &&
-      providerId !== "codex" &&
-      !(
-        providerId === "openai" &&
-        codexPlugin?.enabled === true &&
-        codexAppServer?.transport === "websocket"
-      )
-    ) {
-      throw new ConfigurationHarnessError(
-        "The Codex Harness requires the native codex model provider.",
-      );
-    }
-    resolved.add(selected ?? "openclaw");
-  }
-
-  if (resolved.size !== 1) {
-    throw new ConfigurationHarnessError(
-      "The configured Agent models select conflicting Harness runtimes.",
-    );
-  }
-  return [...resolved][0]!;
 }
 
 function validExecutionMode(value: unknown): value is HarnessExecutionMode {
@@ -1134,6 +795,149 @@ function validChannelDirectoryResult(value: unknown): value is ChannelDirectoryR
     ids.add(entry.id);
   }
   return true;
+}
+
+/** Discovery needs the access token and identity; refresh custody stays with the login. */
+function discoveryLoginCredential(value: string): string {
+  try {
+    const bundle = asRecord(JSON.parse(value));
+    const auth = asRecord(bundle?.auth);
+    const tokens = asRecord(auth?.tokens);
+    if (bundle === undefined || auth === undefined || tokens === undefined) {
+      return "{}";
+    }
+    const { refresh_token: _refreshToken, ...discoveryTokens } = tokens;
+    const { last_refresh: _lastRefresh, ...discoveryAuth } = auth;
+    return JSON.stringify({ ...bundle, auth: { ...discoveryAuth, tokens: discoveryTokens } });
+  } catch {
+    return "{}";
+  }
+}
+
+/** Resource kinds that Namespace IAM Roles and AccessBindings may name. */
+const NAMESPACE_POLICY_RESOURCE_KINDS: ReadonlySet<ResourceKind> = new Set<ResourceKind>([
+  "namespace",
+  "agent",
+  "agent_revision",
+  "configuration",
+  "credential_source",
+  "preset",
+  "secret",
+  "service_account",
+]);
+
+/**
+ * Refuses an AccessBinding whose Role cannot take effect on the binding's target, so a
+ * policy write never reports success for a grant that IAM evaluation drops. `create` is
+ * authorized against the Namespace, never an existing resource, so no exact-resource
+ * binding grants it; a Role with no Permission for the target's kind grants nothing there.
+ * Roles that also name other kinds stay valid: one Role may be bound to several targets.
+ */
+function assertAccessBindingRoleApplies(role: Readonly<Role>, resourceKind: ResourceKind): void {
+  const label = (permission: Readonly<Permission>) =>
+    `${permission.resourceKind}:${permission.action}`;
+  const creates = role.permissions.filter((permission) => permission.action === "create");
+  if (creates.length > 0) {
+    throw new IAMAccessBindingRoleError(
+      `Role ${role.id} has Permissions that no AccessBinding can grant: ${creates.map(label).join(", ")}. ` +
+        "No AccessBinding grants create: only Installation administrators can create Agents, Configurations, Secrets and other resources. Remove these Permissions from the Role.",
+    );
+  }
+  if (!role.permissions.some((permission) => permission.resourceKind === resourceKind)) {
+    throw new IAMAccessBindingRoleError(
+      `Role ${role.id} grants nothing on the ${resourceKind} target: its Permissions (${role.permissions.map(label).join(", ")}) ` +
+        `apply only to other resource kinds. Bind it to a resource of one of those kinds, or add ${resourceKind} Permissions.`,
+    );
+  }
+}
+
+/** An AccessBinding removed as a side effect, as recorded in the audit of the removal. */
+export interface RemovedAccessBinding {
+  readonly id: string;
+  readonly subjectKind: AccessBinding["subjectKind"];
+  readonly subjectId: string;
+  readonly roleId: string;
+  readonly resourceKind?: ResourceKind;
+  readonly resourceId?: string;
+}
+
+function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBinding {
+  return Object.freeze({
+    id: binding.id,
+    subjectKind: binding.subjectKind,
+    subjectId: binding.subjectId,
+    roleId: binding.roleId,
+    ...(binding.resourceKind === undefined ? {} : { resourceKind: binding.resourceKind }),
+    ...(binding.resourceId === undefined ? {} : { resourceId: binding.resourceId }),
+  });
+}
+
+/**
+ * Lists the Namespace AccessBindings that target one exact resource. Deleting the resource
+ * removes them, so callers record the list in that deletion's audit event.
+ */
+export async function accessBindingsTargeting(
+  state: Pick<PlatformReadView, "iamPolicy">,
+  namespaceId: string,
+  resourceKind: ResourceKind,
+  resourceId: string,
+): Promise<readonly RemovedAccessBinding[]> {
+  return Object.freeze(
+    (await state.iamPolicy.listAccessBindings(namespaceId))
+      .filter(
+        (binding) => binding.resourceKind === resourceKind && binding.resourceId === resourceId,
+      )
+      .map(removedAccessBinding),
+  );
+}
+
+/**
+ * Removes a deleted Namespace's own policy (its AccessBindings, then its Roles) in the
+ * tombstoning transaction, so no grant outlives the Namespace. Returns what was removed
+ * for the lifecycle audit event.
+ */
+export async function removeNamespacePolicy(
+  state: Pick<PlatformUnitOfWork, "iamPolicy">,
+  namespaceId: string,
+): Promise<{
+  readonly accessBindings: readonly RemovedAccessBinding[];
+  readonly roleIds: readonly string[];
+}> {
+  const accessBindings: RemovedAccessBinding[] = [];
+  for (const binding of await state.iamPolicy.listAccessBindings(namespaceId)) {
+    if (await state.iamPolicy.deleteAccessBinding(namespaceId, binding.id)) {
+      accessBindings.push(removedAccessBinding(binding));
+    }
+  }
+  const roleIds: string[] = [];
+  for (const role of await state.iamPolicy.listRoles(namespaceId)) {
+    if (await state.iamPolicy.deleteRole(namespaceId, role.id)) {
+      roleIds.push(role.id);
+    }
+  }
+  return Object.freeze({
+    accessBindings: Object.freeze(accessBindings),
+    roleIds: Object.freeze(roleIds),
+  });
+}
+
+/** Audit details for removed Namespace policy; empty when nothing was removed. */
+export function removedPolicyDetails(
+  removed:
+    | {
+        readonly accessBindings: readonly RemovedAccessBinding[];
+        readonly roleIds: readonly string[];
+      }
+    | undefined,
+): Readonly<Record<string, unknown>> {
+  return {
+    ...(removed === undefined || removed.accessBindings.length === 0
+      ? {}
+      : { removedAccessBindings: removed.accessBindings }),
+    ...(removed === undefined || removed.roleIds.length === 0
+      ? {}
+      : { removedRoleIds: removed.roleIds }),
+  };
 }
 
 export class OpenClawController {
@@ -1316,7 +1120,9 @@ export class OpenClawController {
     return this.read(async (state) => {
       const deploymentsInProgress = new Set<string>();
       for (const operation of await state.operations.list()) {
-        if (operation.kind !== "agent_revision") {
+        // Credential withdrawal work (CREDENTIAL_WITHDRAWAL_TARGET) targets an active revision
+        // without deploying it; PlatformOperation types the literal.
+        if (operation.kind !== "agent_revision" || operation.target === "credentials_withdrawn") {
           continue;
         }
         const work = await state.operations.findWork(
@@ -1441,7 +1247,7 @@ export class OpenClawController {
   async createIAMRole(principalId: string, input: CreateIAMRoleInput): Promise<Readonly<Role>> {
     const permissions = this.iamRolePermissions(input.permissions);
     if (input.name !== undefined && !validName(input.name)) {
-      throw new ScopeViolationError("The IAM Role name is invalid.");
+      throw new IAMPolicyValidationError("/name", "The IAM Role name is invalid.");
     }
     const namespace = await this.admitIAMPolicyOperation(principalId, input.namespaceId);
     const driver = this.iamPolicyDriver("createNamespaceRole");
@@ -1535,14 +1341,17 @@ export class OpenClawController {
     input: CreateIAMAccessBindingInput,
   ): Promise<Readonly<AccessBinding>> {
     if (input.subjectKind !== "identity" || !isNonEmptyString(input.subjectId)) {
-      throw new ScopeViolationError("The IAM AccessBinding subject is invalid.");
+      throw new IAMPolicyValidationError("/subjectId", "The IAM AccessBinding subject is invalid.");
     }
     if (!isNonEmptyString(input.roleId)) {
-      throw new ScopeViolationError("The IAM AccessBinding Role is invalid.");
+      throw new IAMPolicyValidationError("/roleId", "The IAM AccessBinding Role is invalid.");
     }
     this.assertNamespacePolicyResourceKind(input.resourceKind);
     if (!isNonEmptyString(input.resourceId)) {
-      throw new ScopeViolationError("The IAM AccessBinding resource is invalid.");
+      throw new IAMPolicyValidationError(
+        "/resourceId",
+        "The IAM AccessBinding resource is invalid.",
+      );
     }
     const namespace = await this.admitIAMPolicyOperation(principalId, input.namespaceId);
     await this.authorize(principalId, "read", {
@@ -1561,12 +1370,19 @@ export class OpenClawController {
       );
     }
     const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
+    const roles = this.iamPolicyDriver("getNamespaceRole");
     return this.mutate(async (state) => {
       await this.holdIAMPolicyAuthority(state, principalId, namespace.id, {
         kind: input.resourceKind,
         id: input.resourceId,
         namespaceId: namespace.id,
       });
+      const role = await this.iamPolicyOperation(() =>
+        roles.getNamespaceRole!({ policy: state.iamPolicy }, namespace.id, input.roleId),
+      );
+      if (role !== undefined) {
+        assertAccessBindingRoleApplies(role, input.resourceKind);
+      }
       return this.iamPolicyOperation(() =>
         driver.createNamespaceAccessBinding!(
           { policy: state.iamPolicy },
@@ -2499,7 +2315,7 @@ export class OpenClawController {
       // Native Driver failures can contain private runtime or credential details.
       throw new DependencyUnavailableError("Runtime diagnostics are unavailable.");
     }
-    return this.deploymentDiagnostics(diagnostics, revision.id);
+    return deploymentDiagnostics(diagnostics, revision.id);
   }
 
   /** Tier 1: Pod status, restarts, Events and log sources (Agent operate + read). */
@@ -2560,7 +2376,10 @@ export class OpenClawController {
     };
     const source = query.source;
     if (source === "sandbox") {
-      return this.readSandboxLogs(principalId, agentId, driver, binding, query, options);
+      return runtimeLogPageAtLevel(
+        await this.readSandboxLogs(principalId, agentId, driver, binding, query, options),
+        query.minLevel,
+      );
     }
     if (typeof driver.readAgentRuntimeLogs !== "function") {
       throw new NotImplementedError(
@@ -2576,7 +2395,7 @@ export class OpenClawController {
         events: false,
       });
       try {
-        return await readRuntimeLogPage({
+        const page = await readRuntimeLogPage({
           description,
           query,
           codec: options.codec,
@@ -2597,6 +2416,7 @@ export class OpenClawController {
             }
           },
         });
+        return runtimeLogPageAtLevel(page, query.minLevel);
       } catch (error) {
         if (error instanceof RuntimeLogReadError) {
           throw new RuntimeLogsError(
@@ -3190,7 +3010,20 @@ export class OpenClawController {
       if (!revision) {
         throw new DependencyUnavailableError("The active Agent revision is unavailable.");
       }
-      return Object.freeze({ agent, revision });
+      if (action !== "administer") {
+        return Object.freeze({ agent, revision });
+      }
+      // Native admin status must know whether a newer deployment is replacing this revision.
+      // Only the newest later revision is decoded strictly, so an unreadable older snapshot
+      // cannot make a healthy Agent's native admin unavailable.
+      const newest = (await state.revisions.listRevisionsForBrowsing(namespace.id, agent.id))
+        .filter((candidate) => candidate.revision > revision.revision)
+        .sort((left, right) => right.revision - left.revision)[0];
+      const successor =
+        newest === undefined
+          ? undefined
+          : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
+      return Object.freeze({ agent, revision, ...(successor === undefined ? {} : { successor }) });
     });
   }
 
@@ -3412,10 +3245,15 @@ export class OpenClawController {
     });
   }
 
-  async deletePreset(principalId: string, namespaceId: string, presetId: string): Promise<void> {
+  /** Returns the AccessBindings removed with the Preset, for its deletion audit. */
+  async deletePreset(
+    principalId: string,
+    namespaceId: string,
+    presetId: string,
+  ): Promise<readonly RemovedAccessBinding[]> {
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
-      await this.deletePresetInState(state, principalId, namespace.id, presetId);
+      return this.deletePresetInState(state, principalId, namespace.id, presetId);
     });
   }
 
@@ -3424,7 +3262,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     presetId: string,
-  ): Promise<void> {
+  ): Promise<readonly RemovedAccessBinding[]> {
     await this.authorize(principalId, "delete", {
       kind: "preset",
       id: presetId,
@@ -3433,14 +3271,14 @@ export class OpenClawController {
     if (!(await state.presets.lockPreset(namespaceId, presetId))) {
       throw new ScopeViolationError("The Preset does not belong to the exact Namespace.");
     }
-    for (const binding of await state.iamPolicy.listAccessBindings(namespaceId)) {
-      if (binding.resourceKind === "preset" && binding.resourceId === presetId) {
-        await state.iamPolicy.deleteAccessBinding(namespaceId, binding.id);
-      }
+    const removed = await accessBindingsTargeting(state, namespaceId, "preset", presetId);
+    for (const binding of removed) {
+      await state.iamPolicy.deleteAccessBinding(namespaceId, binding.id);
     }
     if (!(await state.presets.deletePreset(namespaceId, presetId))) {
       throw new ResourceConflictError("The Preset changed during deletion.");
     }
+    return removed;
   }
 
   /** True when a Preset is still the exact Installation default seeded into its Namespace. */
@@ -3580,7 +3418,12 @@ export class OpenClawController {
     });
   }
 
-  async deleteSecret(principalId: string, namespaceId: string, secretId: string): Promise<void> {
+  /** Returns the AccessBindings removed with the Secret, for its deletion audit. */
+  async deleteSecret(
+    principalId: string,
+    namespaceId: string,
+    secretId: string,
+  ): Promise<readonly RemovedAccessBinding[]> {
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
       await this.authorize(principalId, "delete", {
@@ -3597,11 +3440,13 @@ export class OpenClawController {
           "A Configuration, active revision, or pending deployment still references the Secret.",
         );
       }
+      const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
       const driver = this.secretDriver(secret.driverId);
       await this.secretOperation(() => driver.delete(secret));
       if (!(await state.secrets.deleteSecret(namespace.id, secret.id))) {
         throw new ResourceConflictError("The Secret changed during deletion.");
       }
+      return removed;
     });
   }
 
@@ -3628,6 +3473,10 @@ export class OpenClawController {
         id: locked.id,
         namespaceId: locked.id,
       });
+      // An Installation property, so it is reported before any Namespace state.
+      if (!this.selections.has("credential_gateway")) {
+        throw new CredentialGatewayNotConfiguredError();
+      }
       if (locked.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -3635,25 +3484,7 @@ export class OpenClawController {
       const type = await this.credentialSourceType(selected, input.type);
       credentialSourceFieldsMatch("config", type.config, config);
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
-      const read: Record<string, string> = {};
-      for (const [field, reference] of Object.entries(secretRefs)) {
-        if (reference.namespaceId !== locked.id) {
-          throw new ScopeViolationError("Credential source Secrets cannot cross Namespaces.");
-        }
-        await this.authorize(principalId, "operate", reference);
-        const secret = await state.secrets.lockSecret(locked.id, reference.id);
-        if (secret === undefined) {
-          throw new ScopeViolationError("The credential source Secret is unavailable.");
-        }
-        const secretDriver = this.secretDriver(secret.driverId);
-        if (secretDriver.withValue === undefined) {
-          throw new DependencyUnavailableError(
-            "The selected Secret Driver cannot supply values to a Credential Gateway.",
-          );
-        }
-        const withValue = secretDriver.withValue.bind(secretDriver);
-        read[field] = await this.secretOperation(() => withValue(secret, async (value) => value));
-      }
+      const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);
       const registering = await state.credentialSources.createCredentialSource(
         Object.freeze({
           id: this.nextIdentifier("credential_source"),
@@ -3710,6 +3541,109 @@ export class OpenClawController {
       throw new ResourceConflictError("The credential source changed during registration.");
     }
     return this.credentialSourceMetadata(ready, status);
+  }
+
+  /**
+   * Authorizes `operate` on each referenced same-Namespace Secret and reads its current value
+   * for a Credential Gateway call. Values stay in memory for that call only.
+   */
+  private async readCredentialSourceSecrets(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    namespace: Readonly<Namespace>,
+    references: Readonly<Record<string, SecretReference>>,
+  ): Promise<Record<string, string>> {
+    const values: Record<string, string> = {};
+    for (const [field, reference] of Object.entries(references)) {
+      if (reference.namespaceId !== namespace.id) {
+        throw new ScopeViolationError("Credential source Secrets cannot cross Namespaces.");
+      }
+      await this.authorize(principalId, "operate", reference);
+      const secret = await state.secrets.lockSecret(namespace.id, reference.id);
+      if (secret === undefined) {
+        throw new ScopeViolationError("The credential source Secret is unavailable.");
+      }
+      const secretDriver = this.secretDriver(secret.driverId);
+      if (secretDriver.withValue === undefined) {
+        throw new DependencyUnavailableError(
+          "The selected Secret Driver cannot supply values to a Credential Gateway.",
+        );
+      }
+      const withValue = secretDriver.withValue.bind(secretDriver);
+      values[field] = await this.secretOperation(() => withValue(secret, async (value) => value));
+    }
+    return values;
+  }
+
+  /**
+   * Pushes current, or replacement, Secret values to the gateway copy. The gateway call runs
+   * under the source lock, like a Secret update; a failed commit leaves the gateway newer, and
+   * repeating the same request converges. Running Harness processes keep the previous value.
+   */
+  async updateCredentialSource(
+    principalId: string,
+    input: UpdateCredentialSourceInput,
+  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, input.namespaceId);
+      await this.authorize(principalId, "update", {
+        kind: "credential_source",
+        id: input.credentialSourceId,
+        namespaceId: namespace.id,
+      });
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      const source = await state.credentialSources.lockCredentialSource(
+        namespace.id,
+        input.credentialSourceId,
+      );
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      if (source.state !== "ready") {
+        throw new ResourceConflictError("Only a ready credential source can be updated.");
+      }
+      const gateway = this.credentialGatewayDriver(source.driverId);
+      const type = await this.credentialSourceType(gateway, source.type);
+      const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
+      credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+      const values = await this.readCredentialSourceSecrets(
+        state,
+        principalId,
+        namespace,
+        secretRefs,
+      );
+      // The gateway sees Compute's runtime placement, the same Workspace as the paired Sandbox.
+      const placed = await this.credentialNamespace(namespace);
+      const status = await this.credentialGatewayOperation(() =>
+        gateway.updateSource(
+          {
+            namespace: placed,
+            source,
+            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          },
+          { type: source.type, config: source.config, secrets: values },
+        ),
+      );
+      if (status.state === "failed" || status.state === "absent") {
+        throw new DependencyUnavailableError("The Credential Gateway did not update the source.");
+      }
+      const updated =
+        input.secrets === undefined
+          ? source
+          : await state.credentialSources.replaceCredentialSourceSecrets(
+              namespace.id,
+              source.id,
+              secretRefs,
+            );
+      if (updated === undefined) {
+        throw new ResourceConflictError("The credential source changed during the update.");
+      }
+      return this.credentialSourceMetadata(updated, status);
+    });
   }
 
   /**
@@ -3814,7 +3748,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     credentialSourceId: string,
-    audit?: () => AuditEvent,
+    audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
   ): Promise<void> {
     this.assertCredentialSourceTransactionBoundary();
     const { namespace, source } = await this.mutate(async (state) => {
@@ -3834,8 +3768,8 @@ export class OpenClawController {
         );
       }
       if (await state.credentialSources.hasReferences(locked.id, found.id)) {
-        throw new ResourceConflictError(
-          "An Agent, active revision, or pending deployment still references the credential source.",
+        throw new ResourceStateConflictError(
+          "An Agent, active revision, or pending deployment still references the credential source. Delete those Agents, or deploy them without it, first.",
         );
       }
       const deleting =
@@ -3864,11 +3798,17 @@ export class OpenClawController {
     // The success event commits with the final removal, so a completed deletion is always audited.
     await this.mutate(async (state) => {
       await this.lockNamespace(state, namespace.id);
+      const removed = await accessBindingsTargeting(
+        state,
+        namespace.id,
+        "credential_source",
+        source.id,
+      );
       if (!(await state.credentialSources.deleteCredentialSource(namespace.id, source.id))) {
         throw new ResourceConflictError("The credential source changed during deletion.");
       }
       if (audit !== undefined) {
-        await state.audit.append(audit());
+        await state.audit.append(audit(removed));
       }
     });
   }
@@ -4042,7 +3982,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     serviceAccountId: string,
-  ): Promise<void> {
+  ): Promise<readonly RemovedAccessBinding[]> {
     this.serviceAccountIdentity(namespaceId, serviceAccountId);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
@@ -4070,9 +4010,16 @@ export class OpenClawController {
       if (driver !== undefined) {
         await this.driverOperation(() => driver.delete(account), "ServiceAccount");
       }
+      const removed = await accessBindingsTargeting(
+        state,
+        namespace.id,
+        "service_account",
+        account.id,
+      );
       if (!(await state.serviceAccounts.deleteServiceAccount(namespace.id, account.id))) {
         throw new ResourceConflictError("The ServiceAccount changed during deletion.");
       }
+      return removed;
     });
   }
 
@@ -4167,7 +4114,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     configurationId: string,
-  ): Promise<void> {
+  ): Promise<readonly RemovedAccessBinding[]> {
     this.configurationIdentity(namespaceId, configurationId);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
@@ -4186,7 +4133,9 @@ export class OpenClawController {
       }
       const agents = await state.agents.listAgents(namespace.id);
       if (agents.some((agent) => agent.configurationId === configuration.id)) {
-        throw new ResourceConflictError("An Agent still references the exact Configuration.");
+        throw new ResourceStateConflictError(
+          "An Agent still references the Configuration. Delete the Agent or select another Configuration first.",
+        );
       }
       const previous = this.exactConfiguration(
         await this.driverOperation(() =>
@@ -4200,10 +4149,266 @@ export class OpenClawController {
       this.registerRollback(async () => {
         await driver.create(previous);
       });
+      const removed = await accessBindingsTargeting(
+        state,
+        namespace.id,
+        "configuration",
+        configuration.id,
+      );
       if (!(await state.configurations.deleteConfiguration(namespace.id, configuration.id))) {
         throw new ResourceConflictError("The Configuration changed during deletion.");
       }
+      return removed;
     });
+  }
+
+  private async authorizeDeviceAuthorizationScope(
+    principalId: string,
+    namespaceId: string,
+    agentId?: string,
+  ): Promise<void> {
+    if (agentId === undefined) {
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    } else {
+      const resource = { kind: "agent" as const, id: agentId, namespaceId };
+      await this.authorize(principalId, "read", resource);
+      await this.authorize(principalId, "update", resource);
+    }
+    await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      if (agentId !== undefined) {
+        const agent = await state.agents.findAgent(namespaceId, agentId);
+        if (agent === undefined) {
+          throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+        }
+        if (agent.status !== "active") {
+          throw new AgentDeletingError();
+        }
+        if (agent.executionMode !== "dedicated") {
+          throw new NotImplementedError("Device login requires a dedicated Agent.");
+        }
+      }
+    });
+  }
+
+  async startAgentDeviceAuthorization(
+    principalId: string,
+    namespaceId: string,
+    harnessId: string,
+    agentId?: string,
+  ) {
+    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+    await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
+    if (harnessId !== "codex") {
+      // Permanent: retrying cannot help, so this is not reported as a provider outage.
+      throw new NotImplementedError("Device login is available only for the Codex Harness.");
+    }
+    const compute = this.selectedDriver("compute");
+    const secrets = this.secretDriver();
+    if (
+      !compute.startHarnessDeviceAuthorization ||
+      !compute.pollHarnessDeviceAuthorization ||
+      !secrets.withValue ||
+      !secrets.compareAndSwap
+    ) {
+      throw new NotImplementedError(
+        "Device authorization is unavailable for the selected Drivers.",
+      );
+    }
+    let started: HarnessDeviceAuthorization;
+    try {
+      started = await compute.startHarnessDeviceAuthorization(harnessId);
+    } catch {
+      throw new DependencyUnavailableError("Could not start device login. Try again.");
+    }
+    // Repeat authority checks after provider I/O, before persisting a credential session.
+    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+    const { privateState, expiresAt, ...authorization } = started;
+    const session: DeviceAuthorizationSession = {
+      kind: "harness_device_authorization",
+      version: 1,
+      actorId: principalId,
+      namespaceId,
+      ...(agentId === undefined ? {} : { agentId }),
+      harnessId,
+      computeDriverId: compute.id,
+      phase: "pending",
+      expiresAt,
+      nextPollAt: new Date(
+        Date.parse(this.timestamp()) + authorization.intervalSeconds * 1000,
+      ).toISOString(),
+      authorization,
+      privateState,
+    };
+    const secret = await this.createSecret(principalId, {
+      namespaceId,
+      name: `Device login ${crypto.randomUUID()}`,
+      value: JSON.stringify(session),
+    });
+    return { source: secret.ref, status: "pending" as const, expiresAt, ...authorization };
+  }
+
+  private async readAgentDeviceAuthorization(
+    principalId: string,
+    namespaceId: string,
+    secretId: string,
+    agentId?: string,
+  ) {
+    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
+    const secret = await this.read((state) => state.secrets.findSecret(namespaceId, secretId));
+    if (secret === undefined) {
+      throw new ScopeViolationError("The login Secret does not belong to the exact Namespace.");
+    }
+    const driver = this.secretDriver(secret.driverId);
+    if (!driver.withValue || !driver.compareAndSwap) {
+      throw new NotImplementedError("Device authorization is unavailable for the Secret Driver.");
+    }
+    const value = await this.secretOperation(() =>
+      driver.withValue!(secret, async (value) => value),
+    );
+    const session = deviceAuthorizationSession(value);
+    if (
+      session.actorId !== principalId ||
+      session.namespaceId !== namespaceId ||
+      session.agentId !== agentId
+    ) {
+      throw new ScopeViolationError("The login belongs to another actor or Agent scope.");
+    }
+    if (
+      session.phase !== "cancelled" &&
+      Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
+    ) {
+      // Expiry erases provider material on first touch instead of only blocking use.
+      // A source sealed by the runtime refuses the swap and keeps its own lifecycle.
+      const expired = JSON.stringify({
+        ...session,
+        phase: "cancelled",
+        privateState: undefined,
+        credential: undefined,
+      });
+      if (await this.secretOperation(() => driver.compareAndSwap!(secret, value, expired))) {
+        return { secret, driver, value: expired, session: deviceAuthorizationSession(expired) };
+      }
+    }
+    return { secret, driver, value, session };
+  }
+
+  async pollAgentDeviceAuthorization(
+    principalId: string,
+    namespaceId: string,
+    secretId: string,
+    agentId?: string,
+  ) {
+    const { secret, driver, value, session } = await this.readAgentDeviceAuthorization(
+      principalId,
+      namespaceId,
+      secretId,
+      agentId,
+    );
+    if (
+      session.phase === "cancelled" ||
+      Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
+    ) {
+      throw new ResourceConflictError("Device login expired or was cancelled. Connect again.");
+    }
+    const response = (status: "pending" | "ready", expiresAt = session.expiresAt) => ({
+      source: this.secretMetadata(secret).ref,
+      status,
+      expiresAt,
+      ...session.authorization,
+    });
+    if (session.phase === "ready") {
+      return response("ready");
+    }
+    if (
+      session.phase === "polling" ||
+      Date.parse(session.nextPollAt) > Date.parse(this.timestamp())
+    ) {
+      return response("pending");
+    }
+    const compute = this.selectedDriver("compute");
+    if (compute.id !== session.computeDriverId || !compute.pollHarnessDeviceAuthorization) {
+      throw new ResourceConflictError("The login Driver changed. Connect again.");
+    }
+    const claimed = JSON.stringify({ ...session, phase: "polling" });
+    if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, claimed)))) {
+      return response("pending");
+    }
+    let result: HarnessDeviceAuthorizationResult;
+    try {
+      result = await compute.pollHarnessDeviceAuthorization(session.privateState!);
+    } catch {
+      // An exchange can consume its code even if the response is lost. Never replay it.
+      await this.secretOperation(() =>
+        driver.compareAndSwap!(
+          secret,
+          claimed,
+          JSON.stringify({
+            ...session,
+            phase: "cancelled",
+            privateState: undefined,
+          }),
+        ),
+      );
+      throw new DependencyUnavailableError("Could not complete device login. Connect again.");
+    }
+    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
+    const { privateState: _privateState, ...completedSession } = session;
+    const next: DeviceAuthorizationSession =
+      result.status === "pending"
+        ? {
+            ...session,
+            phase: "pending",
+            nextPollAt: new Date(
+              Date.parse(this.timestamp()) + session.authorization.intervalSeconds * 1000,
+            ).toISOString(),
+          }
+        : {
+            ...completedSession,
+            phase: "ready",
+            credential: result.credential,
+            expiresAt: new Date(Date.parse(this.timestamp()) + 24 * 60 * 60 * 1000).toISOString(),
+          };
+    // Cancellation or another owner changing the Secret fences a late provider response.
+    if (
+      !(await this.secretOperation(() =>
+        driver.compareAndSwap!(secret, claimed, JSON.stringify(next)),
+      ))
+    ) {
+      throw new ResourceConflictError("The login changed while completing. Connect again.");
+    }
+    return response(result.status, next.expiresAt);
+  }
+
+  async cancelAgentDeviceAuthorization(
+    principalId: string,
+    namespaceId: string,
+    secretId: string,
+    agentId?: string,
+  ): Promise<void> {
+    const { secret, driver, value, session } = await this.readAgentDeviceAuthorization(
+      principalId,
+      namespaceId,
+      secretId,
+      agentId,
+    );
+    // Local discard must never revoke a shared upstream login session.
+    const discarded = JSON.stringify({
+      ...session,
+      phase: "cancelled",
+      privateState: undefined,
+      credential: undefined,
+    });
+    if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, discarded)))) {
+      throw new ResourceConflictError(
+        "The login changed or belongs to the runtime. Refresh and retry.",
+      );
+    }
   }
 
   async discoverAgentModels(
@@ -4247,13 +4452,17 @@ export class OpenClawController {
           "Plugin discovery is unavailable.",
         );
       }
-      return (accessToken) => {
-        if (accessToken === undefined && driver.discoveryCredential !== "none") {
+      return (authentication) => {
+        if (
+          authentication.accessToken === undefined &&
+          authentication.credential === undefined &&
+          driver.discoveryCredential !== "none"
+        ) {
           throw new PluginDiscoveryError("credentials_rejected");
         }
         return driver.discoverCatalog!(
           {
-            ...(accessToken === undefined ? {} : { accessToken }),
+            ...authentication,
             ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
             ...(input.q === undefined ? {} : { q: input.q }),
           },
@@ -4462,14 +4671,15 @@ export class OpenClawController {
           "Plugin tool discovery is unavailable.",
         );
       }
-      return (accessToken) => {
-        if (accessToken === undefined && driver.discoveryCredential !== "none") {
+      return (authentication) => {
+        if (
+          authentication.accessToken === undefined &&
+          authentication.credential === undefined &&
+          driver.discoveryCredential !== "none"
+        ) {
           throw new PluginDiscoveryError("credentials_rejected");
         }
-        return driver.getCatalogPlugin!(
-          { ...(accessToken === undefined ? {} : { accessToken }), pluginId: input.pluginId },
-          signal,
-        );
+        return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
       };
     });
   }
@@ -4478,10 +4688,11 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     credential: PluginDiscoveryCredential,
-    prepareDiscovery: () => (accessToken: string | undefined) => Promise<T>,
+    prepareDiscovery: () => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
     validateCurrent?: () => Promise<void>,
+    scopeAgentId?: string,
   ): Promise<T> {
-    const source = credential.secretRef;
+    const source = credential.secretRef ?? credential.oauthLogin;
     if (source !== undefined) {
       if (source.kind !== "secret" || source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Secret references cannot cross Namespaces.");
@@ -4493,6 +4704,7 @@ export class OpenClawController {
     // Keep both upstream errors and accidentally echoed credential material out of responses.
     const invoke = async (
       accessToken: string | undefined,
+      oauthCredential?: string,
     ): Promise<{ value: T } | { error: PluginDiscoveryError } | { validationError: unknown }> => {
       try {
         await validateCurrent?.();
@@ -4502,7 +4714,12 @@ export class OpenClawController {
         return { validationError: error };
       }
       try {
-        const value = await discover(accessToken);
+        const value = await discover({
+          ...(accessToken === undefined ? {} : { accessToken }),
+          ...(oauthCredential === undefined
+            ? {}
+            : { credential: { kind: "oauth", value: oauthCredential } }),
+        });
         const serialized = JSON.stringify(value);
         const encodedToken =
           accessToken === undefined ? undefined : JSON.stringify(accessToken).slice(1, -1);
@@ -4524,7 +4741,23 @@ export class OpenClawController {
     };
 
     let outcome: { value: T } | { error: PluginDiscoveryError } | { validationError: unknown };
-    if (credential.accessToken !== undefined) {
+    if (credential.oauthLogin !== undefined) {
+      const { session } = await this.readAgentDeviceAuthorization(
+        principalId,
+        namespaceId,
+        credential.oauthLogin.id,
+        scopeAgentId,
+      );
+      if (
+        session.phase !== "ready" ||
+        Date.parse(session.expiresAt) <= Date.parse(this.timestamp())
+      ) {
+        throw new ResourceConflictError(
+          "Connect again to configure plugins. This login is no longer available in OCE.",
+        );
+      }
+      outcome = await invoke(undefined, discoveryLoginCredential(session.credential!));
+    } else if (credential.accessToken !== undefined) {
       outcome = await invoke(credential.accessToken);
     } else if (credential.secretRef !== undefined) {
       const source = credential.secretRef;
@@ -4587,54 +4820,79 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId: string,
-    input: { readonly cursor?: string; readonly q?: string },
+    input: { readonly cursor?: string; readonly q?: string; readonly oauthLogin?: SecretReference },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    return this.withSavedAgentPluginCredential(principalId, namespaceId, agentId, () => {
-      const driver = this.pluginDriver();
-      if (!driver.discoverCatalog) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin discovery is unavailable.",
-        );
-      }
-      return (accessToken) =>
-        driver.discoverCatalog!(
-          { ...(accessToken === undefined ? {} : { accessToken }), ...input },
-          signal,
-        );
-    });
+    return this.withSavedAgentPluginCredential(
+      principalId,
+      namespaceId,
+      agentId,
+      () => {
+        const driver = this.pluginDriver();
+        if (!driver.discoverCatalog) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin discovery is unavailable.",
+          );
+        }
+        return (authentication) =>
+          driver.discoverCatalog!(
+            {
+              ...authentication,
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+              ...(input.q === undefined ? {} : { q: input.q }),
+            },
+            signal,
+          );
+      },
+      input.oauthLogin,
+    );
   }
 
   async discoverSavedAgentPluginDetails(
     principalId: string,
     namespaceId: string,
     agentId: string,
-    input: { readonly pluginId: string },
+    input: { readonly pluginId: string; readonly oauthLogin?: SecretReference },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    return this.withSavedAgentPluginCredential(principalId, namespaceId, agentId, () => {
-      const driver = this.pluginDriver();
-      if (!driver.getCatalogPlugin) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin tool discovery is unavailable.",
-        );
-      }
-      return (accessToken) =>
-        driver.getCatalogPlugin!(
-          { ...(accessToken === undefined ? {} : { accessToken }), pluginId: input.pluginId },
-          signal,
-        );
-    });
+    return this.withSavedAgentPluginCredential(
+      principalId,
+      namespaceId,
+      agentId,
+      () => {
+        const driver = this.pluginDriver();
+        if (!driver.getCatalogPlugin) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin tool discovery is unavailable.",
+          );
+        }
+        return (authentication) =>
+          driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+      },
+      input.oauthLogin,
+    );
   }
 
   private async withSavedAgentPluginCredential<T>(
     principalId: string,
     namespaceId: string,
     agentId: string,
-    prepareDiscovery: () => (accessToken: string | undefined) => Promise<T>,
+    prepareDiscovery: () => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
+    oauthLogin?: SecretReference,
   ): Promise<T> {
+    if (oauthLogin !== undefined) {
+      await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+      return this.withPluginDiscoveryCredential(
+        principalId,
+        namespaceId,
+        { oauthLogin },
+        prepareDiscovery,
+        () => this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId),
+        agentId,
+      );
+    }
     const first = await this.boundAgentPluginSecret(principalId, namespaceId, agentId);
     if (first === undefined) {
       return this.withPluginDiscoveryCredential(principalId, namespaceId, {}, prepareDiscovery);
@@ -5146,7 +5404,12 @@ export class OpenClawController {
           configuration.secretBindings,
           credentialSourceType,
         );
-      } catch {
+      } catch (error) {
+        // A driver names unsupported Configuration content the caller owns; keep that
+        // message. Other refusals stay generic.
+        if (error instanceof ConfigurationHarnessError) {
+          throw error;
+        }
         throw new ResourceConflictError(
           "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
         );
@@ -5263,6 +5526,118 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * Records a withdrawal of `credentialSourceId` from the Agent's active revision and queues
+   * worker work to revoke it. A replay of a pending withdrawal queues another attempt only when
+   * no earlier attempt is still queued or running; a revoked withdrawal is returned unchanged.
+   */
+  async withdrawAgentCredentialSource(
+    principalId: string,
+    input: AgentCredentialSourceInput,
+  ): Promise<Readonly<CredentialWithdrawal>> {
+    return this.mutate(async (state) => {
+      await this.lockNamespace(state, input.namespaceId);
+      const agent = await state.agents.lockAgent(input.namespaceId, input.agentId);
+      if (agent === undefined) {
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      }
+      await this.authorize(principalId, "operate", {
+        kind: "agent",
+        id: agent.id,
+        namespaceId: agent.namespaceId,
+      });
+      const revision = await this.activeCredentialSourceRevision(state, agent, input);
+      const withdrawal = await state.credentialSources.requestCredentialWithdrawal(
+        Object.freeze({
+          namespaceId: agent.namespaceId,
+          agentId: agent.id,
+          revisionId: revision.id,
+          credentialSourceId: input.credentialSourceId,
+          state: "pending",
+          requestedBy: principalId,
+          requestedAt: this.timestamp(),
+        }),
+      );
+      if (
+        withdrawal.state === "pending" &&
+        !(await state.operations.hasOutstandingCredentialWithdrawalWork(
+          agent.namespaceId,
+          revision.id,
+        ))
+      ) {
+        await this.record(state, {
+          kind: "agent_revision",
+          action: "reconcile",
+          target: "credentials_withdrawn",
+          namespaceId: agent.namespaceId,
+          resourceId: revision.id,
+          actorId: principalId,
+          operationId: crypto.randomUUID(),
+        });
+      }
+      return withdrawal;
+    });
+  }
+
+  async readAgentCredentialWithdrawal(
+    principalId: string,
+    input: AgentCredentialSourceInput,
+  ): Promise<Readonly<CredentialWithdrawal>> {
+    await this.authorize(principalId, "read", {
+      kind: "agent",
+      id: input.agentId,
+      namespaceId: input.namespaceId,
+    });
+    return this.read(async (state) => {
+      await this.exactNamespace(state, input.namespaceId);
+      const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
+      if (agent === undefined || agent.activeRevisionId === undefined) {
+        throw new ScopeViolationError("The Agent has no active revision.");
+      }
+      const withdrawal = await state.credentialSources.findCredentialWithdrawal(
+        agent.namespaceId,
+        agent.activeRevisionId,
+        input.credentialSourceId,
+      );
+      if (withdrawal === undefined) {
+        throw new ScopeViolationError(
+          "The credential source was not withdrawn from the Agent's active revision.",
+        );
+      }
+      return withdrawal;
+    });
+  }
+
+  /** The active revision must hold the source as its frozen Harness authentication. */
+  private async activeCredentialSourceRevision(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    input: AgentCredentialSourceInput,
+  ): Promise<Readonly<AgentRevision>> {
+    if (agent.status !== "active" || agent.activeRevisionId === undefined) {
+      throw new ResourceStateConflictError(
+        "The Agent has no active revision to withdraw the credential source from.",
+      );
+    }
+    const revision = await state.revisions.findRevision(
+      agent.namespaceId,
+      agent.id,
+      agent.activeRevisionId,
+    );
+    if (
+      revision === undefined ||
+      revision.harnessAuth.method !== "credential_source" ||
+      revision.harnessAuth.sourceId !== input.credentialSourceId
+    ) {
+      throw new ScopeViolationError(
+        "The Agent's active revision does not use this credential source.",
+      );
+    }
+    return revision;
+  }
+
   async stopAgent(
     principalId: string,
     namespaceId: string,
@@ -5356,7 +5731,11 @@ export class OpenClawController {
               })
             ).decision.allowed
           ) {
-            throw new AuthorizationDeniedError("Only the initiating actor can retry deletion.");
+            throw new DeletionRetryOwnedError(work.actorId, {
+              kind: "namespace",
+              id: namespace.id,
+              namespaceId: namespace.id,
+            });
           }
           if (
             !(await state.operations.retryFailedNamespaceDeletion(
@@ -5512,7 +5891,11 @@ export class OpenClawController {
               })
             ).decision.allowed
           ) {
-            throw new AuthorizationDeniedError("Only the initiating actor can retry deletion.");
+            throw new DeletionRetryOwnedError(work.actorId, {
+              kind: "agent",
+              id: agent.id,
+              namespaceId: namespace.id,
+            });
           }
           if (
             !(await state.operations.retryFailedAgentDeletion(
@@ -5650,6 +6033,7 @@ export class OpenClawController {
         const updated = deleted
           ? await state.namespaces.markNamespaceDeleted(current.id, this.timestamp())
           : current;
+        const removedPolicy = deleted ? await removeNamespacePolicy(state, current.id) : undefined;
         await this.appendLifecycleAudit(
           state,
           actorId,
@@ -5659,6 +6043,7 @@ export class OpenClawController {
           {
             namespaceDeleted: result.namespaceDeleted,
             ...(result.failure === undefined ? {} : { failure: result.failure }),
+            ...removedPolicyDetails(removedPolicy),
           },
         );
         return updated;
@@ -5987,7 +6372,11 @@ export class OpenClawController {
     if (binding === null || binding.method === "runtime") {
       return;
     }
-    if (binding.method === "api_key" || binding.method === "codex_pat") {
+    if (
+      binding.method === "api_key" ||
+      binding.method === "codex_pat" ||
+      binding.method === "oauth"
+    ) {
       if (binding.source.namespaceId !== namespaceId) {
         throw new ScopeViolationError("Harness authentication sources cannot cross Namespaces.");
       }
@@ -6110,11 +6499,11 @@ export class OpenClawController {
       throw new ScopeViolationError("The provisioning Agent is unavailable.");
     }
     const secretDriver =
-      binding.method === "api_key" || binding.method === "codex_pat"
+      binding.method === "api_key" || binding.method === "codex_pat" || binding.method === "oauth"
         ? this.secretDriver()
         : undefined;
     const auth: HarnessAuthSnapshot =
-      binding.method === "api_key" || binding.method === "codex_pat"
+      binding.method === "api_key" || binding.method === "codex_pat" || binding.method === "oauth"
         ? { ...binding, secretDriverId: secretDriver!.id }
         : agent === undefined
           ? await this.serviceAccountHarnessAuthSnapshot(state, namespaceId, backendId, binding)
@@ -6657,7 +7046,11 @@ export class OpenClawController {
     for (const binding of Object.values(input.secretBindings ?? {})) {
       ids.add(binding.source.id);
     }
-    if (input.harnessAuth?.method === "api_key" || input.harnessAuth?.method === "codex_pat") {
+    if (
+      input.harnessAuth?.method === "api_key" ||
+      input.harnessAuth?.method === "codex_pat" ||
+      input.harnessAuth?.method === "oauth"
+    ) {
       ids.add(input.harnessAuth.source.id);
     }
     const secrets: Secret[] = [];
@@ -6752,7 +7145,11 @@ export class OpenClawController {
     for (const binding of Object.values(bindings ?? {})) {
       await this.authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
     }
-    if (harnessAuth?.method === "api_key" || harnessAuth?.method === "codex_pat") {
+    if (
+      harnessAuth?.method === "api_key" ||
+      harnessAuth?.method === "codex_pat" ||
+      harnessAuth?.method === "oauth"
+    ) {
       await this.authorizeProvisioningSecretSource(
         state,
         principalId,
@@ -6834,7 +7231,11 @@ export class OpenClawController {
     if (binding.method === "runtime") {
       return immutableCopy(binding);
     }
-    if (binding.method === "api_key" || binding.method === "codex_pat") {
+    if (
+      binding.method === "api_key" ||
+      binding.method === "codex_pat" ||
+      binding.method === "oauth"
+    ) {
       await this.authorizeAgentPrincipal(agent.servicePrincipalId, "operate", binding.source);
       const source = await state.secrets.lockSecret(agent.namespaceId, binding.source.id);
       if (source === undefined) {
@@ -7025,57 +7426,6 @@ export class OpenClawController {
         agent,
         driver: this.runtimeCredentialComputeDriver("provision"),
       });
-    });
-  }
-
-  private validRuntimeDiagnosticCheck(value: RuntimeDiagnosticCheck): RuntimeDiagnosticCheck {
-    const state = value?.state;
-    if (
-      typeof value !== "object" ||
-      value === null ||
-      Array.isArray(value) ||
-      !validRuntimeDiagnosticIdentifier(value.component) ||
-      !validRuntimeDiagnosticIdentifier(value.check) ||
-      (state !== "succeeded" && state !== "failed" && state !== "unknown") ||
-      (value.checkedAt !== null && !validRuntimeDiagnosticTimestamp(value.checkedAt)) ||
-      (value.code !== undefined && !validRuntimeDiagnosticIdentifier(value.code))
-    ) {
-      throw new DependencyUnavailableError(
-        "The selected compute Driver returned invalid runtime diagnostic evidence.",
-      );
-    }
-    return Object.freeze({
-      component: value.component,
-      check: value.check,
-      state,
-      checkedAt: value.checkedAt,
-      ...(value.code === undefined ? {} : { code: value.code }),
-    });
-  }
-
-  private deploymentDiagnostics(
-    diagnostics: AgentDeploymentDiagnostics,
-    revisionId: string,
-  ): Readonly<AgentDeploymentDiagnostics> {
-    if (
-      typeof diagnostics !== "object" ||
-      diagnostics === null ||
-      Array.isArray(diagnostics) ||
-      diagnostics.revisionId !== revisionId ||
-      !validRuntimeDiagnosticTimestamp(diagnostics.observedAt) ||
-      !Array.isArray(diagnostics.checks) ||
-      diagnostics.checks.length > 32
-    ) {
-      throw new DependencyUnavailableError(
-        "The selected compute Driver returned invalid runtime diagnostics.",
-      );
-    }
-    return Object.freeze({
-      revisionId: diagnostics.revisionId,
-      observedAt: diagnostics.observedAt,
-      checks: Object.freeze(
-        diagnostics.checks.map((check) => this.validRuntimeDiagnosticCheck(check)),
-      ),
     });
   }
 
@@ -7303,51 +7653,72 @@ export class OpenClawController {
   }
 
   private assertNamespacePolicyResourceKind(kind: ResourceKind): void {
-    if (
-      kind !== "namespace" &&
-      kind !== "agent" &&
-      kind !== "agent_revision" &&
-      kind !== "configuration" &&
-      kind !== "credential_source" &&
-      kind !== "preset" &&
-      kind !== "secret" &&
-      kind !== "service_account"
-    ) {
-      throw new ScopeViolationError("IAM policy APIs require an exact Namespace resource target.");
+    if (!NAMESPACE_POLICY_RESOURCE_KINDS.has(kind)) {
+      throw new IAMPolicyValidationError(
+        "/resourceKind",
+        "IAM policy APIs require an exact Namespace resource target.",
+      );
     }
   }
 
   private iamRolePermissions(permissions: readonly Permission[]): readonly Permission[] {
     if (!Array.isArray(permissions) || permissions.length === 0 || permissions.length > 64) {
-      throw new ScopeViolationError("IAM Roles require one or more supported Permissions.");
+      throw new IAMPolicyValidationError(
+        "/permissions",
+        "IAM Roles require 1 to 64 supported Permissions.",
+      );
     }
     const seen = new Set<string>();
-    return Object.freeze(
-      permissions.map((permission) => {
-        if (
-          typeof permission !== "object" ||
-          permission === null ||
-          Array.isArray(permission) ||
-          !PERMISSION_ACTIONS.includes(permission.action) ||
-          !RESOURCE_KINDS.includes(permission.resourceKind)
-        ) {
-          throw new ScopeViolationError("IAM Role Permissions are invalid.");
-        }
-        this.assertNamespacePolicyResourceKind(permission.resourceKind);
-        if (permission.resourceKind === "namespace" && permission.action !== "read") {
-          throw new ScopeViolationError("IAM Namespace Role Permissions support only read.");
-        }
-        const key = `${permission.action}\u0000${permission.resourceKind}`;
-        if (seen.has(key)) {
-          throw new ScopeViolationError("IAM Role Permissions contain duplicates.");
-        }
-        seen.add(key);
-        return Object.freeze({
-          action: permission.action,
-          resourceKind: permission.resourceKind,
-        });
-      }),
-    );
+    const unsupported: string[] = [];
+    const checked = permissions.map((permission, index) => {
+      if (
+        typeof permission !== "object" ||
+        permission === null ||
+        Array.isArray(permission) ||
+        !PERMISSION_ACTIONS.includes(permission.action) ||
+        !RESOURCE_KINDS.includes(permission.resourceKind)
+      ) {
+        throw new IAMPolicyValidationError(
+          `/permissions/${index}`,
+          "IAM Role Permissions are invalid.",
+        );
+      }
+      if (!NAMESPACE_POLICY_RESOURCE_KINDS.has(permission.resourceKind)) {
+        throw new IAMPolicyValidationError(
+          `/permissions/${index}/resourceKind`,
+          `Namespace IAM Roles cannot grant ${permission.resourceKind} Permissions.`,
+        );
+      }
+      if (permission.resourceKind === "namespace" && permission.action !== "read") {
+        throw new IAMPolicyValidationError(
+          `/permissions/${index}/action`,
+          "Namespace IAM Roles support only namespace:read on the Namespace itself.",
+        );
+      }
+      const key = `${permission.action}\u0000${permission.resourceKind}`;
+      if (seen.has(key)) {
+        throw new IAMPolicyValidationError(
+          `/permissions/${index}`,
+          `IAM Role Permissions contain ${permission.resourceKind}:${permission.action} more than once.`,
+        );
+      }
+      seen.add(key);
+      if (!isSupportedPermission(permission)) {
+        unsupported.push(`${permission.resourceKind}:${permission.action}`);
+      }
+      return Object.freeze({
+        action: permission.action,
+        resourceKind: permission.resourceKind,
+      });
+    });
+    if (unsupported.length > 0) {
+      throw new IAMPolicyValidationError(
+        "/permissions",
+        `No operation checks these Permissions, so they would grant nothing: ${unsupported.join(", ")}. ` +
+          "See the per-kind actions in the permissions reference.",
+      );
+    }
+    return Object.freeze(checked);
   }
 
   private async verifyNamespacePolicyResource(
@@ -7358,14 +7729,20 @@ export class OpenClawController {
     await this.read(async (state) => {
       if (resourceKind === "namespace") {
         if (resourceId !== namespaceId) {
-          throw new ScopeViolationError("The IAM target must be the exact Namespace.");
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "A namespace target must be the Namespace in the request path.",
+          );
         }
         await this.exactNamespace(state, namespaceId);
         return;
       }
       if (resourceKind === "agent") {
         if ((await state.agents.findAgent(namespaceId, resourceId)) === undefined) {
-          throw new ScopeViolationError("The IAM target Agent does not belong to the Namespace.");
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "The IAM target Agent does not belong to the Namespace.",
+          );
         }
         return;
       }
@@ -7378,19 +7755,24 @@ export class OpenClawController {
             return;
           }
         }
-        throw new ScopeViolationError(
+        throw new IAMPolicyValidationError(
+          "/resourceId",
           "The IAM target AgentRevision does not belong to the Namespace.",
         );
       }
       if (resourceKind === "preset") {
         if ((await state.presets.findPreset(namespaceId, resourceId)) === undefined) {
-          throw new ScopeViolationError("The IAM target Preset does not belong to the Namespace.");
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "The IAM target Preset does not belong to the Namespace.",
+          );
         }
         return;
       }
       if (resourceKind === "configuration") {
         if ((await state.configurations.findConfiguration(namespaceId, resourceId)) === undefined) {
-          throw new ScopeViolationError(
+          throw new IAMPolicyValidationError(
+            "/resourceId",
             "The IAM target Configuration does not belong to the Namespace.",
           );
         }
@@ -7398,7 +7780,10 @@ export class OpenClawController {
       }
       if (resourceKind === "secret") {
         if ((await state.secrets.findSecret(namespaceId, resourceId)) === undefined) {
-          throw new ScopeViolationError("The IAM target Secret does not belong to the Namespace.");
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "The IAM target Secret does not belong to the Namespace.",
+          );
         }
         return;
       }
@@ -7407,14 +7792,16 @@ export class OpenClawController {
           (await state.credentialSources.findCredentialSource(namespaceId, resourceId)) ===
           undefined
         ) {
-          throw new ScopeViolationError(
+          throw new IAMPolicyValidationError(
+            "/resourceId",
             "The IAM target credential source does not belong to the Namespace.",
           );
         }
         return;
       }
       if ((await state.serviceAccounts.findServiceAccount(namespaceId, resourceId)) === undefined) {
-        throw new ScopeViolationError(
+        throw new IAMPolicyValidationError(
+          "/resourceId",
           "The IAM target ServiceAccount does not belong to the Namespace.",
         );
       }

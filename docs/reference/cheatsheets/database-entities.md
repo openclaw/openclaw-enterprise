@@ -140,6 +140,21 @@ Links each credential source secret field to the Namespace Secret that supplied 
 - `field`
 - `secret_id`
 
+### `credential_withdrawals`
+
+Records one credential source withdrawn from one Agent revision, until the gateway confirms revocation.
+
+- `namespace_id`
+- `agent_id`
+- `revision_id`
+- `credential_source_id`
+- `state`
+- `requested_by`
+- `requested_at`
+- `completed_at`
+- `last_reason`
+- `last_attempt_at`
+
 ### `service_accounts`
 
 Stores Namespace service accounts and any credential Secret references.

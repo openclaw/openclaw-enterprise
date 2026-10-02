@@ -304,7 +304,7 @@ not write the shared native registry while the prior gateway is running.
 - [Bundled implementations](../../../apps/controller/src/drivers/plugin/index.ts).
 - [Trusted selection](../../../apps/controller/src/composition/installation-config.ts).
 - [Agent plugin runtime flow](../../flows/agent-plugins.md).
-- [Deployment guide](../../guides/deploy.md), [testing guide](../../testing/plugins.md), and [implementation proof requirements](../../../specs/16-plugin-driver.md#verification).
+- [Deployment guide](../../guides/deploy.md), [testing guide](../../testing/plugins.md), and [implementation proof requirements](../../../specs/plans/16-plugin-driver.md#verification).
 
 Source and contract tests do not establish compatibility with every runtime
 image. Native proof requires the testing guide's opt-in real-runtime lane.

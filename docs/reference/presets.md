@@ -18,8 +18,7 @@ The trusted Installation YAML can include bundled Presets and JSON files:
 presets:
   includeDefaults: true
   files:
-    - presets/devday.json
-    - presets/devday-partners.json
+    - presets/swe-preset.json
 ```
 
 `includeDefaults: true` seeds exactly **Standard Codex** and **Standard OpenClaw**.
@@ -65,62 +64,31 @@ OpenClaw uses the ordinary OpenAI provider endpoint and native harness. It does
 not load the Codex plugin, its app-server configuration, or its hosted cached-search override. The Codex-specific
 sandbox and network proxy settings therefore apply only to **Standard Codex**.
 
-## DevDay custom presets
+## SWE Agent preset
 
-[`SWE Agent`](../../deploy/presets/devday.json) copies
-**Standard Codex** and adds Slack Socket Mode with six prefilled channels.
+[`SWE Agent`](../../deploy/presets/swe-preset.json) copies **Standard Codex**
+and adds Slack Socket Mode and workspace instructions for software engineering.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
-model reference is `codex/gpt-6-astra`. All four DevDay presets expose only `name`
-and `model` variables. After **Use Preset**, choose an existing service account Secret or
+model reference is `codex/gpt-6-astra`. The preset exposes only `name` and `model`
+variables. After **Use Preset**, choose an existing service account Secret or
 **Create new Secret...** before creating the Agent.
+
 Load a copy beside your YAML as in the example above, or reference the shipped
-container file at `/app/deploy/presets/devday.json`. It is opt-in and is not added
-by `includeDefaults` alone.
+container file at `/app/deploy/presets/swe-preset.json`. It is opt-in and is not
+added by `includeDefaults` alone.
 
-[`Community Agent`](../../deploy/presets/devday-partners.json) copies the SWE
-Agent runtime with community-focused workspace
-instructions for answering questions and discussing the roadmap. Direct messages
-are disabled. It checks Linear
-for relevant updates when available and continues with other sources if access fails.
+In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack**
+to configure channels, allowed senders, and Slack app/bot Secrets. No channels or
+credentials are stored in the preset.
 
-[`Q&A Agent`](../../deploy/presets/devday-qa.json) and
-[`Oncall Agent`](../../deploy/presets/devday-oncall.json) copy the entire SWE Agent
-template, including its Slack and workspace instructions. Their separate file
-entries are commented out in the example Installation YAML, along with SWE Agent
-and Community Agent. Uncomment only the custom presets you want to install.
-
-SWE Agent, Q&A Agent, and Oncall Agent prefill these channels:
-
-| Channel            | ID            |
-| ------------------ | ------------- |
-| oce-feedback       | `C0C49E7CS4A` |
-| oce-team           | `C0C43A2QA11` |
-| oce-feedback-test  | `C0C569NN9ME` |
-| oce-team-test      | `C0C4A0JH2BG` |
-| oce-community      | `C0C5KF0JLSC` |
-| oce-community-test | `C0C5KF0DWLQ` |
-
-Community Agent prefills its own channel list:
-
-| Channel            | ID            |
-| ------------------ | ------------- |
-| oce-team           | `C0C43A2QA11` |
-| oce-team-test      | `C0C4A0JH2BG` |
-| oce-community      | `C0C5KF0JLSC` |
-| oce-community-test | `C0C5KF0DWLQ` |
-
-In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack** to
-choose allowed senders and bind Slack app/bot Secrets. The presets allow all channel members (`users: ["*"]`)
-and do not require mentions in their configured channels. Narrow the sender list in the drawer if
-needed. No credentials are stored in the file.
 The preset includes the supplied instructions in
 `template.agent.initialWorkspaceFiles.AGENTS.md`, including their draft decisions.
-All DevDay copies use `{{vars.name}}` in the heading, opening sentence, and other
-self-references, filled from the entered `name` when applying the Preset. Later
-name edits do not re-render the copied file.
-To revise them, update that content and the existing Namespace Preset through the API. Restarting with a changed
-JSON file preserves already-installed same-name copies.
+It uses `{{vars.name}}` in the heading, opening sentence, and other self-references,
+filled from the entered `name` when applying the Preset. Later name edits do not
+re-render the copied file. To revise the instructions, update that content and the
+existing Namespace Preset through the API. Restarting with a changed JSON file
+preserves already-installed same-name copies.
 
 ## Contents
 

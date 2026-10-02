@@ -37,6 +37,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/stop.mjs",
       "agents/runtime-access.mjs",
       "agents/harness-auth.mjs",
+      "agents/device-login.mjs",
       "agents/secret-access.mjs",
       "agents/secret-picker.mjs",
       "agents/credentials.mjs",

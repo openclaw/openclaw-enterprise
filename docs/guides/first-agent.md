@@ -91,6 +91,35 @@ the same Agent name and a different `--prompt` to ask another question; you do
 not need to enter the model key again. Stopping the local stack
 with `dev down` [deletes the installation and its Agents](quickstart.md#clean-up-and-stop).
 
+## Clean up
+
+To remove only this Agent and keep the installation, delete the Agent and then
+the Configuration, Secret, and Role the command created for it. Set `AGENT_ID`
+to the Agent ID the command printed:
+
+```bash
+AGENT_ID=<agent-id>
+AGENT_JSON="$(./bin/occ agent get "$AGENT_ID" -o json)"
+CONFIGURATION_ID="$(jq -r .configurationId <<<"$AGENT_JSON")"
+SECRET_ID="$(jq -r .harnessAuth.source.id <<<"$AGENT_JSON")"
+ROLE_ID="role_local_first_agent_secret_$(printf '%s\0%s' "$AGENT_ID" "$SECRET_ID" |
+  sha256sum | cut -d' ' -f1)"
+./bin/occ agent delete "$AGENT_ID"
+./bin/occ agent get "$AGENT_ID"
+```
+
+Repeat `agent get` until it returns `404`, then delete the rest:
+
+```bash
+./bin/occ configuration delete "$CONFIGURATION_ID"
+./bin/occ secret delete "$SECRET_ID"
+./bin/occ iam role delete "$ROLE_ID"
+```
+
+Each run creates a separate Role named `Local first Agent Secret access`, so
+`occ iam role list` shows one per first Agent until you delete it. The command
+remembers the Agent name; use a new name for the next run.
+
 <span id="troubleshooting"></span>
 
 ## Troubleshoot

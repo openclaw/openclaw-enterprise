@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
@@ -20,17 +19,6 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-
-async function unusedPort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 
 function control(socketPath, path, payload, headers = {}) {
   const body = Buffer.from(JSON.stringify(payload));
@@ -149,7 +137,7 @@ test("private metadata sessions reject other methods and routes before issuing a
 test("protected metadata lookup restricts scope, caches descriptions, and retires tokens", async (t) => {
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     repositories: [
       {
         repositoryRef: "repo-a",
@@ -212,7 +200,7 @@ test("protected metadata lookup restricts scope, caches descriptions, and retire
 test("metadata lookup rejects requests larger than the visible-page bound", async (t) => {
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
   });
   const result = await descriptions(fixture.config.gateway.controlSocket, {
     namespaceId: fixture.namespaceId,
@@ -229,7 +217,7 @@ test("shutdown cancels an active metadata read and retires its issued token", as
   });
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     repositories: [
       {
         repositoryRef: "repo-a",
@@ -269,7 +257,7 @@ test("shutdown cancels an active metadata read and retires its issued token", as
 test("missing and temporarily unavailable descriptions do not block selection", async (t) => {
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     repositories: [
       {
         repositoryRef: "repo-a",
@@ -307,7 +295,7 @@ test("missing and temporarily unavailable descriptions do not block selection", 
 test("ordinary registry and standalone session admission reject the private metadata profile", async (t) => {
   const registry = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
   });
   assert.throws(() =>
     resolveGitHubRepositoryBinding(registry.registry, {
@@ -365,7 +353,7 @@ test("a newly visible page takes priority over older queued descriptions", async
   });
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     repositories: [
       {
         repositoryRef: "repo-a",
@@ -442,7 +430,7 @@ test("metadata issuance is rate-limited across a visible page", { timeout: 30000
   });
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     repositories,
   });
   const socket = fixture.config.gateway.controlSocket;
@@ -480,7 +468,7 @@ test("a stalled provider header respects the configured timeout and leaves the p
   });
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     limits: { firstHeaderMs: 1000 },
     repositories: [
       {

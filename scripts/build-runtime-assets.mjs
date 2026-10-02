@@ -213,7 +213,7 @@ if (command === "inputs") {
   const store = join(root, "node_modules/.pnpm");
   const retained = new Set();
   const visited = new Set();
-  async function visit(importer) {
+  async function visit(importer, manifestBytes) {
     const canonical = await realpath(importer);
     if (visited.has(canonical)) {
       return;
@@ -223,21 +223,20 @@ if (command === "inputs") {
     if (!packagePath.startsWith("..")) {
       retained.add(packagePath.split("/")[0]);
     }
-    const manifest = JSON.parse(await readFile(join(canonical, "package.json"), "utf8"));
-    const names = new Set(
-      Object.keys({
-        ...manifest.dependencies,
-        ...manifest.optionalDependencies,
-        ...manifest.peerDependencies,
-      }),
+    const manifest = JSON.parse(
+      manifestBytes ?? (await readFile(join(canonical, "package.json"), "utf8")),
     );
-    for (const name of names) {
+    for (const name of Object.keys({
+      ...manifest.dependencies,
+      ...manifest.optionalDependencies,
+      ...manifest.peerDependencies,
+    })) {
       let directory = canonical;
       while (true) {
         const candidate = join(directory, "node_modules", name);
         try {
-          await readFile(join(candidate, "package.json"));
-          await visit(candidate);
+          const manifestBytes = await readFile(join(candidate, "package.json"));
+          await visit(candidate, manifestBytes);
           break;
         } catch (error) {
           if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
@@ -262,8 +261,8 @@ if (command === "inputs") {
     })) {
       const candidate = join(root, directory, name);
       try {
-        await readFile(join(candidate, "package.json"));
-        await visit(candidate);
+        const manifestBytes = await readFile(join(candidate, "package.json"));
+        await visit(candidate, manifestBytes);
       } catch (error) {
         if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
           throw error;

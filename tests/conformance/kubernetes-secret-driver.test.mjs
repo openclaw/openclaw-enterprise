@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   KubernetesSecretDriver,
   SecretBackendUnavailableError,
+  SecretConflictError,
   SecretOwnershipError,
   SecretValidationError,
 } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
@@ -356,6 +357,53 @@ test("kubernetes-secret-driver rejects malformed or oversized stored values on t
       driver.withValue(secret, async () => assert.fail("invalid value must not be used")),
       SecretBackendUnavailableError,
     );
+  }
+});
+
+test("kubernetes-secret-driver conditional writes preserve concurrent changes and Agent-owned credentials", async () => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  const namespace = client.addNamespace(nsId);
+  const driver = driverWithClient(client);
+  const identity = { id: secretId(), namespaceId: nsId, name: "agent-login" };
+  const backendRef = await driver.create(identity, "pending-login");
+  const secret = {
+    ...identity,
+    driverId: driver.id,
+    backendRef,
+    createdAt: new Date().toISOString(),
+  };
+  const key = `${namespace}/${backendRef.name}`;
+
+  assert.equal(await driver.compareAndSwap(secret, "other-login", "polling-login"), false);
+  assert.equal(client.secrets.get(key).metadata.resourceVersion, "1");
+  await assert.rejects(
+    driver.compareAndSwap(
+      { ...secret, backendRef: { ...backendRef, uid: "foreign-uid" } },
+      "pending-login",
+      "polling-login",
+    ),
+    SecretOwnershipError,
+  );
+
+  // Two pollers observe the same value. Kubernetes resourceVersion admits only one claim.
+  const results = await Promise.all([
+    driver.compareAndSwap(secret, "pending-login", "first-poller"),
+    driver.compareAndSwap(secret, "pending-login", "second-poller"),
+  ]);
+  assert.deepEqual([...results].sort(), [false, true]);
+  const winner = results[0] ? "first-poller" : "second-poller";
+  assert.equal(await driver.withValue(secret, async (value) => value), winner);
+  assert.equal(client.secrets.get(key).metadata.resourceVersion, "2");
+
+  // The Agent's ownership marker fences both ordinary edits and stale conditional completion.
+  for (const phase of ["claimed", "consumed"]) {
+    const stored = client.secrets.get(key);
+    stored.metadata.annotations["openclaw.dev/oauth-phase"] = phase;
+    const before = clone(stored);
+    assert.equal(await driver.compareAndSwap(secret, winner, "stale-completion"), false);
+    await assert.rejects(driver.update(secret, "reset-login"), SecretConflictError);
+    assert.deepEqual(client.secrets.get(key), before);
   }
 });
 

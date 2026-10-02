@@ -36,48 +36,51 @@ input is not supported. The server validates document fields against the
 [HTTP API contract](api.md). `--help` on `configuration`, `secret`, `agent`,
 `iam role`, and `iam access-binding` `create` shows a minimal sample document.
 
-| Command                                          | What it does                                                                                                                                                     |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `occ installation get`                           | Reads the singleton Installation.                                                                                                                                |
-| `occ installation deployment-inventory`          | Reads the complete Agent deployment inventory for a coordinated fleet operation.                                                                                 |
-| `occ namespace list`                             | Lists authorized Namespaces. `ADOPTED NAMESPACE` is set only for adopted Kubernetes namespaces.                                                                  |
-| `occ namespace get ID`                           | Reads one Namespace and its status.                                                                                                                              |
-| `occ namespace create NAME`                      | Creates a Namespace. `--existing-namespace K8S_NAME` requests adoption of an operator-prepared Kubernetes namespace and also requires Installation `administer`. |
-| `occ namespace delete ID`                        | Begins deleting an empty Namespace. Use `namespace get` to inspect the resulting state.                                                                          |
-| `occ configuration create --file FILE`           | Creates a Configuration. The body contains `kind` and `values`.                                                                                                  |
-| `occ configuration get ID`                       | Reads a Configuration.                                                                                                                                           |
-| `occ configuration update ID --file FILE`        | Updates a Configuration; the body must replace `values`. Omit the create-only `kind`.                                                                            |
-| `occ configuration delete ID`                    | Deletes an unreferenced Configuration.                                                                                                                           |
-| `occ secret create --file FILE`                  | Stores a Namespace Secret from a protected JSON document.                                                                                                        |
-| `occ secret list`                                | Lists Namespace Secret metadata, never values.                                                                                                                   |
-| `occ secret get ID`                              | Reads Secret metadata, never its value.                                                                                                                          |
-| `occ secret update ID --file FILE`               | Replaces the Secret value; consumers require explicit redeployment.                                                                                              |
-| `occ secret delete ID`                           | Deletes an unreferenced Namespace Secret.                                                                                                                        |
-| `occ credential-source create --file FILE`       | Registers a Secret with the selected Credential Gateway. See [credential sources](credential-sources.md#register-a-source).                                      |
-| `occ credential-source list`                     | Lists credential sources without live gateway status.                                                                                                            |
-| `occ credential-source get ID`                   | Reads a credential source and its live gateway status, never its value.                                                                                          |
-| `occ credential-source delete ID`                | Deletes an unreferenced credential source and the gateway's copy.                                                                                                |
-| `occ iam role list`                              | Lists Namespace Roles.                                                                                                                                           |
-| `occ iam role get ID`                            | Reads a Namespace Role.                                                                                                                                          |
-| `occ iam role create --file FILE`                | Creates a Namespace Role with explicit permissions.                                                                                                              |
-| `occ iam role delete ID`                         | Deletes an unreferenced Namespace Role.                                                                                                                          |
-| `occ iam access-binding list`                    | Lists Namespace AccessBindings.                                                                                                                                  |
-| `occ iam access-binding get ID`                  | Reads a Namespace AccessBinding.                                                                                                                                 |
-| `occ iam access-binding create --file FILE`      | Grants a Role to a principal for an exact resource.                                                                                                              |
-| `occ iam access-binding delete ID`               | Deletes a Namespace AccessBinding.                                                                                                                               |
-| `occ agent delete ID`                            | Begins asynchronous Agent deletion, including its owned runtime state.                                                                                           |
-| `occ agent list`                                 | Lists authorized Agents in the selected Namespace.                                                                                                               |
-| `occ agent get ID`                               | Reads an Agent's desired state and active revision.                                                                                                              |
-| `occ agent create --file FILE`                   | Creates an Agent draft.                                                                                                                                          |
-| `occ agent update ID --file FILE`                | Updates editable Agent fields; the body must include `configurationId`.                                                                                          |
-| `occ agent deploy ID`                            | Requests deployment and creates an immutable revision.                                                                                                           |
-| `occ agent revisions ID`                         | Lists the Agent's immutable revisions; each revision ID is a deployment ID.                                                                                      |
-| `occ agent deployment-status ID [DEPLOYMENT_ID]` | Reads the durable status and error of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                                                     |
-| `occ agent runtime-credentials get ID`           | Reads whether generated runtime credentials are configured for the Agent.                                                                                        |
-| `occ agent runtime-credentials provision ID`     | Creates the initial generated runtime credential bundle (empty request body).                                                                                    |
-| `occ agent stop ID`                              | Requests a stop while retaining revisions and persistent state.                                                                                                  |
-| `occ agent runtime ID`                           | Reads Pod status, restarts, last termination, log sources and Events for a revision. See [runtime logs](#runtime-status-and-logs).                               |
-| `occ agent logs ID --source SOURCE`              | Prints one redacted page of container output, or follows it. See [runtime logs](#runtime-status-and-logs).                                                       |
+| Command                                                | What it does                                                                                                                                                     |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `occ installation get`                                 | Reads the singleton Installation.                                                                                                                                |
+| `occ installation deployment-inventory`                | Reads the complete Agent deployment inventory for a coordinated fleet operation.                                                                                 |
+| `occ namespace list`                                   | Lists authorized Namespaces. `ADOPTED NAMESPACE` is set only for adopted Kubernetes namespaces.                                                                  |
+| `occ namespace get ID`                                 | Reads one Namespace and its status.                                                                                                                              |
+| `occ namespace create NAME`                            | Creates a Namespace. `--existing-namespace K8S_NAME` requests adoption of an operator-prepared Kubernetes namespace and also requires Installation `administer`. |
+| `occ namespace delete ID`                              | Begins deleting an empty Namespace. Use `namespace get` to inspect the resulting state.                                                                          |
+| `occ configuration create --file FILE`                 | Creates a Configuration. The body contains `kind` and `values`.                                                                                                  |
+| `occ configuration get ID`                             | Reads a Configuration.                                                                                                                                           |
+| `occ configuration update ID --file FILE`              | Updates a Configuration; the body must replace `values`. Omit the create-only `kind`.                                                                            |
+| `occ configuration delete ID`                          | Deletes an unreferenced Configuration.                                                                                                                           |
+| `occ secret create --file FILE`                        | Stores a Namespace Secret from a protected JSON document.                                                                                                        |
+| `occ secret list`                                      | Lists Namespace Secret metadata, never values.                                                                                                                   |
+| `occ secret get ID`                                    | Reads Secret metadata, never its value.                                                                                                                          |
+| `occ secret update ID --file FILE`                     | Replaces the Secret value; consumers require explicit redeployment.                                                                                              |
+| `occ secret delete ID`                                 | Deletes an unreferenced Namespace Secret.                                                                                                                        |
+| `occ credential-source create --file FILE`             | Registers a Secret with the selected Credential Gateway. See [credential sources](credential-sources.md#register-a-source).                                      |
+| `occ credential-source list`                           | Lists credential sources without live gateway status.                                                                                                            |
+| `occ credential-source get ID`                         | Reads a credential source and its live gateway status, never its value.                                                                                          |
+| `occ credential-source delete ID`                      | Deletes an unreferenced credential source and the gateway's copy.                                                                                                |
+| `occ credential-source update ID [--file FILE]`        | Pushes current Secret values, or the replacement `secrets` in `FILE`, to the gateway copy. Running Agents use them after a redeploy.                             |
+| `occ iam role list`                                    | Lists Namespace Roles.                                                                                                                                           |
+| `occ iam role get ID`                                  | Reads a Namespace Role.                                                                                                                                          |
+| `occ iam role create --file FILE`                      | Creates a Namespace Role with explicit permissions.                                                                                                              |
+| `occ iam role delete ID`                               | Deletes an unreferenced Namespace Role.                                                                                                                          |
+| `occ iam access-binding list`                          | Lists Namespace AccessBindings.                                                                                                                                  |
+| `occ iam access-binding get ID`                        | Reads a Namespace AccessBinding.                                                                                                                                 |
+| `occ iam access-binding create --file FILE`            | Grants a Role to a principal for an exact resource.                                                                                                              |
+| `occ iam access-binding delete ID`                     | Deletes a Namespace AccessBinding.                                                                                                                               |
+| `occ agent delete ID`                                  | Begins asynchronous Agent deletion, including its owned runtime state.                                                                                           |
+| `occ agent list`                                       | Lists authorized Agents in the selected Namespace.                                                                                                               |
+| `occ agent get ID`                                     | Reads an Agent's desired state and active revision.                                                                                                              |
+| `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                          |
+| `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                          |
+| `occ agent deploy ID`                                  | Requests deployment and creates an immutable revision.                                                                                                           |
+| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs) with configuration generation, deployment status, and `*` on the active one.                              |
+| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                           |
+| `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                        |
+| `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                    |
+| `occ agent credential-withdrawal request ID SOURCE_ID` | Revokes a credential source from the Agent's active revision; see [withdrawal](credential-sources.md#withdraw-a-source-from-an-agent).                           |
+| `occ agent credential-withdrawal get ID SOURCE_ID`     | Shows whether that withdrawal is `pending` or `revoked`, who requested it, and the reason code of the latest attempt.                                            |
+| `occ agent stop ID`                                    | Requests a stop while retaining revisions and persistent state.                                                                                                  |
+| `occ agent runtime ID`                                 | Reads Pod status, restarts, last termination, log sources and Events for a revision. See [runtime logs](#runtime-status-and-logs).                               |
+| `occ agent logs ID --source SOURCE`                    | Prints one redacted page of container output, or follows it. See [runtime logs](#runtime-status-and-logs).                                                       |
 
 Use the [HTTP API](api.md) to work with ServiceAccounts and configured
 Backends; the CLI has no commands for these. Neither the CLI nor the HTTP API
@@ -105,25 +108,29 @@ claimed.
 ## Runtime status and logs
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the
-[Agent logs](../guides/topics/agent-logs.md) routes. Both use the Agent's active
-revision unless you pass `--revision ID`; without an active revision they use the
-latest revision and print a notice to stderr. `runtime` accepts `-o table|json|yaml`
+[Agent logs](../guides/topics/agent-logs.md) routes. Without `--revision ID`,
+both read the latest revision when it is newer than the active one and has Pods
+(a deploy in progress or a failed replacement, whose Pods hold the failure),
+else the active revision, else the latest revision. They print the revision they
+read to stderr; a reader without Agent `operate` cannot check for Pods, so the
+notice names the newer revision to pass. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
 Agent `administer` and `read` plus `read` on the revision, and each view is
 audited.
 
-| `occ agent logs` flag  | Meaning                                                                                                                           |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `--source SOURCE`      | Required: `gateway`, `agent` (dedicated Harness container) or `sandbox` (OpenShell policy decisions; no `--pod` or `--previous`). |
-| `--revision ID`        | Revision to read; defaults to the active revision, else the latest revision.                                                      |
-| `--pod NAME`           | Pod to read when the source has more than one.                                                                                    |
-| `--previous`           | Read the container instance before the last restart.                                                                              |
-| `--tail N`             | Lines from the end of the stream, 1 to 1000 (default 200).                                                                        |
-| `--since DURATION`     | Only lines newer than a Go duration such as `10m`, up to `24h`.                                                                   |
-| `--follow`             | Poll every 2 seconds with the view's cursor until Ctrl-C.                                                                         |
-| `-o text` or `-o json` | Text lines (default) or NDJSON, one API record per line.                                                                          |
+| `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--source SOURCE`      | Required: `gateway`, `agent` (dedicated Harness container) or `sandbox` (OpenShell policy decisions; no `--pod` or `--previous`).                                                                          |
+| `--revision ID`        | Revision to read; defaults as described above.                                                                                                                                                             |
+| `--pod NAME`           | Pod to read when the source has more than one.                                                                                                                                                             |
+| `--previous`           | Read the container instance before the last restart.                                                                                                                                                       |
+| `--tail N`             | Lines from the end of the stream, 1 to 1000 (default 200).                                                                                                                                                 |
+| `--since DURATION`     | Only lines newer than a Go duration such as `10m`, up to `24h`.                                                                                                                                            |
+| `--follow`             | Poll every 2 seconds with the view's cursor until Ctrl-C.                                                                                                                                                  |
+| `--level LEVEL`        | Only `error`, `warn`, `info` or `debug` lines and above, filtered by OCC after `--tail` (the last N lines are read, then filtered, so fewer may print); lines of unknown level stay. Default: every level. |
+| `-o text` or `-o json` | Text lines (default) or NDJSON, one API record per line.                                                                                                                                                   |
 
 Text output prints `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value` per line.
 Gap and withheld records are printed to stderr as `notice:` lines; in JSON mode

@@ -129,10 +129,10 @@ RWO filesystem claims and OCE's non-root UID/GID 1000. An EBS CSI StorageClass
 can serve this requirement as well as the explicitly selected Gateway class.
 Review other workloads before changing the cluster default. The worker stops
 predecessors before preparing a replacement; allow for termination and disk
-reattachment downtime. EBS availability-zone constraints still apply. Existing
-owned RWX workspace claims retain their original storage and data; RWX is no
-longer required for new Harness workspaces. Validate storage failover and
-node fencing separately for your deployment.
+reattachment downtime. EBS availability-zone constraints still apply. New and
+reused Harness claims require RWO. Before upgrading an installation with legacy
+RWX claims, follow the [storage transition prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces).
+Validate storage failover and node fencing separately for your deployment.
 
 ## Enable Console workspace files
 

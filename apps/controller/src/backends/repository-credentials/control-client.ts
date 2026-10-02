@@ -92,7 +92,7 @@ function githubId(value: unknown): value is string {
 function identity(value: unknown): string {
   if (
     typeof value !== "string" ||
-    Buffer.byteLength(value) < 1 ||
+    value.length === 0 ||
     Buffer.byteLength(value) > 512 ||
     hasControlCharacters(value)
   ) {
@@ -440,7 +440,8 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     maximumResponseBytes = 16 * 1024,
   ): Promise<Reply> {
     const body = input === undefined ? "" : JSON.stringify(input);
-    if (Buffer.byteLength(body) > 16 * 1024) {
+    const bodyBytes = Buffer.byteLength(body);
+    if (bodyBytes > 16 * 1024) {
       throw new RepositoryCredentialControlError(false);
     }
     try {
@@ -458,7 +459,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
               host: "localhost",
               connection: "close",
               "content-type": "application/json",
-              "content-length": Buffer.byteLength(body),
+              "content-length": bodyBytes,
               ...(admissionId === undefined ? {} : { "x-admission-id": admissionId }),
             },
           },

@@ -69,10 +69,11 @@ counts or bypass the limit.
 `--port` for parallel local previews and tests. These two small internal CLIs use
 built-in Node argument handling because each has one option and no subcommands.
 
-`site.mjs` owns mobile navigation, local Pagefind search, theme switching, code
-copying, heading links, Mermaid rendering, and Driver matrix filtering. Driver
-matrix pages use custom replacement blocks around generated GitHub fallback
-tables:
+`site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
+Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
+and Driver matrix filtering. Sidebar scroll uses session storage and leaves the
+navigation at the default position when storage is unavailable. Driver matrix
+pages use custom replacement blocks around generated GitHub fallback tables:
 
 - `<!-- compute-matrix:start -->` / `<!-- compute-matrix:end -->` reads
   `docs/assets/compute-driver-matrix.json` and is regenerated with

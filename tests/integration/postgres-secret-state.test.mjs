@@ -397,6 +397,131 @@ test("in-memory state persists Secret metadata and binding references without va
 });
 
 test(
+  "PostgreSQL OAuth Harness references enforce source ownership and retained revision lifetime",
+  requiresPostgres,
+  async (context) => {
+    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const store = new PostgresPlatformState(pool);
+    await ensureInstallation(store);
+    const { namespace, configuration, agent } = resources();
+    const source = secret(namespace.id);
+    const replacement = secret(namespace.id);
+    const foreign = resources();
+    const foreignSource = secret(foreign.namespace.id);
+    const auth = { method: "oauth", source: bindingValue(source).source };
+    await store.transact(async (state) => {
+      await state.namespaces.createNamespace(namespace);
+      await state.namespaces.createNamespace(foreign.namespace);
+      await state.configurations.createConfiguration(configuration);
+      await state.secrets.createSecret(source);
+      await state.secrets.createSecret(replacement);
+      await state.secrets.createSecret(foreignSource);
+      await state.agents.createAgent({ ...agent, harnessAuth: auth });
+    });
+    const stored = await pool.query(
+      "SELECT harness_auth, harness_auth_secret_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
+      [namespace.id, agent.id],
+    );
+    assert.deepEqual(stored.rows[0], { harness_auth: auth, harness_auth_secret_id: source.id });
+
+    // Execute writes directly so application validation cannot conceal a missing
+    // JSON constraint or the composite Namespace/Secret foreign key.
+    for (const [binding, code] of [
+      [{ ...auth, source: { ...auth.source, id: identifier("sec") } }, "23503"],
+      [{ ...auth, source: { ...auth.source, id: foreignSource.id } }, "23503"],
+      [{ ...auth, source: bindingValue(foreignSource).source }, "23514"],
+      [{ ...auth, refreshToken: "must-not-be-stored-in-database" }, "23514"],
+    ]) {
+      await assert.rejects(
+        pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
+          JSON.stringify(binding),
+          agent.id,
+        ]),
+        { code },
+      );
+    }
+    await assert.rejects(
+      pool.query("DELETE FROM occ.secrets WHERE namespace_id = $1 AND id = $2", [
+        namespace.id,
+        source.id,
+      ]),
+      { code: "23001", constraint: "agents_harness_auth_secret_owner" },
+    );
+
+    const snapshot = revisionFor(agent, configuration, source);
+    const revision = await store.transact((state) =>
+      state.revisions.createRevision({
+        ...snapshot,
+        harnessAuth: { ...snapshot.harnessAuth, method: "oauth" },
+      }),
+    );
+    assert.equal(revision.harnessAuth.method, "oauth");
+    await store.transact(async (state) => {
+      await state.agents.updateConfiguration(
+        namespace.id,
+        agent.id,
+        configuration.id,
+        undefined,
+        null,
+      );
+      assert.equal(await state.secrets.hasReferences(namespace.id, source.id), false);
+      await state.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId: namespace.id,
+        resourceId: revision.id,
+        actorId: "principal-oauth-state",
+      });
+      assert.equal(await state.secrets.hasReferences(namespace.id, source.id), true);
+    });
+    await assert.rejects(
+      store.transact((state) => state.secrets.deleteSecret(namespace.id, source.id)),
+      { name: "ScopeViolationError" },
+    );
+
+    // A queued revision retains its source after the draft changes. Once activated,
+    // the active revision retains it even after its controller work has completed.
+    await store.transact((state) =>
+      state.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
+    );
+    const completed = await pool.query(
+      `UPDATE occ.controller_work SET state = 'succeeded', completed_at = clock_timestamp(),
+         reason_code = 'REVISION_ACTIVATED', updated_at = clock_timestamp()
+       WHERE namespace_id = $1 AND revision_id = $2`,
+      [namespace.id, revision.id],
+    );
+    assert.equal(completed.rowCount, 1);
+    await store.transact(async (state) => {
+      await state.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
+        method: "oauth",
+        source: bindingValue(replacement).source,
+      });
+      assert.equal(await state.secrets.hasReferences(namespace.id, source.id), true);
+    });
+    await assert.rejects(
+      store.transact((state) => state.secrets.deleteSecret(namespace.id, source.id)),
+      { name: "ScopeViolationError" },
+    );
+    const nextSnapshot = revisionFor(agent, configuration, replacement, 2);
+    await store.transact(async (state) => {
+      const next = await state.revisions.createRevision({
+        ...nextSnapshot,
+        harnessAuth: { ...nextSnapshot.harnessAuth, method: "oauth" },
+      });
+      await state.agents.compareAndSetActiveRevision(namespace.id, agent.id, revision.id, next.id);
+      assert.equal(await state.secrets.hasReferences(namespace.id, source.id), false);
+      assert.equal(await state.secrets.deleteSecret(namespace.id, source.id), true);
+      assert.equal(await state.secrets.findSecret(namespace.id, source.id), undefined);
+    });
+  },
+);
+
+test(
   "PostgreSQL state persists Secret metadata and enforces binding dependencies",
   requiresPostgres,
   async (context) => {

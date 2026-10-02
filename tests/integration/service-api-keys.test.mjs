@@ -401,6 +401,61 @@ test("service API keys authenticate scoped automation without replacing sessions
       { env: adminEnv },
     );
     assert.deepEqual(JSON.parse(bindingRead.stdout), binding);
+    // A secret Role bound to the Namespace could never grant anything there: the CLI shows
+    // the API's refusal naming the Permissions instead of reporting a created binding.
+    const inapplicableFile = join(directory, "inapplicable-binding.json");
+    await writeFile(
+      inapplicableFile,
+      JSON.stringify({
+        subjectKind: "identity",
+        subjectId: boundAgent.servicePrincipalId,
+        roleId: role.id,
+        resourceKind: "namespace",
+        resourceId: namespaceId,
+      }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      run(occCli, ["iam", "access-binding", "create", "--file", inapplicableFile], {
+        env: adminEnv,
+      }),
+      (error) => {
+        assert.match(
+          error.stderr,
+          /HTTP 400\): INVALID_REQUEST: Role \S+ grants nothing on the namespace target: its Permissions \(secret:operate\)/,
+        );
+        return true;
+      },
+    );
+
+    // This Installation selects no Credential Gateway: the CLI names it and the reference
+    // instead of an opaque dependency failure.
+    policy.roles.push({
+      id: "cli-credential-source-creator",
+      namespaceId,
+      permissions: [{ action: "create", resourceKind: "credential_source" }],
+    });
+    policy.bindings.push({
+      id: "cli-credential-source-creator",
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "cli-credential-source-creator",
+    });
+    const sourceFile = join(directory, "credential-source.json");
+    await writeFile(sourceFile, JSON.stringify({ name: "openai-key", type: "openai" }), {
+      mode: 0o600,
+    });
+    await assert.rejects(
+      run(occCli, ["credential-source", "create", "--file", sourceFile], { env }),
+      (error) => {
+        assert.match(
+          error.stderr,
+          /HTTP 409\): CREDENTIAL_GATEWAY_NOT_CONFIGURED: This Installation has no Credential Gateway.*docs\/reference\/credential-sources\.md/,
+        );
+        return true;
+      },
+    );
     const runtimeInitial = await run(
       occCli,
       ["agent", "runtime-credentials", "get", agent.data.id, "-o", "json"],
@@ -1000,5 +1055,45 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
       .status,
     200,
+  );
+  const coverageDenial = auditSink.events.find(
+    (event) =>
+      event.action === "openclaw.auth.service-keys.create" &&
+      event.kind === "authorization_denial" &&
+      event.actorId === operator.principal.id,
+  );
+  assert.equal(coverageDenial.reasonCode, "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED");
+  assert.match(coverageDenial.decisionReason, /every grant of the target ServicePrincipal/);
+  assert.equal(coverageDenial.details.servicePrincipalId, bootstrapService.id);
+
+  // Revocation needs the same authority as issuance.
+  const revokePath = `/api/auth/service-keys/${bootstrapKey.data.id}`;
+  const revokeEscalation = await request("DELETE", revokePath, { headers: asOperator });
+  assert.equal(revokeEscalation.status, 403, JSON.stringify(revokeEscalation));
+  assert.equal(
+    (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
+      .status,
+    200,
+  );
+  const revokeDenial = auditSink.events.find(
+    (event) =>
+      event.action === "openclaw.auth.service-keys.revoke" &&
+      event.kind === "authorization_denial" &&
+      event.actorId === operator.principal.id,
+  );
+  assert.equal(revokeDenial.reasonCode, "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED");
+  assert.equal(revokeDenial.details.servicePrincipalId, bootstrapService.id);
+  assert.equal(revokeDenial.details.serviceKeyId, bootstrapKey.data.id);
+  // The operator can still revoke a key whose principal it covers.
+  assert.equal(
+    (await request("DELETE", `/api/auth/service-keys/${covered.data.id}`, { headers: asOperator }))
+      .status,
+    200,
+  );
+  assert.equal((await request("DELETE", revokePath, { headers: asAdmin })).status, 200);
+  assert.equal(
+    (await request("GET", namespacePath, { headers: { "x-api-key": bootstrapKey.data.key } }))
+      .status,
+    401,
   );
 });

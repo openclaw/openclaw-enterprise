@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -67,3 +68,16 @@ test(
     assert.deepEqual(volumes["demo-loki"], { sizeLimit: "1Gi" });
   },
 );
+
+test("demo guide install can be rerun after a cold-cache wait timeout", async () => {
+  const guide = await readFile(`${repository}docs/guides/observability/demo.md`, "utf8");
+  // A cold image cache can overrun the wait and leave a failed release. Plain
+  // `helm install` then refuses the reserved name; `upgrade --install` upgrades
+  // the failed release in place, and still refuses one left pending by an
+  // interrupted run.
+  assert.match(
+    guide,
+    /helm upgrade --install demo deploy\/helm\/openclaw-observability-demo \\\n\s+-n oce-observability-demo -f "\$OBS_FILES\/demo\.yaml" --wait --timeout 10m\n/,
+  );
+  assert.doesNotMatch(guide, /helm install demo/);
+});

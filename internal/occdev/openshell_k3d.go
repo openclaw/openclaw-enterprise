@@ -222,7 +222,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 	}
 	clusterAttempted = true
-	if err := r.run(ctx, "k3d", clusterArgs...); err != nil {
+	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
 		clusterCreationFailed = true
 		return err
 	}
@@ -291,7 +291,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	} else {
 		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
 	}
-	if err := writeInstallation(state, runtimeImage, assets, codexSeccompProfile); err != nil {
+	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
+	if err != nil {
+		return err
+	}
+	if err := writeInstallation(state, runtimeImage, assets, codexSeccompProfile, statusProxySource); err != nil {
 		return err
 	}
 	if routingPodCIDR != "" {
@@ -342,6 +346,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if state.BrowserPort != 0 {
 		consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
 		fmt.Fprintf(r.opts.Out, "Browser console: https://%s:%d/console/\nBrowser CA certificate: %s\n", consoleHost, state.BrowserPort, filepath.Join(directory, "browser-ca.crt"))
+	} else {
+		fmt.Fprintf(r.opts.Out, "Console: %s/console/\n", apiURL)
+	}
+	if routingPodCIDR == "" {
+		fmt.Fprintln(r.opts.Out, "Note: this profile installs no private gateway routing, so dedicated Agent deployments fail with DEPENDENCY_UNAVAILABLE. See docs/guides/deploy/openshell-credential-sources.md.")
 	}
 	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nCompute Driver: Kubernetes\nSandbox Driver: %s\nDeployment: Kubernetes only\nPlatform Namespace: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nAdministrator: admin@development.openclaw.invalid\nAdministrator password file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=%s OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, sandboxDriver, state.PlatformNamespace, apiURL, installation, state.KeyPath, filepath.Join(directory, "initial-admin-password"), filepath.Join(directory, "kubeconfig"), state.Cluster, sandboxDriver, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
 	return nil

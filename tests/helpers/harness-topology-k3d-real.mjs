@@ -95,7 +95,7 @@ const startupFailurePluginId = "codex-plugin:linear@openai-curated-remote";
 const deniedPort = 18791;
 const sharedWorkspaceVolumeName = "openclaw-workspace";
 const harnessWorkspaceClaimSize = "40Gi";
-const harnessWorkspaceSubPaths = Object.freeze(["generated-images", "workspace"]);
+const harnessWorkspaceSubPaths = Object.freeze(["codex-sessions", "generated-images", "workspace"]);
 const executeFile = promisify(execFile);
 const {
   kubectl,
@@ -2968,7 +2968,6 @@ async function assertKubernetesOtelLogs(topology) {
                 [OTEL_RESOURCE.revisionId]: topology.revision.id,
               },
               attributes: { "event.name": "codex.operational" },
-              body: "codex.operational",
             },
           ]),
     ],
@@ -3538,6 +3537,39 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
     );
   }
 
+  // A dedicated Gateway runs OpenClaw tools in its own Pod, whose workspace is empty; the
+  // thread must offer no tool that would list, edit or run commands there instead of the Harness.
+  // Earlier cases started other threads; this session's thread is the one holding its nonce.
+  const rolloutsBefore =
+    topology.harnessPod === undefined
+      ? undefined
+      : (await codexRollouts(topology)).filter(({ text }) => text.includes(nonce));
+  if (rolloutsBefore !== undefined) {
+    assert.equal(rolloutsBefore.length, 1, "the session must own exactly one Codex rollout");
+    assert.deepEqual(
+      rolloutsBefore[0].dynamicTools.filter((name) => gatewayLocalCodexTools.includes(name)),
+      [],
+      "Codex must not receive OpenClaw tools that act on the Gateway Pod",
+    );
+    // Stop/start replaces both Pods. The rollout lives on the Harness claim, so the Gateway's
+    // bound thread resumes instead of silently starting a new one.
+    const previousHarnessUid = topology.harnessPod.metadata.uid;
+    await kubectl(
+      "delete",
+      "pod",
+      topology.harnessPod.metadata.name,
+      "--namespace",
+      topology.placement,
+      "--wait=true",
+      "--timeout=120s",
+    );
+    topology.harnessPod = await waitForReadyAgentPod(
+      topology,
+      topology.revision.id,
+      previousHarnessUid,
+    );
+  }
+
   // Deleting the Pod destroys emptyDir state; only the owning durable claim can preserve these outcomes.
   const previousUid = topology.gatewayPod.metadata.uid;
   await kubectl(
@@ -3603,9 +3635,68 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
       `the post-restart ${role} turn must write to the retained session transcript`,
     );
   }
+  if (rolloutsBefore !== undefined) {
+    const rolloutsAfter = (await codexRollouts(topology)).filter(({ text }) =>
+      text.includes(afterNonce),
+    );
+    assert.deepEqual(
+      rolloutsAfter.map(({ file, threadId }) => ({ file, threadId })),
+      rolloutsBefore.map(({ file, threadId }) => ({ file, threadId })),
+      "the post-restart turn must resume the retained Codex thread, not start a new one",
+    );
+    assert.ok(
+      rolloutsAfter[0].text.includes(afterNonce),
+      "the resumed Codex thread must record the post-restart turn",
+    );
+  }
   context.diagnostic(
     `Gateway transcript, PNG ${artifactId}, and SQLite integrity survived Pod UID ${previousUid} -> ${topology.gatewayPod.metadata.uid}.`,
   );
+}
+
+// Matches the Gateway entrypoint's exclusions for a workspace-node Gateway.
+const gatewayLocalCodexTools = Object.freeze([
+  "ls",
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "exec",
+  "process",
+  "gateway_exec",
+  "gateway_process",
+  "terminal",
+  "openclaw",
+]);
+
+// Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.
+async function codexRollouts(topology) {
+  const output = await execNode(
+    topology.placement,
+    topology.harnessPod.metadata.name,
+    `
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const files = [];
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) walk(file);
+        else if (entry.name.endsWith(".jsonl")) files.push(file);
+      }
+    };
+    walk("/home/node/.codex/sessions");
+    process.stdout.write(JSON.stringify(files.sort().map((file) => {
+      const text = fs.readFileSync(file, "utf8");
+      const meta = JSON.parse(text.split("\\n")[0]).payload;
+      const names = (meta.dynamic_tools ?? []).flatMap((tool) =>
+        tool.type === "namespace" ? tool.tools.map(({ name }) => name) : [tool.name],
+      );
+      return { file, threadId: meta.id, dynamicTools: names, text };
+    })));
+  `,
+  );
+  return JSON.parse(output);
 }
 
 async function assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology) {

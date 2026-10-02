@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-09-30
-last_updated_session: 01a0f0d0-002a-7dc3-af73-e7d25dfe92e2
+updated: 2026-10-01
+last_updated_session: authoring-run/0f81a0c3-327f-4389-ae2e-89431878a2d7
 ---
 
 # GitHub Actions testing flow
@@ -58,7 +58,9 @@ test inventory, environment, required inputs, and preparation settings.
 
 CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In docs mode, `docs-checks` verifies checkout identity and formatting, then installs, checks, and builds documentation; it runs no conformance, integration, browser, Go, or other product tests. Full mode runs `checks-baseline`, the thirteen-lane matrix, and `runtime-image-fixture`. Kubernetes fixture and observability lanes use `ubuntu-22.04` for bridge netfilter support; `runtime-image-fixture` also uses it. The repository credential platform lane uses `blacksmith-16vcpu-ubuntu-2404`; remaining lanes and audit use `blacksmith-8vcpu-ubuntu-2404`.
 
-For a PR, the selector verifies the tested checkout and merge parents against the event base and head, then compares the base and tested trees. API reference outputs and Markdown under `docs/reference/api/` select full for `openapi:check`. Only nonempty changes to allowlisted regular Markdown files select docs mode; code, configuration, workflow, mixed or unknown changes and non-PR events select full. Missing or unverifiable policy or source evidence selects full or fails closed. Policy comes from the verified PR base; a base without it selects full. `CI Required` independently verifies mode and job outcomes: docs requires successful impact, audit and documentation jobs and skipped full test jobs; full requires successful impact, audit and all fifteen lanes and a skipped documentation job. Missing, failed, cancelled, or unexpectedly skipped selected jobs fail the gate. Full mode aggregates same-source test results; docs mode does not aggregate or invent test artifacts.
+For a PR, the selector verifies the tested checkout and merge parents against the event base and head, then compares the base and tested trees. Git path decoding preserves a leading UTF-8 BOM as filename data; paths outside the allowlist select full. API reference outputs and Markdown under `docs/reference/api/` select full for `openapi:check`. Only nonempty changes to allowlisted regular Markdown files select docs mode; code, configuration, workflow, mixed or unknown changes and non-PR events select full. Missing or unverifiable policy or source evidence selects full or fails closed. Policy comes from the verified PR base; a base without it selects full. `CI Required` independently verifies mode and job outcomes: docs requires successful impact, audit and documentation jobs and skipped full test jobs; full requires successful impact, audit and all fifteen lanes and a skipped documentation job. Missing, failed, cancelled, or unexpectedly skipped selected jobs fail the gate. Full mode aggregates same-source test results; docs mode does not aggregate or invent test artifacts.
+
+The impact job adds an advisory run summary with the selected mode and a fixed reason category. Categories distinguish non-PR events, unavailable event inspection, malformed event JSON, invalid base, head or tested commit identities, checkout or parent mismatch, unavailable base policy, Git inspection failure, empty or malformed diffs, unsupported type changes, non-UTF-8 filenames, ineligible changes and verified documentation selection. Bootstrap guard categories identify their source; selector execution failures fail the impact job. If selection fails or its reason is missing, malformed, or from an older base selector, the summary reports the affected information as unavailable. It includes no changed paths or arbitrary selector output.
 
 The PR can change the `pull_request` workflow definition loaded from its merge checkout, bypassing or replacing these steps despite base-loaded policy. A separately trusted required workflow or equivalent external enforcement is a deployment decision, not an established source property. Hosted behavior, including fork and required-check enforcement, remains unverified.
 
@@ -156,14 +158,18 @@ Per-file cleanup releases its disposable database; job cleanup removes only stat
 
 - [Testing guide](../testing/README.md)
 - [CI suite map](../../scripts/ci/test-suites.json)
-- [Integration implementation specification](../../specs/19-github-actions-test-coverage.md)
-- [Upstream infrastructure report](../../specs/reports/openclaw-testing-infrastructure.md)
+- [Integration implementation specification](../../specs/plans/19-github-actions-test-coverage/index.md)
+- [Upstream infrastructure report](../../specs/plans/19-github-actions-test-coverage/source-audit.md)
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 02:34: Document the advisory impact summary in the accompanying changes. (authoring-run/0f81a0c3-327f-4389-ae2e-89431878a2d7 - c61836797191a0924671eaaec074863fe2d80cfe)
+
+- 2026-10-01 01:06: Preserve Git path byte identity in the selector and document its coverage decision in the accompanying changes. (authoring-run/2403db12-cdf4-4070-aece-2f4b45ff0234 - 5e0906ccd42473596c2006474adf199d42ab74df)
 
 - 2026-09-29 22:55: Split browser, PostgreSQL authentication, and image model-probe lanes; cache hosted controller/runtime builds while retaining required result accounting. (01a0f0d0-002a-7dc3-af73-e7d25dfe92e2 - b8d7e48f5837d11e54e04dce40650f7ccc5100f0)
 

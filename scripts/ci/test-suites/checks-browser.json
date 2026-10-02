@@ -7,6 +7,9 @@
       "path": "tests/browser/console-agents.test.mjs"
     },
     {
+      "path": "tests/browser/console-codex-oauth.test.mjs"
+    },
+    {
       "path": "tests/browser/console-agent-repositories.test.mjs"
     },
     {

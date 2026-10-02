@@ -15,6 +15,14 @@ revocation record the administrator and the non-secret key and principal IDs,
 not the credential. The audit event contract does not represent a general log of
 all successful reads, Agent prompts, or model responses.
 
+The controller worker records a `reconcile` event when queued work changes
+state: each retry, permanent failure, expired claim, and completion. A pass that
+leaves work waiting, such as a deployment whose runtime is still starting, is
+recorded only when its result differs from the work item's previous one, so a
+deployment that waits for minutes writes one waiting event, not one per check.
+Authorization denials and lifecycle events such as revision activation are
+always recorded.
+
 Reading an Agent's container output is the exception among reads. Each
 [runtime log view](agent-logs.md) records one `openclaw.agents.runtime_logs.view`
 event before any output is read, with the version, source, Pod, container,

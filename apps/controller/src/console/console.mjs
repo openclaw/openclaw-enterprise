@@ -31,7 +31,59 @@ let externalSessionBinding = false;
 const externalAttemptStorageKeys = {
   github: "occ.console.githubAttempt",
   google: "occ.console.googleAttempt",
+  oidc: "occ.console.oidcAttempt",
 };
+// The last discovered OIDC label, kept per tab so messages after the IdP round trip, which
+// reloads the Console before discovery answers, name the provider the person chose.
+const oidcLabelStorageKey = "occ.console.oidcLabel";
+// Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
+// GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
+function providerIcon(provider) {
+  if (provider !== "github" && provider !== "google") {
+    return null;
+  }
+  const namespace = "http://www.w3.org/2000/svg";
+  const node = (tag, attributes) => {
+    const item = document.createElementNS(namespace, tag);
+    for (const [name, value] of Object.entries(attributes)) {
+      item.setAttribute(name, value);
+    }
+    return item;
+  };
+  const svg = node("svg", {
+    class: "auth-provider-icon",
+    "aria-hidden": "true",
+    focusable: "false",
+    viewBox: provider === "github" ? "0 0 24 24" : "0 0 23.5 24",
+  });
+  if (provider === "github") {
+    svg.append(
+      node("path", {
+        d: "M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943",
+      }),
+    );
+    return svg;
+  }
+  const clip = node("clipPath", { id: "auth-google-logo-clip" });
+  clip.append(
+    node("path", {
+      d: "M12 10v4.5h6.47c-.5 2.7-3 4.74-6.47 4.74-3.9 0-7.1-3.3-7.1-7.25S8.1 4.75 12 4.75c1.8 0 3.35.6 4.6 1.8l3.4-3.4C18 1.2 15.24 0 12 0 5.4 0 0 5.4 0 12s5.4 12 12 12c7 0 11.5-4.9 11.5-11.7 0-.8-.1-1.54-.2-2.3z",
+    }),
+  );
+  const filter = node("filter", { id: "auth-google-logo-blur" });
+  filter.append(node("feGaussianBlur", { stdDeviation: "1" }));
+  const group = node("g", { "clip-path": "url(#auth-google-logo-clip)" });
+  const colors = node("foreignObject", {
+    filter: "url(#auth-google-logo-blur)",
+    width: "28",
+    height: "28",
+    transform: "translate(-2 -2)",
+  });
+  colors.append(element("div", { className: "auth-google-colors" }));
+  group.append(colors, node("path", { fill: "#3186FF", d: "M11 8h16v8H11z" }));
+  svg.append(clip, filter, group);
+  return svg;
+}
 const externalProviders = {
   github: {
     label: "GitHub",
@@ -43,7 +95,48 @@ const externalProviders = {
     origin: "https://accounts.google.com",
     pathname: "/o/oauth2/v2/auth",
   },
+  // The operator configures the IdP: discovery supplies its label and authorization
+  // endpoint, and the start URL must use exactly that HTTPS endpoint.
+  oidc: {
+    label: rememberedOidcLabel() ?? "single sign-on",
+    origin: null,
+    pathname: null,
+  },
 };
+
+// 1 to 40 code points, as the server's discovery schema allows.
+function validOidcLabel(label) {
+  const length = [...label].length;
+  return length > 0 && length <= 40;
+}
+function rememberedOidcLabel() {
+  try {
+    const label = sessionStorage.getItem(oidcLabelStorageKey);
+    return typeof label === "string" && validOidcLabel(label) ? label : null;
+  } catch {
+    return null;
+  }
+}
+
+// Adopts discovery's OIDC settings; false when they are missing or malformed.
+function configureOidc(signIn) {
+  try {
+    const endpoint = new URL(signIn?.authorizationUrl);
+    const label = signIn?.label;
+    if (endpoint.protocol !== "https:" || typeof label !== "string" || !validOidcLabel(label)) {
+      return false;
+    }
+    externalProviders.oidc = { label, origin: endpoint.origin, pathname: endpoint.pathname };
+    try {
+      sessionStorage.setItem(oidcLabelStorageKey, label);
+    } catch {
+      // Without tab storage, post-redirect messages use the default label.
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 const bindingValue = /^[A-Za-z0-9_-]{43}$/;
 
 // A failed provider sign-in. Where password sign-in is recovery-only, ordinary users
@@ -462,6 +555,7 @@ function showLogin(message = "", returnPath = null) {
         }
         const authorization = new URL(result.url);
         if (
+          origin === null ||
           authorization.origin !== origin ||
           authorization.pathname !== pathname ||
           (externalSessionBinding && !bindingValue.test(result.attemptId ?? ""))
@@ -486,10 +580,16 @@ function showLogin(message = "", returnPath = null) {
         setDisabled(false);
       }
     });
+    const icon = providerIcon(provider);
+    if (icon !== null) {
+      control.prepend(icon);
+    }
     return control;
   };
   const github = providerButton("github");
   const google = providerButton("google");
+  // Created once discovery has supplied its label and endpoint.
+  let oidc = null;
   const recovery = button(
     "Recovery sign-in",
     () => {
@@ -505,6 +605,9 @@ function showLogin(message = "", returnPath = null) {
     submit.disabled = disabled;
     github.disabled = disabled;
     google.disabled = disabled;
+    if (oidc !== null) {
+      oidc.disabled = disabled;
+    }
   }
   const providers = element("div", { className: "auth-providers" });
   let pending = false;
@@ -576,8 +679,16 @@ function showLogin(message = "", returnPath = null) {
         if (available?.google === true) {
           providers.append(google);
         }
+        if (available?.oidc === true && configureOidc(available.oidcSignIn)) {
+          oidc = providerButton("oidc");
+          oidc.disabled = pending;
+          providers.append(oidc);
+        }
         // Only an explicit false hides the form: failed or older discovery keeps it.
-        if (available?.password === false && (available.github || available.google)) {
+        if (
+          available?.password === false &&
+          (available.github || available.google || available.oidc)
+        ) {
           recoveryOnly = true;
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
@@ -1060,6 +1171,31 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
     }
     shell = renderShell(current.feature);
+    if (current.agentId && error.status === 404 && current.namespace === null) {
+      // A typed or shared link has no Namespace, so the console read the Agent in
+      // the default selection. Agent IDs are unique: look in the others.
+      panel(shell.view, "Loading…", "Looking for this Agent in your other Namespaces.");
+      const located = await locateAgentNamespace(current.agentId, namespaceId);
+      if (!lifetime.isCurrent(active)) {
+        return;
+      }
+      if (located.namespaceId) {
+        navigate(current.target, located.namespaceId, true);
+        return;
+      }
+      const selected = namespaces.find((item) => item.id === namespaceId);
+      panel(
+        shell.view,
+        located.complete ? "Agent unavailable" : "Agent not in this Namespace",
+        located.complete
+          ? "None of your Namespaces has this Agent. It may have been deleted, or you no longer have access to it."
+          : `This Agent is not in ${selected ? `the ${selected.name} Namespace` : "the selected Namespace"}. Choose the Namespace that contains it.`,
+        located.complete ? "Back to Agents" : "Switch Namespace",
+        () => (located.complete ? navigate("agents") : switchNamespace()),
+        error.requestId,
+      );
+      return;
+    }
     if (current.agentId && error.status === 404) {
       panel(
         shell.view,
@@ -1083,12 +1219,15 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
               : current.feature === "backends"
                 ? "Backend discovery unavailable"
                 : "Request unavailable";
+    const agentDenied = current.agentId && error.status === 403;
     panel(
       shell.view,
       title,
-      error.status === 403
-        ? "You do not have permission to read this collection."
-        : "The read could not be completed. Retry to check current access and saved state.",
+      agentDenied
+        ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
+        : error.status === 403
+          ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+          : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),
       error.requestId,
@@ -1099,6 +1238,34 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       shell.view.setAttribute("aria-busy", "false");
     }
   }
+}
+
+// Bounds the reads one Namespace-less Agent link can cause.
+const agentLookupNamespaceLimit = 20;
+
+// Finds the readable Namespace that holds agentId, other than the one already
+// read. complete is true when every other readable Namespace answered that it
+// has no such Agent.
+async function locateAgentNamespace(agentId, excluded) {
+  const candidates = namespaces.filter((item) => item.id !== excluded);
+  const probed = candidates.slice(0, agentLookupNamespaceLimit);
+  const results = await Promise.allSettled(
+    probed.map((item) =>
+      request(`/namespaces/${encodeURIComponent(item.id)}/agents/${encodeURIComponent(agentId)}`),
+    ),
+  );
+  const found = probed.filter(
+    (_, index) => results[index].status === "fulfilled" && results[index].value?.id === agentId,
+  );
+  if (found.length === 1) {
+    return { namespaceId: found[0].id, complete: true };
+  }
+  const complete =
+    candidates.length === probed.length &&
+    results.every(
+      (result) => result.status === "rejected" && [403, 404].includes(result.reason?.status),
+    );
+  return { namespaceId: null, complete };
 }
 
 async function revalidateMountedAgent(current) {

@@ -2,13 +2,17 @@ package occcli
 
 import (
 	"bytes"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 const (
@@ -117,19 +121,78 @@ func TestSecretListShowsNamespaceSecrets(t *testing.T) {
 }
 
 func agentRevisionsResponse() string {
-	return `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","createdAt":"2026-09-30T01:00:00.000Z"},` +
-		`{"id":"` + testRevision1ID + `","revision":1,"agentId":"` + testAgentID + `","createdAt":"2026-09-30T00:00:00.000Z"}]`
+	return `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z"},` +
+		`{"id":"` + testRevision1ID + `","revision":1,"agentId":"` + testAgentID + `","configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z"}]`
 }
 
-func TestAgentRevisionsListsDeploymentIDs(t *testing.T) {
-	out, _, err := runOCC(t, map[string]string{
-		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions": agentRevisionsResponse(),
-	}, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+// agentRevisionResponses serves an Agent whose active revision is revision 1,
+// a failed revision 2, and the revision list.
+func agentRevisionResponses() map[string]string {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	return map[string]string{
+		"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
+		"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
+		"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"}`,
+		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
+	}
+}
+
+func TestAgentRevisionsTellsRevisionsApart(t *testing.T) {
+	out, requested, err := runOCC(t, agentRevisionResponses(), "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err != nil {
+		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected a header and two rows:\n%s", out)
+	}
+	if fields := strings.Fields(lines[0]); !slices.Equal(fields, []string{"ACTIVE", "ID", "REVISION", "GENERATION", "STATUS", "CONFIGURATION", "CREATED"}) {
+		t.Fatalf("unexpected header %q", lines[0])
+	}
+	if fields := strings.Fields(lines[1]); !slices.Equal(fields, []string{testRevision2ID, "2", "2", "failed", "-", "2026-09-30T01:00:00.000Z"}) {
+		t.Fatalf("revision 2 must be inactive, generation 2, failed: %q", lines[1])
+	}
+	if fields := strings.Fields(lines[2]); !slices.Equal(fields, []string{"*", testRevision1ID, "1", "1", "succeeded", "-", "2026-09-30T00:00:00.000Z"}) {
+		t.Fatalf("revision 1 must be active, generation 1, succeeded: %q", lines[2])
+	}
+}
+
+func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
+	for _, format := range []string{"json", "yaml"} {
+		out, _, err := runOCC(t, agentRevisionResponses(), "--namespace", testNamespaceID, "-o", format, "agent", "revisions", testAgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rows []map[string]any
+		if format == "json" {
+			err = json.Unmarshal([]byte(out), &rows)
+		} else {
+			err = yaml.Unmarshal([]byte(out), &rows)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", format, err, out)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("%s: expected two revisions:\n%s", format, out)
+		}
+		if rows[0]["active"] != false || rows[0]["deploymentStatus"] != "failed" {
+			t.Fatalf("%s: revision 2 = %v", format, rows[0])
+		}
+		if rows[1]["active"] != true || rows[1]["deploymentStatus"] != "succeeded" {
+			t.Fatalf("%s: revision 1 = %v", format, rows[1])
+		}
+	}
+}
+
+func TestAgentRevisionsToleratesUnreadableDeploymentStatus(t *testing.T) {
+	responses := agentRevisionResponses()
+	delete(responses, "GET /namespaces/"+testNamespaceID+"/agents/"+testAgentID+"/deployments/"+testRevision2ID)
+	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, testRevision1ID) || !strings.Contains(out, testRevision2ID) {
-		t.Fatalf("expected both revision IDs:\n%s", out)
+	if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
+		t.Fatalf("expected both revisions with the readable status:\n%s", out)
 	}
 }
 
@@ -145,6 +208,48 @@ func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	}
 	if !strings.Contains(out, "failed") || !strings.Contains(out, "CONVERGENCE_DEADLINE_EXCEEDED") {
 		t.Fatalf("expected the latest deployment failure:\n%s", out)
+	}
+}
+
+func TestDeploymentStatusTableShowsStartupWarnings(t *testing.T) {
+	// D331: a succeeded deployment that disabled a plugin must not look clean.
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses := map[string]string{
+		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
+			`","namespaceId":"` + testNamespaceID + `","status":"succeeded","warnings":[` +
+			`{"code":"PLUGIN_AUTH_REQUIRED","pluginId":"linear@openai-curated-remote"},` +
+			`{"code":"PLUGIN_INSTALL_FAILED","pluginId":"diffs@openai-curated"}]}`,
+	}
+	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "WARNINGS") {
+		t.Fatalf("expected a WARNINGS column:\n%s", out)
+	}
+	if !strings.HasSuffix(lines[1], "linear@openai-curated-remote (PLUGIN_AUTH_REQUIRED), diffs@openai-curated (PLUGIN_INSTALL_FAILED)") {
+		t.Fatalf("expected each warning in the table row:\n%s", out)
+	}
+
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
+		`","namespaceId":"` + testNamespaceID + `","status":"succeeded"}`
+	out, _, err = runOCC(t, responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) != 2 || len(strings.Fields(lines[1])) != 5 || !strings.HasSuffix(lines[1], " -") {
+		t.Fatalf("expected empty ERROR and WARNINGS cells:\n%s", out)
+	}
+
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `{"deploymentId":"` + testRevision2ID +
+		`","status":"succeeded","warnings":[{"code":"PLUGIN_AUTH_REQUIRED","pluginId":"linear@openai-curated-remote"}]}`
+	out, _, err = runOCC(t, responses, "--namespace", testNamespaceID, "--output", "json", "agent", "deployment-status", testAgentID, testRevision2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"pluginId": "linear@openai-curated-remote"`) {
+		t.Fatalf("expected structured warnings unchanged:\n%s", out)
 	}
 }
 

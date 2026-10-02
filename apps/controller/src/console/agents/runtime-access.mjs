@@ -9,9 +9,9 @@ function unavailableText(status) {
     case "stopped":
       return "Start this Agent before opening OpenClaw.";
     case "unsupported":
-      return "This Agent does not expose a supported OpenClaw endpoint.";
+      return "OpenClaw is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.";
     case "unavailable":
-      return "OpenClaw access is unavailable because OCE could not load an active AgentRevision. Check this Agent’s deployment, then refresh access.";
+      return "OpenClaw is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.";
     default:
       return "OpenClaw access is unavailable.";
   }

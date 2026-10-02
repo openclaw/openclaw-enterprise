@@ -30,6 +30,10 @@ they keep their URLs and remain searchable.
 
 ## Write and name the page
 
+For proposals and implementation planning, follow
+[RFCs and implementation plans](specifications.md), including numbering,
+document ownership, and historical preservation.
+
 Use a short sidebar label: `Overview`, `Configure`, and `Troubleshoot` work when
 their group supplies the subject. Give the article a descriptive sentence-case
 title, such as `Troubleshoot Agents`, so it makes sense from search or a direct

@@ -136,8 +136,10 @@ function matches(secret: string, email: string, entry: Entry): boolean {
  * first entry that verifies.
  *
  * `accountState` is read at most once, and only when an entry's MAC matches this email. A
- * failed read returns undefined (the shared lane) rather than failing the attempt: the
- * cookie only ever relaxes admission, so it fails safe.
+ * failed or refused read returns undefined, never a verified exemption. The controller
+ * bounds the read with `admitStateRead` and retains its signed keys as additional shared-
+ * lane constraints, so losing proof cannot reopen an already-spent device allowance.
+ * Signed keys alone constrain resource use; only fresh state verifies the exemption.
  */
 export async function verifyKnownDevice(
   secret: string,
@@ -145,6 +147,10 @@ export async function verifyKnownDevice(
   cookieValue: string | undefined,
   now: number,
   accountState: KnownDeviceAccountState,
+  admitStateRead?: (
+    signedEntryKeys: readonly string[],
+    read: () => Promise<string | undefined>,
+  ) => Promise<string | undefined>,
 ): Promise<{ readonly deviceKey: string } | undefined> {
   const candidates = currentEntries(cookieValue, now).filter((entry) =>
     matches(secret, email, entry),
@@ -154,7 +160,10 @@ export async function verifyKnownDevice(
   }
   let state: string | undefined;
   try {
-    state = await accountState(normalizedEmail(email));
+    const read = () => accountState(normalizedEmail(email));
+    state = await (admitStateRead === undefined
+      ? read()
+      : admitStateRead([...new Set(candidates.map((entry) => entry.mac))], read));
   } catch {
     return undefined;
   }

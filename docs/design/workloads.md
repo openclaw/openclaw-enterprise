@@ -116,7 +116,7 @@ data plane: selected model authorization, app-server transport, node enrollment
 and execution configuration. Harnesses cannot write canonical CP sources, routes
 or active-revision state. Current raw model-token delivery and bearer app-server
 transport remain explicit limitations, not brokered or mutually authenticated
-workload identity. See the [implementation follow-ups](../../specs/36-control-plane-gateways-plan.md#open-work-and-release-boundaries).
+workload identity. See the [implementation follow-ups](../../specs/plans/36-control-plane-gateways-plan.md#open-work-and-release-boundaries).
 
 ## Agent deployment
 

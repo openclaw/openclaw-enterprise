@@ -149,19 +149,35 @@ Driver-owned pipelines also have separate guarantees.
 
 The bundled Collector keeps transport-derived identity before parsing untrusted
 JSON. It classifies fixed OCC event names, `gateway` subsystem records, Codex
-stderr records from `codex_app_server`, and the Gateway and Harness wrappers'
-stderr diagnostics: `runtime.startup_phase` keeps `occ.startup.phase`, and
+stderr records from `codex_app_server` plus Codex warnings and errors (not
+`codex_otel`), `codex.turn` and `codex.tool_call`, and the Gateway and Harness wrappers'
+stderr diagnostics: `runtime.startup_phase` keeps `occ.startup.phase` (and a
+failed phase's cause as `occ.code`, such as `PLUGIN_NOT_IN_CATALOG`), and
 `runtime.workspace_node` and the model probes keep `occ.code`. A failed phase or
 non-`READY` probe is WARN, so a startup failure's cause reaches the backend.
+`runtime.gateway_settings_overridden` is WARN with no attributes: the names of
+the replaced owner settings stay in `occ agent logs`.
 Kubernetes resources drop the `latest` image tag that metadata extraction reports
 for a digest-only image. For retained records it keeps allowlisted
-attributes and replaces the body with the event name, stripping arbitrary content.
+attributes and replaces the body with the event name, stripping arbitrary content;
+Codex turn and tool-call bodies are fixed text, and a `codex.operational` body
+keeps a short plain-text Codex message only from `codex_app_server` or the fixed
+`codex_core::responses_retry` retry messages; a Codex warning without such a
+message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and bounded `occ.code`;
 the local diagnostic message is excluded from remote export.
 `authentication.sign-in-limit-warning` keeps `occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
-hash is not exported. It drops malformed,
+hash is not exported. `authentication.provider-unavailable-warning` keeps
+`occ.sign_in.provider`, `.step`, `.cause` and `.status`, plus a transport code as
+`occ.code`; the provider instance ID stays local. It drops malformed,
 oversized, unclassified, unspecified-severity, and Codex protocol stdout records.
+OpenClaw's Gateway startup failure (an `error` record with no subsystem whose
+message starts `Gateway failed to start:`) is exported as
+`gateway.startup_failed`, so a crash-looping Gateway's cause reaches the backend;
+its body keeps the message under the same plain-text rules as `codex.operational`.
+Those rules also reject a message with an argv credential flag (`-u`, `--password`)
+or a `user:password` pair.
 Collector-only configuration holds exporter credentials and TLS settings. Finite
 queues and retries make logs best-effort; outage or overflow cannot block API
 service, worker reconciliation, or PostgreSQL audit persistence.
@@ -195,13 +211,15 @@ for panels, correlation, and authorization limits.
 - [Security controls](../reference/security.md)
 - [Observability guide](../guides/observability.md)
 - [Deployment guide](../guides/deploy.md)
-- [Common OpenTelemetry logging spec](../../specs/20-common-otel-logging.md)
+- [Common OpenTelemetry logging spec](../../specs/plans/20-common-otel-logging/index.md)
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 14:45: Export sign-in provider outage warnings with bounded provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)
 
 - 2026-09-25 11:31: Documented query-time operational summaries and filtering in the accompanying demo dashboard change. (redacted - 1a458b227585c572ec0ac70fd10efc3834165075)
 

@@ -17,8 +17,8 @@ continues through [revision admission](configuration-driver/persistence-and-revi
 
 - [Installation loader](../../apps/controller/src/composition/installation-config.ts):
   `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
-  Bundled defaults are **Standard Codex** and **Standard OpenClaw**; custom DevDay
-  files are loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
+  Bundled defaults are **Standard Codex** and **Standard OpenClaw**; the custom SWE Agent
+  file is loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
   name/template definitions to OCC and call `initializeDefaultPresets`.
 
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.

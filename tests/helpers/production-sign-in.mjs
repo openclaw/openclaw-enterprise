@@ -153,6 +153,50 @@ export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
   });
 }
 
+/**
+ * An Auth0-shaped OIDC issuer for the fixtures: the trailing slash is part of `iss`, and all
+ * four URLs share its host, as the parser and chart require.
+ */
+export const fixtureOidcIssuer = Object.freeze({
+  issuer: "https://tenant.idp.example.test/",
+  authorizationUrl: "https://tenant.idp.example.test/authorize",
+  tokenUrl: "https://tenant.idp.example.test/oauth/token",
+  jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
+});
+
+/** The example values plus generic OIDC sign-in, the OIDC counterpart of googleUpgradeValues. */
+export function oidcUpgradeValues(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
+  return {
+    "auth.oidc.enabled": "true",
+    "auth.oidc.issuer": issuer.issuer,
+    "auth.oidc.authorizationUrl": issuer.authorizationUrl,
+    "auth.oidc.tokenUrl": issuer.tokenUrl,
+    "auth.oidc.jwksUrl": issuer.jwksUrl,
+    ...Object.fromEntries(Object.entries(extra).map(([key, value]) => [`auth.oidc.${key}`, value])),
+    "auth.recoveryUserId": recoveryUserId,
+    "agentNativeAdmin.enabled": "false",
+  };
+}
+
+/** The API Pod's settings for oidcUpgradeValues. The recovery name is shared with GitHub. */
+export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
+  return Object.freeze({
+    OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
+    OCC_AUTH_BASE_URL: consoleOrigin,
+    OCC_AUTH_OIDC_ISSUER: issuer.issuer,
+    OCC_AUTH_OIDC_AUTHORIZATION_URL: issuer.authorizationUrl,
+    OCC_AUTH_OIDC_TOKEN_URL: issuer.tokenUrl,
+    OCC_AUTH_OIDC_JWKS_URL: issuer.jwksUrl,
+    OCC_AUTH_OIDC_CLIENT_ID: secretRef("occ-oidc-login", "client-id"),
+    OCC_AUTH_OIDC_CLIENT_SECRET: secretRef("occ-oidc-login", "client-secret"),
+    ...(extra.tokenAuth === undefined ? {} : { OCC_AUTH_OIDC_TOKEN_AUTH: extra.tokenAuth }),
+    ...(extra.displayName === undefined ? {} : { OCC_AUTH_OIDC_DISPLAY_NAME: extra.displayName }),
+    OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId,
+    OCC_AGENT_NATIVE_ADMIN_ENABLED: "false",
+    OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
+  });
+}
+
 function resolveSettings(settings, secrets) {
   const environment = {};
   for (const [name, value] of Object.entries(settings)) {
@@ -520,6 +564,160 @@ export async function googleSignIn(
   const bindingCookie = cookieHeaderFromSetCookie(start.headers["set-cookie"]);
   const callback = await app.inject({
     url: `/api/auth/providers/google/callback?state=${state}&code=${code}`,
+    remoteAddress,
+    headers: { cookie: bindingCookie },
+  });
+  return { start, callback, attemptId, url, state, bindingCookie };
+}
+
+/**
+ * A local stand-in for one OIDC issuer's token and JWKS URLs (`fixtureOidcIssuer` by
+ * default). Only fetches to the issuer's origin are answered here. It plays the IdP the
+ * way fakeGoogle plays Google: `authorize(url, options)` captures the authorization
+ * request and returns a one-use code for `subject` (`codeLength` pads it, as Entra's long
+ * codes do); /token checks the client credentials (post or basic, per `tokenAuth`), code,
+ * redirect URI and S256 verifier, then returns an RS256 ID token for `issuer.issuer`
+ * echoing the nonce. Per-code `claims` override ID-token claims; `key: "foreign"` signs
+ * with an unpublished key. `rotate()` replaces the published key. `issuer` may be
+ * reassigned to model an issuer change, and `tokenAuth`
+ * to switch the credential method. Modes: "up" and "error" (503). It proves OCE
+ * against its own reading of OIDC, not any IdP's behaviour.
+ */
+export function fakeOidc(
+  t,
+  { clientId, clientSecret, issuer = fixtureOidcIssuer, tokenAuth = "client_secret_post" } = {},
+) {
+  const keyPair = (kid) => {
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const { n, e } = publicKey.export({ format: "jwk" });
+    return { kid, privateKey, jwk: { kid, kty: "RSA", alg: "RS256", use: "sig", n, e } };
+  };
+  let generation = 0;
+  let key = keyPair(`fixture-oidc-kid-${generation}`);
+  const foreign = keyPair("fixture-oidc-foreign");
+  const codes = new Map();
+  const fixture = {
+    mode: "up",
+    requests: 0,
+    issuer,
+    tokenAuth,
+    authorizations: [],
+    tokens: [],
+    get jwks() {
+      return { keys: [key.jwk] };
+    },
+    rotate() {
+      generation += 1;
+      key = keyPair(`fixture-oidc-kid-${generation}`);
+    },
+    authorize(url, { subject, claims = {}, key: signer = "published", codeLength = 0 }) {
+      const request = Object.fromEntries(new URL(url).searchParams);
+      fixture.authorizations.push(request);
+      const prefix = `fixture-oidc-code-${randomBytes(12).toString("base64url")}`;
+      const code = prefix.padEnd(codeLength, "c");
+      codes.set(code, { request, subject, claims, signer, key });
+      return code;
+    },
+  };
+  function idToken({ request, subject, claims, signer, key: issuedWith }) {
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: fixture.issuer.issuer,
+      aud: clientId,
+      sub: subject,
+      nonce: request.nonce,
+      iat: now - 5,
+      exp: now + 3600,
+      ...claims,
+    };
+    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const used = signer === "foreign" ? foreign : issuedWith;
+    const input = `${encode({ alg: "RS256", kid: used.kid, typ: "JWT" })}.${encode(payload)}`;
+    return `${input}.${sign("sha256", Buffer.from(input), used.privateKey).toString("base64url")}`;
+  }
+  const json = (status, body) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  async function answer(request) {
+    fixture.requests += 1;
+    if (fixture.mode === "error") {
+      return json(503, {});
+    }
+    const url = new URL(request.url).href;
+    if (url === fixture.issuer.jwksUrl) {
+      return request.method === "GET" ? json(200, fixture.jwks) : json(405, {});
+    }
+    if (url !== fixture.issuer.tokenUrl) {
+      return json(404, {});
+    }
+    const form = new URLSearchParams(await request.text());
+    const basic = /^Basic (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
+    const [basicId, basicSecret] =
+      basic === undefined
+        ? []
+        : Buffer.from(basic, "base64").toString("utf8").split(":").map(decodeURIComponent);
+    const credentials =
+      fixture.tokenAuth === "client_secret_basic"
+        ? !form.has("client_secret") && basicId === clientId && basicSecret === clientSecret
+        : basic === undefined &&
+          form.get("client_id") === clientId &&
+          form.get("client_secret") === clientSecret;
+    const grant = codes.get(form.get("code") ?? "");
+    codes.delete(form.get("code") ?? "");
+    const challenge = createHash("sha256")
+      .update(form.get("code_verifier") ?? "")
+      .digest("base64url");
+    fixture.tokens.push(Object.fromEntries(form));
+    if (
+      request.method !== "POST" ||
+      form.get("grant_type") !== "authorization_code" ||
+      !credentials ||
+      grant === undefined ||
+      grant.request.client_id !== clientId ||
+      grant.request.scope !== "openid" ||
+      grant.request.code_challenge_method !== "S256" ||
+      grant.request.code_challenge !== challenge ||
+      form.get("redirect_uri") !== grant.request.redirect_uri
+    ) {
+      return json(400, { error: "invalid_grant" });
+    }
+    return json(200, {
+      access_token: `fixture-oidc-access-${randomBytes(12).toString("base64url")}`,
+      token_type: "Bearer",
+      expires_in: 3600,
+      id_token: idToken(grant),
+    });
+  }
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin === new URL(fixture.issuer.issuer).origin) {
+      return answer(new Request(input, init));
+    }
+    return originalFetch(input, init);
+  });
+  return fixture;
+}
+
+/** Starts OIDC sign-in, visits the fake IdP and completes the callback, from one address. */
+export async function oidcSignIn(app, origin, idp, authorization, remoteAddress = "192.0.2.70") {
+  const start = await app.inject({
+    method: "POST",
+    url: "/api/auth/providers/oidc/start",
+    remoteAddress,
+    headers: { origin },
+  });
+  if (start.statusCode !== 200) {
+    throw new Error(`OIDC start failed with ${start.statusCode}: ${start.body}`);
+  }
+  const { url, attemptId } = start.json().data;
+  const state = new URL(url).searchParams.get("state");
+  const code = idp.authorize(url, authorization);
+  const bindingCookie = cookieHeaderFromSetCookie(start.headers["set-cookie"]);
+  const callback = await app.inject({
+    url: `/api/auth/providers/oidc/callback?state=${state}&code=${code}`,
     remoteAddress,
     headers: { cookie: bindingCookie },
   });

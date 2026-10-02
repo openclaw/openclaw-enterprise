@@ -190,7 +190,16 @@ function rootBarrels(snapshot, policy) {
 export function evaluatePolicy(snapshot, resolutions, policy) {
   validatePolicy(policy);
   const packages = [...snapshot.packages].sort((a, b) => b.path.length - a.path.length);
-  const owner = (file) => packages.find((pkg) => inside(file, pkg.path));
+  const owners = new Map();
+  const owner = (file) => {
+    if (!owners.has(file)) {
+      owners.set(
+        file,
+        packages.find((pkg) => inside(file, pkg.path)),
+      );
+    }
+    return owners.get(file);
+  };
   const barrels = rootBarrels(snapshot, policy);
   const edges = [];
   const diagnostics = [];

@@ -4,6 +4,7 @@ import type {
   CredentialGatewayContext,
   CredentialGatewayDriver,
   CredentialRevisionContext,
+  CredentialWithdrawalContext,
   CredentialSourceAttachment,
   CredentialSourceContext,
   CredentialSourceInput,
@@ -181,15 +182,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     await this.ensureProfile(client, workspace, type, context.signal);
     const name = openShellProviderName(context.source.id);
-    const credentials = Object.fromEntries(
-      Object.entries(type.credentials).map(([field, key]) => {
-        const value = input.secrets[field];
-        if (!isNonEmptyString(value)) {
-          throw new ScopeViolationError(`The credential source secret ${field} is required.`);
-        }
-        return [key, value];
-      }),
-    );
+    const credentials = providerCredentials(type, input);
     try {
       await client.createProvider(
         {
@@ -220,12 +213,34 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return { state: "ready" };
   }
 
+  /**
+   * Replaces the stored static values. OpenShell gives them only to processes started after
+   * the update, so a running Harness keeps its value until its next deployment.
+   */
   async updateSource(
-    _context: CredentialSourceContext,
-    _input: CredentialSourceInput,
+    context: CredentialSourceContext,
+    input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
-    // TODO(credential-gateway next slice): update static values through UpdateProvider.
-    throw new ScopeViolationError("OpenShell credential source updates are not supported yet.");
+    const type = sourceType(input.type);
+    const workspace = openShellWorkspaceName(context.namespace);
+    const client = this.client(context);
+    const name = openShellProviderName(context.source.id);
+    const existing = await client.getProvider(workspace, name, context.signal);
+    if (existing === undefined) {
+      return { state: "absent" };
+    }
+    if (!ownedBy(existing, context.source.id, input.type)) {
+      throw new ScopeViolationError(
+        "An OpenShell provider with this source's name is not owned by the source.",
+      );
+    }
+    await client.updateProviderCredentials(
+      workspace,
+      name,
+      providerCredentials(type, input),
+      context.signal,
+    );
+    return { state: "ready" };
   }
 
   async rotateSource(_context: CredentialSourceContext): Promise<CredentialSourceStatus> {
@@ -323,11 +338,39 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return Object.freeze(statuses);
   }
 
-  async withdraw(
-    _context: CredentialRevisionContext & { readonly sourceId: string },
-  ): Promise<CredentialAttachmentStatus> {
-    // TODO(credential-gateway next slice): detach one Agent with DetachSandboxProvider.
-    throw new ScopeViolationError("OpenShell credential withdrawal is not supported yet.");
+  /**
+   * Detaches the source's provider from the revision's Sandbox. Only a REVOKED receipt reports
+   * `revoked`: the Sandbox's placeholders then stop resolving, even in running processes.
+   */
+  async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
+    const workspace = openShellWorkspaceName(context.namespace);
+    const client = this.client(context);
+    const provider = openShellProviderName(context.sourceId);
+    const sandbox = context.sandbox.resourceName;
+    // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
+    const detached = await client.detachSandboxProvider(
+      workspace,
+      sandbox,
+      provider,
+      context.signal,
+    );
+    // A missing Sandbox has no placeholders left to resolve.
+    if (detached === undefined) {
+      return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+    }
+    const status = await client.getSandboxProviderStatus(
+      workspace,
+      sandbox,
+      provider,
+      context.signal,
+      detached.receiptId,
+    );
+    const state = attachmentState(status.state);
+    return Object.freeze({
+      sourceId: context.sourceId,
+      state: state === "revoked" ? "revoked" : "pending",
+      ...(status.reason === undefined ? {} : { reason: status.reason }),
+    });
   }
 
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
@@ -353,6 +396,21 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
     }
   }
+}
+
+function providerCredentials(
+  type: OpenShellSourceType,
+  input: CredentialSourceInput,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(type.credentials).map(([field, key]) => {
+      const value = input.secrets[field];
+      if (!isNonEmptyString(value)) {
+        throw new ScopeViolationError(`The credential source secret ${field} is required.`);
+      }
+      return [key, value];
+    }),
+  );
 }
 
 function attachmentState(state: string): CredentialAttachmentStatus["state"] {

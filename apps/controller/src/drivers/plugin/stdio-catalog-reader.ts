@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 
 import type { PluginCatalogEntry } from "@openclaw-enterprise/contracts";
 import { NotImplementedError } from "@openclaw-enterprise/occ";
+import { asRecord } from "@openclaw-enterprise/utils";
 
 import { codexCatalogEntries, type CodexPluginCatalogReader } from "./runtime-translator.ts";
 
@@ -38,12 +39,6 @@ function requestTimeout(value: unknown): number {
     );
   }
   return value as number;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 function ensureAuthenticated(accountResponse: unknown): void {

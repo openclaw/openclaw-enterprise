@@ -51,6 +51,9 @@ type OpenClawPluginDescriptor = {
   readonly version: string;
   readonly integrity: string;
   readonly toolNames: readonly string[];
+  // Native plugin config applied only when the Gateway serves browsers through
+  // an OCC-authenticated public origin (native admin), so links it returns open.
+  readonly publicOriginConfig?: Readonly<Record<string, unknown>>;
 };
 
 // Admission metadata comes from the integrity-pinned package's manifest and
@@ -64,6 +67,9 @@ const OPENCLAW_PLUGIN_CATALOG: readonly OpenClawPluginDescriptor[] = [
     integrity:
       "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==",
     toolNames: ["diffs"],
+    // Native-admin requests reach the Gateway through the OCC proxy, which is
+    // not loopback; the viewer otherwise answers 404 for its own links.
+    publicOriginConfig: { security: { allowRemoteViewer: true } },
   },
 ];
 
@@ -911,6 +917,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     selections: unknown,
     failures: unknown = [],
     defaultApprovers?: unknown,
+    gatewayPublicOrigin = false,
   ): Record<string, unknown> {
     validatePolicies("openclaw", selections, defaultApprovers);
     const failedPluginIds = failedPluginIdSet(failures);
@@ -938,6 +945,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       }
       entries[nativeId] = {
         enabled: pluginEnabled,
+        ...(pluginEnabled && gatewayPublicOrigin && descriptor.publicOriginConfig !== undefined
+          ? { config: descriptor.publicOriginConfig }
+          : {}),
       };
       installs.push({
         pluginId,
@@ -975,6 +985,10 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
+  function openClawManagedEntryConfig(nativeId: string): unknown {
+    return nativeCatalog.find((entry) => entry.nativeId === nativeId)?.publicOriginConfig;
+  }
+
   function openClawCatalogEntries(): readonly Record<string, unknown>[] {
     return nativeCatalog.map((entry) => ({
       id: OCC_DRIVER_ID + ":" + entry.nativeId,
@@ -993,6 +1007,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     codexReadParamsForSelections,
     codexRuntimeArtifact,
     openClawCatalogEntries,
+    openClawManagedEntryConfig,
     openClawRuntimeArtifact,
   };
 }
@@ -1036,11 +1051,13 @@ export function openClawRuntimeArtifact(
   selections: PluginDesiredState,
   failures: PluginRuntimeFailureInput = [],
   defaultApprovers?: PluginApprovers,
+  gatewayPublicOrigin = false,
 ): PluginRuntimeResolvedArtifacts {
   return pluginRuntimeTranslator.openClawRuntimeArtifact(
     selections,
     failures,
     defaultApprovers,
+    gatewayPublicOrigin,
   ) as PluginRuntimeResolvedArtifacts;
 }
 

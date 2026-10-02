@@ -19,6 +19,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
 const zeroGrant = "principal-source-zero-grant";
+const updater = "principal-source-updater";
 const installation = Object.freeze({
   id: "installation-credential-source-occ",
   name: "Credential source OCC conformance",
@@ -86,8 +87,19 @@ function createTestCredentialGateway(options = {}) {
       }
       return { state: "ready" };
     },
-    async updateSource() {
-      throw new Error("not exercised");
+    async updateSource(context, input) {
+      calls.push({ operation: "updateSource", sourceId: context.source.id, input });
+      if (options.updateError !== undefined) {
+        throw options.updateError;
+      }
+      if (options.updateStatus !== undefined) {
+        return options.updateStatus;
+      }
+      if (!stored.has(context.source.id)) {
+        return { state: "absent" };
+      }
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
     },
     async rotateSource() {
       throw new Error("not exercised");
@@ -126,7 +138,7 @@ function createTestSandbox() {
 
 async function fixture(options = {}) {
   const iamState = {
-    identities: [administrator, deployer, zeroGrant].map((id) => ({
+    identities: [administrator, deployer, zeroGrant, updater].map((id) => ({
       kind: "principal",
       id,
       issuer: "credential-source-occ",
@@ -144,15 +156,15 @@ async function fixture(options = {}) {
             action,
             resourceKind: "configuration",
           })),
-          ...["create", "read", "delete", "operate"].map((action) => ({
+          ...["create", "read", "update", "delete", "operate"].map((action) => ({
             action,
             resourceKind: "secret",
           })),
-          ...["create", "read", "delete", "operate"].map((action) => ({
+          ...["create", "read", "update", "delete", "operate"].map((action) => ({
             action,
             resourceKind: "credential_source",
           })),
-          ...["create", "read", "update", "delete", "deploy"].map((action) => ({
+          ...["create", "read", "update", "delete", "deploy", "operate"].map((action) => ({
             action,
             resourceKind: "agent",
           })),
@@ -172,6 +184,15 @@ async function fixture(options = {}) {
         id: "source-agent-role",
         permissions: [{ action: "operate", resourceKind: "credential_source" }],
       },
+      {
+        // May update sources but may not operate on the Secret material an update reads.
+        id: "source-updater-role",
+        permissions: [
+          { action: "read", resourceKind: "namespace" },
+          { action: "read", resourceKind: "credential_source" },
+          { action: "update", resourceKind: "credential_source" },
+        ],
+      },
     ],
     bindings: [
       {
@@ -186,6 +207,12 @@ async function fixture(options = {}) {
         subjectId: deployer,
         roleId: "source-deployer-role",
       },
+      {
+        id: "source-updater-binding",
+        subjectKind: "identity",
+        subjectId: updater,
+        roleId: "source-updater-role",
+      },
     ],
     restrictions: [],
   };
@@ -194,8 +221,9 @@ async function fixture(options = {}) {
     { id: "credential-source-iam" },
   );
   let now = Date.parse("2026-09-27T12:00:00.000Z");
+  const state = new InMemoryPlatformState();
   const controller = new OpenClawController(installation, {
-    state: new InMemoryPlatformState(),
+    state,
     now: () => new Date(now),
   });
   // Deletion is final only once no timed-out registration could still create a gateway copy.
@@ -286,6 +314,7 @@ async function fixture(options = {}) {
     namespace,
     passRegistrationFence,
     secretDriver,
+    state,
   };
 }
 
@@ -716,6 +745,263 @@ test("a credential source, including one being deleted, keeps its Namespace none
   passRegistrationFence();
   await controller.deleteCredentialSource(administrator, namespace.id, source.id);
   await controller.deleteNamespace(administrator, namespace.id);
+});
+
+test("an update re-sends current or replacement Secret values and keeps config immutable", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace, state } = await fixture();
+  await makeReady();
+  const original = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: original.ref },
+  });
+
+  // A bare update re-reads the referenced Secret, so a changed Secret reaches the gateway copy.
+  await controller.updateSecret(administrator, {
+    namespaceId: namespace.id,
+    secretId: original.id,
+    value: "rotated-model-key",
+  });
+  const resynced = await controller.updateCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    credentialSourceId: source.id,
+  });
+  assert.deepEqual(resynced.status, { state: "ready" });
+  assert.deepEqual(gateway.stored.get(source.id), { api_key: "rotated-model-key" });
+  // Only the gateway holds the value: the response, the read, and OCC's record carry references.
+  assert.equal(JSON.stringify(resynced).includes("rotated-model-key"), false);
+  const reread = await controller.readCredentialSource(administrator, namespace.id, source.id);
+  assert.equal(JSON.stringify(reread).includes("rotated-model-key"), false);
+  const persisted = await state.read((view) =>
+    view.credentialSources.findCredentialSource(namespace.id, source.id),
+  );
+  assert.equal(JSON.stringify(persisted).includes("rotated-model-key"), false);
+
+  // Replacement references switch the source to another same-Namespace Secret.
+  const replacement = await modelSecret();
+  const replaced = await controller.updateCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    credentialSourceId: source.id,
+    secrets: { api_key: replacement.ref },
+  });
+  assert.deepEqual(replaced.secrets, { api_key: replacement.ref });
+  assert.deepEqual(gateway.stored.get(source.id), { api_key: "synthetic-model-key" });
+  assert.equal(JSON.stringify(replaced).includes("synthetic-model-key"), false);
+  // The original Secret is no longer referenced by the source, so it can now be deleted.
+  await controller.deleteSecret(administrator, namespace.id, original.id);
+
+  // Replacements must keep the catalog's exact fields.
+  await assert.rejects(
+    controller.updateCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      credentialSourceId: source.id,
+      secrets: { api_key: replacement.ref, extra: replacement.ref },
+    }),
+    /extra is not supported/,
+  );
+});
+
+test("an update requires update on the source and operate on every Secret it reads", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace } = await fixture({
+    gateway: {},
+  });
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  // The deployer may read and create sources but holds neither update nor Secret operate.
+  await assert.rejects(
+    controller.updateCredentialSource(deployer, {
+      namespaceId: namespace.id,
+      credentialSourceId: source.id,
+    }),
+    AuthorizationDeniedError,
+  );
+  // Update on the source alone is not enough: every Secret it reads needs operate too.
+  await assert.rejects(
+    controller.updateCredentialSource(updater, {
+      namespaceId: namespace.id,
+      credentialSourceId: source.id,
+    }),
+    (error) =>
+      error instanceof AuthorizationDeniedError &&
+      error.authorization?.resource.kind === "secret" &&
+      error.authorization.resource.id === secret.id,
+  );
+  assert.equal(gateway.calls.filter(({ operation }) => operation === "updateSource").length, 0);
+});
+
+test("an update whose commit fails after the gateway accepted it converges when repeated", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const original = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: original.ref },
+  });
+  const replacement = await modelSecret();
+  await controller.updateSecret(administrator, {
+    namespaceId: namespace.id,
+    secretId: replacement.id,
+    value: "replacement-model-key",
+  });
+  const input = {
+    namespaceId: namespace.id,
+    credentialSourceId: source.id,
+    secrets: { api_key: replacement.ref },
+  };
+
+  // The gateway call runs inside the request's transaction; a later failure, such as its
+  // audit append, rolls back OCC's references while the gateway copy is already newer.
+  await assert.rejects(
+    controller.transact(async () => {
+      await controller.updateCredentialSource(administrator, input);
+      throw new Error("audit append failed");
+    }),
+    /audit append failed/,
+  );
+  assert.deepEqual(gateway.stored.get(source.id), { api_key: "replacement-model-key" });
+  const retained = await controller.readCredentialSource(administrator, namespace.id, source.id);
+  assert.deepEqual(retained.secrets, { api_key: original.ref });
+
+  // Repeating the same request brings OCC level with the gateway.
+  const repeated = await controller.updateCredentialSource(administrator, input);
+  assert.deepEqual(repeated.secrets, { api_key: replacement.ref });
+  assert.deepEqual(gateway.stored.get(source.id), { api_key: "replacement-model-key" });
+});
+
+for (const [failure, gatewayOptions] of [
+  ["throws", { updateError: new Error("gateway unavailable") }],
+  // The gateway lost its copy while OCC still records the source as ready.
+  ["reports the copy absent", { updateStatus: { state: "absent" } }],
+  ["reports the update failed", { updateStatus: { state: "failed" } }],
+]) {
+  test(`a gateway update that ${failure} keeps the source and its Secret references unchanged`, async () => {
+    const { controller, makeReady, modelSecret, namespace } = await fixture({
+      gateway: gatewayOptions,
+    });
+    await makeReady();
+    const original = await modelSecret();
+    const source = await controller.createCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      name: "openai",
+      type: "openai",
+      secrets: { api_key: original.ref },
+    });
+    const replacement = await modelSecret();
+    await assert.rejects(
+      controller.updateCredentialSource(administrator, {
+        namespaceId: namespace.id,
+        credentialSourceId: source.id,
+        secrets: { api_key: replacement.ref },
+      }),
+      DependencyUnavailableError,
+    );
+    const retained = await controller.readCredentialSource(administrator, namespace.id, source.id);
+    assert.equal(retained.state, "ready");
+    assert.deepEqual(retained.secrets, { api_key: original.ref });
+  });
+}
+
+test("withdrawal is recorded for the active revision and queued for the worker once", async () => {
+  const {
+    controller,
+    dedicatedAgent,
+    grantAgentSourceOperate,
+    makeReady,
+    modelSecret,
+    namespace,
+    state,
+  } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const agent = await dedicatedAgent();
+  await controller.updateAgent(administrator, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "credential_source", sourceId: source.id },
+  });
+  grantAgentSourceOperate(agent, source);
+  const request = { namespaceId: namespace.id, agentId: agent.id, credentialSourceId: source.id };
+
+  // Withdrawal revokes a running revision's access, so the Agent needs an active revision.
+  await assert.rejects(
+    controller.withdrawAgentCredentialSource(administrator, request),
+    ResourceConflictError,
+  );
+  const revision = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  await controller.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
+  );
+  const withdrawalWork = () =>
+    state
+      .pendingOperations()
+      .filter(
+        (operation) =>
+          operation.kind === "agent_revision" && operation.target === "credentials_withdrawn",
+      );
+
+  // Withdrawal requires operate on the Agent, which the deployer lacks.
+  await assert.rejects(
+    controller.withdrawAgentCredentialSource(deployer, request),
+    AuthorizationDeniedError,
+  );
+  const withdrawal = await controller.withdrawAgentCredentialSource(administrator, request);
+  assert.equal(withdrawal.state, "pending");
+  assert.equal(withdrawal.revisionId, revision.id);
+  assert.equal(withdrawal.requestedBy, administrator);
+  assert.equal(withdrawalWork().length, 1);
+  assert.equal(withdrawalWork()[0].resourceId, revision.id);
+  assert.deepEqual(
+    await controller.readAgentCredentialWithdrawal(administrator, request),
+    withdrawal,
+  );
+
+  // A replay keeps the same withdrawal; while the first attempt is outstanding it queues none.
+  assert.deepEqual(
+    await controller.withdrawAgentCredentialSource(administrator, request),
+    withdrawal,
+  );
+  assert.equal(withdrawalWork().length, 1);
+
+  // Only the source the active revision authenticates with can be withdrawn.
+  const other = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "other",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  await assert.rejects(
+    controller.withdrawAgentCredentialSource(administrator, {
+      ...request,
+      credentialSourceId: other.id,
+    }),
+    ScopeViolationError,
+  );
+  // A withdrawn source stays referenced by the active revision until a redeploy replaces it.
+  await assert.rejects(
+    controller.deleteCredentialSource(administrator, namespace.id, source.id),
+    ResourceConflictError,
+  );
 });
 
 test("deploy admission freezes the source and requires the Agent principal to operate it", async () => {

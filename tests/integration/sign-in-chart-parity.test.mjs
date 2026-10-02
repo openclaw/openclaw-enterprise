@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -24,8 +24,11 @@ import {
   defaultInstallSettings,
   githubUpgradeSettings,
   githubUpgradeValues,
+  fixtureOidcIssuer,
   googleUpgradeSettings,
   googleUpgradeValues,
+  oidcUpgradeSettings,
+  oidcUpgradeValues,
 } from "../helpers/production-sign-in.mjs";
 
 const tooling = await chartTooling();
@@ -36,6 +39,8 @@ const secrets = {
   "occ-github-login/client-secret": "chart-parity-client-secret",
   "occ-google-login/client-id": "chart-parity-google-client-id.apps.googleusercontent.com",
   "occ-google-login/client-secret": "chart-parity-google-client-secret",
+  "occ-oidc-login/client-id": "chart-parity-oidc-client-id",
+  "occ-oidc-login/client-secret": "chart-parity-oidc-client-secret",
 };
 
 // Each proxy preset the chart offers, as operators set it, and what the API must read.
@@ -124,6 +129,21 @@ async function startupCode(directory, settings) {
   return diagnostic.code;
 }
 
+// Runs `check` over `cases` with at most one start per CPU at a time: each case starts the API
+// in a child process with a 20 s deadline, and starting them all at once on a small runner
+// pushes the last ones past it.
+async function eachBounded(cases, check) {
+  const queue = [...cases];
+  const workers = Math.min(Math.max(2, availableParallelism()), queue.length);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (queue.length > 0) {
+        await check(queue.shift());
+      }
+    }),
+  );
+}
+
 async function startupDirectory(t) {
   const directory = await mkdtemp(join(tmpdir(), "occ-sign-in-chart-parity-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -167,7 +187,9 @@ test(
         assert.deepEqual(
           objects
             .filter(({ kind }) => kind === "NetworkPolicy")
-            .map(({ metadata }) => /-api-(github|google)-login-egress$/.exec(metadata.name)?.[1])
+            .map(
+              ({ metadata }) => /-api-(github|google|oidc)-login-egress$/.exec(metadata.name)?.[1],
+            )
             .filter(Boolean)
             .sort(),
           githubEnabled ? ["github"] : [],
@@ -175,7 +197,7 @@ test(
         );
         assert.ok(
           !deploymentEnv(objects, "worker").some(({ name }) =>
-            /^OCC_AUTH_(GITHUB_|GOOGLE_|TRUSTED_PROXY_|CLIENT_IP_HEADER)/.test(name),
+            /^OCC_AUTH_(GITHUB_|GOOGLE_|OIDC_|TRUSTED_PROXY_|CLIENT_IP_HEADER)/.test(name),
           ),
           label,
         );
@@ -299,7 +321,9 @@ test(
         assert.deepEqual(
           objects
             .filter(({ kind }) => kind === "NetworkPolicy")
-            .map(({ metadata }) => /-api-(github|google)-login-egress$/.exec(metadata.name)?.[1])
+            .map(
+              ({ metadata }) => /-api-(github|google|oidc)-login-egress$/.exec(metadata.name)?.[1],
+            )
             .filter(Boolean)
             .sort(),
           egress,
@@ -307,7 +331,7 @@ test(
         );
         assert.ok(
           !deploymentEnv(objects, "worker").some(({ name }) =>
-            /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name),
+            /^OCC_AUTH_(GITHUB|GOOGLE|OIDC)_/.test(name),
           ),
           label,
         );
@@ -315,6 +339,134 @@ test(
         assert.deepEqual(humanLoginConfiguration(environment), parsed, label);
         assert.equal(await startupCode(directory, environment), "PERSISTENCE_UNAVAILABLE", label);
       }),
+    );
+  },
+);
+
+test(
+  "the API accepts exactly the OIDC sign-in settings the chart renders, alone and with GitHub and Google",
+  tooling,
+  async (t) => {
+    const directory = await startupDirectory(t);
+    const oidc = {
+      ...fixtureOidcIssuer,
+      clientId: secrets["occ-oidc-login/client-id"],
+      clientSecret: secrets["occ-oidc-login/client-secret"],
+      tokenAuth: "client_secret_post",
+      displayName: "single sign-on",
+      recoveryUserId,
+    };
+    const keycloak = {
+      issuer: "https://sso.example.com/realms/acme",
+      authorizationUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/auth",
+      tokenUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/token",
+      jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs",
+    };
+    const extra = { tokenAuth: "client_secret_basic", displayName: "Acme SSO" };
+    const cases = [
+      {
+        label: "OIDC only",
+        values: oidcUpgradeValues(recoveryUserId),
+        settings: oidcUpgradeSettings(recoveryUserId),
+        parsed: { oidc },
+        egress: ["oidc"],
+      },
+      {
+        label: "OIDC only, basic token auth and a label",
+        values: oidcUpgradeValues(recoveryUserId, keycloak, extra),
+        settings: oidcUpgradeSettings(recoveryUserId, keycloak, extra),
+        parsed: { oidc: { ...oidc, ...keycloak, ...extra } },
+        egress: ["oidc"],
+      },
+      {
+        // The default token method is not rendered: the API reads its absence as post.
+        label: "OIDC, explicit default token auth",
+        values: oidcUpgradeValues(recoveryUserId, fixtureOidcIssuer, {
+          tokenAuth: "client_secret_post",
+        }),
+        settings: oidcUpgradeSettings(recoveryUserId),
+        parsed: { oidc },
+        egress: ["oidc"],
+      },
+      {
+        label: "GitHub, Google and OIDC, recovery-only password sign-in",
+        values: {
+          ...githubUpgradeValues(recoveryUserId),
+          ...googleUpgradeValues(recoveryUserId),
+          ...oidcUpgradeValues(recoveryUserId),
+          "auth.passwordSignIn": "recovery-only",
+        },
+        settings: {
+          ...githubUpgradeSettings(recoveryUserId),
+          ...googleUpgradeSettings(recoveryUserId),
+          ...oidcUpgradeSettings(recoveryUserId),
+          OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
+        },
+        parsed: {
+          github: {
+            clientId: secrets["occ-github-login/client-id"],
+            clientSecret: secrets["occ-github-login/client-secret"],
+            recoveryUserId,
+          },
+          google: {
+            clientId: secrets["occ-google-login/client-id"],
+            clientSecret: secrets["occ-google-login/client-secret"],
+            allowedDomains: [],
+            recoveryUserId,
+          },
+          oidc,
+          passwordSignIn: "recovery-only",
+        },
+        egress: ["github", "google", "oidc"],
+      },
+    ];
+    await Promise.all(
+      cases.map(async ({ label, values, settings, parsed, egress }) => {
+        const objects = await renderChart(values);
+        const rendered = signInSettings(deploymentEnv(objects, "api"));
+        assert.deepEqual(rendered, settings, label);
+        const policies = objects.filter(({ kind }) => kind === "NetworkPolicy");
+        assert.deepEqual(
+          policies
+            .map(
+              ({ metadata }) => /-api-(github|google|oidc)-login-egress$/.exec(metadata.name)?.[1],
+            )
+            .filter(Boolean)
+            .sort(),
+          egress,
+          label,
+        );
+        // The default OIDC egress is any address except link-local, on TCP 443 only.
+        const oidcEgress = policies.find(({ metadata }) =>
+          metadata.name.endsWith("-api-oidc-login-egress"),
+        );
+        assert.deepEqual(
+          oidcEgress.spec.egress,
+          [
+            {
+              to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
+              ports: [{ protocol: "TCP", port: 443 }],
+            },
+          ],
+          label,
+        );
+        assert.ok(
+          !deploymentEnv(objects, "worker").some(({ name }) => /^OCC_AUTH_OIDC_/.test(name)),
+          label,
+        );
+        const environment = resolveSecrets(rendered);
+        assert.deepEqual(humanLoginConfiguration(environment), parsed, label);
+        assert.equal(await startupCode(directory, environment), "PERSISTENCE_UNAVAILABLE", label);
+      }),
+    );
+    const narrowed = await renderChart({
+      ...oidcUpgradeValues(recoveryUserId),
+      "auth.oidc.egressCidrs[0]": "198.51.100.0/24",
+    });
+    assert.deepEqual(
+      narrowed.find(({ metadata }) => metadata.name.endsWith("-api-oidc-login-egress")).spec
+        .egress[0].to,
+      [{ ipBlock: { cidr: "198.51.100.0/24" } }],
     );
   },
 );
@@ -405,9 +557,10 @@ const invalid = [
     parser: /requires client ID, client secret and recovery user ID/,
   },
   {
-    name: "a recovery user without GitHub or Google",
+    name: "a recovery user without GitHub, Google or OIDC",
     values: { "auth.recoveryUserId": recoveryUserId },
-    chart: /auth\.recoveryUserId requires auth\.github\.enabled or auth\.google\.enabled/,
+    chart:
+      /auth\.recoveryUserId requires auth\.github\.enabled, auth\.google\.enabled or auth\.oidc\.enabled/,
     env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: recoveryUserId },
     parser: /requires client ID, client secret and recovery user ID/,
   },
@@ -424,12 +577,12 @@ const invalid = [
     },
   },
   {
-    name: "recovery-only password sign-in without GitHub or Google",
+    name: "recovery-only password sign-in without an external provider",
     values: { "auth.passwordSignIn": "recovery-only" },
     chart:
-      /auth\.passwordSignIn: recovery-only requires auth\.github\.enabled or auth\.google\.enabled/,
+      /auth\.passwordSignIn: recovery-only requires auth\.github\.enabled, auth\.google\.enabled or auth\.oidc\.enabled/,
     env: { OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" },
-    parser: /OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub or Google sign-in/,
+    parser: /OCC_AUTH_PASSWORD_SIGN_IN=recovery-only requires GitHub, Google or OIDC sign-in/,
   },
   {
     name: "an unknown password sign-in policy",
@@ -471,38 +624,130 @@ const invalid = [
     env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "example.com/admin" },
     parser: /OCC_AUTH_GOOGLE_ALLOWED_DOMAINS must be a comma-separated list of DNS domain names/,
   },
+  {
+    name: "OIDC without a recovery user",
+    values: { ...oidcUpgradeValues(""), "auth.recoveryUserId": "" },
+    chart: /auth\.oidc\.enabled requires auth\.recoveryUserId/,
+    oidc: true,
+    env: { OCC_AUTH_GITHUB_RECOVERY_USER_ID: undefined },
+    parser: /OIDC sign-in requires its provider settings and a recovery user ID/,
+  },
+  {
+    name: "OIDC without a token URL",
+    values: { ...oidcUpgradeValues(recoveryUserId), "auth.oidc.tokenUrl": "" },
+    chart: /auth\.oidc\.tokenUrl must be an https URL on port 443 on the issuer's host/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_TOKEN_URL: "" },
+    parser: /OIDC sign-in requires issuer, authorization URL, token URL/,
+  },
+  ...[
+    ["an HTTP issuer", "issuer", "http://tenant.idp.example.test/"],
+    ["an issuer on another port", "issuer", "https://tenant.idp.example.test:8443/"],
+    // The URL parser drops `:443`, but `iss` is compared with the configured string.
+    ["an issuer with an explicit port 443", "issuer", "https://tenant.idp.example.test:443/"],
+    ["an IP-address issuer", "issuer", "https://203.0.113.10/"],
+    ["an issuer with a query", "issuer", "https://tenant.idp.example.test/?t=1"],
+  ].map(([name, key, value]) => ({
+    name: `OIDC with ${name}`,
+    values: { ...oidcUpgradeValues(recoveryUserId), [`auth.oidc.${key}`]: value },
+    chart: /auth\.oidc\.issuer must be an https URL on port 443 with a DNS host name/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_ISSUER: value },
+    parser: /OCC_AUTH_OIDC_ISSUER must be an https URL/,
+  })),
+  ...[
+    [
+      "an off-host token URL",
+      "tokenUrl",
+      "OCC_AUTH_OIDC_TOKEN_URL",
+      "https://evil.example.test/token",
+    ],
+    [
+      "userinfo in the JWKS URL",
+      "jwksUrl",
+      "OCC_AUTH_OIDC_JWKS_URL",
+      "https://u@tenant.idp.example.test/jwks",
+    ],
+    [
+      "a fragment in the authorization URL",
+      "authorizationUrl",
+      "OCC_AUTH_OIDC_AUTHORIZATION_URL",
+      "https://tenant.idp.example.test/authorize#x",
+    ],
+    [
+      "an HTTP JWKS URL",
+      "jwksUrl",
+      "OCC_AUTH_OIDC_JWKS_URL",
+      "http://tenant.idp.example.test/jwks",
+    ],
+  ].map(([name, key, variable, value]) => ({
+    name: `OIDC with ${name}`,
+    values: { ...oidcUpgradeValues(recoveryUserId), [`auth.oidc.${key}`]: value },
+    chart: new RegExp(`auth\\.oidc\\.${key} must be an https URL on port 443 on the issuer's host`),
+    oidc: true,
+    env: { [variable]: value },
+    parser: new RegExp(`${variable} must be an https URL on port 443 on the issuer's host`),
+  })),
+  {
+    name: "OIDC with an unknown token method",
+    values: { ...oidcUpgradeValues(recoveryUserId), "auth.oidc.tokenAuth": "private_key_jwt" },
+    chart: /auth\.oidc\.tokenAuth must be client_secret_post or client_secret_basic/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_TOKEN_AUTH: "private_key_jwt" },
+    parser: /OCC_AUTH_OIDC_TOKEN_AUTH must be client_secret_post or client_secret_basic/,
+  },
+  {
+    name: "OIDC with an overlong label",
+    values: { ...oidcUpgradeValues(recoveryUserId), "auth.oidc.displayName": "x".repeat(41) },
+    chart: /auth\.oidc\.displayName must be 1 to 40 printable characters/,
+    oidc: true,
+    env: { OCC_AUTH_OIDC_DISPLAY_NAME: "x".repeat(41) },
+    parser: /OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters/,
+  },
+  {
+    // As for GitHub, composition refuses the combination before any database work.
+    name: "OIDC with shared-cookie native administration",
+    values: { ...oidcUpgradeValues(recoveryUserId), "agentNativeAdmin.enabled": "true" },
+    chart: /auth\.oidc requires agentNativeAdmin\.enabled: false/,
+    oidc: true,
+    env: {
+      OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
+      OCC_AUTH_COOKIE_DOMAIN: "oce.example.internal",
+    },
+  },
 ];
 
 test("values the chart refuses are settings the API also refuses", tooling, async (t) => {
   const directory = await startupDirectory(t);
-  await Promise.all(
-    invalid.map(async ({ name, values, chart, github, google, env, parser }) => {
-      assert.match(await chartRefusal(values), chart, name);
-      const environment = Object.fromEntries(
-        Object.entries({
-          ...resolveSecrets(
-            github
-              ? githubUpgradeSettings(recoveryUserId)
-              : google
-                ? googleUpgradeSettings(recoveryUserId)
+  await eachBounded(invalid, async ({ name, values, chart, github, google, oidc, env, parser }) => {
+    assert.match(await chartRefusal(values), chart, name);
+    const environment = Object.fromEntries(
+      Object.entries({
+        ...resolveSecrets(
+          github
+            ? githubUpgradeSettings(recoveryUserId)
+            : google
+              ? googleUpgradeSettings(recoveryUserId)
+              : oidc
+                ? oidcUpgradeSettings(recoveryUserId)
                 : defaultInstallSettings,
-          ),
-          ...env,
-        }).filter(([, value]) => value !== undefined),
+        ),
+        ...env,
+      }).filter(([, value]) => value !== undefined),
+    );
+    if (parser !== undefined) {
+      assert.throws(
+        () => {
+          humanLoginConfiguration(environment);
+          clientAddressConfiguration(environment);
+        },
+        parser,
+        name,
       );
-      if (parser !== undefined) {
-        assert.throws(
-          () => {
-            humanLoginConfiguration(environment);
-            clientAddressConfiguration(environment);
-          },
-          parser,
-          name,
-        );
-      }
-      assert.equal(await startupCode(directory, environment), "STARTUP_FAILED", name);
-    }),
-  );
+    }
+    assert.equal(await startupCode(directory, environment), "STARTUP_FAILED", name);
+  });
 });
 
 // The chart is stricter than the API for one input: the API documents ingress-nginx as the
@@ -571,14 +816,63 @@ test(
 );
 
 test(
+  "the chart refuses OIDC Secret and egress settings the API cannot observe",
+  tooling,
+  async () => {
+    const oidc = oidcUpgradeValues(recoveryUserId);
+    for (const [name, values, chart] of [
+      [
+        "the Google sign-in Secret",
+        { ...oidc, ...googleOn, "auth.oidc.secretName": "occ-google-login" },
+        /auth\.oidc credentials must use a dedicated Secret/,
+      ],
+      [
+        "the GitHub sign-in Secret",
+        { ...oidc, ...githubOn, "auth.oidc.secretName": "occ-github-login" },
+        /auth\.oidc credentials must use a dedicated Secret/,
+      ],
+      [
+        "the Better Auth Secret",
+        { ...oidc, "auth.oidc.secretName": "occ-auth" },
+        /auth\.oidc credentials must use a dedicated Secret/,
+      ],
+      [
+        "one key for client ID and secret",
+        { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
+        /auth\.oidc client ID and client secret must use different Secret keys/,
+      ],
+      [
+        "a hostname egress",
+        { ...oidc, "auth.oidc.egressCidrs[0]": "tenant.idp.example.test" },
+        /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
+      ],
+      [
+        "a /0 egress entry",
+        { ...oidc, "auth.oidc.egressCidrs[0]": "0.0.0.0/0" },
+        /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
+      ],
+      [
+        "an HTTP base URL",
+        { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
+        /auth\.oidc requires an HTTPS auth\.baseUrl/,
+      ],
+    ]) {
+      assert.match(await chartRefusal(values), chart, name);
+    }
+  },
+);
+
+test(
   "install notes warn when sign-in is exposed without a trusted proxy, and never fail",
   tooling,
   async () => {
     const github = await trustedProxyNotice(githubUpgradeValues(recoveryUserId));
     assert.match(github, /^WARNING: api\.trustedProxy is not set\./);
-    assert.match(github, /GitHub or Google sign-in\nstarts have no per-client limit/);
+    assert.match(github, /external sign-in\nstarts have no per-client limit/);
     const google = await trustedProxyNotice(googleUpgradeValues(recoveryUserId));
     assert.match(google, /^WARNING: api\.trustedProxy is not set\./);
+    const oidc = await trustedProxyNotice(oidcUpgradeValues(recoveryUserId));
+    assert.match(oidc, /^WARNING: api\.trustedProxy is not set\. With GitHub, Google or OIDC/);
     assert.match(
       await trustedProxyNotice(),
       /^NOTE: api\.trustedProxy is not set, so failed password sign-ins are limited per\nemail only/,

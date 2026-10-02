@@ -40,7 +40,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.0 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the v0.1.3-pre.1 registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -130,7 +130,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   const matches = (selector, labels) =>
     selector.matchLabels !== undefined &&
     Object.entries(selector.matchLabels).every(([key, value]) => labels[key] === value);
-  // OpenShell v0.1.0 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
+  // OpenShell v0.1.3-pre.1 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
   const supervisor = {
     "openshell.ai/managed-by": "openshell",
     "openshell.ai/boundary-role": "supervisor",

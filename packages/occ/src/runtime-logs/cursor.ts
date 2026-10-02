@@ -29,6 +29,10 @@ export interface RuntimeLogCursorPosition {
    * occurrence), for overlap de-duplication.
    */
   readonly lastHashes: readonly string[];
+  /** Container PEM context; absent on legacy cursors and unknown initial tails. */
+  readonly pemOpen?: boolean;
+  /** Conservative delivered-time frontier; null cannot establish forward chronology. */
+  readonly pemAfterTime?: string | null;
   readonly issuedAt: number;
 }
 
@@ -67,12 +71,28 @@ function sameMac(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** Kubelet UTC timestamp, with its original nanosecond precision retained. */
+export function validRuntimeLogFrontierTime(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString().slice(0, 19) === value.slice(0, 19)
+  );
+}
+
+function frontierTimeKey(value: string): string {
+  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value)!;
+  return `${match[1]}.${(match[2] ?? "").padEnd(9, "0")}Z`;
+}
+
 function position(value: unknown): RuntimeLogCursorPosition | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
   const record = value as Record<string, unknown>;
   const hashes = record.h;
+  const hasPem = Object.hasOwn(record, "po") || Object.hasOwn(record, "pt");
   if (
     typeof record.v !== "string" ||
     typeof record.p !== "string" ||
@@ -84,7 +104,13 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     !Array.isArray(hashes) ||
     hashes.length > MAX_HASHES ||
     !hashes.every((hash) => typeof hash === "string" && /^[A-Za-z0-9_-]{16}$/.test(hash)) ||
-    !Number.isSafeInteger(record.i)
+    !Number.isSafeInteger(record.i) ||
+    (hasPem &&
+      (typeof record.po !== "boolean" ||
+        (record.pt !== null &&
+          (!validRuntimeLogFrontierTime(record.pt) ||
+            !validRuntimeLogFrontierTime(record.t) ||
+            frontierTimeKey(record.pt) !== frontierTimeKey(record.t)))))
   ) {
     return undefined;
   }
@@ -97,6 +123,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     lastTime: record.t as string | null,
     lastHashes: hashes as string[],
     issuedAt: record.i as number,
+    ...(hasPem ? { pemOpen: record.po as boolean, pemAfterTime: record.pt as string | null } : {}),
   };
 }
 
@@ -118,6 +145,8 @@ export function createRuntimeLogCursorCodec(secret: string): RuntimeLogCursorCod
           t: value.lastTime,
           h: value.lastHashes.slice(-MAX_HASHES),
           i: value.issuedAt,
+          po: value.pemOpen,
+          pt: value.pemAfterTime,
         }),
       ).toString("base64url");
       return `v1.${payload}.${mac(secret, payload)}`;

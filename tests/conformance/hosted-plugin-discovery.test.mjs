@@ -16,6 +16,34 @@ const runtimeHelp = {
   url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
 };
 
+function oauthCredential(isFedramp = false) {
+  const claims = Buffer.from(
+    JSON.stringify({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "account_oauth_fixture",
+        ...(isFedramp ? { chatgpt_account_is_fedramp: true } : {}),
+      },
+    }),
+  ).toString("base64url");
+  return {
+    kind: "oauth",
+    value: JSON.stringify({
+      version: 1,
+      provider: "codex",
+      state: "ready",
+      auth: {
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "oauth-access-fixture",
+          refresh_token: "oauth-refresh-fixture",
+          account_id: "account_oauth_fixture",
+          id_token: `e30.${claims}.fixture`,
+        },
+      },
+    }),
+  };
+}
+
 // Plugin Service's PluginDirectoryDetailItem and AppBatchRecord wire contracts.
 function plugin(release = {}) {
   return {
@@ -149,6 +177,98 @@ for (const q of [undefined, "  ", " linear & docs? "]) {
     );
   });
 }
+
+for (const isFedramp of [false, true]) {
+  test(`hosted OAuth discovery uses its server-owned account for list, search and details (FedRAMP ${isFedramp})`, async (t) => {
+    const requests = [];
+    t.mock.method(globalThis, "fetch", async (url, init) => {
+      // OAuth identity comes from native login state; the PAT whoami route is never called.
+      assert.ok(url.startsWith(catalogUrl));
+      assert.equal(init.headers.Authorization, "Bearer oauth-access-fixture");
+      assert.equal(init.headers["ChatGPT-Account-ID"], "account_oauth_fixture");
+      assert.equal(init.headers["OAI-Product-Sku"], "codex");
+      assert.equal(init.headers["X-OpenAI-Fedramp"], isFedramp ? "true" : undefined);
+      assert.doesNotMatch(JSON.stringify({ url, init }), /oauth-refresh-fixture/);
+      const path = url.slice(catalogUrl.length);
+      requests.push(path);
+      if (path.startsWith("plugins/list?") || path.startsWith("plugins/search?")) {
+        return Response.json({ plugins: [plugin()], pagination: { next_page_token: null } });
+      }
+      if (path === `plugins/${pluginId}?includeDownloadUrls=true`) {
+        return Response.json(plugin());
+      }
+      assert.equal(path, "apps/batch");
+      assert.equal(init.method, "POST");
+      assert.deepEqual(JSON.parse(init.body), {
+        app_ids: ["connector_fixture"],
+        include_tools: true,
+      });
+      return Response.json({ apps: [app("connector_fixture")] });
+    });
+    const driver = new CodexPluginDriver();
+    const credential = oauthCredential(isFedramp);
+    const page = await driver.discoverCatalog({ credential });
+    assert.equal(page.plugins[0].remoteId, pluginId);
+    const search = await driver.discoverCatalog({ credential, q: "hosted tools" });
+    assert.equal(search.plugins[0].remoteId, pluginId);
+    const detail = await driver.getCatalogPlugin({ credential, pluginId });
+    assert.equal(detail.tools[0].id, "connector_fixture/search");
+    assert.equal(detail.available, true);
+    assert.deepEqual(requests, [
+      "plugins/list?scope=GLOBAL&limit=20",
+      "plugins/search?scope=GLOBAL&limit=20&q=hosted+tools",
+      `plugins/${pluginId}?includeDownloadUrls=true`,
+      "apps/batch",
+    ]);
+    assert.doesNotMatch(JSON.stringify({ page, search, detail }), /oauth-(access|refresh)-fixture/);
+  });
+}
+
+test("hosted OAuth discovery rejects handed-off, invalid and conflicting credentials before provider calls", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    assert.fail("Rejected OAuth credentials must not reach the provider");
+  });
+  const ready = JSON.parse(oauthCredential().value);
+  for (const credential of [
+    { kind: "oauth", value: JSON.stringify({ ...ready, state: "consumed" }) },
+    { kind: "oauth", value: "invalid native login state" },
+    {
+      kind: "oauth",
+      value: JSON.stringify({
+        ...ready,
+        auth: { ...ready.auth, tokens: { ...ready.auth.tokens, account_id: "different_account" } },
+      }),
+    },
+  ]) {
+    const driver = new CodexPluginDriver();
+    await assert.rejects(driver.discoverCatalog({ credential }), {
+      name: "PluginDiscoveryError",
+      reason: "credentials_rejected",
+    });
+    await assert.rejects(driver.getCatalogPlugin({ credential, pluginId }), {
+      name: "PluginDiscoveryError",
+      reason: "credentials_rejected",
+    });
+  }
+  await assert.rejects(
+    new CodexPluginDriver().discoverCatalog({ accessToken, credential: oauthCredential() }),
+    { name: "PluginDiscoveryError", reason: "credentials_rejected" },
+  );
+  assert.equal(request.mock.callCount(), 0);
+});
+
+test("hosted OAuth discovery rejects provider metadata that echoes its bearer credential", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      plugins: [plugin({ display_name: "Private oauth-access-fixture" })],
+      pagination: { next_page_token: null },
+    }),
+  );
+  await assert.rejects(new CodexPluginDriver().discoverCatalog({ credential: oauthCredential() }), {
+    name: "PluginDiscoveryError",
+    reason: "invalid_response",
+  });
+});
 
 test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid cosmetic values", async (t) => {
   const primary = "https://images.example/logo.png?signature=fixture&expires=123";

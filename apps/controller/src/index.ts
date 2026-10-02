@@ -74,6 +74,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   AuthorizationDeniedError,
+  accessBindingsTargeting,
+  DeletionRetryOwnedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   DependencyUnavailableError,
   NamespaceNotReadyError,
@@ -428,6 +430,9 @@ function operationTarget(
   ) {
     return { kind: "secret", id: namespaceId, namespaceId };
   }
+  if (operation.operationId.endsWith("DeviceAuthorization") && namespaceId) {
+    return { kind: "agent", id: agentId ?? namespaceId, namespaceId };
+  }
   if (secretId && namespaceId) {
     return { kind: "secret", id: secretId, namespaceId };
   }
@@ -438,8 +443,12 @@ function operationTarget(
   ) {
     return { kind: "credential_source", id: namespaceId, namespaceId };
   }
+  // A route naming a credential source authorizes the resource kind it declares: withdrawal
+  // routes declare the Agent.
   if (credentialSourceId && namespaceId) {
-    return { kind: "credential_source", id: credentialSourceId, namespaceId };
+    return operation.resourceKind === "agent" && agentId
+      ? { kind: "agent", id: agentId, namespaceId }
+      : { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
     (operation.operationId === "createAgent" ||
@@ -474,6 +483,25 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (operation.operationId.endsWith("DeviceAuthorization")) {
+    const saved = operation.operationId.includes("SavedAgent");
+    return [
+      {
+        action: saved ? "update" : "create",
+        resourceKind: "agent",
+        scope: saved ? "requested" : "namespace",
+      },
+      ...(saved
+        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
+        : []),
+      {
+        action: operation.operationId.startsWith("start") ? "create" : "operate",
+        resourceKind: "secret",
+        scope: operation.operationId.startsWith("start") ? "namespace" : "requested",
+      },
+    ];
+  }
 
   if (operation.operationId === "createNamespace") {
     return [
@@ -1777,19 +1805,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     context?: RequestContext,
     evidence?: AuthorizationEvidence,
     authorization?: NonNullable<AuthorizationDeniedError["authorization"]>,
+    explanation?: {
+      readonly decisionReason: string;
+      readonly details: Readonly<Record<string, unknown>>;
+    },
   ): Promise<void> {
     try {
+      const base = event(
+        operation,
+        request,
+        operationTarget(operation, installationId, request.params as Record<string, unknown>),
+        kind,
+        context,
+        evidence,
+        undefined,
+        authorization,
+      );
       await options.auditSink.append(
-        event(
-          operation,
-          request,
-          operationTarget(operation, installationId, request.params as Record<string, unknown>),
-          kind,
-          context,
-          evidence,
-          undefined,
-          authorization,
-        ),
+        explanation === undefined
+          ? base
+          : {
+              ...base,
+              decisionReason: explanation.decisionReason,
+              details: { ...base.details, ...explanation.details },
+            },
       );
     } catch {
       throw failure(
@@ -2238,6 +2277,59 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (
+      operation.operationId === "startAgentDeviceAuthorization" ||
+      operation.operationId === "startSavedAgentDeviceAuthorization" ||
+      operation.operationId === "pollAgentDeviceAuthorization" ||
+      operation.operationId === "pollSavedAgentDeviceAuthorization" ||
+      operation.operationId === "cancelAgentDeviceAuthorization" ||
+      operation.operationId === "cancelSavedAgentDeviceAuthorization"
+    ) {
+      const agentId = params.agentId;
+      let result;
+      if (operation.operationId.startsWith("start")) {
+        result = await controller.startAgentDeviceAuthorization(
+          context.actorId,
+          namespaceId,
+          body?.harnessId as string,
+          agentId,
+        );
+      } else if (operation.operationId.startsWith("poll")) {
+        result = await controller.pollAgentDeviceAuthorization(
+          context.actorId,
+          namespaceId,
+          params.secretId as string,
+          agentId,
+        );
+      } else {
+        await controller.cancelAgentDeviceAuthorization(
+          context.actorId,
+          namespaceId,
+          params.secretId as string,
+          agentId,
+        );
+      }
+      // Clients poll on the provider interval; audit the transition, not every pending poll.
+      if (result?.status !== "pending" || operation.operationId.startsWith("start")) {
+        await options.auditSink.append(
+          event(
+            operation,
+            request,
+            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+      }
+      reply.header("cache-control", "no-store");
+      if (result === undefined) {
+        reply.status(204).send();
+      } else {
+        reply.send({ data: result, meta: { requestId: request.id } });
+      }
+      return;
+    }
+
     if (operation.operationId === "discoverAgentModels") {
       const models = await controller.discoverAgentModels(context.actorId, namespaceId, {
         provider: body?.provider as string,
@@ -2251,6 +2343,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
+        ...(body?.oauthLogin === undefined
+          ? {}
+          : { oauthLogin: body.oauthLogin as SecretReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2264,6 +2359,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
+        ...(body?.oauthLogin === undefined
+          ? {}
+          : { oauthLogin: body.oauthLogin as SecretReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2291,6 +2389,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
+          ...(body?.oauthLogin === undefined
+            ? {}
+            : { oauthLogin: body.oauthLogin as SecretReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2305,7 +2406,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         params.agentId as string,
-        { pluginId: body?.pluginId as string },
+        {
+          pluginId: body?.pluginId as string,
+          ...(body?.oauthLogin === undefined
+            ? {}
+            : { oauthLogin: body.oauthLogin as SecretReference }),
+        },
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
@@ -2652,14 +2758,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "deleteAgent") {
       const agent = await controller.transact(async (unit) => {
         const deleting = await controller!.deleteAgent(context.actorId, namespaceId, agentId);
+        // The deleting Agent is locked and refuses new bindings, so these are exactly the
+        // AccessBindings that completing the deletion removes (unless deleted explicitly).
+        const pending = await accessBindingsTargeting(unit, namespaceId, "agent", deleting.id);
+        const recorded = event(
+          operation,
+          request,
+          { kind: "agent", id: deleting.id, namespaceId },
+          "mutation",
+          context,
+        );
         await unit.audit.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: deleting.id, namespaceId },
-            "mutation",
-            context,
-          ),
+          pending.length === 0
+            ? recorded
+            : {
+                ...recorded,
+                details: { ...recorded.details, accessBindingsRemovedOnCompletion: pending },
+              },
         );
         return clientAgent(deleting);
       });
@@ -3111,6 +3226,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         readonly runtimeHeaders: Readonly<Record<string, string>>;
       } & NativeAdminTargetStatus);
 
+  // An exclusive Compute Driver stops the active revision's workload before a newer
+  // revision starts, so nothing serves until that revision activates. If it fails, the
+  // Agent stays down while the old revision is still recorded as active.
+  function replacesActiveWorkload(successor: Readonly<AgentRevision>): boolean {
+    let compute: ComputeDriver;
+    try {
+      compute = controller!.selectedDriver("compute");
+    } catch {
+      throw dependencyUnavailable();
+    }
+    return (
+      successor.compute.id === compute.id &&
+      successor.compute.implementation === compute.implementation &&
+      compute.requiresStoppedPredecessors?.(successor) === true
+    );
+  }
+
   async function resolveNativeAdminAvailability(input: {
     readonly actorId: string;
     readonly namespaceId: string;
@@ -3143,7 +3275,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       }
       throw error;
     }
-    const { agent, revision } = selection;
+    const { agent, revision, successor } = selection;
     const target = nativeAdminTarget({
       publicOrigin,
       installationId,
@@ -3153,6 +3285,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
     if (agent.desiredRuntimeState !== "running") {
       return { status: "stopped", agent, revision, target };
+    }
+    if (successor !== undefined && replacesActiveWorkload(successor)) {
+      return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
       return { status: "unsupported", agent, revision, target };
@@ -3335,7 +3470,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           summary: operation.summary,
           description: creating
             ? "Requires a session or Installation-scoped service key with administer on the Installation. Issues a Better Auth key for an existing non-Agent ServicePrincipal in its exact scope when the caller already holds every IAM grant of that ServicePrincipal at the same or a broader scope; creates no identity or IAM grant. The plaintext key is returned only here."
-            : "Requires a session or Installation-scoped service key with administer on the Installation. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
+            : "Requires a session or Installation-scoped service key with administer on the Installation, plus every IAM grant of the key's ServicePrincipal, as for issuance. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
           tags: [...operation.tags],
           security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
           "x-openclaw-permissions": [
@@ -3422,6 +3557,54 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               },
             };
           };
+          // Issuing or revoking a key acts with every grant of its ServicePrincipal, so the
+          // caller must already hold all of them; Installation administer alone is not enough.
+          const requireCoverage = async (servicePrincipalId: string) => {
+            let covered;
+            try {
+              covered =
+                typeof selected.coversIdentityAccess === "function" &&
+                (await selected.coversIdentityAccess({
+                  principalId: context.actorId,
+                  targetIdentityId: servicePrincipalId,
+                })) === true;
+            } catch {
+              throw dependencyUnavailable();
+            }
+            if (covered) {
+              return;
+            }
+            const base = event(
+              operation,
+              request,
+              target,
+              "authorization_denial",
+              context,
+              decision.evidence,
+              { outcome: "denied", reasonCode: "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED" },
+            );
+            try {
+              await options.auditSink.append({
+                ...base,
+                decisionReason:
+                  "The caller does not hold every grant of the target ServicePrincipal.",
+                details: {
+                  ...base.details,
+                  servicePrincipalId,
+                  ...(creating
+                    ? {}
+                    : { serviceKeyId: (request.params as { keyId: string }).keyId }),
+                },
+              });
+            } catch {
+              throw dependencyUnavailable();
+            }
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "The caller does not hold every grant of the target ServicePrincipal.",
+            );
+          };
           if (creating) {
             const body = request.body as {
               servicePrincipalId: string;
@@ -3452,25 +3635,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               );
             }
             // A key carries all of its principal's grants; never issue beyond the caller's own.
-            let covered;
-            try {
-              covered =
-                typeof selected.coversIdentityAccess === "function" &&
-                (await selected.coversIdentityAccess({
-                  principalId: context.actorId,
-                  targetIdentityId: principal.id,
-                })) === true;
-            } catch {
-              throw dependencyUnavailable();
-            }
-            if (!covered) {
-              await denial(operation, request, "authorization_denial", context, decision.evidence);
-              throw failure(
-                403,
-                "FORBIDDEN",
-                "The caller does not hold every grant of the target ServicePrincipal.",
-              );
-            }
+            await requireCoverage(principal.id);
             let key;
             try {
               key = await options.auth.createServiceKey({
@@ -3498,6 +3663,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             if (!key) {
               throw failure(404, "NOT_FOUND", "The service API key was not found.");
             }
+            // Revocation requires the same authority as issuance.
+            await requireCoverage(key.servicePrincipalId);
             try {
               await options.auth.revokeServiceKey(key);
               await options.auditSink.append(audit(key));
@@ -3521,14 +3688,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           response: responses({
             type: "object",
             additionalProperties: false,
-            required: ["github", "google", "password", "sessionBinding"],
+            required: ["github", "google", "oidc", "password", "sessionBinding"],
             properties: {
               github: { type: "boolean" },
               google: { type: "boolean" },
+              oidc: { type: "boolean" },
+              oidcSignIn: {
+                type: "object",
+                description:
+                  "Present only when OIDC sign-in is configured: the Console's button label and the configured authorization endpoint that the start URL must use.",
+                additionalProperties: false,
+                required: ["label", "authorizationUrl"],
+                properties: {
+                  label: { type: "string", minLength: 1, maxLength: 40 },
+                  authorizationUrl: { type: "string", format: "uri" },
+                },
+              },
               password: {
                 type: "boolean",
                 description:
-                  "False when password sign-in is recovery-only: ordinary accounts sign in with GitHub or Google, and only the recovery account uses a password.",
+                  "False when password sign-in is recovery-only: ordinary accounts sign in with an external provider, and only the recovery account uses a password.",
               },
               sessionBinding: { type: "boolean" },
             },
@@ -3539,153 +3718,101 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         reply.header("cache-control", "no-store");
         const github = options.auth.githubEnabled === true;
         const google = options.auth.googleEnabled === true;
+        const oidc = options.auth.oidcEnabled === true;
         const password = options.auth.passwordSignIn !== "recovery-only";
         return {
-          data: { github, google, password, sessionBinding: github || google },
+          data: {
+            github,
+            google,
+            oidc,
+            ...(oidc && options.auth.oidcSignIn !== undefined
+              ? { oidcSignIn: options.auth.oidcSignIn }
+              : {}),
+            password,
+            sessionBinding: github || google || oidc,
+          },
           meta: { requestId: request.id },
         };
       },
     );
-    routes.post(
-      "/api/auth/providers/github/start",
-      {
-        schema: {
-          operationId: "startGitHubSignIn",
-          summary: "Start GitHub sign-in for an enrolled account",
-          description:
-            "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
-          tags: ["Authentication"],
-          security: [],
-          response: {
-            ...responses({
+    // Handlers resolve on each request, as before: options.auth is read lazily.
+    const externalSignInProviders = [
+      { name: "github", label: "GitHub", article: "a", operation: "GitHub" },
+      { name: "google", label: "Google", article: "a", operation: "Google" },
+      { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
+    ] as const;
+    for (const provider of externalSignInProviders) {
+      routes.post(
+        `/api/auth/providers/${provider.name}/start`,
+        {
+          schema: {
+            operationId: `start${provider.operation}SignIn`,
+            summary: `Start ${provider.label} sign-in for an enrolled account`,
+            description:
+              "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
+            tags: ["Authentication"],
+            security: [],
+            response: {
+              ...responses({
+                type: "object",
+                additionalProperties: false,
+                required: ["url", "attemptId"],
+                properties: {
+                  url: { type: "string", format: "uri" },
+                  attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+                },
+              }),
+              403: { description: "Forbidden", ...error },
+            },
+          },
+        },
+        async (request, reply) => options.auth[`${provider.name}Start`](request, reply),
+      );
+      routes.get(
+        `/api/auth/providers/${provider.name}/callback`,
+        {
+          schema: {
+            operationId: `complete${provider.operation}SignIn`,
+            summary: `Complete an enrolled ${provider.label} sign-in`,
+            description:
+              "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
+            tags: ["Authentication"],
+            security: [],
+            response: { 302: { description: "Redirect to Console", type: "null" } },
+          },
+        },
+        async (request, reply) => options.auth[`${provider.name}Callback`](request, reply),
+      );
+      routes.post(
+        `/api/auth/providers/${provider.name}/result`,
+        {
+          schema: {
+            operationId: `confirm${provider.operation}SignIn`,
+            summary: `Confirm which session ${provider.article} ${provider.label} sign-in created`,
+            description:
+              "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
+            tags: ["Authentication"],
+            security: [{ sessionCookie: [] }],
+            body: {
               type: "object",
               additionalProperties: false,
-              required: ["url", "attemptId"],
-              properties: {
-                url: { type: "string", format: "uri" },
-                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
-              },
-            }),
-            403: { description: "Forbidden", ...error },
+              required: ["attemptId"],
+              properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
+            },
+            response: {
+              ...responses({
+                type: "object",
+                additionalProperties: false,
+                required: ["sessionKey"],
+                properties: { sessionKey: { type: "string" } },
+              }),
+              403: { description: "Forbidden", ...error },
+            },
           },
         },
-      },
-      async (request, reply) => options.auth.githubStart(request, reply),
-    );
-    routes.get(
-      "/api/auth/providers/github/callback",
-      {
-        schema: {
-          operationId: "completeGitHubSignIn",
-          summary: "Complete an enrolled GitHub sign-in",
-          description:
-            "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
-          tags: ["Authentication"],
-          security: [],
-          response: { 302: { description: "Redirect to Console", type: "null" } },
-        },
-      },
-      async (request, reply) => options.auth.githubCallback(request, reply),
-    );
-    routes.post(
-      "/api/auth/providers/github/result",
-      {
-        schema: {
-          operationId: "confirmGitHubSignIn",
-          summary: "Confirm which session a GitHub sign-in created",
-          description:
-            "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["attemptId"],
-            properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
-          },
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["sessionKey"],
-              properties: { sessionKey: { type: "string" } },
-            }),
-            403: { description: "Forbidden", ...error },
-          },
-        },
-      },
-      async (request, reply) => options.auth.githubResult(request, reply),
-    );
-    routes.post(
-      "/api/auth/providers/google/start",
-      {
-        schema: {
-          operationId: "startGoogleSignIn",
-          summary: "Start Google sign-in for an enrolled account",
-          description:
-            "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
-          tags: ["Authentication"],
-          security: [],
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["url", "attemptId"],
-              properties: {
-                url: { type: "string", format: "uri" },
-                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
-              },
-            }),
-            403: { description: "Forbidden", ...error },
-          },
-        },
-      },
-      async (request, reply) => options.auth.googleStart(request, reply),
-    );
-    routes.get(
-      "/api/auth/providers/google/callback",
-      {
-        schema: {
-          operationId: "completeGoogleSignIn",
-          summary: "Complete an enrolled Google sign-in",
-          description:
-            "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
-          tags: ["Authentication"],
-          security: [],
-          response: { 302: { description: "Redirect to Console", type: "null" } },
-        },
-      },
-      async (request, reply) => options.auth.googleCallback(request, reply),
-    );
-    routes.post(
-      "/api/auth/providers/google/result",
-      {
-        schema: {
-          operationId: "confirmGoogleSignIn",
-          summary: "Confirm which session a Google sign-in created",
-          description:
-            "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["attemptId"],
-            properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
-          },
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["sessionKey"],
-              properties: { sessionKey: { type: "string" } },
-            }),
-            403: { description: "Forbidden", ...error },
-          },
-        },
-      },
-      async (request, reply) => options.auth.googleResult(request, reply),
-    );
+        async (request, reply) => options.auth[`${provider.name}Result`](request, reply),
+      );
+    }
 
     const accountParams = {
       type: "object",
@@ -3711,7 +3838,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return failure(
         409,
         "RESOURCE_CONFLICT",
-        "Account controls require GitHub or Google sign-in; the password-only profile does not support them.",
+        "Account controls require GitHub, Google or OIDC sign-in; the password-only profile does not support them.",
       );
     }
     async function humanAccountActor(
@@ -3849,6 +3976,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         summary: "Attach an exact Google identity to an existing account",
       },
       {
+        operationName: "oidc",
+        path: "/api/auth/accounts/:userId/providers/oidc",
+        operationId: "attachOidcIdentity",
+        summary: "Attach an exact OIDC identity to an existing account",
+      },
+      {
         operationName: "disable",
         path: "/api/auth/accounts/:userId/disable",
         operationId: "disableAuthAccount",
@@ -3913,14 +4046,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required:
-                operationName === "github" || operationName === "google"
+                operationName === "github" || operationName === "google" || operationName === "oidc"
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
                 expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
                 ...(operationName === "github"
                   ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
-                  : operationName === "google"
+                  : operationName === "google" || operationName === "oidc"
                     ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
                     : {}),
               },
@@ -3963,6 +4096,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             }
             const { subject } = request.body as { subject: string };
             await options.auth.attachGoogle(userId, subject, actor, expectedVersion);
+          } else if (operationName === "oidc") {
+            if (!options.auth.attachOidc || !options.auth.oidcEnabled) {
+              throw failure(409, "RESOURCE_CONFLICT", "OIDC sign-in is not configured.");
+            }
+            const { subject } = request.body as { subject: string };
+            await options.auth.attachOidc(userId, subject, actor, expectedVersion);
           } else if (operationName === "detach") {
             if (!options.auth.detachMethod) {
               throw dependencyUnavailable();
@@ -4221,7 +4360,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "signInEmail",
           summary: "Sign in with email and password",
           description:
-            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub or Google sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
+            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -4856,6 +4995,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             context,
             error.evidence,
             error.authorization,
+            error instanceof DeletionRetryOwnedError
+              ? {
+                  decisionReason:
+                    "A deletion can be retried only by its initiating actor while it holds delete.",
+                  details: { initiatingActorId: error.initiatingActorId },
+                }
+              : undefined,
           );
         } catch (auditError) {
           mapped = requestFailure(auditError);

@@ -5,7 +5,8 @@ These steps continue [the observability demonstration stack](demo.md). Run them 
 ## Recover an incomplete setup
 
 Do not rerun failed or interrupted commands: an absent marker does not prove
-no changes. Confirm cluster UID, OCC status, complete history, saved revision
+no changes. The one exception is a demo install that timed out waiting; rerun
+that block as the [setup guide](demo.md#install-private-backends) describes. Confirm cluster UID, OCC status, complete history, saved revision
 and live resources. If upgrade was never invoked and OCC matches the saved
 revision, no rollback is needed. Otherwise retain dependencies and inspect for
 rollback below or escalate. If backup or cluster identity is unavailable, stop

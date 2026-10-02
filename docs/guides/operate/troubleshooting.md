@@ -1,16 +1,88 @@
 # Troubleshoot the platform
 
-Use this page when the Kubernetes installation, control plane, or several Agents
-are affected. For a problem with one Agent, start with
-[Agent troubleshooting](../topics/agent-troubleshoot.md). For a
-failure before local Kubernetes starts, use [Local Setup](../quickstart.md).
+Use this page when local startup, the Kubernetes installation, the control plane,
+or several Agents are affected. For a problem with one Agent, start with
+[Agent troubleshooting](../topics/agent-troubleshoot.md).
+
+## Local K3s cannot find the cpuset controller
+
+If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
+`/sys/fs/cgroup/cgroup.controllers` inside that server. Docker running inside a
+containerized development host needs the outer host to delegate `cpuset`;
+a running Docker daemon does not prove delegation. For Podman, check the
+[rootful setup requirements](../deploy/local-kubernetes-development.md#start-the-profile).
+
+Use the host management service's documented delegation procedure. If delegation
+changes fail, check that service before concluding that an outer-host change is
+required. Restore any paused management service and verify its health before
+continuing; do not disable the K3s check. Confirm `cpuset` is available inside the
+k3d server and that K3s starts successfully.
+
+## Local K3s image lookup times out
+
+The Compose control-plane profile without OpenShell resolves a K3s channel
+unless `OCC_DEVELOPMENT_K3S_IMAGE` selects an explicit image. If that lookup times out,
+select an approved Kubernetes 1.35-or-newer image through the
+[profile settings](../../reference/settings/development.md).
+
+After a failed creation, wait for startup to exit, then run `./scripts/dev-down`
+from the repository root with the same profile and state directory. Retry the
+[Compose profile startup](../deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute)
+with the selected image and wait for the development stack to report ready.
+
+## Local startup stalls on cert-manager
+
+On some Linux hosts, especially Ubuntu with Docker 29, the k3d node cannot
+resolve container registries. Startup then waits on the cert-manager rollout
+while its pods stay in `ContainerCreating`. The launcher does not print those
+Pod events, and it prints the kubeconfig path only after startup succeeds.
+
+In a second terminal, while that wait is still running, describe the
+cert-manager Pods. The context is `k3d-` plus the cluster name from the first
+startup line, `Creating Kubernetes-only k3d cluster ...`. `<state-directory>`
+belongs to the process that started OCC, not to this second terminal. Use
+`OCC_DEVELOPMENT_STATE_DIRECTORY` when that process set it. Otherwise use that
+process's temporary directory plus `openclaw-development`: its `TMPDIR` when
+set, and `/tmp` on Linux when `TMPDIR` is unset. Do not substitute this
+terminal's `TMPDIR`. The
+[development settings](../../reference/settings/development.md#required-development-controller-environment)
+define that directory.
+
+```bash
+kubectl --kubeconfig '<state-directory>/kubeconfig' \
+  --context 'k3d-<cluster>' \
+  -n cert-manager describe pods
+```
+
+A registry DNS failure shows up as a lookup error in the Pod events. Follow
+[Resolve node DNS failures](../deploy/local-kubernetes-development.md#resolve-node-dns-failures)
+and set a reachable resolver for a fresh start. That recovery changes only the
+owned node's resolver. If startup rolls the cluster back, wait until that
+command exits before starting again.
+
+## Local Codex sandbox check fails
+
+Kubernetes-only startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
+dedicated Codex sandbox before bootstrap. On Ubuntu 24.04,
+`kernel.apparmor_restrict_unprivileged_userns=1` denies the user namespace
+Codex bubblewrap needs. Startup reports `kubectl failed` while verifying that
+sandbox and rolls the owned cluster back. The preparation step does not print
+the bubblewrap error.
+
+Set that host sysctl to `0`, wait until the failed startup exits, and start
+again. The setting applies to the whole host. The launcher does not change it,
+and the sandbox check still runs. Do not skip the check.
+
+A production node uses the separate
+[Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
+sysctl change onto a shared cluster.
+
+## The Helm installation did not complete
 
 Run production commands from an operator shell with Helm and `kubectl`, read
 access to the `openclaw-system` namespace, and `KUBECONFIG_FILE` and `CONTEXT`
 set to the affected cluster. The examples use the default release `oce`; replace
 it if you installed with another name.
-
-## The Helm installation did not complete
 
 Start with the release and the initialization Job:
 
@@ -71,6 +143,16 @@ When the startup wrapper holds a failed check, the event adds it, for example
 `; startup check model-probe failed with AUTHENTICATION_FAILED`. See
 [Harness authentication](../../reference/harness-execution.md#harness-authentication)
 for the probe codes.
+
+## A Gateway log asks for a restart to apply the model catalog
+
+OpenClaw downloads its hosted model catalog in the background and logs
+`remote model catalog downloaded; restart the Gateway to apply it`. No action
+is needed: the Gateway keeps serving with the catalog it started with, and the
+download applies, if at all, at its next start. To stop this background
+traffic, set `models.catalogRefresh.enabled` to `false` in the Agent's
+Configuration and deploy it; the Gateway then uses only the catalog bundled in
+the runtime image.
 
 ## Authentication fails after installation
 

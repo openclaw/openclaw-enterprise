@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-09-30
-last_updated_session: build-logs-3/agent-logs-slice-3
+last_updated_session: authoring-run/2c8a089c-ec67-402d-8cfd-ec8b29c5e3fe
 ---
 
 # Agent runtime logs flow
@@ -106,6 +106,28 @@ drops lines already delivered at the cursor time, emits `stream_replaced`,
 `runtime-logs/redact.ts:maskPemBlockLines` can mask a PEM block whose BEGIN,
 body and END lines arrive as separate plain-text lines.
 
+For container follow polls, the signed cursor also carries optional `pemOpen`
+and `pemAfterTime` state. It describes the delivered boundary, not the start of
+the fetched overlap. The reader validates timestamp order in the consumed prefix
+through the last delivered line, without replaying older content through that
+state. Each delivered line is compared with the reliable `pemAfterTime` from the
+prior cursor, not with an earlier line on the same page. Only a line strictly
+newer than that prior frontier can close a carried open block. Thus an ordered
+same-page BEGIN and END at the same newer timestamp can close it. Times at or
+before the prior frontier and evicted line hashes do not establish forward
+progress; replayed overlap cannot erase a carried later BEGIN. Ordinary non-PEM
+text remains visible while ambiguous context stays open.
+
+Missing, invalid or reordered times make the frontier uncertain (`null`); later
+timestamped pages alone cannot repair that uncertainty. Empty polls preserve it,
+and lines beyond the page or byte cut do not advance it. A new view, expiry,
+instance/Pod change or replacement during the read discards the old context.
+The paired fields are validated together under the existing cursor MAC; malformed
+or inconsistent pairs fail as `cursor_invalid` before a Driver read. Legacy
+cursors and initial tails without observed PEM boundaries remain unknown and
+best-effort. This does not recover missing log history or change JSON withholding,
+short-token patterns, bracket-tag classification or sandbox pagination.
+
 `source=sandbox` skips the Compute description. `OpenClawController.readSandboxLogs`
 lists the source only when the selected Sandbox Driver provisioned the revision
 and implements `readSandboxLogs`, resolves Compute's placement with
@@ -134,7 +156,11 @@ names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 sanitized records and fails on the reserved `content` class.
 `runtimeLogDownloadBody` serializes the same branded records as text lines with
 the same check, and `runtimeLogDownloadFileName` names the attachment
-`<agent>-<revision>-<source>-<pod>.log`. The console filters
+`<agent>-<revision>-<source>-<pod>.log`. A `minLevel` query
+(`runtime-logs/read.ts:runtimeLogPageAtLevel`) removes sanitized lines below that
+level after the cursor is signed, so polls resume after hidden lines; unknown-level
+lines, gaps and withheld counts stay. The console asks for `minLevel=info` unless
+**Include debug** is selected; its level chips and text filter
 (`apps/controller/src/console/agents/logs.mjs`) run only over loaded rows. The
 console remembers a `403` from either route for the signed-in operator for the
 page session, so reopening the Logs tab adds no audited denial, and another
@@ -154,6 +180,11 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
   tiers, cursors and failures; `kubernetes-compute.test.mjs` covers plane
   selection, Event filtering and the typed `403`. These use in-memory Kubernetes
   responses; `agent-runtime-logs-k3d-real.test.mjs` reads a real cluster.
+  The same content suite exercises the real reader, cursor and sanitizer with
+  synthetic Driver pages: cross-poll masking, replay/eviction, uncertain times,
+  cuts, paired-field validation and stream/view resets. A separate handler case
+  checks the serialized cursor through the supported controller fixture. These
+  controls do not establish real-cluster behavior.
   `runtime-logs-sandbox.test.mjs` drives the sandbox source through the real
   handler and OpenShell Driver with a gateway client that answers only
   `GetSandboxLogs`; `openshell-gateway-wire.test.mjs` checks the wire shape.
@@ -169,6 +200,14 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 14:00: Add the server-side `minLevel` floor and the console's **Include debug** control. (fix-d79 - 3d6ce1fdb)
+
+- 2026-09-30 23:44: Clarify the prior cursor frontier and ordered same-page PEM boundaries without changing masking behavior. (authoring-run/2c8a089c-ec67-402d-8cfd-ec8b29c5e3fe - a4cddf26bc462744bfff912b1e1cdb9f1ee60cd2)
+
+- 2026-09-30 20:37: Receive cursor-context masking with current runtime-log guidance and preserve the current view behavior. (authoring-run/e2da7c2d-8080-4dd4-9ce9-d494b890234c - fb22aa07c1613218280cff25d6b62bfb4cff6b5d)
+
+- 2026-09-30 19:43: Carry authenticated PEM context across bounded container polls without closing on ambiguous overlap. (authoring-run/b5fcaf0e-328a-4fe2-b53f-e72268ef70af - affac2bfc1370e590e6da570bcaaad4a207c9f09)
 
 - 2026-09-30 08:30: Document runtime status and container log reads for Kubernetes Compute. (build-1/agent-logs-slice-1 - 0918be781)
 - 2026-09-30 11:40: Add downloads, console filters and the `occ agent runtime|logs` callers. (build-2/agent-logs-slice-2)

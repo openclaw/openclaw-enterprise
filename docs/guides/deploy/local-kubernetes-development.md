@@ -41,12 +41,8 @@ The machine shares only `$HOME` by default, so set
 `OCC_DEVELOPMENT_STATE_DIRECTORY` beneath it.
 
 Docker inside a containerized development host also needs `cpuset` delegated
-by the outer host. If node logs show `failed to find cpuset cgroup (v2)`, inspect
-`/sys/fs/cgroup/cgroup.controllers` inside the k3d server. A running Docker daemon
-does not prove this prerequisite. If delegation changes fail, check the host
-management service and its documented delegation procedure before concluding
-that an outer-host change is required. Restore any paused management service
-and verify its health before continuing; do not disable the K3s check.
+by the outer host. For `failed to find cpuset cgroup (v2)`, follow
+[local cgroup troubleshooting](../operate/troubleshooting.md#local-k3s-cannot-find-the-cpuset-controller).
 
 Startup resolves the engine's host API socket itself. Do not export
 `DOCKER_HOST` or `CONTAINER_HOST` from the path `podman info` reports: on a
@@ -74,8 +70,9 @@ actual policy, installs it only on the owned k3d node, and verifies workspace
 and outside-write boundaries and missing-profile failure. Only dedicated Codex
 containers select the profile. The private state directory records its hashes and
 node provenance in `codex-seccomp-provenance.json`. If the policy, runtime, or
-verification is unsupported, startup fails and rolls back the owned cluster;
-check the reported failure and host user-namespace restrictions before retrying.
+verification is unsupported, startup fails and rolls back the owned cluster.
+On Ubuntu 24.04, follow
+[local Codex sandbox troubleshooting](../operate/troubleshooting.md#local-codex-sandbox-check-fails).
 The sandbox check applies to that node and image at startup; repeat it after a
 runtime, kernel, or image change by recreating the local installation.
 
@@ -103,10 +100,8 @@ requires [hybrid private routing](local-compose-kubernetes.md) before deployment
 Follow that procedure before creating Agent Namespaces; it also describes the
 Compose repository and Slack service connections.
 
-If the default K3s channel lookup times out, set
-`OCC_DEVELOPMENT_K3S_IMAGE` to an approved explicit Kubernetes 1.35-or-newer
-image before retrying. After a failed creation, run `./scripts/dev-down` with
-the same state directory first. See [profile settings](../../reference/settings/development.md).
+If the K3s channel lookup times out, follow
+[local image-lookup troubleshooting](../operate/troubleshooting.md#local-k3s-image-lookup-times-out).
 
 ### Start the OpenShell fail-closed profile
 
@@ -123,7 +118,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 The checkout-local CLI creates one k3d cluster and then:
 
 1. installs the pinned Agent Sandbox controller and OpenShell
-   `v0.1.0` assets;
+   `v0.1.3-pre.1` assets;
 2. imports digest-resolved OpenShell, OCE controller, Agent runtime, and
    PostgreSQL images;
 3. creates `oce-system` and installs PostgreSQL, OpenShell Gateway, and the OCE
@@ -170,8 +165,9 @@ helper does not modify the default kubeconfig or current kubectl context.
 
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
-changing the API port alone leaves PostgreSQL on port 55432. Generated runtime workloads have a 2 GiB memory limit
-each; size the local engine VM for OCC plus the Agents you run. Keep each
+changing the API port alone leaves PostgreSQL on port 55432. Generated Harness workloads have a 2 GiB memory limit
+each, and each Agent Gateway requests 1280 MiB with a 3 GiB limit; size the local engine VM for OCC
+plus the Agents you run. Keep each
 stack's resources under the helper's lifecycle until cleanup.
 
 ## Require both proxies before enabling Slack
@@ -271,6 +267,11 @@ Kubernetes in-cluster. When OpenShell is selected, the API, which registers
 credential sources, and the worker reach OpenShell Gateway through a narrow
 development NetworkPolicy in `oce-system`.
 
+The launcher sets `network.pluginStatusProxySourceCidrs` to the k3d node's Pod
+bridge address, the source the API server uses to proxy to Pods. That enables
+plugin status and diagnostics and lets a dedicated Codex Gateway start once on
+a first deploy.
+
 The OpenShell profile declares an `openshell` Backend for the Gateway
 endpoint and selects both the OpenShell Sandbox and the
 [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md),
@@ -323,8 +324,9 @@ kubectl --kubeconfig '<profile-kubeconfig>' --context '<profile-context>' \
 
 Expect the workspace to become `Bound` with access mode `RWO`, followed by a
 running Harness Pod. With `WaitForFirstConsumer`, a pending claim before Pod
-creation is normal. Existing owned RWX claims are retained; do not delete a claim
-or change its access mode to adopt the new default.
+creation is normal. Legacy RWX claims are unsupported; before upgrading an older
+installation, follow the [storage transition prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces).
+Do not change a PVC's access mode in place.
 
 ### Preserve storage across restarts
 
@@ -416,7 +418,7 @@ for both scoped RoleBindings.
 - This is a development environment, not a production deployment recipe.
 - The OpenShell profile installs one central Gateway per cluster. OCC runs in
   the cluster and creates tenant resources in separate `oce-*` Namespaces.
-- Stock OpenShell `v0.1.0` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.3-pre.1` remains fail-closed for unsupported Secret and
   workload-identity projections. Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.
 - OpenShell Gateway permits unauthenticated users only inside this disposable,

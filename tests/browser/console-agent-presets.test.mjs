@@ -123,11 +123,22 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  // Codex serves curated plugins only to ChatGPT logins: the API-key default cannot browse them.
+  assert.equal(await page.getByLabel("Authentication method").inputValue(), "api_key");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog
+    .getByText("Codex plugins need a ChatGPT login. With an OpenAI API key", { exact: false })
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  assert.deepEqual(pathRequests(requests, "POST", catalogPath), []);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const linear = dialog.getByRole("button", { name: "Linear", exact: true });
   await linear.waitFor();
-  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
   assert.deepEqual(
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
     [{}],
@@ -569,7 +580,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   } finally {
     detailRelease.resolve();
   }
-  await dialog.getByText(/token was rejected or cannot access plugins/).waitFor();
+  await dialog.getByText(/credential was rejected or cannot access plugins/).waitFor();
   assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.equal((await dialog.textContent()).includes("private upstream response"), false);
   failTools = false;
@@ -579,7 +590,10 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     await dialog.locator('details.plugin-tool-row[data-tool="app_shared/events%2Flist"]').count(),
     1,
   );
-  assert.equal(await dialog.getByText(/token was rejected or cannot access plugins/).count(), 0);
+  assert.equal(
+    await dialog.getByText(/credential was rejected or cannot access plugins/).count(),
+    0,
+  );
   const detailLogo = dialog.locator(".plugin-detail-header .plugin-logo img");
   await detailLogo.evaluate((image) => image.decode());
   assert.ok(await detailLogo.evaluate((image) => image.naturalWidth > 0));
@@ -1043,7 +1057,7 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
 });
 
-test("Dedicated OpenClaw Presets keep their OpenClaw harness", async (t) => {
+test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const root = await mkdtemp(join(tmpdir(), "occ-dedicated-openclaw-preset-"));
@@ -1055,6 +1069,13 @@ test("Dedicated OpenClaw Presets keep their OpenClaw harness", async (t) => {
   const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "dedicated-key");
   const harnessAuth = { method: "api_key", source: secret.ref };
   const values = nativeValues("dedicated-openclaw");
+  values.models.providers.openai = {
+    ...values.models.providers.openai,
+    baseUrl: "https://models.example.test/v1",
+    api: "openai-completions",
+    headers: { "X-Model-Route": "enterprise" },
+  };
+  values.models.providers.openai.models[0].id = "openai/gpt-4.1";
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
       name: "Dedicated OpenClaw",
@@ -1095,9 +1116,67 @@ test("Dedicated OpenClaw Presets keep their OpenClaw harness", async (t) => {
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON", { exact: true });
   assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  // Changing only topology must not redirect inference or discard provider settings.
+  for (const mode of ["embedded", "dedicated"]) {
+    await page.getByLabel("Execution mode").selectOption(mode);
+    assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+    assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
+  }
   const createdResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const created = (await response.json()).data;
+  assert.equal(created.executionMode, "dedicated");
+  assert.deepEqual(created.harnessAuth, harnessAuth);
+  const saved = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+  );
+  assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-4.1");
+  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"].agentRuntime, {
+    id: "openclaw",
+  });
+  assert.deepEqual(saved.data.values.models.providers, values.models.providers);
+});
+
+test("Partial Presets without a model policy retain the default Codex harness", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-partial-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Partial model Preset", { ready: true });
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Gateway settings only",
+      template: {
+        agent: { name: "Partial Preset Agent" },
+        configuration: { values: { gateway: { mode: "local", bind: "lan" } } },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-astra");
+  await createModelCredentialSecret(page, "partial-preset-model-key");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -1109,10 +1188,11 @@ test("Dedicated OpenClaw Presets keep their OpenClaw harness", async (t) => {
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
   );
-  assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-4.1");
-  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"].agentRuntime, {
-    id: "openclaw",
+  assert.equal(saved.data.values.agents.defaults.model, "codex/gpt-6-astra");
+  assert.deepEqual(saved.data.values.agents.defaults.models["codex/gpt-6-astra"].agentRuntime, {
+    id: "codex",
   });
+  assert.deepEqual(saved.data.values.gateway, { mode: "local", bind: "lan" });
 });
 
 test("Presets render variables into independent Agent drafts and keep partial-save retries fixed", async (t) => {

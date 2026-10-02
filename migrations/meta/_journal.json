@@ -300,7 +300,21 @@
       "idx": 42,
       "version": "7",
       "when": 1787000000042,
-      "tag": "0042_agent_runtime_roles",
+      "tag": "0042_oauth_harness_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1787000000043,
+      "tag": "0043_credential_withdrawals",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1787000000044,
+      "tag": "0044_agent_runtime_roles",
       "breakpoints": true
     }
   ]

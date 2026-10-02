@@ -108,9 +108,30 @@ changed.
 | Repository access and broker state                                | Reconcile durable inputs; recreate sessions  | Repository metadata, broker image, service name, CA, runtime policy, volumes, and external GitHub App grants must remain compatible. Broker sessions are ephemeral and image rollout does not expand external installations.                                                        | Preserve the exact Service name, hostname, certificate, and CA until old sessions drain, along with repository volumes and grants. A lost session can fail its revision; inspect cleanup and explicitly deploy a new authorized revision when needed. Verify clone and the required read or write operation. |
 | Plugin integrations                                               | Reconcile manually                           | Catalogs, policy, credentials, and external authorization are independent of an image replacement.                                                                                                                                                                                  | Reconcile catalog availability, reviewer policy, NetworkPolicies, Secret bindings, and external grants. Verify a representative tool call.                                                                                                                                                                   |
 | Authentication, TLS, and routing                                  | Preserve and reconcile                       | Auth secrets, hostnames, cookie scope, certificates, Gateway routes, and trusted-proxy CIDRs are operator-owned. Auth sessions may be invalidated when these change.                                                                                                                | Preserve stable secrets when sessions should survive. Reconcile origins and routes with the live hostname, and verify human login, service-key access, workspace routing, and native admin access.                                                                                                           |
-| PostgreSQL, bootstrap, workspace, gateway, and repository volumes | Preserve                                     | These survive only while their external database, PVCs, k3d volumes, or Compose volumes remain. Images do not recreate them.                                                                                                                                                        | Keep the existing resources and reclaim policies. Do not delete a database, bootstrap volume, Agent PVC, revision, or Namespace to force an upgrade through.                                                                                                                                                 |
+| PostgreSQL, bootstrap, workspace, gateway, and repository volumes | Preserve                                     | These survive only while their external database, PVCs, k3d volumes, or Compose volumes remain. Images do not recreate them.                                                                                                                                                        | Keep the existing resources and reclaim policies. Do not delete these to force an upgrade through, except the explicitly discarded legacy RWX Agents below.                                                                                                                                                  |
 | Native-admin pod-local edits and broker sessions                  | Recreate or discard                          | Pod-local changes and in-memory sessions disappear when the owning Pod restarts. Managed Configurations and PVC data persist.                                                                                                                                                       | Move intended configuration into a managed resource before rollout. Inspect lost sessions and retained cleanup obligations; worker maintenance does not recreate lost sessions.                                                                                                                              |
 | Long-lived local profile state                                    | Preserve and reconcile manually              | Compose files, bind mounts, kubeconfig, cluster name, image tags, private state files, and named volumes sit outside the release image.                                                                                                                                             | Update every image consumer, retain PostgreSQL and k3d volumes, add new mounted files explicitly, and verify rendered Compose and Helm configuration before recreating only affected services. A custom retained topology needs its own procedure.                                                           |
+
+## Remove legacy RWX workspaces
+
+After recording the baseline and completing any required backups above, remove
+legacy RWX development Agents before deploying the RWO-only controller:
+
+1. Inventory Harness workspace PVC access modes and confirm with their Agent
+   owners which legacy RWX-backed Agents can be discarded. Record these as
+   intentional deletions in the inventory.
+2. Using the current compatible OCE version, delete those Agents through OCE and
+   confirm their workspace PVCs are gone. Deleting an Agent also deletes its
+   Gateway state; this transition does not preserve or migrate its data. Keep the
+   old API and worker running for this cleanup, then quiesce them for the upgrade.
+3. Upgrade only after no legacy RWX Harness claims remain. Recreate any needed
+   Agents with new RWO storage.
+
+Do not change PVC access modes in place. The RWO-only version rejects legacy
+RWX claims during reconciliation and final Agent deletion; upgrading first can
+block both redeployment and cleanup. A failed deletion can already have removed
+Gateway state before rejecting the Harness claim; it does not preserve the whole
+Agent. Existing RWO-backed Agents need no recreation.
 
 ## Apply the release in dependency order
 
@@ -134,7 +155,8 @@ changed.
 - [ ] The authenticated Installation and protected startup configuration agree.
       API and worker selected the same Driver identities.
 - [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
-      contain the expected IDs. IAM, Backend, service-account, deployment-work,
+      contain the expected IDs, accounting for recorded legacy RWX deletions and
+      newly created replacement Agents. IAM, Backend, service-account, deployment-work,
       and audit-record inventories also reconcile. The controller-only helper
       requests no deployments; check for revisions affected by broker restart.
 - [ ] Persisted Preset templates match the intended source definitions. Missing
@@ -143,7 +165,8 @@ changed.
 - [ ] Runtime releases selected new successful revisions. Gateway and Agent Pods
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
-      sessions match the baseline.
+      sessions match the baseline for retained Agents. Recreated legacy RWX Agents
+      have new identities and fresh storage; verify their new RWO claims instead.
 - [ ] Authentication, audit, metrics, traces, and alert delivery still reach
       their configured sinks.
 - [ ] A real model response succeeds for each execution mode and provider in

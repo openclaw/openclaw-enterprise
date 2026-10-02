@@ -173,7 +173,7 @@ export function createAuthPrincipalSeed(
           })),
       ),
       { action: "operate", resourceKind: "secret" },
-      ...(["create", "read", "delete", "operate"] as const).map((action) => ({
+      ...(["create", "read", "update", "delete", "operate"] as const).map((action) => ({
         action,
         resourceKind: "credential_source" as const,
       })),

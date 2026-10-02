@@ -40,7 +40,9 @@ graph TD
   J -->|no| Y["Return unavailable"]
   I -->|yes| K{"Agent desired running?"}
   K -->|no| L["Return stopped with derived origin"]
-  K -->|yes| M{"Native config and endpoint supported?"}
+  K -->|yes| R2{"Newer revision replacing it on an exclusive Compute Driver?"}
+  R2 -->|yes| Y
+  R2 -->|no| M{"Native config and endpoint supported?"}
   M -->|no| N["Return unsupported with derived origin"]
   M -->|yes| O["Return available Agent URL"]
   O --> P["Browser opens derived Agent host with shared OCE session cookie"]
@@ -130,7 +132,7 @@ lease runs admission again against current session state.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. The native gateway never receives the OCE session cookie.
+The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. A `502` from the gateway's user-photo route (`/api/users/<id>/avatar`) becomes an empty `404`: it means OpenClaw could not fetch a Gravatar fallback, which a dedicated Gateway without internet egress never can, and the UI shows initials for both. The native gateway never receives the OCE session cookie.
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -183,7 +185,7 @@ The init container cannot write through the gateway's later mount path.
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to invalid native admin enablement, missing public origin, invalid Agent domain, invalid shared cookie parent domain, invalid Better Auth cookie scope, or insufficient auth secret material.
 - `disabled` means the Installation has not enabled the feature.
 - `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
-- `unavailable` means active revision selection raised `DependencyUnavailableError` before OCC could derive the Agent target.
+- `unavailable` means active revision selection raised `DependencyUnavailableError` before OCC could derive the Agent target, or a newer revision exists whose Compute Driver `requiresStoppedPredecessors` (Kubernetes dedicated). That worker stops the active revision's workload before the newer one starts, so nothing serves until the newer revision activates; if it fails, the old revision stays recorded as active with no workload.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests should not contain native-admin exchange, bootstrap, callback, launch-code, state, verifier, or Agent-specific session-cookie traffic.
@@ -209,6 +211,8 @@ The init container cannot write through the gateway's later mount path.
 ## Changelog
 
 - 2026-10-02 11:55: Trace per-person OpenClaw role assignments, disjoint human routing, verified profile admission, session scope intersection and connection revocation. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
+- 2026-10-01 21:00: Reported `unavailable` while a newer exclusive revision replaces the active workload, including after that replacement fails.
+- 2026-10-01 18:20: Answered unreachable user-photo fallbacks with `404` instead of `502`.
 
 - 2026-09-30 19:00: Remembered a denied availability read per tab and session owner so reloads do not add an audited denial per view.
 

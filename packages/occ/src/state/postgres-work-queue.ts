@@ -2,6 +2,7 @@ import { isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/ut
 import { createHash, randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
 import {
+  CREDENTIAL_WITHDRAWAL_TARGET,
   nonempty,
   safeFailureCode,
   validateFailureData,
@@ -68,7 +69,8 @@ interface WorkRow {
   readonly revision_id: string | null;
   readonly actor_id: string;
   readonly namespace_target: "ready" | "deleted" | null;
-  readonly agent_target: "stopped" | "deleted" | "provisioned" | null;
+  readonly agent_target:
+    "stopped" | "deleted" | "provisioned" | typeof CREDENTIAL_WITHDRAWAL_TARGET | null;
   readonly state: ControllerWorkState;
   readonly available_at: Date | string;
   readonly attempt_count: number;
@@ -215,7 +217,10 @@ function transferRepositoryCleanupSql(continuingRevision = "false"): string {
       JOIN cleanup_agents AS agent
         ON agent.namespace_id = revision.namespace_id AND agent.id = revision.agent_id
       JOIN cleanup_namespaces AS namespace ON namespace.id = source.namespace_id
-      WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id)
+      -- Credential withdrawal work (agent_target = 'credentials_withdrawn', see
+      -- CREDENTIAL_WITHDRAWAL_TARGET) leaves its active revision running, so it owns no cleanup.
+      WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id
+          AND source.agent_target IS NULL)
         OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
           AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
         OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
@@ -453,7 +458,11 @@ const FAIL_EXHAUSTED_NAMESPACES_SQL = `
     RETURNING namespace.id
   )`;
 
-const INSERT_EVIDENCE_CTE_SQL = `
+/**
+ * Queue transitions append `reconcile` evidence in the same statement. `filter` narrows which
+ * transitioned rows get a row; it is appended to the evidence SELECT's WHERE clause.
+ */
+const insertEvidenceCteSql = (filter = "") => `
   evidence_targets AS (
     SELECT transitioned.*,
       CASE WHEN ${repositoryCleanupSql("transitioned")} THEN
@@ -491,9 +500,34 @@ const INSERT_EVIDENCE_CTE_SQL = `
       jsonb_build_object('reasonCode', $4::text, 'attemptCount', transitioned.attempt_count,
         'workId', transitioned.idempotency_key)
     FROM evidence_targets AS transitioned
+    WHERE true ${filter}
     RETURNING id
   )`;
+const INSERT_EVIDENCE_CTE_SQL = insertEvidenceCteSql();
 const INSERT_EVIDENCE_SQL = `${INSERT_EVIDENCE_CTE_SQL}
+  SELECT transitioned.* FROM transitioned`;
+/**
+ * A deployment waiting for its runtime defers every few seconds with the same code. Only a
+ * change is recorded: a deferral whose outcome and reason code match the latest evidence for the
+ * same revision work item adds no row. Retries, failures, and completions are always recorded.
+ * The lookup matches the `audit_events_work_attempt_idx` partial index.
+ */
+const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(`
+      AND NOT EXISTS (
+        SELECT 1 FROM (
+          SELECT prior.outcome, prior.details->>'reasonCode' AS reason_code
+          FROM occ.audit_events AS prior
+          WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
+            AND prior.resource_kind = 'agent_revision'
+            AND prior.details->>'workId' = transitioned.idempotency_key
+            AND prior.namespace_id = transitioned.namespace_id
+            AND prior.actor_id = transitioned.actor_id
+            AND prior.occurred_at >= transitioned.created_at
+          ORDER BY prior.occurred_at DESC, prior.id DESC
+          LIMIT 1
+        ) AS latest
+        WHERE latest.outcome = $3::text AND latest.reason_code = $4::text
+      )`)}
   SELECT transitioned.* FROM transitioned`;
 const SETTLE_PROVISIONING_FAILURE_SQL = `
   settled_provisioning_failures AS (
@@ -581,7 +615,9 @@ export class PostgresWorkQueue {
         (agentId !== null &&
           revisionId === null &&
           (namespaceTarget !== null || (agentTarget !== "stopped" && agentTarget !== "deleted"))) ||
-        (revisionId !== null && (namespaceTarget !== null || agentTarget !== null)))
+        (revisionId !== null &&
+          (namespaceTarget !== null ||
+            (agentTarget !== null && agentTarget !== CREDENTIAL_WITHDRAWAL_TARGET))))
     ) {
       throw new ScopeViolationError(
         "Controller work requires one exact Namespace, Agent, or revision target shape.",
@@ -711,6 +747,8 @@ export class PostgresWorkQueue {
              AND revision.admitted_spec->'repository_credentials' IS NOT NULL))
            AND (
              (source.agent_id = revision.agent_id AND source.revision_id IS NOT NULL
+               -- Excludes credential withdrawal work; see CREDENTIAL_WITHDRAWAL_TARGET.
+               AND source.agent_target IS NULL
                AND revision.revision_number <= source_revision.revision_number)
              OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
                AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
@@ -773,17 +811,7 @@ export class PostgresWorkQueue {
           `WITH candidate AS (
              SELECT work.idempotency_key
              FROM occ.controller_work AS work
-             WHERE work.state = 'queued'
-               AND work.available_at <= clock_timestamp()
-               AND (work.attempt_count < $2::integer OR ${repositoryCleanupSql("work")})
-               ${this.namespaceFilter("work")}
-               AND NOT EXISTS (
-                 SELECT 1
-                 FROM occ.controller_work AS in_flight
-                 WHERE in_flight.state = 'claimed'
-                   AND COALESCE(in_flight.agent_id, in_flight.namespace_id) =
-                       COALESCE(work.agent_id, work.namespace_id)
-               )
+             WHERE ${this.claimablePredicate("$2")}
              ORDER BY work.available_at, work.created_at, work.idempotency_key
              FOR UPDATE OF work SKIP LOCKED
              LIMIT 1
@@ -829,6 +857,27 @@ export class PostgresWorkQueue {
       [claim.idempotencyKey, claim.claimToken, this.leaseDurationMs],
     );
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);
+  }
+
+  /**
+   * Whether some Work could be claimed now. Work for an Agent or Namespace that
+   * already has a claim (the caller's own included) does not count: no worker
+   * could take it.
+   */
+  async claimableWorkWaiting(): Promise<boolean> {
+    const waiting = await this.client.query(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM occ.controller_work AS work
+         WHERE ${this.claimablePredicate("$1")}
+       ) AS waiting`,
+      [this.maxAttempts],
+    );
+    const value = (waiting.rows[0] as { waiting?: unknown } | undefined)?.waiting;
+    if (typeof value !== "boolean") {
+      throw new ScopeViolationError("The controller work backlog returned an invalid answer.");
+    }
+    return value;
   }
 
   async pending(): Promise<number> {
@@ -959,7 +1008,7 @@ export class PostgresWorkQueue {
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
          RETURNING *
-       ), ${INSERT_EVIDENCE_SQL}`,
+       ), ${INSERT_DEFER_EVIDENCE_SQL}`,
       [
         claim.idempotencyKey,
         claim.claimToken,
@@ -1228,6 +1277,21 @@ export class PostgresWorkQueue {
       throw new ScopeViolationError("Controller work retry jitter must be in the range [0, 1).");
     }
     return value;
+  }
+
+  // Queued Work a worker may claim now; `maxAttempts` names the bound parameter.
+  private claimablePredicate(maxAttempts: string): string {
+    return `work.state = 'queued'
+               AND work.available_at <= clock_timestamp()
+               AND (work.attempt_count < ${maxAttempts}::integer OR ${repositoryCleanupSql("work")})
+               ${this.namespaceFilter("work")}
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM occ.controller_work AS in_flight
+                 WHERE in_flight.state = 'claimed'
+                   AND COALESCE(in_flight.agent_id, in_flight.namespace_id) =
+                       COALESCE(work.agent_id, work.namespace_id)
+               )`;
   }
 
   private namespaceFilter(alias?: string): string {

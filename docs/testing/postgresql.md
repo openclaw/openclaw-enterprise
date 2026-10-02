@@ -201,9 +201,10 @@ The same composition covers the GitHub profile against the fixture provider:
 - `postgres-github-admin-scope.test.mjs`: a created administrator cannot attach
   an identity to, or revoke, the broader bootstrap administrator's account, or
   take its recovery designation.
-- `postgres-github-tab-binding.test.mjs`: Playwright over the HTTPS Origin. A tab
-  signed in with GitHub signs out after another tab's password sign-in, and the
-  login receipt is one-use and needs the exact Origin.
+- `postgres-github-tab-binding.test.mjs`, `postgres-oidc-tab-binding.test.mjs`:
+  Playwright over the HTTPS Origin. A tab signed in with GitHub, or OIDC alone, signs
+  out after another tab's password sign-in; the login receipt is one-use and needs the
+  exact Origin.
 - `postgres-github-recovery-replacement.test.mjs`: online recovery replacement
   moves the reserved password lane and survives a restart with the original seed.
 - `postgres-google-sign-in.test.mjs`: Google sign-in against a fixture OpenID

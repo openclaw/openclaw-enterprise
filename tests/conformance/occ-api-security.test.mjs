@@ -1275,10 +1275,19 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   assert.equal(views().length, 3);
 
   // Cursors are bound to the principal, target and signature.
+  const cursorParts = first.data.cursor.split(".");
+  const originalMac = cursorParts[2];
+  const tamperedMac = `${originalMac[0] === "A" ? "B" : "A"}${originalMac.slice(1)}`;
+  const tamperedCursor = `${cursorParts[0]}.${cursorParts[1]}.${tamperedMac}`;
+  assert.equal(
+    Buffer.from(originalMac, "base64url").equals(Buffer.from(tamperedMac, "base64url")),
+    false,
+    "the tamper control must change decoded MAC bytes",
+  );
   const readsBefore = driverReads(fixture).length;
   for (const [label, forged, session] of [
     ["foreign principal", first.data.cursor, other.session],
-    ["tampered", `${first.data.cursor.slice(0, -2)}AA`, viewer.session],
+    ["tampered", tamperedCursor, viewer.session],
     ["another source", first.data.cursor.replace("v1.", "v1.e"), viewer.session],
   ]) {
     const rejected = await fixture.request(
@@ -1314,6 +1323,90 @@ test("runtime log cursors bind one principal and view and are re-authorized on e
   });
   assert.equal(revoked.status, 403);
   assert.equal(driverReads(fixture).length, readsBefore);
+});
+
+test("minLevel filters log lines on the server and a cursor still resumes after hidden lines", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  const state = fixture.computeDriver.state;
+  const codex = (index, level, fields, span) =>
+    runtimeLogLine(
+      index,
+      JSON.stringify({
+        timestamp: "2026-10-01T07:49:44.100970Z",
+        level,
+        fields,
+        target: span === undefined ? "codex_core::client" : "codex_exec_server::local_file_system",
+        ...(span === undefined ? {} : { span, spans: [] }),
+      }),
+    );
+  state.lines = [
+    codex(1, "INFO", { message: "new" }, { name: "fs.read_file" }),
+    codex(2, "WARN", { message: "retrying model request" }),
+    runtimeLogLine(3, "plain wrapper text"),
+    codex(4, "INFO", { message: "close" }, { name: "fs.read_file" }),
+  ];
+  const views = () =>
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view");
+  const shown = (page) =>
+    page.data.records.map((record) =>
+      record.type === "line" ? `${record.level} ${record.message}` : record.type,
+    );
+
+  const all = await fixture.request("GET", target.logsPath("source=gateway"));
+  assert.equal(all.status, 200, all.text);
+  assert.deepEqual(shown(all), [
+    "debug span new fs.read_file",
+    "warn retrying model request",
+    "unknown plain wrapper text",
+    "debug span close fs.read_file",
+  ]);
+
+  // Lines of unknown level stay: the server cannot tell they are below the floor.
+  const info = await fixture.request("GET", target.logsPath("source=gateway&minLevel=info"));
+  assert.equal(info.status, 200, info.text);
+  assert.deepEqual(shown(info), ["warn retrying model request", "unknown plain wrapper text"]);
+  assert.equal(views().length, 2);
+
+  // A poll at the same level is the same view and resumes after the last line read,
+  // including the hidden debug line, so lowering the level later never replays it.
+  state.lines.push(
+    codex(5, "INFO", { message: "new" }, { name: "fs.get_metadata" }),
+    codex(6, "ERROR", { message: "model request failed" }),
+  );
+  const next = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&minLevel=info&cursor=${encodeURIComponent(info.data.cursor)}`),
+  );
+  assert.equal(next.status, 200, next.text);
+  assert.deepEqual(shown(next), ["error model request failed"]);
+  assert.equal(views().length, 2);
+  const after = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(next.data.cursor)}`),
+  );
+  assert.equal(after.status, 200, after.text);
+  assert.deepEqual(shown(after), []);
+
+  // The download applies the same floor.
+  const download = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&minLevel=error&download=true"),
+  );
+  assert.equal(download.status, 200, download.text);
+  assert.deepEqual(
+    download.text
+      .trim()
+      .split("\n")
+      .slice(1)
+      .map((line) => line.split(" ").slice(1, 2)[0]),
+    ["UNKNOWN", "ERROR"],
+  );
+
+  const reads = driverReads(fixture).length;
+  const invalid = await fixture.request("GET", target.logsPath("source=gateway&minLevel=unknown"));
+  assert.equal(invalid.status, 400, invalid.text);
+  assert.equal(driverReads(fixture).length, reads);
 });
 
 test("an expired runtime log cursor starts a new audited view with a labelled gap", async () => {

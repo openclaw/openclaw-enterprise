@@ -6,12 +6,13 @@ import test from "node:test";
 import {
   maskRuntimeEventText,
   redactRuntimeLogText,
-  sanitizeRuntimeLogChunk,
-} from "../../packages/occ/src/index.ts";
+} from "../../packages/occ/src/runtime-logs/redact.ts";
+import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import { readRuntimeLogPage } from "../../packages/occ/src/runtime-logs/read.ts";
 import {
-  createRuntimeLogComputeDriver,
-  createRuntimeLogFixture,
-} from "../helpers/runtime-logs.mjs";
+  createRuntimeLogCursorCodec,
+  RUNTIME_LOG_CURSOR_TTL_MS,
+} from "../../packages/occ/src/runtime-logs/cursor.ts";
 
 const corpusUrl = new URL("../fixtures/runtime-logs/canary-corpus.txt", import.meta.url);
 const alphanumeric = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -46,6 +47,14 @@ function canaries() {
     CODEX_PROMPT: `codex-prompt-${randomUUID()}`,
     WRAPPER_EXTRA: `wrapper-extra-${randomUUID()}`,
     MALFORMED: `malformed-canary-${randomUUID()}`,
+    ARGV_PASSWORD: `argv${randomString(12)}`,
+    HF_TOKEN: `hf_${randomString(34)}`,
+    STRIPE_KEY: `sk_live_${randomString(24)}`,
+    BASIC: Buffer.from(`user:${randomString(12)}`).toString("base64"),
+    NETRC_PASSWORD: `netrc${randomString(12)}`,
+    SERVICE_KEY: randomBytes(16).toString("hex"),
+    // A chat reply that the agent command prints through `runtime.log` (no subsystem).
+    REPLY: `reply-canary-${randomUUID()}`,
   };
 }
 
@@ -73,6 +82,8 @@ async function corpusLines(values) {
 }
 
 test("runtime log route bodies never contain planted credentials, prompts or protocol output", async () => {
+  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
+    await import("../helpers/runtime-logs.mjs");
   const values = {
     ...canaries(),
     DEEP: `deep-canary-${randomUUID()}`,
@@ -118,6 +129,24 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
     }
     assert.equal(logs.text.includes(value), false, `canary ${name} leaked into the response`);
   }
+  // A level floor only removes sanitized records; it never reaches unsanitized text.
+  const floored = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&tailLines=1000&minLevel=warn"),
+  );
+  assert.equal(floored.status, 200, floored.text);
+  for (const [name, value] of Object.entries({ ...values, SPLIT: splitFragment })) {
+    if (name === "CONTROL") {
+      continue;
+    }
+    assert.equal(floored.text.includes(value), false, `canary ${name} leaked at minLevel=warn`);
+  }
+  assert.ok(
+    floored.data.records.every(
+      (record) => record.type !== "line" || ["error", "warn", "unknown"].includes(record.level),
+    ),
+  );
+  assert.equal(floored.data.records.at(-1).reason, "truncated");
   // The download is the same sanitized page in a second serializer.
   const download = await fixture.request("GET", target.logsPath("source=gateway&download=true"));
   assert.equal(download.status, 200, download.text);
@@ -129,7 +158,7 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
     assert.equal(download.text.includes(value), false, `canary ${name} leaked into the download`);
   }
   assert.match(download.text, /\[redacted:/);
-  assert.match(download.text, / WITHHELD 2 unrecognised_structured$/m);
+  assert.match(download.text, / WITHHELD 3 unrecognised_structured$/m);
   assert.match(download.text, / GAP truncated: /);
   const controls = [...download.text].filter((character) => {
     const code = character.codePointAt(0);
@@ -167,15 +196,100 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
   assert.deepEqual(
     withheld.map(({ reason, count }) => ({ reason, count })),
     [
-      { reason: "unrecognised_structured", count: 2 },
+      { reason: "unrecognised_structured", count: 3 },
       { reason: "malformed", count: 2 },
     ],
   );
-  assert.equal(logs.data.withheld, 4);
+  assert.equal(logs.data.withheld, 5);
   // The byte cut is labelled, never silent.
   assert.equal(logs.data.truncated, true);
   assert.equal(logs.data.records.at(-1).type, "gap");
   assert.equal(logs.data.records.at(-1).reason, "truncated");
+});
+
+test("OpenClaw console records without a subsystem are withheld below warn", () => {
+  const stream = { source: "gateway", pod: "gateway-0", container: "gateway" };
+  const reply = `reply-canary-${randomUUID()}`;
+  const { records } = sanitizeRuntimeLogChunk({
+    stream,
+    truncated: false,
+    lines: [
+      { time: lineTime(1), raw: JSON.stringify({ level: "info", message: reply }) },
+      { time: lineTime(2), raw: JSON.stringify({ level: "debug", message: reply, subsystem: "" }) },
+      {
+        time: lineTime(3),
+        raw: JSON.stringify({
+          level: "error",
+          message: "Gateway failed to start: gateway.bind=custom requires gateway.customBindHost",
+        }),
+      },
+      { time: lineTime(4), raw: JSON.stringify({ level: "warn", message: "config reloaded" }) },
+      {
+        time: lineTime(5),
+        raw: JSON.stringify({ level: "info", subsystem: "gateway", message: "listening" }),
+      },
+    ],
+  });
+  assert.deepEqual(
+    records.map((record) =>
+      record.type === "withheld"
+        ? `withheld ${record.reason} ${record.count}`
+        : `${record.level} ${record.message}`,
+    ),
+    [
+      "withheld unrecognised_structured 2",
+      "error Gateway failed to start: gateway.bind=custom requires gateway.customBindHost",
+      "warn config reloaded",
+      "info listening",
+    ],
+  );
+});
+
+test("credential shapes outside key names are masked in messages and kept fields", () => {
+  const stream = { source: "agent", pod: "gateway-0", container: "agent" };
+  const password = `pw${randomString(14)}`;
+  const hf = `hf_${randomString(34)}`;
+  const stripe = `sk_live_${randomString(24)}`;
+  const restricted = `rk_test_${randomString(24)}`;
+  const basic = Buffer.from(`svc:${randomString(12)}`).toString("base64");
+  const netrc = `n${randomString(15)}`;
+  const serviceKey = randomBytes(16).toString("hex");
+  const turn = `curl --user ops:${password} https://x.example.invalid`;
+  const { records } = sanitizeRuntimeLogChunk({
+    stream,
+    truncated: false,
+    lines: [
+      { time: lineTime(1), raw: `curl -u admin:${password} https://x.example.invalid` },
+      { time: lineTime(2), raw: `token ${hf} ${stripe} ${restricted}` },
+      { time: lineTime(3), raw: `Proxy auth Basic ${basic}` },
+      { time: lineTime(4), raw: `machine github.com login bob password ${netrc}` },
+      { time: lineTime(5), raw: `MY_SERVICE_KEY=${serviceKey}` },
+      {
+        time: lineTime(6),
+        raw: JSON.stringify({
+          level: "warn",
+          target: "codex_core::tools::parallel",
+          fields: { message: "tool failed", turn_id: turn },
+        }),
+      },
+      {
+        time: lineTime(7),
+        raw: JSON.stringify({ level: "warn", subsystem: "x", message: "m", code: stripe }),
+      },
+      // Prose and identifiers stay readable.
+      { time: lineTime(8), raw: "basic authentication failed; see hf_hub_download and sort -u" },
+    ],
+  });
+  const text = JSON.stringify(records);
+  for (const value of [password, hf, stripe, restricted, basic, netrc, serviceKey]) {
+    assert.equal(text.includes(value), false, `${value.slice(0, 6)}... leaked`);
+  }
+  assert.equal(
+    records.at(-1).message,
+    "basic authentication failed; see hf_hub_download and sort -u",
+  );
+  assert.match(records[0].message, /^curl -u \[redacted:argv\] https:/);
+  assert.equal(records[4].message, "MY_SERVICE_KEY=[redacted:key-value]");
 });
 
 test("the wrapper's fixed plain-text failure line is a wrapper error, not unknown text", () => {
@@ -197,6 +311,86 @@ test("the wrapper's fixed plain-text failure line is a wrapper error, not unknow
         level: "unknown",
         message: "Harness model authentication probe failed. extra",
       },
+    ],
+  );
+});
+
+test("a failed startup phase keeps its fixed cause code", () => {
+  const { records } = sanitizeRuntimeLogChunk({
+    stream: { source: "agent", pod: "agent-0", container: "agent" },
+    truncated: false,
+    lines: [
+      {
+        time: lineTime(1),
+        raw: '{"event":"runtime.startup_phase","container":"agent","phase":"plugin-install","outcome":"failed","ms":60000,"sinceStartMs":62000,"code":"PLUGIN_NOT_IN_CATALOG"}',
+      },
+    ],
+  });
+  assert.deepEqual(
+    records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
+    [
+      {
+        kind: "wrapper",
+        level: "error",
+        message: "runtime.startup_phase",
+        fields: {
+          container: "agent",
+          phase: "plugin-install",
+          outcome: "failed",
+          ms: 60000,
+          sinceStartMs: 62000,
+          code: "PLUGIN_NOT_IN_CATALOG",
+        },
+      },
+    ],
+  );
+});
+
+test("a Gateway settings override keeps its setting names, never values (D322)", () => {
+  const event = (settings) =>
+    JSON.stringify({
+      event: "runtime.gateway_settings_overridden",
+      container: "gateway",
+      settings,
+    });
+  const { records, withheld } = sanitizeRuntimeLogChunk({
+    stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
+    truncated: false,
+    lines: [
+      {
+        time: lineTime(1),
+        raw: event([
+          "cron.triggers.enabled",
+          "models.providers.codex.baseUrl",
+          "models.providers.codex.apiKey",
+          "models.providers.codex.models[].headers",
+        ]),
+      },
+      // An item that is not a key path drops the list, never the event.
+      { time: lineTime(2), raw: event(["cron.triggers.enabled", "models.providers.sk-live x"]) },
+      { time: lineTime(3), raw: event("cron.triggers.enabled") },
+    ],
+  });
+  assert.equal(withheld, 0);
+  assert.deepEqual(
+    records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
+    [
+      {
+        kind: "wrapper",
+        level: "warn",
+        message: "runtime.gateway_settings_overridden",
+        fields: {
+          container: "gateway",
+          settings:
+            "cron.triggers.enabled, models.providers.codex.baseUrl, models.providers.codex.apiKey, models.providers.codex.models[].headers",
+        },
+      },
+      ...[2, 3].map(() => ({
+        kind: "wrapper",
+        level: "warn",
+        message: "runtime.gateway_settings_overridden",
+        fields: { container: "gateway" },
+      })),
     ],
   );
 });
@@ -231,7 +425,12 @@ test("the sanitizer drops a partial final line and bounds oversized input", () =
   const long = sanitizeRuntimeLogChunk({
     stream,
     truncated: false,
-    lines: [{ time: lineTime(1), raw: `{"level":"info","message":"${"z ".repeat(6000)}"}` }],
+    lines: [
+      {
+        time: lineTime(1),
+        raw: `{"level":"info","subsystem":"gateway","message":"${"z ".repeat(6000)}"}`,
+      },
+    ],
   });
   assert.equal(long.records[0].truncated, true);
   assert.ok(Buffer.byteLength(long.records[0].message) <= 8 * 1024);
@@ -615,6 +814,8 @@ test("bounded key and path patterns still mask the shapes they did before", () =
 });
 
 test("Event messages hide node names, image references and Secret names", async () => {
+  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
+    await import("../helpers/runtime-logs.mjs");
   const node = `ip-10-0-${randomInt(255)}-${randomInt(255)}.ec2.internal`;
   const image = `registry.example.com/team-${randomString(8).toLowerCase()}/gateway:1.2.3`;
   const secret = `db-creds-${randomString(8).toLowerCase()}`;
@@ -658,4 +859,495 @@ test("Event messages hide node names, image references and Secret names", async 
     assert.equal(runtime.text.includes(name), false, `${name} reached the runtime route`);
   }
   assert.match(runtime.data.pods[0].events[0].message, /to \[redacted:node\]$/);
+});
+
+test("Codex span lifecycle records: turns are info events, other spans are debug, no span payload leaves", () => {
+  const stream = { source: "agent", pod: "gateway-0", container: "agent" };
+  const canary = `codex-span-canary-${randomUUID()}`;
+  const tracing = (level, target, fields, span) =>
+    JSON.stringify({
+      timestamp: "2026-10-01T07:49:44.100970Z",
+      level,
+      fields,
+      target,
+      ...(span === undefined ? {} : { span, spans: [] }),
+    });
+  // Field names follow Codex 0.158's `turn` span (codex_core::tasks) and tool-call event.
+  const turn = {
+    name: "turn",
+    "otel.name": "session_task.turn",
+    "thread.id": canary,
+    "turn.id": "turn-1",
+    model: "gpt-5.6-luna",
+    "codex.turn.reasoning_effort": "medium",
+    prompt: canary,
+  };
+  const closed = {
+    ...turn,
+    "codex.turn.token_usage.input_tokens": 1200,
+    "codex.turn.token_usage.output_tokens": 80,
+    "codex.turn.token_usage.total_tokens": 1280,
+  };
+  const { records } = sanitizeRuntimeLogChunk({
+    stream,
+    truncated: false,
+    lines: [
+      tracing("INFO", "codex_core::tasks", { message: "new" }, turn),
+      tracing("INFO", "codex_core::tasks", { message: "enter" }, turn),
+      tracing("INFO", "codex_core::tasks", { message: "exit" }, turn),
+      tracing("INFO", "codex_core::tools::parallel", {
+        message: "tool call completed",
+        tool_name: "shell",
+        turn_id: "turn-1",
+        call_id: canary,
+        total_duration_ms: 42,
+        arguments: canary,
+      }),
+      tracing(
+        "INFO",
+        "codex_core::tasks",
+        { message: "close", "time.busy": "2.1s", "time.idle": "9ms" },
+        closed,
+      ),
+      tracing(
+        "INFO",
+        "codex_exec_server::local_file_system",
+        { message: "close", "time.busy": "35µs" },
+        { name: "fs.read_file", path: canary },
+      ),
+      tracing("INFO", "codex_core::client", { message: "new" }, { name: `${canary} x` }),
+      // A plain event whose message happens to be a lifecycle word is not a span record.
+      tracing("INFO", "codex_core::client", { message: "close" }),
+    ].map((raw, index) => ({ time: lineTime(index + 1), raw })),
+  });
+  assert.deepEqual(
+    records.map(({ kind, level, message, subsystem, fields }) => ({
+      kind,
+      level,
+      message,
+      subsystem,
+      ...(fields === undefined ? {} : { fields }),
+    })),
+    [
+      {
+        kind: "codex",
+        level: "info",
+        message: "turn started",
+        subsystem: "codex_core::tasks",
+        fields: { model: "gpt-5.6-luna", turn_id: "turn-1" },
+      },
+      { kind: "codex", level: "debug", message: "span enter turn", subsystem: "codex_core::tasks" },
+      { kind: "codex", level: "debug", message: "span exit turn", subsystem: "codex_core::tasks" },
+      {
+        kind: "codex",
+        level: "info",
+        message: "tool call completed",
+        subsystem: "codex_core::tools::parallel",
+        fields: { tool_name: "shell", turn_id: "turn-1", total_duration_ms: 42 },
+      },
+      {
+        kind: "codex",
+        level: "info",
+        message: "turn completed",
+        subsystem: "codex_core::tasks",
+        fields: {
+          model: "gpt-5.6-luna",
+          turn_id: "turn-1",
+          input_tokens: 1200,
+          output_tokens: 80,
+          total_tokens: 1280,
+          busy: "2.1s",
+        },
+      },
+      {
+        kind: "codex",
+        level: "debug",
+        message: "span close fs.read_file",
+        subsystem: "codex_exec_server::local_file_system",
+      },
+      { kind: "codex", level: "debug", message: "span new span", subsystem: "codex_core::client" },
+      { kind: "codex", level: "info", message: "close", subsystem: "codex_core::client" },
+    ],
+  );
+  assert.equal(JSON.stringify(records).includes(canary), false, "no span payload or call ID leaks");
+});
+
+// Controlled Driver output; the reader, authenticated cursor and sanitizer are real.
+// These source tests do not qualify a Kubernetes/provider deployment.
+function pollReader() {
+  const binding = {
+    principalId: "synthetic-person",
+    agentId: "agent-test",
+    revisionId: "revision-test",
+    source: "gateway",
+  };
+  const pod = {
+    name: "gateway-test-0",
+    uid: "synthetic-pod-0",
+    container: "gateway",
+    restartCount: 0,
+  };
+  const codec = createRuntimeLogCursorCodec(randomBytes(32).toString("hex"));
+  let cursor;
+  let reads = 0;
+  let admissions = 0;
+  const now = Date.parse("2026-09-30T12:10:00Z");
+  return {
+    codec,
+    binding,
+    get cursor() {
+      return cursor;
+    },
+    get reads() {
+      return reads;
+    },
+    get admissions() {
+      return admissions;
+    },
+    async poll(lines, options = {}) {
+      const selected = { ...pod, ...options.pod };
+      const description = {
+        revisionId: binding.revisionId,
+        sources: [{ id: "gateway", kind: "container", available: true, pods: [selected] }],
+      };
+      const result = await readRuntimeLogPage({
+        description,
+        query: { source: "gateway", previous: false, tailLines: 1000, cursor, ...options.query },
+        codec,
+        binding: options.binding ?? binding,
+        signal: new AbortController().signal,
+        now: () => now + (options.elapsed ?? 0),
+        admitView: async () => {
+          admissions += 1;
+        },
+        readLogs: async () => {
+          reads += 1;
+          return {
+            stream: {
+              source: "gateway",
+              pod: selected.name,
+              podUid: selected.uid,
+              container: "gateway",
+              restartCount: selected.restartCount,
+              ...options.stream,
+            },
+            lines,
+            truncated: options.truncated ?? false,
+          };
+        },
+      });
+      cursor = result.cursor;
+      return result;
+    },
+  };
+}
+const pemBegin = "-----BEGIN PRIVATE KEY-----";
+const pemEnd = "-----END PRIVATE KEY-----";
+const syntheticPemTail = Buffer.from("synthetic-tail-data").toString("base64");
+function timedLog(raw, second) {
+  return {
+    raw,
+    time:
+      second === null
+        ? null
+        : new Date(Date.parse("2026-09-30T12:00:00Z") + second * 1000).toISOString(),
+  };
+}
+function messages(page) {
+  return page.records.filter((record) => record.type === "line").map((record) => record.message);
+}
+function assertTailMasked(page) {
+  assert.equal(JSON.stringify(page.records).includes(syntheticPemTail), false);
+  assert.ok(messages(page).some((message) => message.includes("[redacted:pem]")));
+}
+
+test("runtime log cursor carries PEM context over three polls and empty polls", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0), timedLog(randomBytes(48).toString("base64"), 1)]);
+  const beforeEmpty = reader.codec.decode(reader.cursor, reader.binding).position;
+  await reader.poll([]);
+  const afterEmpty = reader.codec.decode(reader.cursor, reader.binding).position;
+  assert.equal(afterEmpty.pemOpen, beforeEmpty.pemOpen);
+  assert.equal(afterEmpty.pemAfterTime, beforeEmpty.pemAfterTime);
+  assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 2)]));
+  const final = await reader.poll([timedLog(pemEnd, 3), timedLog("retrying in 5s", 4)]);
+  assert.ok(messages(final).includes("retrying in 5s"));
+  assert.ok(
+    messages(await reader.poll([timedLog(syntheticPemTail, 5)])).includes(syntheticPemTail),
+  );
+  assert.equal(reader.admissions, 1);
+});
+
+test("runtime log cursor does not let an evicted same-time old END erase a later BEGIN", async () => {
+  const reader = pollReader();
+  const overlap = [
+    pemEnd,
+    ...Array.from({ length: 20 }, (_, i) => `retrying worker ${i}`),
+    pemBegin,
+  ].map((raw) => timedLog(raw, 0));
+  await reader.poll(overlap);
+  // END was evicted from the 16 retained hashes; BEGIN is deduplicated. Neither
+  // replayed END nor another unseen same-time line proves forward progress.
+  assertTailMasked(await reader.poll([...overlap, timedLog(syntheticPemTail, 0)]));
+  assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 1)]));
+  await reader.poll([timedLog(pemEnd, 2)]);
+  assert.ok(
+    messages(await reader.poll([timedLog(syntheticPemTail, 3)])).includes(syntheticPemTail),
+  );
+});
+
+test("runtime log cursor retains uncertain context after an untimestamped BEGIN", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog("started worker", 0), timedLog(pemBegin, null)]);
+  const page = await reader.poll([
+    timedLog(pemEnd, 1),
+    timedLog("retrying in 5s", 2),
+    timedLog(syntheticPemTail, null),
+  ]);
+  assertTailMasked(page);
+  assert.ok(messages(page).includes("retrying in 5s"));
+});
+
+test("runtime log cursor ignores an undelivered byte-cut END", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  assertTailMasked(
+    await reader.poll([timedLog(syntheticPemTail, 1), timedLog(pemEnd, 2)], { truncated: true }),
+  );
+  assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 3)]));
+});
+
+test("runtime log cursor context stops at the page byte bound before a future END", async () => {
+  const reader = pollReader();
+  const page = await reader.poll([
+    timedLog(pemBegin, 0),
+    ...Array.from({ length: 70 }, (_, i) => timedLog("A".repeat(8192), i + 1)),
+    timedLog(pemEnd, 72),
+  ]);
+  assert.equal(page.truncated, true);
+  assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 100)]));
+});
+
+test("runtime log cursor verifies context authentication before any Driver read", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  const parts = reader.cursor.split(".");
+  const payload = JSON.parse(Buffer.from(parts[1], "base64url"));
+  payload.po = false;
+  parts[1] = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const before = reader.reads;
+  await assert.rejects(reader.poll([], { query: { cursor: parts.join(".") } }), {
+    reason: "cursor_invalid",
+  });
+  assert.equal(reader.reads, before);
+  await assert.rejects(
+    reader.poll([], { binding: { ...reader.binding, principalId: "other-person" } }),
+    { reason: "cursor_invalid" },
+  );
+  assert.equal(reader.reads, before);
+});
+
+test("runtime log cursor context resets for changed stream, view, expiry and mid-read replacement", async (t) => {
+  for (const [name, options] of [
+    ["pod UID", { pod: { uid: "new-pod" } }],
+    ["restart", { pod: { restartCount: 1 } }],
+    ["pod choice", { pod: { name: "gateway-test-1" }, query: { pod: "gateway-test-1" } }],
+    ["previous instance", { query: { previous: true } }],
+    ["new view", { query: { cursor: undefined } }],
+    ["expired", { elapsed: RUNTIME_LOG_CURSOR_TTL_MS + 1 }],
+    ["mid-read UID", { stream: { podUid: "new-pod" } }],
+    ["mid-read restart", { stream: { restartCount: 1 } }],
+  ]) {
+    await t.test(name, async () => {
+      const reader = pollReader();
+      await reader.poll([timedLog(pemBegin, 0)]);
+      // A new/unknown tail cannot infer a BEGIN from the old stream/view.
+      assert.ok(
+        messages(await reader.poll([timedLog(syntheticPemTail, 1)], options)).includes(
+          syntheticPemTail,
+        ),
+      );
+    });
+  }
+});
+
+test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
+  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
+    await import("../helpers/runtime-logs.mjs");
+  const computeDriver = createRuntimeLogComputeDriver();
+  const fixture = await createRuntimeLogFixture({ computeDriver });
+  const target = await fixture.deployAgent();
+  const lines = [
+    timedLog(pemBegin, 0),
+    timedLog(randomBytes(48).toString("base64"), 1),
+    timedLog(syntheticPemTail, 2),
+    timedLog(pemEnd, 3),
+    timedLog("retrying in 5s", 4),
+  ];
+  let cursor;
+  for (const count of [2, 3, 5]) {
+    computeDriver.state.lines = lines.slice(0, count);
+    const query = new URLSearchParams({
+      source: "gateway",
+      tailLines: "1000",
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    const response = await fixture.request("GET", target.logsPath(query.toString()));
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(
+      response.text.includes(syntheticPemTail),
+      false,
+      "the actual handler must not serialize the middle-poll fragment",
+    );
+    assert.equal(typeof response.data.cursor, "string");
+    cursor = response.data.cursor;
+    if (count === 5) {
+      assert.ok(response.data.records.some((record) => record.message === "retrying in 5s"));
+    }
+  }
+});
+
+test("runtime log cursor keeps an ambiguous same-time close conservative", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  await reader.poll([timedLog(pemEnd, 0), timedLog("retrying in 5s", 0)]);
+  assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 1)]));
+  await reader.poll([timedLog("retrying in 5s", 2)]);
+  assert.ok(
+    messages(await reader.poll([timedLog(syntheticPemTail, 3)])).includes(syntheticPemTail),
+  );
+});
+
+test("runtime log cursor retains uncertainty for missing, malformed and reordered times", async (t) => {
+  for (const [name, lines] of [
+    ["missing", [timedLog(pemEnd, null), timedLog(syntheticPemTail, 1)]],
+    ["malformed", [{ raw: pemEnd, time: "not-a-time" }, timedLog(syntheticPemTail, 1)]],
+    ["reordered", [timedLog(pemEnd, 3), timedLog(syntheticPemTail, 2)]],
+  ]) {
+    await t.test(name, async () => {
+      const reader = pollReader();
+      await reader.poll([timedLog(pemBegin, 0)]);
+      assertTailMasked(await reader.poll(lines));
+      // Later timestamps cannot reconstruct the missing chronology of this view.
+      await reader.poll([timedLog(pemEnd, 4)]);
+      assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 5)]));
+    });
+  }
+});
+
+test("runtime log cursor keeps a later BEGIN on the same line as END", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  await reader.poll([timedLog(`${pemEnd} ${pemBegin}`, 1)]);
+  assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 2)]));
+});
+
+test("runtime log cursor rejects malformed or inconsistent signed PEM field pairs before reading", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  for (const change of [
+    { pemOpen: undefined },
+    { pemAfterTime: undefined },
+    { pemOpen: "true" },
+    { pemOpen: null },
+    { pemAfterTime: 123 },
+    { pemAfterTime: "invalid" },
+    { pemAfterTime: "2026-02-31T12:00:00Z" },
+    { pemAfterTime: timedLog("", 1).time },
+    { lastTime: null },
+  ]) {
+    // Exercise authenticated schema validation, separately from MAC tampering.
+    const cursor = reader.codec.encode(reader.binding, { ...position, ...change });
+    const before = reader.reads;
+    await assert.rejects(reader.poll([], { query: { cursor } }), { reason: "cursor_invalid" });
+    assert.equal(reader.reads, before);
+  }
+});
+
+test("runtime log cursor preserves legacy absent context as unknown", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog("retrying in 5s", 0)]);
+  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  const legacy = reader.codec.encode(reader.binding, {
+    ...position,
+    pemOpen: undefined,
+    pemAfterTime: undefined,
+  });
+  assert.equal(reader.codec.decode(legacy, reader.binding).position.pemOpen, undefined);
+  // No observed BEGIN and no END: short arbitrary text remains best-effort.
+  const page = await reader.poll([timedLog(syntheticPemTail, 1)], { query: { cursor: legacy } });
+  assert.ok(messages(page).includes(syntheticPemTail));
+  assert.equal(reader.codec.decode(page.cursor, reader.binding).position.pemOpen, undefined);
+});
+
+test("runtime log cursor keeps the frontier stable on replay and does not inspect undelivered lookahead", async () => {
+  const reader = pollReader();
+  const begin = timedLog(pemBegin, 0);
+  await reader.poll([begin]);
+  const prior = reader.codec.decode(reader.cursor, reader.binding).position;
+  await reader.poll([begin]);
+  const replay = reader.codec.decode(reader.cursor, reader.binding).position;
+  assert.equal(replay.pemOpen, true);
+  assert.equal(replay.pemAfterTime, prior.pemAfterTime);
+  // A malformed future line beyond the response cut is not consumed evidence.
+  const page = await reader.poll([
+    ...Array.from({ length: 70 }, (_, i) => timedLog("A".repeat(8192), i + 1)),
+    { raw: pemEnd, time: null },
+  ]);
+  assert.equal(page.truncated, true);
+  const frontier = reader.codec.decode(page.cursor, reader.binding).position;
+  assert.equal(frontier.pemOpen, true);
+  assert.notEqual(frontier.pemAfterTime, null);
+  assert.equal(frontier.pemAfterTime, frontier.lastTime);
+});
+
+test("runtime log cursor detects reordered overlap even when deduplication removes the old frontier line", async () => {
+  const reader = pollReader();
+  const body = timedLog(randomBytes(48).toString("base64"), 1);
+  await reader.poll([timedLog(pemBegin, 0), body]);
+  assertTailMasked(await reader.poll([timedLog(pemEnd, 3), body, timedLog(syntheticPemTail, 4)]));
+});
+
+test("runtime log cursor preserves known-open context across a lost overlap window", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  const page = await reader.poll([timedLog(syntheticPemTail, 100)], { query: { tailLines: 1 } });
+  assert.ok(
+    page.records.some((record) => record.type === "gap" && record.reason === "window_exceeded"),
+  );
+  assertTailMasked(page);
+});
+
+test("runtime log cursor preserves an observed BEGIN on uncertain initial and legacy pages", async (t) => {
+  for (const legacy of [false, true]) {
+    for (const beginTime of [3, null]) {
+      await t.test(
+        `${legacy ? "legacy" : "initial"} ${beginTime === null ? "null" : "reordered"}`,
+        async () => {
+          const reader = pollReader();
+          if (legacy) {
+            await reader.poll([timedLog("retrying in 5s", 0)]);
+            assert.equal(
+              reader.codec.decode(reader.cursor, reader.binding).position.pemOpen,
+              undefined,
+            );
+          }
+          // BEGIN is observed in this very page. Missing earlier cursor context does
+          // not make this older END valid evidence of a close.
+          await reader.poll([timedLog(pemBegin, beginTime), timedLog(pemEnd, 1)]);
+          const context = reader.codec.decode(reader.cursor, reader.binding).position;
+          const next = await reader.poll([
+            timedLog(syntheticPemTail, 4),
+            timedLog("retrying in 5s", 5),
+          ]);
+          assertTailMasked(next);
+          assert.ok(messages(next).includes("retrying in 5s"));
+          assert.equal(context.pemOpen, true);
+          assert.equal(context.pemAfterTime, null);
+        },
+      );
+    }
+  }
 });

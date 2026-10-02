@@ -14,6 +14,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 
 const installationId = "ins_4033697e-6397-4cc6-9b04-8ec17af78cf1";
 // Bootstrap allocates the first Namespace ID for the initial default Namespace.
@@ -102,25 +103,9 @@ async function createFixture(options = {}) {
   let configurationSequence = 0;
 
   const computeDriver = {
+    ...createDevelopmentComputeDriver(),
     id: "compute-workspace-files",
-    capability: "compute",
     implementation: "deterministic-test",
-    validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
   };
 
   function createApp(principal = administrator, overrides = {}, factory = createControllerApp) {

@@ -296,7 +296,7 @@ function environment(requirements: HarnessWorkloadRequirements): Record<string, 
     if ("valueFrom" in entry) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-        `OpenShell v0.1.0 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
+        `OpenShell v0.1.3-pre.1 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
     result[nonempty(entry.name, "Environment variable name")] = entry.value;
@@ -1305,6 +1305,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         `OpenShell managed workspace mode is not implemented; cannot ${operation}.`,
       );
     }
+  }
+
+  harnessResource(
+    context: Pick<SandboxHarnessContext, "namespace" | "revision">,
+  ): SandboxResourceRef {
+    return this.sandboxRef(context);
   }
 
   private sandboxRef(

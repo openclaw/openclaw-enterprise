@@ -1,4 +1,4 @@
-// Minimal OpenShell v0.1.0 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.3-pre.1 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only
@@ -25,6 +25,9 @@ service OpenShell {
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
       returns (GetSandboxProviderStatusResponse);
   rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
+  rpc UpdateProvider(UpdateProviderRequest) returns (ProviderResponse);
+  rpc DetachSandboxProvider(DetachSandboxProviderRequest)
+      returns (DetachSandboxProviderResponse);
   rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
   rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
   rpc DeleteProvider(DeleteProviderRequest) returns (DeleteProviderResponse);
@@ -317,6 +320,34 @@ message ProviderResponse {
   Provider provider = 1;
 }
 
+// Non-empty credential values merge into the existing provider; type and profile are fixed.
+message UpdateProviderRequest {
+  Provider provider = 1;
+  WorkspaceSelector workspace_scope = 3;
+  string request_id = 4;
+}
+
+message DetachSandboxProviderRequest {
+  string sandbox = 1;
+  string provider = 2;
+  uint64 expected_resource_version = 3;
+  WorkspaceSelector workspace_scope = 4;
+  string request_id = 5;
+}
+
+// Revocation is complete only when the receipt's readiness reaches REVOKED.
+message DetachSandboxProviderResponse {
+  bool detached = 2;
+  ProviderMutationReceipt receipt = 3;
+}
+
+message ProviderMutationReceipt {
+  string receipt_id = 1;
+  string mutation_id = 2;
+  string provider = 3;
+  string workspace = 4;
+}
+
 message GetProviderRequest {
   string name = 1;
   WorkspaceSelector workspace_scope = 2;
@@ -454,6 +485,7 @@ message GetSandboxProviderStatusResponse {
 }
 
 message ProviderReadinessStatus {
+  ProviderMutationReceipt receipt = 1;
   ProviderReadinessState state = 2;
   ProviderReadinessReason reason = 3;
 }
@@ -488,7 +520,7 @@ enum ProviderReadinessReason {
   PROVIDER_READINESS_REASON_SNAPSHOT_MISMATCH = 15;
 }
 
-// Sandbox logs, from OpenShell proto/openshell.proto at 496ebba (GetSandboxLogs,
+// Sandbox logs, from OpenShell proto/openshell.proto at dde8a9a (GetSandboxLogs,
 // SandboxLogLine). The gateway keeps the last 2000 lines per sandbox in memory.
 message GetSandboxLogsRequest {
   WorkspaceSelector workspace_scope = 6;

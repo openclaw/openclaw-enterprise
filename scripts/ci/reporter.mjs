@@ -323,6 +323,84 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "runtime-model-probe") {
+    if (
+      !["outer-timeout", "wrapper-exited", "classification"].includes(diagnostic.reason) ||
+      ![
+        "not-observed",
+        "READY",
+        "AUTHENTICATION_FAILED",
+        "MODEL_PROBE_CPU_STARVED",
+        "MODEL_PROBE_FAILED",
+        "MODEL_PROBE_TIMEOUT",
+        "UNAVAILABLE",
+        "other",
+      ].includes(diagnostic.probe) ||
+      !["not-observed", "ok", "failed", "other"].includes(diagnostic.modelPhase)
+    ) {
+      return undefined;
+    }
+    const result = {
+      kind: "runtime-model-probe",
+      reason: diagnostic.reason,
+      probe: diagnostic.probe,
+      modelPhase: diagnostic.modelPhase,
+    };
+    for (const key of [
+      "running",
+      "readyObserved",
+      "pluginReadyObserved",
+      "nativeSpawnPhaseObserved",
+      "failureObserved",
+    ]) {
+      if (typeof diagnostic[key] !== "boolean") {
+        return undefined;
+      }
+      result[key] = diagnostic[key];
+    }
+    for (const key of [
+      "loadClientsSubmitted",
+      "loadClientsStarted",
+      "loadClientsSettled",
+      "loadClientsRejected",
+    ]) {
+      if (!Number.isInteger(diagnostic[key]) || diagnostic[key] < 0 || diagnostic[key] > 8) {
+        return undefined;
+      }
+      result[key] = diagnostic[key];
+    }
+    if (
+      result.loadClientsSettled > result.loadClientsSubmitted ||
+      result.loadClientsStarted > result.loadClientsSubmitted ||
+      result.loadClientsRejected > result.loadClientsSettled
+    ) {
+      return undefined;
+    }
+    for (const key of ["capMs", "elapsedMs", "cpuWaitMs"]) {
+      if (diagnostic[key] === undefined || (key === "cpuWaitMs" && diagnostic[key] === null)) {
+        result[key] = diagnostic[key];
+      } else if (
+        Number.isSafeInteger(diagnostic[key]) &&
+        diagnostic[key] >= 0 &&
+        diagnostic[key] <= 3_600_000
+      ) {
+        result[key] = diagnostic[key];
+      } else {
+        return undefined;
+      }
+    }
+    result.probeStage = [
+      "prepare",
+      "preflight",
+      "spawn",
+      "returned",
+      "cleanup",
+      "complete",
+    ].includes(diagnostic.probeStage)
+      ? diagnostic.probeStage
+      : "not-observed";
+    return result;
+  }
   if (diagnostic.kind === "network-policy") {
     return [
       "Agent outbound platform traffic",

@@ -30,6 +30,7 @@ output/playwright/
 !.agents/skills/mermaid-diagrams/
 !.agents/skills/local-dev/
 !.agents/skills/technical-writing/
+!.agents/skills/spec/
 !.agents/skills/design-review/
 !.agents/skills/LICENSE.openclaw
 __pycache__/

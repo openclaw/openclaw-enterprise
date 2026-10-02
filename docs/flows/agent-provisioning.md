@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: "2026-09-29"
-last_updated_session: "authoring-run/bb89c55f-8771-46c9-801d-e5bc028d7e5c"
+updated: "2026-09-30"
+last_updated_session: "Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa"
 ---
 
 # Agent provisioning flow
@@ -48,6 +48,15 @@ graph TD
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent`
 
+Console keeps the configured Harness separate from execution mode: dedicated
+OpenClaw retains its native provider/model and uses the same provisioning,
+retry, and deployment navigation as dedicated Codex. Selecting OpenClaw starts
+in Embedded mode; Dedicated is an explicit choice when the Installation reports
+native worker support. Preset restoration and
+Credentials read native model runtime policy through
+`apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
+Service Accounts and Codex plugin browsing remain specific to Codex.
+
 The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. Model discovery uses the entered API key or service account token without saving it. Create Agent saves that credential as an ordinary Namespace Secret, clears the input, and reuses its returned reference for provisioning retries. Bound Presets retain their credential and provider. A lost Secret-save response needs recovery rather than automatic repetition.
 
 Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options, selected repository bindings with an explicit access profile, and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
@@ -76,6 +85,18 @@ The Compute Driver prepares runtime credentials through the existing credential 
 
 The job admits one first revision and records its ID. Provisioning reports success at this handoff. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` returns those IDs immediately; the submit handler opens Agent details for that revision without waiting for activation. The detail page's Deployment activity panel reads the recorded startup result and exposes Refresh deployment. Ordinary revision reconciliation owns startup, activation and runtime failure. Later deployments use the regular Deploy API.
 
+Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
+with all required containment facets. The pinned runtime lacks that support;
+an operator must declare a compatible custom image in
+[Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
+`packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
+Admission does not prove that the
+Driver can deliver every workload requirement. The current Sandbox handoff
+rejects workspace initialization, and stock OpenShell rejects Secret-backed
+environment projection. These requirements remain enforced; the
+[OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
+describes the upstream delivery limits and verification-only path.
+
 ### 5. Failures preserve useful outputs
 
 `packages/occ/src/state/postgres-state.ts:provisioning`
@@ -98,7 +119,7 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 - [Configuration Driver flow](configuration-driver.md)
 - [Secret storage and delivery](secret-storage-and-delivery.md)
 - [Workspace files](workspace-files.md)
-- [Asynchronous Agent provisioning spec](../../specs/35-agent-provisioning.md)
+- [Asynchronous Agent provisioning spec](../../specs/plans/35-agent-provisioning.md)
 
 ## Manual Notes
 
@@ -106,11 +127,15 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 
 ## Changelog
 
+- 2026-09-30 17:31: Reconcile Console Harness selection with Embedded defaults, native-worker admission, and current provisioning navigation. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa - a0970577)
+
 - 2026-09-29 17:30: Agent deletion settles an effect left by cancelled provisioning instead of waiting for it forever. (fix-1/agent-deletion-unsettled-effect)
 
 - 2026-09-29 05:00: Document request-time channel credential validation. (authoring-run/bb89c55f-8771-46c9-801d-e5bc028d7e5c - 756b02ce)
 
 - 2026-09-29 02:33: Open Agent details after provisioning hands off the first deployment, and show pending or failed deployment status there. (Codex/01a0eaf9-6dcf-76b1-a376-d2a2fbfd6c60 - a14435c8)
+
+- 2026-09-28 17:30: Separate Console Harness selection from Dedicated placement and document retained Sandbox delivery requirements. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa - e2b739f5)
 
 - 2026-09-23 21:00: Integrate provider model discovery and saved API-key/PAT references with canonical Dedicated provisioning and deployment activation. (Codex/01a0cf27-71c6-7042-8357-74d1811a2ef8 - fb711b49)
 

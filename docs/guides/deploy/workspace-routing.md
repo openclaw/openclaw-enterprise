@@ -360,6 +360,11 @@ native client does not expose mTLS client-certificate options.
 | `404 NOT_FOUND` and `The requested workspace file was not found.` | The native file is missing. Do not create or overwrite it just to clear the Console notice.                                                                                                              |
 | `503 UNKNOWN_OUTCOME` after a write                               | Read the file before deciding whether to repeat the write. OCC does not automatically replay it.                                                                                                         |
 
+After `UNKNOWN_OUTCOME`, read the same file and compare its content with the
+intended write. If it matches, do not retry. If you cannot read the file yet,
+wait or ask someone with `read` permission on the Agent to check before deciding
+whether to retry.
+
 The [Agents reference](../../reference/agents.md#workspace-files) lists file
 limits and permissions. The [Kubernetes testing guide](../../testing/kubernetes.md#kubernetes-model-turns-and-secrets)
 describes integration evidence.

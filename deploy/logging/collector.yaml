@@ -18,20 +18,40 @@ processors:
           # Retain only transport-derived identity before examining untrusted JSON.
           - keep_keys(attributes, ["service.name", "service.instance.id", "service.version", "container.id", "openclaw.namespace.id", "openclaw.agent.id", "openclaw.revision.id", "log.iostream"])
           - set(cache["record"], ParseJSON(body)) where IsString(body) and Len(body) <= 32768
-          - set(attributes["event.name"], cache["record"]["event"]) where IsMap(cache["record"]) and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["event"]) and IsMatch(cache["record"]["event"], "^(listening|startup-error|http[.]completed|http[.]unexpected_error|compute[.]preflight-warning|authentication[.](sign-in-limited|sign-in-limit-warning)|worker[.](started|stopped|health|completed|error|startup-error)|installation[.](bootstrapped|already-bootstrapped|bootstrap-failed)|migration[.](completed|failed))$$")
+          - set(attributes["event.name"], cache["record"]["event"]) where IsMap(cache["record"]) and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["event"]) and IsMatch(cache["record"]["event"], "^(listening|startup-error|http[.]completed|http[.]unexpected_error|compute[.]preflight-warning|authentication[.](sign-in-limited|sign-in-limit-warning|provider-unavailable-warning)|worker[.](started|stopped|health|completed|error|startup-error)|installation[.](bootstrapped|already-bootstrapped|bootstrap-failed)|migration[.](completed|failed))$$")
           - set(attributes["event.name"], "gateway.operational") where IsMap(cache["record"]) and attributes["service.name"] == "openclaw-gateway" and IsString(cache["record"]["subsystem"]) and IsMatch(cache["record"]["subsystem"], "^gateway(/|$$)")
-          - set(attributes["event.name"], "codex.operational") where IsMap(cache["record"]) and attributes["service.name"] == "codex-app-server" and attributes["log.iostream"] == "stderr" and IsString(cache["record"]["target"]) and IsMatch(cache["record"]["target"], "^codex_app_server(::|$$)")
+          # Codex prints span lifecycle records (fields.message new/enter/exit/close
+          # with a span object) for every instrumented call. The Codex `turn` span's
+          # start and end, completed tool calls, app-server records and any Codex
+          # warning or error (except the content-bearing codex_otel targets) are
+          # exported; other span lifecycle records are not.
+          - set(cache["span_event"], true) where IsMap(cache["record"]) and IsMap(cache["record"]["span"]) and IsMap(cache["record"]["fields"]) and IsString(cache["record"]["fields"]["message"]) and IsMatch(cache["record"]["fields"]["message"], "^(new|enter|exit|close)$$")
+          - set(attributes["event.name"], "codex.turn") where cache["span_event"] == true and attributes["service.name"] == "codex-app-server" and attributes["log.iostream"] == "stderr" and cache["record"]["target"] == "codex_core::tasks" and cache["record"]["span"]["name"] == "turn" and (cache["record"]["fields"]["message"] == "new" or cache["record"]["fields"]["message"] == "close")
+          - set(attributes["event.name"], "codex.tool_call") where IsMap(cache["record"]) and attributes["service.name"] == "codex-app-server" and attributes["log.iostream"] == "stderr" and cache["record"]["target"] == "codex_core::tools::parallel" and IsMap(cache["record"]["fields"]) and cache["record"]["fields"]["message"] == "tool call completed"
+          - set(attributes["event.name"], "codex.operational") where attributes["event.name"] == nil and cache["span_event"] == nil and IsMap(cache["record"]) and attributes["service.name"] == "codex-app-server" and attributes["log.iostream"] == "stderr" and IsString(cache["record"]["target"]) and (IsMatch(cache["record"]["target"], "^codex_app_server(::|$$)") or (IsMatch(cache["record"]["target"], "^codex_") and not IsMatch(cache["record"]["target"], "^codex_otel(::|$$)") and IsString(cache["record"]["level"]) and IsMatch(cache["record"]["level"], "^(WARN|ERROR)$$")))
+          # OpenClaw prints its startup failure without a subsystem; it is the only
+          # cause of a crash-looping Gateway, so it is exported as a fixed event.
+          - set(attributes["event.name"], "gateway.startup_failed") where attributes["event.name"] == nil and IsMap(cache["record"]) and attributes["service.name"] == "openclaw-gateway" and cache["record"]["subsystem"] == nil and IsString(cache["record"]["level"]) and IsMatch(cache["record"]["level"], "^(error|ERROR)$$") and IsString(cache["record"]["message"]) and IsMatch(cache["record"]["message"], "^Gateway failed to start:[ ]")
+          - set(attributes["occ.codex.tool_name"], cache["record"]["fields"]["tool_name"]) where attributes["event.name"] == "codex.tool_call" and IsString(cache["record"]["fields"]["tool_name"]) and IsMatch(cache["record"]["fields"]["tool_name"], "^[A-Za-z][A-Za-z0-9_.:-]{0,63}$$")
           # Runtime wrapper diagnostics on stderr: fixed event names whose retained
           # fields are bounded below, so a Gateway or Codex startup failure has a cause.
-          - set(attributes["event.name"], cache["record"]["event"]) where attributes["event.name"] == nil and IsMap(cache["record"]) and (attributes["service.name"] == "openclaw-gateway" or attributes["service.name"] == "codex-app-server") and attributes["log.iostream"] == "stderr" and IsString(cache["record"]["event"]) and IsMatch(cache["record"]["event"], "^(runtime[.](startup_phase|workspace_node)|(openclaw|codex)[.]model_probe)$$")
+          - set(attributes["event.name"], cache["record"]["event"]) where attributes["event.name"] == nil and IsMap(cache["record"]) and (attributes["service.name"] == "openclaw-gateway" or attributes["service.name"] == "codex-app-server") and attributes["log.iostream"] == "stderr" and IsString(cache["record"]["event"]) and IsMatch(cache["record"]["event"], "^(runtime[.](startup_phase|workspace_node|gateway_settings_overridden)|(openclaw|codex)[.]model_probe)$$")
           - set(attributes["occ.code"], cache["record"]["code"]) where (attributes["event.name"] == "openclaw.model_probe" or attributes["event.name"] == "codex.model_probe" or attributes["event.name"] == "runtime.workspace_node") and IsString(cache["record"]["code"]) and IsMatch(cache["record"]["code"], "^[A-Z][A-Z0-9_]{0,63}$$")
           - set(attributes["occ.startup.phase"], cache["record"]["phase"]) where attributes["event.name"] == "runtime.startup_phase" and IsString(cache["record"]["phase"]) and IsMatch(cache["record"]["phase"], "^[a-z][a-z0-9-]{0,63}$$")
+          # A failed startup phase may name a bounded cause, such as a plugin missing from the catalog.
+          - set(attributes["occ.code"], cache["record"]["code"]) where attributes["event.name"] == "runtime.startup_phase" and cache["record"]["outcome"] == "failed" and IsString(cache["record"]["code"]) and IsMatch(cache["record"]["code"], "^[A-Z][A-Z0-9_]{0,63}$$")
           - set(attributes["request.id"], cache["record"]["requestId"]) where attributes["event.name"] != nil and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["requestId"]) and IsMatch(cache["record"]["requestId"], "^([a-z_]+_)?[a-f0-9-]{36}$$")
           - set(attributes["occ.namespace.id"], cache["record"]["namespaceId"]) where attributes["event.name"] != nil and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["namespaceId"]) and IsMatch(cache["record"]["namespaceId"], "^([a-z_]+_)?[a-f0-9-]{36}$$")
           - set(attributes["occ.agent.id"], cache["record"]["agentId"]) where attributes["event.name"] != nil and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["agentId"]) and IsMatch(cache["record"]["agentId"], "^([a-z_]+_)?[a-f0-9-]{36}$$")
           - set(attributes["occ.revision.id"], cache["record"]["revisionId"]) where attributes["event.name"] != nil and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["revisionId"]) and IsMatch(cache["record"]["revisionId"], "^([a-z_]+_)?[a-f0-9-]{36}$$")
           - set(attributes["occ.code"], cache["record"]["code"]) where attributes["event.name"] != nil and (attributes["service.name"] == "occ-api" or attributes["service.name"] == "occ-worker") and IsString(cache["record"]["code"]) and IsMatch(cache["record"]["code"], "^[A-Z][A-Z0-9_]{0,63}$$")
           - set(attributes["occ.sign_in.lane"], cache["record"]["lane"]) where attributes["event.name"] == "authentication.sign-in-limited" and IsString(cache["record"]["lane"]) and IsMatch(cache["record"]["lane"], "^(email|address|untracked)$$")
+          # A provider outage keeps which provider and step failed and a bounded cause;
+          # the provider instance ID stays in local logs.
+          - set(attributes["occ.sign_in.provider"], cache["record"]["provider"]) where attributes["event.name"] == "authentication.provider-unavailable-warning" and IsString(cache["record"]["provider"]) and IsMatch(cache["record"]["provider"], "^(github|google|oidc)$$")
+          - set(attributes["occ.sign_in.step"], cache["record"]["step"]) where attributes["event.name"] == "authentication.provider-unavailable-warning" and IsString(cache["record"]["step"]) and IsMatch(cache["record"]["step"], "^(authorization|token|jwks|profile)$$")
+          - set(attributes["occ.sign_in.cause"], cache["record"]["cause"]) where attributes["event.name"] == "authentication.provider-unavailable-warning" and IsString(cache["record"]["cause"]) and IsMatch(cache["record"]["cause"], "^(connect_refused|dns|timeout|tls|connection_reset|network|redirect|http_status|oversized_response|malformed_response|provider_error)$$")
+          - set(attributes["occ.sign_in.status"], Int(cache["record"]["status"])) where attributes["event.name"] == "authentication.provider-unavailable-warning" and (IsInt(cache["record"]["status"]) or IsDouble(cache["record"]["status"])) and cache["record"]["status"] >= 100 and cache["record"]["status"] <= 599
           - set(attributes["http.request.method"], cache["record"]["method"]) where attributes["event.name"] == "http.completed" and IsString(cache["record"]["method"]) and IsMatch(cache["record"]["method"], "^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$$")
           - set(attributes["http.response.status_code"], Int(cache["record"]["status"])) where attributes["event.name"] == "http.completed" and (IsInt(cache["record"]["status"]) or IsDouble(cache["record"]["status"])) and cache["record"]["status"] >= 100 and cache["record"]["status"] <= 599
           - set(attributes["duration_ms"], cache["record"]["durationMs"]) where attributes["event.name"] == "http.completed" and (IsInt(cache["record"]["durationMs"]) or IsDouble(cache["record"]["durationMs"])) and cache["record"]["durationMs"] >= 0 and cache["record"]["durationMs"] <= 600000
@@ -44,6 +64,8 @@ processors:
           # Wrapper diagnostics carry no level: a failed phase or probe is a warning.
           - set(cache["level"], "WARN") where cache["level"] == nil and (attributes["event.name"] == "runtime.startup_phase" or attributes["event.name"] == "runtime.workspace_node") and cache["record"]["outcome"] == "failed"
           - set(cache["level"], "INFO") where cache["level"] == nil and attributes["event.name"] == "runtime.startup_phase" and cache["record"]["outcome"] == "ok"
+          # The Gateway replaced owner settings; their names stay in local logs and OCC.
+          - set(cache["level"], "WARN") where cache["level"] == nil and attributes["event.name"] == "runtime.gateway_settings_overridden"
           - set(cache["level"], "INFO") where cache["level"] == nil and (attributes["event.name"] == "openclaw.model_probe" or attributes["event.name"] == "codex.model_probe") and cache["record"]["code"] == "READY"
           - set(cache["level"], "WARN") where cache["level"] == nil and (attributes["event.name"] == "openclaw.model_probe" or attributes["event.name"] == "codex.model_probe")
           - set(severity_number, SEVERITY_NUMBER_DEBUG) where cache["level"] == "debug" or cache["level"] == "DEBUG" or cache["level"] == 20
@@ -57,6 +79,22 @@ processors:
           # Time comes from the Engine/CRI envelope; arbitrary runtime message text
           # and fields never become the remote body or resource identity.
           - set(body, attributes["event.name"])
+          # Reviewed message classes. Codex turn and tool-call bodies are fixed text.
+          # A codex.operational body is Codex's own message only for codex_app_server
+          # targets (whose formats interpolate only error values) or the two fixed
+          # codex_core::responses_retry messages, and only when it is short plain text: no
+          # quotes, braces, query strings or credential words, and no word longer
+          # than 24 characters. Other Codex errors (codex_core can log chat text and
+          # model-proposed values) keep the event name; such warnings are dropped
+          # below, because a repeating one buries the failure that caused it.
+          - set(body, "turn started") where attributes["event.name"] == "codex.turn" and cache["record"]["fields"]["message"] == "new"
+          - set(body, "turn completed") where attributes["event.name"] == "codex.turn" and cache["record"]["fields"]["message"] == "close"
+          - set(body, "tool call completed") where attributes["event.name"] == "codex.tool_call"
+          - set(body, cache["record"]["fields"]["message"]) where attributes["event.name"] == "codex.operational" and (IsMatch(cache["record"]["target"], "^codex_app_server(::|$$)") or (cache["record"]["target"] == "codex_core::responses_retry" and IsString(cache["record"]["fields"]["message"]) and IsMatch(cache["record"]["fields"]["message"], "^(stream connection failed; waiting to retry|remote compaction v2 stream failed; retrying request after delay)$$"))) and IsMap(cache["record"]["fields"]) and IsString(cache["record"]["fields"]["message"]) and IsMatch(cache["record"]["fields"]["message"], "^[A-Za-z].{0,239}$$") and IsMatch(cache["record"]["fields"]["message"], "^(?:[A-Za-z0-9_-]{1,24}[ ,;:()./=]{1,4})*[A-Za-z0-9_-]{0,24}$$") and not IsMatch(cache["record"]["fields"]["message"], "(?i)(token|secret|passw|bearer|cookie|credential|api.?key|authoriz|session)") and not IsMatch(cache["record"]["fields"]["message"], "(^|[ ])-{1,2}(u|user|p|pass|password|a|proxy-user)([ ]|=)") and not IsMatch(cache["record"]["fields"]["message"], "[A-Za-z0-9_-]:[A-Za-z0-9_-]")
+          # argv credentials carry no credential word: a codex.operational body also
+          # rejects a credential flag (`-u`, `--password`) or a `user:password` pair.
+          # A Gateway startup failure keeps its message under the same rules.
+          - set(body, cache["record"]["message"]) where attributes["event.name"] == "gateway.startup_failed" and IsMatch(cache["record"]["message"], "^.{0,240}$$") and IsMatch(cache["record"]["message"], "^(?:[A-Za-z0-9_-]{1,24}[ ,;:()./=]{1,4})*[A-Za-z0-9_-]{0,24}$$") and not IsMatch(cache["record"]["message"], "(?i)(token|secret|passw|bearer|cookie|credential|api.?key|authoriz|session)") and not IsMatch(cache["record"]["message"], "(^|[ ])-{1,2}(u|user|p|pass|password|a|proxy-user)([ ]|=)") and not IsMatch(cache["record"]["message"], "[A-Za-z0-9_-]:[A-Za-z0-9_-]")
   filter/operational:
     error_mode: propagate
     logs:
@@ -64,6 +102,8 @@ processors:
         - 'attributes["event.name"] == nil'
         - "severity_number == SEVERITY_NUMBER_UNSPECIFIED"
         - 'attributes["service.name"] == "codex-app-server" and attributes["log.iostream"] != "stderr"'
+        # A Codex warning without a reviewed message says nothing a reader can act on.
+        - 'attributes["event.name"] == "codex.operational" and body == "codex.operational" and severity_number == SEVERITY_NUMBER_WARN'
   groupbyattrs/identity:
     keys:
       - service.name

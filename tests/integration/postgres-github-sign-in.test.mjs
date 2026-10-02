@@ -352,6 +352,7 @@ test(
     assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
       github: true,
       google: false,
+      oidc: false,
       password: true,
       sessionBinding: true,
     });
@@ -715,6 +716,7 @@ test(
     });
     assert.equal(recoveryDisable.statusCode, 409, recoveryDisable.body);
     assert.equal(recoveryDisable.json().error.code, "RESOURCE_CONFLICT");
+    assert.equal(recoveryDisable.json().error.message, "The recovery account cannot be disabled.");
 
     const stale = await start();
     assert.equal(
@@ -1199,25 +1201,26 @@ test(
     );
     await pool.query('DELETE FROM occ."user" WHERE id = $1', [unprovisioned]);
     const limitedVersion = (await readAccount(limited.id, adminHeaders)).version;
+    // Conflicts raised after authorization name what blocks them, not "already exists".
+    const staleHolder = await replaceRecovery({
+      userId: limited.id,
+      expectedCurrentUserId: limited.id,
+      expectedVersion: limitedVersion,
+    });
+    assert.equal(staleHolder.statusCode, 409, staleHolder.body);
     assert.equal(
-      (
-        await replaceRecovery({
-          userId: limited.id,
-          expectedCurrentUserId: limited.id,
-          expectedVersion: limitedVersion,
-        })
-      ).statusCode,
-      409,
+      staleHolder.json().error.message,
+      "The recovery designation changed. Read its current state before a new action.",
     );
+    const staleVersion = await replaceRecovery({
+      userId: limited.id,
+      expectedCurrentUserId: recovery,
+      expectedVersion: limitedVersion + 1,
+    });
+    assert.equal(staleVersion.statusCode, 409, staleVersion.body);
     assert.equal(
-      (
-        await replaceRecovery({
-          userId: limited.id,
-          expectedCurrentUserId: recovery,
-          expectedVersion: limitedVersion + 1,
-        })
-      ).statusCode,
-      409,
+      staleVersion.json().error.message,
+      "The authentication account version changed. Read its current state before a new action.",
     );
     assert.equal(
       (
@@ -1388,15 +1391,14 @@ test(
         })
       ).headers["set-cookie"],
     );
+    const passwordDetach = await accountAction(
+      `/api/auth/accounts/${createdId}/methods/${credentialMethod.methodId}/detach`,
+      withGitHub.version,
+    );
+    assert.equal(passwordDetach.statusCode, 409, "the password method cannot be detached");
     assert.equal(
-      (
-        await accountAction(
-          `/api/auth/accounts/${createdId}/methods/${credentialMethod.methodId}/detach`,
-          withGitHub.version,
-        )
-      ).statusCode,
-      409,
-      "the password method cannot be detached",
+      passwordDetach.json().error.message,
+      "Only an attached external identity can be detached.",
     );
     assert.equal(
       (

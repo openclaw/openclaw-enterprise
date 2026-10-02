@@ -184,15 +184,28 @@ credentials, or remote destination settings.
 
 The bundled Collector promotes only fixed operational event classes: reviewed OCC
 event names, gateway subsystem records under `gateway`, Codex app-server
-stderr records under `codex_app_server`, and the runtime wrappers' fixed stderr
-diagnostics (`runtime.startup_phase`, `runtime.workspace_node`, and
-`openclaw.model_probe` / `codex.model_probe`) with only a bounded phase name or
-code. It parses JSON records up to `32KiB`,
+stderr records under `codex_app_server`, Codex warnings and errors (never the
+`codex_otel` targets), the Codex `turn` span's start and end (`codex.turn`),
+completed tool calls (`codex.tool_call`), and the runtime wrappers' fixed stderr
+diagnostics (`runtime.startup_phase`, `runtime.workspace_node`,
+`runtime.gateway_settings_overridden`, and `openclaw.model_probe` /
+`codex.model_probe`) with only a bounded phase name or code. It parses JSON records up to `32KiB`,
 maps severity explicitly, keeps allowlisted attributes, and replaces retained
-bodies with the event class, stripping arbitrary content. It drops malformed,
+bodies with the event class, stripping arbitrary content. Codex turn and tool-call
+bodies are fixed text; a `codex.operational` body keeps Codex's own message only
+for `codex_app_server` targets or the fixed `codex_core::responses_retry` retry
+messages, and only when it is short plain text with no quotes, braces, query
+strings, credential words or word over 24 characters. Other Codex errors, which
+can interpolate chat text, keep the event name; other Codex warnings are dropped. It drops malformed,
 oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
 request, work, Namespace, Agent, and revision IDs remain attributes.
+
+A Gateway startup failure (OpenClaw's `Gateway failed to start:` error, which has
+no subsystem) is promoted as `gateway.startup_failed`; its body keeps the message
+only under the `codex.operational` plain-text rules. Those rules also reject
+messages with an argv credential flag (`-u`, `--password`) or a `user:password`
+pair.
 
 Collector credentials and TLS material live only in Collector-owned deployment
 configuration. In Helm, the bundled Collector uses dedicated config and exporter

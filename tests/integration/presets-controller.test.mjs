@@ -683,7 +683,7 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
     "synthetic-existing-service-account-token",
   );
   const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/devday.json", import.meta.url), "utf8"),
+    await readFile(new URL("../../deploy/presets/swe-preset.json", import.meta.url), "utf8"),
   );
   const originalTemplate = structuredClone(artifact.template);
   validatePresetTemplate(originalTemplate);
@@ -745,6 +745,8 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
   assert.deepEqual(configuration.data.values.channels.slack.replyToModeByChatType, {
     channel: "all",
   });
+  // The reusable preset must not admit any preconfigured deployment-specific channels.
+  assert.deepEqual(configuration.data.values.channels.slack.channels, {});
   const before = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
   assert.deepEqual(
     before.data.map((secret) => secret.id),
@@ -780,83 +782,6 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
   );
   assert.equal(
     JSON.stringify(first.body).includes("synthetic-existing-service-account-token"),
-    false,
-  );
-});
-
-test("Community Agent Preset installs and creates a dedicated Agent with community defaults", async (t) => {
-  const { renderPresetTemplate, validatePresetTemplate } =
-    await import("../../packages/contracts/src/index.ts");
-  const fixture = await createFixture(t);
-  const namespace = await fixture.createNamespace("Community Agent", { ready: true });
-  const serviceAccount = await fixture.createSecret(
-    namespace.id,
-    "Existing community service account token",
-    "synthetic-community-service-account-token",
-  );
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/devday-partners.json", import.meta.url), "utf8"),
-  );
-  const originalTemplate = structuredClone(artifact.template);
-  validatePresetTemplate(originalTemplate);
-  assert.equal(artifact.name, "Community Agent");
-  assert.deepEqual(originalTemplate.agent.harnessAuth, { method: "codex_pat" });
-  assert.deepEqual(originalTemplate.agent.plugins, {});
-
-  const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
-  assert.equal(installed.status, 201, JSON.stringify(installed.body));
-  const selected = await fixture.request("GET", `${collection(namespace.id)}/${installed.data.id}`);
-  assert.equal(selected.status, 200, JSON.stringify(selected.body));
-  assert.deepEqual(selected.data.template, originalTemplate);
-
-  const selectedTemplate = structuredClone(selected.data.template);
-  selectedTemplate.agent.harnessAuth = { method: "codex_pat", source: serviceAccount.ref };
-  const rendered = renderPresetTemplate(selectedTemplate, { name: "Community lifecycle" });
-  assert.equal(
-    rendered.agent.initialWorkspaceFiles["AGENTS.md"].startsWith("# Community lifecycle"),
-    true,
-  );
-  assert.equal(rendered.agent.initialWorkspaceFiles["AGENTS.md"].includes("# Ocalot"), false);
-  assert.match(rendered.agent.initialWorkspaceFiles["AGENTS.md"], /look in Linear/i);
-
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
-  assert.equal(configuration.data.values.channels.slack.dmPolicy, "disabled");
-  assert.deepEqual(configuration.data.values.channels.slack.channels, {
-    C0C43A2QA11: { requireMention: false, users: ["*"] },
-    C0C4A0JH2BG: { requireMention: false, users: ["*"] },
-    C0C5KF0JLSC: { requireMention: false, users: ["*"] },
-    C0C5KF0DWLQ: { requireMention: false, users: ["*"] },
-  });
-  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      ...rendered.agent,
-      configurationId: configuration.data.id,
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.equal(created.data.executionMode, "dedicated");
-  assert.deepEqual(created.data.plugins, {});
-  assert.deepEqual(created.data.harnessAuth, {
-    method: "codex_pat",
-    source: serviceAccount.ref,
-  });
-  const workspaceSetup = await fixture.state.read((state) =>
-    state.workspaceSetups.find(namespace.id, created.data.id),
-  );
-  assert.deepEqual(workspaceSetup?.files, rendered.agent.initialWorkspaceFiles);
-  assert.equal(
-    JSON.stringify(installed.body).includes("synthetic-community-service-account-token"),
-    false,
-  );
-  assert.equal(
-    JSON.stringify(created.body).includes("synthetic-community-service-account-token"),
     false,
   );
 });
@@ -906,11 +831,11 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const path = join(directory, "installation.yaml");
   const configuration = createInstallationDriverConfiguration();
   const customPreset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/devday.json", import.meta.url), "utf8"),
+    await readFile(new URL("../../deploy/presets/swe-preset.json", import.meta.url), "utf8"),
   );
   configuration.presets = {
     includeDefaults: true,
-    files: [fileURLToPath(new URL("../../deploy/presets/devday.json", import.meta.url))],
+    files: [fileURLToPath(new URL("../../deploy/presets/swe-preset.json", import.meta.url))],
   };
   await writeFile(path, JSON.stringify(configuration));
   const runtime = await loadInstallationConfiguration({
@@ -930,10 +855,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   assert.equal(Object.hasOwn(customDefault.template.variables, "modelSecret"), false);
   assert.equal(customDefault.template.variables.model.default, "gpt-6-astra");
   assert.equal(customDefault.template.agent.harnessAuth.method, "codex_pat");
-  assert.equal(
-    customDefault.template.configuration.values.channels.slack.channels.C0C43A2QA11.requireMention,
-    false,
-  );
+  assert.deepEqual(customDefault.template.configuration.values.channels.slack.channels, {});
   assert.equal(customDefault.template.configuration.values.plugins.entries.slack.enabled, true);
   const openclaw = list.data.find((preset) => preset.name === "Standard OpenClaw");
   assert.equal(openclaw.template.agent.executionMode, "embedded");

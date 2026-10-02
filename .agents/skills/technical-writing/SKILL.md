@@ -71,6 +71,14 @@ the current navigation before treating a proposed layout as implemented.
 
 ## Choose the smallest useful page
 
+Keep quickstarts and main guides focused on the normal supported workflow. Put
+platform-specific failures, uncommon environment workarounds, and extended
+diagnostic steps in the owning troubleshooting page or section. Link to that
+guidance with a short, symptom-based pointer beside the affected step; do not
+front-load the main guide with edge cases. Keep required prerequisites, security
+boundaries, destructive effects, and recovery needed for the normal workflow
+beside the action they affect.
+
 | Page                          | Include                                                                                                                                                      |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Overview or README            | Reader outcome, scope, recommended starting path, and links to detail.                                                                                       |

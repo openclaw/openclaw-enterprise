@@ -136,6 +136,11 @@
         "worker fixture disposal preserves another database's live claim and activation",
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
+        "credential withdrawal work revokes from the active revision without redeploying it",
+        "an exhausted credential withdrawal stays pending with its reason until a replay retries it",
+        "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
+        "a deployment retry never re-attaches a source withdrawn while it was finishing",
+        "a withdrawal whose requester lost Agent operate fails once with a denial and no revocation",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "Agent stop cleans a terminal candidate without an active revision",
         "Agent stop reauthorizes the recorded actor before Compute mutation",
@@ -269,6 +274,16 @@
       "path": "tests/integration/postgres-google-sign-in.test.mjs",
       "expectedTests": [
         "PostgreSQL Google sign-in admits only attached identities through the guarded profile"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-oidc-sign-in.test.mjs",
+      "expectedTests": ["PostgreSQL OIDC sign-in admits only attached (issuer, subject) pairs"]
+    },
+    {
+      "path": "tests/integration/postgres-external-session-provider.test.mjs",
+      "expectedTests": [
+        "PostgreSQL sessions end when their external provider instance is no longer configured"
       ]
     },
     {

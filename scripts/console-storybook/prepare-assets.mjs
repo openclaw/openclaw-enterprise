@@ -27,17 +27,14 @@ await writeFile(
 );
 
 // Preview shipped Presets so screenshots follow their current contracts.
-for (const name of [
-  "standard-codex",
-  "standard-openclaw",
-  "devday",
-  "devday-partners",
-  "devday-qa",
-  "devday-oncall",
+for (const [name, file] of [
+  ["standard-codex", "standard-codex"],
+  ["standard-openclaw", "standard-openclaw"],
+  ["swe", "swe-preset"],
 ]) {
   await writeFile(
     new URL(`${name}-preset.mjs`, assets),
-    `export default ${await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8")};\n`,
+    `export default ${await readFile(new URL(`../../deploy/presets/${file}.json`, import.meta.url), "utf8")};\n`,
   );
 }
 

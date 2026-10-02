@@ -1,6 +1,7 @@
 import { element, button } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
-import { harnessAuthDescription } from "./harness-auth.mjs";
+import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
+import { createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createSecretReferenceField } from "./secret-picker.mjs";
@@ -405,6 +406,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { id: "agent-auth-method" },
     element("option", { value: "api_key" }, "OpenAI API key"),
     element("option", { value: "codex_pat" }, "Service Accounts"),
+    element("option", { value: "oauth" }, "ChatGPT OAuth (Experimental)"),
   );
   authMethod.value = passwordAuth?.method ?? authDefault ?? binding?.method ?? "api_key";
   if (passwordAuth) {
@@ -488,6 +490,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  const oauthLogin = createDeviceLogin({
+    context,
+    initial: draft.oauthLogin,
+    hint: "Sign in for this dedicated Codex Agent. You can browse plugins before deployment. Deployment transfers the login to the Agent; later plugin edits use a separate login.",
+    onChange(source) {
+      if (authMethod.value === "oauth") {
+        modelCredentialSource = source;
+        modelCredentialSecret = source;
+        resetPluginDiscovery();
+        updateControls();
+      }
+    },
+  });
   const transientCredentialField = element(
     "div",
     { className: "form-field" },
@@ -532,6 +547,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     ...(!binding
       ? [
           modelCredentialField,
+          oauthLogin.section,
           passwordAuth ? transientCredentialField : pluginDiscoveryTokenDetails,
         ]
       : []),
@@ -539,21 +555,21 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   );
   name.value = agent.name ?? "";
   mode.value = agent.executionMode ?? "dedicated";
-  if (authMethod.value === "codex_pat") {
+  // Partial Presets keep the form default until they select a model Harness.
+  harness.value =
+    configuredHarnessId(rendered.configuration?.values) ??
+    (mode.value === "dedicated" ? "codex" : "openclaw");
+  if (["codex_pat", "oauth"].includes(authMethod.value)) {
     nativeProvider.value = "openai";
+    harness.value = "codex";
     mode.value = "dedicated";
   } else if (nativeProvider.value === "anthropic" || binding?.method === "runtime") {
+    harness.value = "openclaw";
     mode.value = "embedded";
   }
-  // A Preset or draft keeps its own harness; execution mode only chooses the default.
-  const configuredHarness =
-    rendered.configuration?.values?.agents?.defaults?.models?.[initialModel]?.agentRuntime?.id;
-  // Service account tokens authenticate Codex only.
-  harness.value =
-    mode.value === "dedicated" &&
-    (authMethod.value === "codex_pat" || configuredHarness !== "openclaw")
-      ? "codex"
-      : "openclaw";
+  if (harness.value === "codex") {
+    mode.value = "dedicated";
+  }
   const currentTemplate = () =>
     JSON.stringify(
       configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
@@ -669,16 +685,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     feedback.textContent = "";
     renderChannelEditor();
   }
+  function clearModelCredential() {
+    apiKey.value = "";
+    modelCredentialSource = null;
+    modelCredentialSecret = undefined;
+    modelCredentialPicker.refresh();
+  }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
     harness.value =
       nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
-    apiKey.value = "";
-    modelCredentialSource = null;
-    modelCredentialSecret = undefined;
-    modelCredentialPicker.refresh();
+    clearModelCredential();
     if (!binding) {
       authMethod.value = "api_key";
       resetModelChoices(true);
@@ -687,10 +706,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
   });
   authMethod.addEventListener("change", () => {
-    apiKey.value = "";
-    modelCredentialSource = null;
-    modelCredentialSecret = undefined;
-    modelCredentialPicker.refresh();
+    clearModelCredential();
     resetModelChoices();
   });
   model.addEventListener("change", () => updateModelConfiguration());
@@ -699,12 +715,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     // Sandbox Driver; operators opt into it through Execution mode.
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // Service account tokens cannot authenticate OpenClaw; require a new API key.
-    if (!binding && harness.value === "openclaw" && authMethod.value === "codex_pat") {
+    if (
+      !binding &&
+      harness.value === "openclaw" &&
+      ["codex_pat", "oauth"].includes(authMethod.value)
+    ) {
       authMethod.value = "api_key";
-      apiKey.value = "";
-      modelCredentialSource = null;
-      modelCredentialSecret = undefined;
-      modelCredentialPicker.refresh();
+      clearModelCredential();
       resetModelChoices(true);
     } else {
       updateModelConfiguration(true);
@@ -712,10 +729,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     updateControls();
   });
   mode.addEventListener("change", () => {
+    const previousHarness = harness.value;
     if (mode.value === "embedded") {
       harness.value = "openclaw";
     }
-    updateModelConfiguration(true);
+    // Topology alone does not change the model policy or provider transport.
+    if (harness.value !== previousHarness) {
+      updateModelConfiguration(true);
+    } else {
+      renderChannelEditor();
+    }
     updateControls();
   });
   configuration.addEventListener("input", () => {
@@ -726,15 +749,23 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const values = parseObject(configuration);
     const selected = values?.agents?.defaults?.model;
     const ref = typeof selected === "string" ? selected : selected?.primary;
+    const selectedHarness = values && configuredHarnessId(values);
+    if (typeof ref === "string" && selectedHarness) {
+      harness.value = selectedHarness;
+      if (selectedHarness === "codex") {
+        mode.value = "dedicated";
+      }
+    }
     if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
       if (!savedSecret && !hasBoundModelCredential) {
         const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
-        if (selectedProvider !== nativeProvider.value && !binding) {
-          apiKey.value = "";
+        if (
+          !binding &&
+          (selectedProvider !== nativeProvider.value ||
+            (harness.value === "openclaw" && authMethod.value === "codex_pat"))
+        ) {
           authMethod.value = "api_key";
-          modelCredentialSource = null;
-          modelCredentialSecret = undefined;
-          modelCredentialPicker.refresh();
+          clearModelCredential();
         }
         nativeProvider.value = selectedProvider;
         if (selectedProvider === "anthropic") {
@@ -757,20 +788,28 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential = null;
+  // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
+  const apiKeyCodex = () =>
+    harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
+    if (apiKeyCodex()) {
+      return null;
+    }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
       return {};
     }
     if (
       nativeProvider.value !== "openai" ||
       harness.value !== "codex" ||
-      (binding?.method ?? authMethod.value) !== "codex_pat"
+      !["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value)
     ) {
       return null;
     }
     const secretRef = binding?.source ?? modelCredentialSource;
     if (secretRef?.kind === "secret") {
-      return { secretRef };
+      return (binding?.method ?? authMethod.value) === "oauth"
+        ? { oauthLogin: secretRef }
+        : { secretRef };
     }
     return apiKey.value.trim() ? { accessToken: apiKey.value } : null;
   }
@@ -787,18 +826,20 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
       pluginDiscoveryCredential !== null &&
-      (binding?.method ?? authMethod.value) === "codex_pat" &&
+      ["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value) &&
       Boolean(binding?.source ?? modelCredentialSource ?? apiKey.value.trim()),
     isPending: () => pending,
     requestBody: (body) => ({ ...discoveryCredential(), ...body }),
     unavailableMessage: () =>
-      pluginDiscoveryCredential === "none"
-        ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-        : "For discovery, choose Service Accounts with the Codex harness and select a Secret or enter a token under Plugin discovery token (optional).",
+      apiKeyCodex()
+        ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
+        : pluginDiscoveryCredential === "none"
+          ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
+          : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
-        : "Load plugins available to the selected service account credential. Your plugin selections stay unchanged.",
+        : "Load plugins available to the selected credential. Your plugin selections stay unchanged.",
     createApproverField: (options) =>
       createSlackApproverField({
         context,
@@ -988,7 +1029,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       field(
         "Execution mode",
         mode,
-        "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Codex.",
+        "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.",
       ),
     ),
     (repositories = createRepositoryFields(
@@ -1081,6 +1122,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     stagedChannelSecrets,
     modelCredentialSource,
     modelCredentialSecret,
+    oauthLogin: oauthLogin.capture(),
     repositoryAccess: repositories.access(),
   }));
   function parseObject(input, reportInvalid = false) {
@@ -1211,7 +1253,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         ? element(
             "p",
             { className: "error" },
-            "Channels require Dedicated execution. Select OpenAI with the Codex harness or disable configured channels before creating the Agent.",
+            "Channels require Dedicated execution. Select Dedicated under Runtime details or disable configured channels before creating the Agent.",
           )
         : null;
     channelEditor.replaceChildren(...[channels, modeWarning].filter(Boolean));
@@ -1251,6 +1293,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     channelEditor.toggleAttribute("inert", pending || saved || outcomeUnknown);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
+    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
+    if (usesOAuth && !binding) {
+      modelCredentialSource = oauthLogin.source;
+      modelCredentialSecret = oauthLogin.source;
+    }
+    oauthLogin.setActive(usesOAuth && !binding);
+    oauthLogin.setDisabled(pending || saved || outcomeUnknown);
     mode.disabled ||=
       harness.value === "codex" ||
       nativeProvider.value === "anthropic" ||
@@ -1266,7 +1315,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (modeHint) {
       modeHint.textContent = nativeRefused
         ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation's OpenClaw runtime lacks native worker support, so OpenClaw uses Embedded execution. Slack requires Codex."
-        : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Codex.";
+        : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
     }
     if (capabilityDiscoveryDone) {
       const nextStatus = shouldProvision()
@@ -1300,12 +1349,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const patOption = authMethod.querySelector('[value="codex_pat"]');
     patOption.hidden = harness.value !== "codex";
     patOption.disabled = harness.value !== "codex";
+    const oauthOption = authMethod.querySelector('[value="oauth"]');
+    oauthOption.hidden = harness.value !== "codex";
+    oauthOption.disabled = harness.value !== "codex";
     credentialLabel.textContent = passwordAuth
       ? usesPat
         ? "Service account token"
         : "API key"
       : "Token for plugin discovery";
-    modelCredentialField.hidden = Boolean(binding || passwordAuth);
+    modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
+    transientCredentialField.hidden = usesOAuth;
     pluginDiscoveryTokenDetails.hidden = Boolean(
       binding || passwordAuth || !usesPat || pluginDiscoveryCredential === "none",
     );
@@ -1315,11 +1368,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     modelCredentialField.querySelector("label").textContent = usesPat
       ? "Service account token Secret"
       : "API key Secret";
-    modelCredentialPicker.setRequired(!binding && !passwordAuth);
+    modelCredentialPicker.setRequired(!binding && !passwordAuth && !usesOAuth);
     modelCredentialPicker.setDisabled(
       pending ||
         Boolean(
-          binding || passwordAuth || savedConfiguration || savedAgent || provisioningAttempt,
+          binding ||
+          passwordAuth ||
+          usesOAuth ||
+          savedConfiguration ||
+          savedAgent ||
+          provisioningAttempt,
         ) ||
         outcomeUnknown,
     );
@@ -1353,8 +1411,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       apiKey.placeholder = "sk-ant-…";
       credentialHelp.textContent = "Use an Anthropic API key for embedded OpenClaw.";
     }
-    apiKey.required = Boolean(passwordAuth);
-    apiKey.disabled ||= Boolean(savedSecret || binding || (!passwordAuth && !usesPat));
+    apiKey.required = Boolean(passwordAuth && !usesOAuth);
+    apiKey.disabled ||= Boolean(savedSecret || binding || usesOAuth || (!passwordAuth && !usesPat));
     startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
     if (useModelChoices) {
       choiceField.hidden = manualModel;
@@ -1536,7 +1594,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const primaryModel = typeof selected === "string" ? selected : selected?.primary;
     const fallbackPrefixes =
       harness.value === "codex" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
-    // Bound credentials must keep their provider; dedicated Presets support both native prefixes.
+    // Bound Codex Presets may use either supported provider prefix; OpenClaw keeps its provider.
     const primaryPrefixes = hasBoundModelCredential
       ? fallbackPrefixes
       : [harness.value === "codex" ? "codex/" : `${nativeProvider.value}/`];
@@ -1562,11 +1620,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     if (
-      (binding?.method ?? authMethod.value) === "codex_pat" &&
-      (nativeProvider.value !== "openai" || mode.value !== "dedicated")
+      ["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value) &&
+      (nativeProvider.value !== "openai" || harness.value !== "codex" || mode.value !== "dedicated")
     ) {
       feedback.textContent =
-        "Service account tokens require OpenAI with Dedicated execution. Update the Configuration JSON or reset the template before saving.";
+        "Service account tokens and ChatGPT OAuth (Experimental) require OpenAI with the Codex harness and Dedicated execution. Update the Configuration JSON or reset the template before saving.";
       return;
     }
     if (nativeProvider.value === "anthropic" && mode.value !== "embedded") {
@@ -1576,7 +1634,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
       feedback.textContent =
-        "Channels require Dedicated execution. Select OpenAI with the Codex harness or disable configured channels before creating the Agent.";
+        "Channels require Dedicated execution. Select Dedicated under Runtime details or disable configured channels before creating the Agent.";
       return;
     }
     const repositoryBindings = repositories.bindings();
@@ -1592,8 +1650,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
-    if (!binding && !passwordAuth && modelCredentialSource?.kind !== "secret") {
-      feedback.textContent = "Choose a model credential Secret before creating the Agent.";
+    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
+    if (!binding && (!passwordAuth || usesOAuth) && modelCredentialSource?.kind !== "secret") {
+      feedback.textContent = usesOAuth
+        ? "Complete ChatGPT sign-in before creating the Agent."
+        : "Choose a model credential Secret before creating the Agent.";
       return;
     }
     context.setDraftCapture(null);
@@ -1602,7 +1663,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     feedback.textContent = "";
     let mutationStarted = false;
     try {
-      if (passwordAuth && !savedSecret) {
+      if (passwordAuth && !usesOAuth && !savedSecret) {
         mutationStarted = true;
         savedSecret = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
@@ -1615,7 +1676,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         }
         showSavedStatus();
       }
-      const selectedCredentialSource = passwordAuth ? savedSecret?.ref : modelCredentialSource;
+      const selectedCredentialSource =
+        passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
       body.harnessAuth = binding ?? { method: authMethod.value, source: selectedCredentialSource };
       if (shouldProvision()) {
         provisioningAttempt = {

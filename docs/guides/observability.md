@@ -219,7 +219,9 @@ only to keep a reviewed custom configuration.
    app-server. Check the corresponding `openclaw-gateway` or `codex-app-server`
    records and `openclaw.agent.id` / `openclaw.revision.id` resource attributes.
 
-Retained record bodies hold only the event name. Search for a request, Agent,
+Retained record bodies hold the event name; `codex.turn` and `codex.tool_call`
+bodies are fixed text, and `codex.operational` keeps Codex's message when it is
+short plain text. Search for a request, Agent,
 or revision by its attribute, not by body text; in Loki these are structured
 metadata, for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
 

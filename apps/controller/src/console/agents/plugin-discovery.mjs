@@ -10,7 +10,7 @@ function discoveryError(error, deniedMessage, unsupportedMessage) {
   }
   const reason = {
     PLUGIN_DISCOVERY_CREDENTIALS_REJECTED:
-      "The service account token was rejected or cannot access plugins. Check its permissions.",
+      "The credential was rejected or cannot access plugins. Check its permissions.",
     PLUGIN_DISCOVERY_RATE_LIMITED: "The plugin service rate limit was reached. Try again later.",
     PLUGIN_DISCOVERY_UNAVAILABLE:
       "The plugin service is unavailable. Check the server's plugin service access and retry.",
@@ -33,7 +33,7 @@ export function createPluginDiscovery({
   requestBody = (body) => ({ accessToken: accessToken(), ...body }),
   deniedMessage = "Plugin discovery requires Agent create permission in this Namespace. Saved selections can still be edited.",
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
-  availableMessage = "Load plugins available to this service account token. Your plugin selections stay unchanged.",
+  availableMessage = "Load plugins available to this credential. Your plugin selections stay unchanged.",
   createApproverField,
 }) {
   let generation = 0;

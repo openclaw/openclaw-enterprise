@@ -37,6 +37,7 @@
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
         "runtime image keeps Codex auth writable with a nested generated images mount",
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
+        "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed",
         "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
         "runtime image Gateway exits if OpenClaw crashes during a peer status outage",
@@ -89,9 +90,11 @@
       "expectedTests": [
         "the API accepts exactly the sign-in settings the chart renders for every proxy preset, with and without GitHub",
         "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
+        "the API accepts exactly the OIDC sign-in settings the chart renders, alone and with GitHub and Google",
         "values the chart refuses are settings the API also refuses",
         "proxy CIDRs without a preset are refused by the chart and default to ingress-nginx in the API",
         "the chart refuses Google Secret and egress settings the API cannot observe",
+        "the chart refuses OIDC Secret and egress settings the API cannot observe",
         "install notes warn when sign-in is exposed without a trusted proxy, and never fail"
       ]
     },

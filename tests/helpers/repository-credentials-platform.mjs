@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { signInWithEmailPassword, authenticatedHeaders } from "./auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -737,7 +740,12 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     const configured = await request(
       "POST",
       `/namespaces/${namespace.id}/configurations`,
-      { kind: "agent", values: createHarnessConfiguration("openclaw", "repository-fixture") },
+      {
+        kind: "agent",
+        values: withStubbedProviderEndpoint(
+          createHarnessConfiguration("openclaw", "repository-fixture"),
+        ),
+      },
       201,
     );
     const agent = await request(

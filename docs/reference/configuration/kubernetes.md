@@ -49,8 +49,11 @@ Configuration or AgentRevision. The Agent gateway mounts this
 snapshot read-only at `/etc/openclaw/openclaw.json`; its environment contains
 only the file path in `OPENCLAW_CONFIG_PATH`. It never mounts the mutable
 Configuration Driver ConfigMap or copies raw configuration into Pod
-environment. A new admitted generation receives a different immutable snapshot
-and rolls the same Agent gateway. Old snapshots remain until Namespace deletion;
+environment. When OpenClaw starts from this read-only file, the startup wrapper
+also sets `OPENCLAW_CONFIG_READONLY=1`, so OpenClaw treats the file as externally
+managed and does not try to write its last-known-good backup beside it. A new
+admitted generation receives a different immutable snapshot and rolls the same
+Agent gateway. Old snapshots remain until Namespace deletion;
 safe earlier garbage collection is not implemented.
 
 Startup validates the selected Configuration Driver's closed schema and

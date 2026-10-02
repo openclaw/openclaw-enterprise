@@ -275,6 +275,35 @@ func (client *Client) GetCredentialSource(namespaceID, sourceID string) (any, er
 	return client.get("namespaces", namespaceID, "credential-sources", sourceID)
 }
 
+// UpdateCredentialSource pushes current or replacement Secret values to the gateway copy.
+func (client *Client) UpdateCredentialSource(
+	namespaceID string,
+	sourceID string,
+	body jsontext.Value,
+) (any, error) {
+	return client.send(
+		http.MethodPatch,
+		[]string{"namespaces", namespaceID, "credential-sources", sourceID},
+		body,
+	)
+}
+
+// WithdrawAgentCredentialSource revokes a credential source from an Agent's active revision.
+func (client *Client) WithdrawAgentCredentialSource(namespaceID, agentID, sourceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "agents", agentID, "credential-sources", sourceID, "withdraw"},
+		nil,
+	)
+}
+
+// GetAgentCredentialWithdrawal reads a withdrawal of a credential source from an Agent.
+func (client *Client) GetAgentCredentialWithdrawal(namespaceID, agentID, sourceID string) (any, error) {
+	return client.get(
+		"namespaces", namespaceID, "agents", agentID, "credential-sources", sourceID, "withdrawal",
+	)
+}
+
 // DeleteCredentialSource removes an unreferenced credential source and its gateway copy.
 func (client *Client) DeleteCredentialSource(namespaceID, sourceID string) error {
 	return client.sendEmpty(

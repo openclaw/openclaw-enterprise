@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	openShellVersion                = "0.1.0"
+	openShellVersion                = "0.1.3-pre.1"
 	openShellRuntimeClass           = "openshell-sandbox"
 	openShellGatewayService         = "openshell-gateway"
 	openShellGatewayNamespace       = "openshell-system"
@@ -34,12 +34,12 @@ const (
 	openShellBoundaryRoleLabel      = "openshell.ai/boundary-role"
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
-	openShellSourceSHA256           = "f2f85978af532511b9c6355e2baf3ce91a226e3badecc98578413d0ac7958cd7"
+	openShellSourceSHA256           = "b140c4b6ee108ed968ac69f277ba937637ed660bdb1d536129ae5c3fcab48c4b"
 	agentSandboxManifestSHA256      = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:dde8a9a57f34f9d998618b3d35821608165c980f@sha256:7d03ee5b949f06fd3a3244b495c4aa07fb8720c16977c9da3f1ecdd966e84c28"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:dde8a9a57f34f9d998618b3d35821608165c980f@sha256:7a7fd8c765fd19cbddd61a525d08a73ce37cdbe999078f385e2892e659d684bd"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:dde8a9a57f34f9d998618b3d35821608165c980f@sha256:406d9da06b506ec67993754608962f568aeffeae918ed7df0c84ba19cd904124"
 	openShellSourceArchiveURL       = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL         = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
@@ -215,6 +215,13 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s staging image: %w", component, err))
 		}
 	}()
+	// Use the name the engine recorded for the staging tag. Podman qualifies it
+	// with the `localhost` registry, and containerd stores whatever reference
+	// was imported, so the verification below has to look for that name.
+	recorded, err := r.engineImageReference(ctx, stagingTag)
+	if err != nil {
+		return "", err
+	}
 	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
 	if err != nil {
 		return "", err
@@ -233,7 +240,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if r.engine == "docker" {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
-	saveArgs = append(saveArgs, "--output", archive, stagingTag)
+	saveArgs = append(saveArgs, "--output", archive, recorded)
 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
 		return "", err
 	}
@@ -242,6 +249,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	}
 
 	candidates := map[string]struct{}{
+		recorded:                  {},
 		stagingTag:                {},
 		"docker.io/" + stagingTag: {},
 	}

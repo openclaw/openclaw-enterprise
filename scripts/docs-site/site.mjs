@@ -3,10 +3,38 @@ import "./compute-matrix-browser.mjs";
 const menu = document.querySelector("#menu");
 const sidebar = document.querySelector("#sidebar");
 const mobileNavigation = window.matchMedia("(max-width: 760px)");
+const activeTab = document.querySelector(".tabs [aria-current]");
+const sidebarScrollKey = "enterprise-docs-sidebar-scroll:" + activeTab.getAttribute("href");
+
+function restoreSidebarScroll() {
+  try {
+    const scrollTop = Number.parseInt(sessionStorage.getItem(sidebarScrollKey) ?? "", 10);
+    if (Number.isFinite(scrollTop)) {
+      sidebar.scrollTop = scrollTop;
+    }
+  } catch {
+    // Treat blocked storage as a progressive enhancement miss.
+  }
+}
+
+function saveSidebarScroll() {
+  if (sidebar.clientHeight === 0) {
+    return;
+  }
+  try {
+    sessionStorage.setItem(sidebarScrollKey, String(sidebar.scrollTop));
+  } catch {
+    // Treat blocked storage as a progressive enhancement miss.
+  }
+}
+
 document.documentElement.dataset.docsNavigation = "interactive";
 menu.addEventListener("click", () => {
   const open = sidebar.classList.toggle("open");
   menu.setAttribute("aria-expanded", String(open));
+  if (open) {
+    restoreSidebarScroll();
+  }
 });
 sidebar.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && mobileNavigation.matches && sidebar.classList.contains("open")) {
@@ -15,7 +43,10 @@ sidebar.addEventListener("keydown", (event) => {
     menu.focus();
   }
 });
-const activeTab = document.querySelector(".tabs [aria-current]");
+restoreSidebarScroll();
+sidebar.addEventListener("scroll", saveSidebarScroll, { passive: true });
+sidebar.addEventListener("click", saveSidebarScroll);
+window.addEventListener("pagehide", saveSidebarScroll);
 function revealCurrentTab() {
   const tabs = activeTab.parentElement;
   const bounds = tabs.getBoundingClientRect();

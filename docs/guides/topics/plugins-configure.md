@@ -115,7 +115,10 @@ Repeat the status lookup while the result is `queued` or `running`. A
 disabling it. It does not prove the plugin is still healthy or that an Agent
 has used it. A `PLUGIN_INSTALL_FAILED` warning means that selection was disabled
 for this startup even if the Agent deployed. Dedicated Codex can also report
-`PLUGIN_AUTH_REQUIRED` when a selected app still needs authentication.
+`PLUGIN_AUTH_REQUIRED` when a selected app still needs authentication, and
+for every selected plugin when the Agent authenticates with an API key: Codex
+plugins need a ChatGPT login, so the Console does not offer plugin browsing
+for API-key Agents.
 
 To verify that Diffs actually ran, use an Agent client that displays native
 tool results. An operator can [attach with the OpenClaw TUI](../deploy/production-tui.md)
@@ -131,6 +134,11 @@ In the client's tool activity, check the actual `diffs` call and a successful
 result for the requested file and view mode. Runtime versions may return a
 structured result rather than `Diff viewer ready.` A model reply alone does
 not prove it called the tool.
+In `view` mode, Diffs returns a viewer link. It opens in a browser only when the
+Agent uses [native admin access](../deploy/native-admin.md) with
+`gateway.publicOrigin` set to the Agent's native admin origin; otherwise the link
+points at the Gateway's private loopback address. Use `mode: "file"` when you
+need the rendered diff without a link.
 The [Chat Completions check](../operate/model-verification.md) reads only
 assistant text; it cannot verify that Diffs ran. The OCC console has no chat.
 Use the TUI's tool activity for this verification.

@@ -21,13 +21,14 @@ Compose without Installation YAML selects no Secret Driver. See
 The [shared interface](../../../packages/contracts/src/index.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
-| Method                    | Contract                                                                                                                                                                                      |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create(identity, value)` | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                                                                                    |
-| `update(secret, value)`   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                                                                       |
-| `delete(secret)`          | Remove only the backend object belonging to this Secret. Returns no value.                                                                                                                    |
-| `resolve(secret)`         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.                                                           |
-| `withValue(secret, use)`  | When supported, verify exact ownership and pass the current value to a transient server-side callback, such as registering an authorized credential source. Never expose it as a public read. |
+| Method                                    | Contract                                                                                                                                                                                      |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create(identity, value)`                 | Store the value for OCC's `{ id, namespaceId, name }` and return a safe backend reference.                                                                                                    |
+| `update(secret, value)`                   | Replace the value at the stored, owned backend identity. Returns no value and does not report delivery.                                                                                       |
+| `delete(secret)`                          | Remove only the backend object belonging to this Secret. Returns no value.                                                                                                                    |
+| `resolve(secret)`                         | Check live ownership and return only the reference safe to use for projection. Never return the value or substitute another object.                                                           |
+| `compareAndSwap(secret, expected, value)` | Optional atomic replacement of an exact current value. **Experimental** Codex OAuth device login uses it to serialize polling and fence cancellation; a mismatch returns false.               |
+| `withValue(secret, use)`                  | When supported, verify exact ownership and pass the current value to a transient server-side callback, such as registering an authorized credential source. Never expose it as a public read. |
 
 The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 `uid`; these are internal metadata, never caller-selected locations. The public

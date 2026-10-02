@@ -595,14 +595,9 @@ test(
   "native push policy protects every destination and preserves common-directory hooks",
   { timeout: 60000 },
   async (t) => {
-    const reservation = createHttpServer();
-    reservation.listen(0, "127.0.0.1");
-    await once(reservation, "listening");
-    const port = reservation.address().port;
-    await new Promise((done) => reservation.close(done));
     const origin = "https://localhost";
     const fixture = await startRegistryCredentialServiceFixture(t, {
-      gateway: { listen: "127.0.0.1:" + port, publicOrigin: origin },
+      gateway: { listen: "127.0.0.1:0", publicOrigin: origin },
       repositories: [
         {
           repositoryRef: "guarded",
@@ -636,7 +631,7 @@ test(
         socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
         return;
       }
-      const upstream = connect(port, "127.0.0.1", () => {
+      const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         upstream.write(head);
         socket.pipe(upstream).pipe(socket);

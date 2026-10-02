@@ -313,7 +313,7 @@ test(
       state.transact((unit) =>
         iam.deleteNamespaceRole({ policy: unit.iamPolicy }, namespace.id, secretRole.id),
       ),
-      { name: "ResourceConflictError" },
+      { name: "IAMRoleInUseError" },
     );
     await state.transact(async (unit) => {
       assert.equal(
@@ -430,9 +430,13 @@ test(
           throw error;
         }
       }),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
-    assert.equal(bindingError?.name, "ScopeViolationError", "State must reject the orphan subject");
+    assert.equal(
+      bindingError?.name,
+      "IAMPolicyValidationError",
+      "State must reject the orphan subject",
+    );
     assert.equal(
       (await state.read((unit) => unit.iamPolicy.listAccessBindings(namespace.id))).filter(
         (binding) => binding.subjectId === orphan,
@@ -550,7 +554,7 @@ test(
           { ...agentBinding, id: identifier("binding") },
         ),
       ),
-      /target does not belong to the exact Namespace/,
+      /target does not exist in this Namespace or is being deleted/,
     );
 
     assert.equal(
@@ -635,7 +639,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
   },
 );
@@ -787,7 +791,7 @@ test(
         state.transact((unit) =>
           iam.createNamespaceAccessBinding({ policy: unit.iamPolicy }, input),
         ),
-        { name: "ScopeViolationError" },
+        { name: "IAMPolicyValidationError" },
       );
     }
 
@@ -982,7 +986,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError", message: /support only Namespace read/ },
+      { name: "IAMPolicyValidationError", message: /support only Namespace read/ },
     );
     assert.deepEqual(
       await state.transact((unit) => unit.iamPolicy.listAccessBindings(namespace.id)),
@@ -1220,7 +1224,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
     await assert.rejects(
       state.transact((unit) =>
@@ -1267,7 +1271,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
   },
 );

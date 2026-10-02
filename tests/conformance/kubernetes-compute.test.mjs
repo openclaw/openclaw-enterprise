@@ -24,9 +24,11 @@ import {
   kubernetesGatewayNamespaceName,
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { ActivationPendingError, ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import {
   currentComputeAbortSignal,
   withComputeAbortSignal,
+  withComputeWorkWaiting,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -51,18 +53,17 @@ const apiKeyAuth = {
 
 function authContext(revision, namespace = kubernetesGatewayNamespaceName(tenant.id)) {
   return {
-    harnessAuth:
-      revision.harnessAuth.method === "api_key" || revision.harnessAuth.method === "codex_pat"
-        ? {
-            ...revision.harnessAuth,
-            backendRef: {
-              namespaceName: namespace,
-              name: "occ-model-key",
-              key: "value",
-              uid: "model-secret-uid",
-            },
-          }
-        : revision.harnessAuth,
+    harnessAuth: ["api_key", "codex_pat", "oauth"].includes(revision.harnessAuth.method)
+      ? {
+          ...revision.harnessAuth,
+          backendRef: {
+            namespaceName: namespace,
+            name: "occ-model-key",
+            key: "value",
+            uid: "model-secret-uid",
+          },
+        }
+      : revision.harnessAuth,
   };
 }
 
@@ -857,7 +858,11 @@ test("activation refuses a missing or foreign workspace node before changing the
 // A first dedicated Codex deploy with plugins, workspace node enrollment and
 // gateway routing. Only transport observations are faked; startup order and
 // readiness come from the real driver.
-function dedicatedFirstDeployFixture({ statusProxy = true } = {}) {
+//
+// With `clock` ({ now }), enrollment waits are simulated on that fake clock: an
+// observation advances it by its whole wait, or to `state.pairAtMs` if the node
+// pairs within the wait, and never sleeps.
+function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
   const state = {
     setupCalls: 0,
     connected: false,
@@ -867,6 +872,15 @@ function dedicatedFirstDeployFixture({ statusProxy = true } = {}) {
     gatewayWorkspaceNodeId: undefined,
     gatewayWorkspaceNodeFailure: undefined,
     gatewayAppliesBinding: true,
+    // When set, the node host pairs this long after its setup reaches the Harness.
+    pairAfterSetupMs: undefined,
+    // The wait each setup observation was given.
+    observeWaits: [],
+    // With a fake clock: when the node pairs, and when a waiting observation fails.
+    pairAtMs: undefined,
+    failAtMs: undefined,
+    // With a fake clock: observe poll by poll, asking `stopWaiting` between reads.
+    stepObservations: false,
   };
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -881,9 +895,51 @@ function dedicatedFirstDeployFixture({ statusProxy = true } = {}) {
           state.setupCalls++;
           return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
         },
-        async observeSetup() {
+        async observeSetup(_url, _setupId, signal, options) {
           if (!state.enrollmentAvailable) {
             throw new Error("Gateway is restarting after the Harness replacement");
+          }
+          // Like the client: one connection, re-read until connected or the wait ends.
+          state.observeWaits.push(options?.waitMs ?? 0);
+          if (clock !== undefined && state.stepObservations) {
+            // Like the client, poll by poll: read, then ask whether other Work
+            // is waiting for the worker before the next read.
+            const deadline = clock.now + (options?.waitMs ?? 0);
+            for (;;) {
+              if (state.pairAtMs !== undefined && state.pairAtMs <= clock.now) {
+                state.connected = true;
+              }
+              if (
+                state.connected ||
+                clock.now + 250 > deadline ||
+                (options?.stopWaiting !== undefined && (await options.stopWaiting()))
+              ) {
+                return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+              }
+              clock.now += 250;
+            }
+          }
+          if (clock !== undefined) {
+            const deadline = clock.now + (options?.waitMs ?? 0);
+            if (state.failAtMs !== undefined && state.failAtMs <= deadline) {
+              clock.now = Math.max(clock.now, state.failAtMs);
+              throw new Error("Gateway connection closed");
+            }
+            if (!state.connected && state.pairAtMs !== undefined && state.pairAtMs <= deadline) {
+              clock.now = Math.max(clock.now, state.pairAtMs);
+              state.connected = true;
+            } else if (!state.connected) {
+              clock.now = deadline;
+            }
+            return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+          }
+          const deadline = Date.now() + (options?.waitMs ?? 0);
+          while (!state.connected && Date.now() < deadline) {
+            if (options?.stopWaiting !== undefined && (await options.stopWaiting())) {
+              break;
+            }
+            signal.throwIfAborted();
+            await new Promise((resolve) => setTimeout(resolve, 2));
           }
           return state.connected ? { deviceId: "node-1", connected: true } : undefined;
         },
@@ -893,6 +949,12 @@ function dedicatedFirstDeployFixture({ statusProxy = true } = {}) {
       },
     },
   );
+  if (clock === undefined) {
+    // Short enough for tests; long enough that a pass sees a node pairing within it.
+    driver.workspaceNodePairingWaitMs = 60;
+  } else {
+    driver.now = () => clock.now;
+  }
   const revision = routedRevision(driver, {
     plugins: {
       driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
@@ -1064,6 +1126,21 @@ function dedicatedFirstDeployFixture({ statusProxy = true } = {}) {
             uid: `${role}-uid`,
             labels,
           },
+          ...(state.unschedulableRole === role
+            ? {
+                status: {
+                  phase: "Pending",
+                  conditions: [
+                    {
+                      type: "PodScheduled",
+                      status: "False",
+                      reason: "Unschedulable",
+                      message: "0/1 nodes are available: 1 Insufficient memory.",
+                    },
+                  ],
+                },
+              }
+            : {}),
         },
       ],
     };
@@ -1073,6 +1150,16 @@ function dedicatedFirstDeployFixture({ statusProxy = true } = {}) {
   const podPatches = [];
   clients.core.patchNamespacedPod = async ({ name, namespace: target, body }) => {
     podPatches.push({ name, namespace: target, body: structuredClone(body) });
+    if (
+      name === "agent-pod" &&
+      state.pairAfterSetupMs !== undefined &&
+      body.metadata.annotations["openclaw.dev/workspace-node-setup"] !== undefined
+    ) {
+      // The setup file reaches the running Harness; its node host boots and pairs.
+      setTimeout(() => {
+        state.connected = true;
+      }, state.pairAfterSetupMs);
+    }
     const binding = objects.get(
       key("ConfigMap", `${gatewayName}-workspace-node`, kubernetesGatewayNamespaceName(tenant.id)),
     );
@@ -1203,6 +1290,13 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     },
     command: [...RUNTIME_WRAPPER_COMMAND],
   });
+  // The node is named after the Agent, not after the revision's Pod (D85).
+  assert.equal(
+    read("Deployment", agentName).spec.template.spec.containers[0].env.find(
+      ({ name }) => name === "OPENCLAW_NODE_DISPLAY_NAME",
+    )?.value,
+    `agent-${digest(revision.agentId)}-workspace`,
+  );
   const renderedConfiguration = JSON.parse(
     read(
       "ConfigMap",
@@ -1280,6 +1374,10 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     "setupCode",
     "setupId",
   ]);
+  // The recorded node id reaches the candidate Gateway through its Agent-scoped
+  // binding and a Pod nudge in the same pass; its pod template does not change.
+  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayBeforeBinding = read("Deployment", gatewayName, gatewayNamespace);
   state.connected = true;
   assert.equal((await prepare()).ready, true);
   assert.equal(state.setupCalls, 1);
@@ -1292,22 +1390,12 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   ]);
   // The removal nudges the running Harness Pod again, with a new value, so the
   // kubelet removes the file now instead of on its periodic resync.
-  assert.equal(podPatches.length, 2);
-  const [minted, removed] = podPatches.map(
-    ({ body }) => body.metadata.annotations["openclaw.dev/workspace-node-setup"],
-  );
+  assert.equal(podPatches.length, 3);
+  const [minted, removed] = podPatches
+    .slice(0, 2)
+    .map(({ body }) => body.metadata.annotations["openclaw.dev/workspace-node-setup"]);
   assert.notEqual(minted, removed);
   assert.equal(podPatches[1].name, "agent-pod");
-  // A paired file-delivered node reconnects with its saved device token, so an
-  // expired setup is not re-minted and the code does not come back.
-  const paired = objects.get(nodeSecretKey);
-  paired.data.expiresAtMs = Buffer.from(String(Date.now() - 1)).toString("base64");
-  objects.set(nodeSecretKey, paired);
-  // The recorded node id reaches the candidate Gateway through its Agent-scoped
-  // binding and a Pod nudge; its pod template does not change.
-  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
-  const gatewayBeforeBinding = read("Deployment", gatewayName, gatewayNamespace);
-  assert.equal((await prepare()).ready, true);
   const gatewayAfterBinding = read("Deployment", gatewayName, gatewayNamespace);
   assert.deepEqual(gatewayAfterBinding.spec.template, gatewayBeforeBinding.spec.template);
   assert.equal(gatewayAfterBinding.metadata.generation, gatewayBeforeBinding.metadata.generation);
@@ -1318,8 +1406,6 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   });
   assert.equal(binding.immutable, undefined);
   assert.equal(binding.metadata.labels["openclaw.dev/agent"], revision.agentId);
-  assert.equal(objects.get(nodeSecretKey).data.setupCode, undefined);
-  assert.equal(state.setupCalls, 1, "a paired node needs no new setup");
   assert.deepEqual(
     podPatches.slice(2).map(({ name, namespace: target, body }) => ({
       name,
@@ -1334,8 +1420,15 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
       },
     ],
   );
+  // A paired file-delivered node reconnects with its saved device token, so an
+  // expired setup is not re-minted and the code does not come back.
+  const paired = objects.get(nodeSecretKey);
+  paired.data.expiresAtMs = Buffer.from(String(Date.now() - 1)).toString("base64");
+  objects.set(nodeSecretKey, paired);
   // An unchanged binding is neither rewritten nor nudged again.
   assert.equal((await prepare()).ready, true);
+  assert.equal(objects.get(nodeSecretKey).data.setupCode, undefined);
+  assert.equal(state.setupCalls, 1, "a paired node needs no new setup");
   assert.equal(podPatches.length, 3);
   // The node supervisor embeds Codex; neither it nor an OpenShell Sandbox, which
   // carries the whole command in one environment variable, nears the exec limit.
@@ -1468,33 +1561,31 @@ test("a first dedicated deploy pins its workload starts through activation", asy
   );
   markReady(agentName);
   markReady(gatewayName);
-  // The setup reaches the running Harness through its volume; the node pairs
-  // without a workload start, so this pass completes.
-  state.connected = true;
+  // The setup reaches the running Harness through its volume and the node pairs
+  // a moment later, without a workload start. The pass that delivered the setup
+  // sees the pairing and completes: no pending pass once the workloads are ready.
+  state.pairAfterSetupMs = 10;
   assert.equal(await pass(), true);
   assert.equal(pendingPasses, 1);
-  // The Gateway wrapper reports the node a moment after the nudge: activation
-  // waits for that report instead of replacing the serving Gateway.
-  state.gatewayAppliesBinding = false;
+  // That pass also handed the node to the Gateway (binding plus one Pod nudge),
+  // so the hot-apply overlaps the worker's commit and activation's own work.
+  assert.equal(state.gatewayWorkspaceNodeId, "node-1");
   let statusReads = 0;
   const clients = await driver.apiClients;
   const proxy = clients.core.connectGetNamespacedPodProxyWithPath;
   clients.core.connectGetNamespacedPodProxyWithPath = async (request) => {
     if (request.path === "openclaw/runtime/status" && request.name.startsWith("gateway-")) {
       statusReads++;
-      if (statusReads === 2) {
-        state.gatewayWorkspaceNodeId = "node-1";
-      }
     }
     return proxy(request);
   };
   await driver.activateRevision(revision, authContext(revision));
-  assert.equal(statusReads, 2);
+  assert.equal(statusReads, 1, "activation finds the Gateway's ack on its first read");
   assert.equal(state.setupCalls, 1);
   assert.equal(
     podPatches.filter(({ name }) => name === "gateway-pod").length,
     1,
-    "activation nudges the running Gateway Pod once",
+    "the running Gateway Pod is nudged once, by preparation",
   );
 
   assert.deepEqual(
@@ -1533,6 +1624,322 @@ test("a first dedicated deploy pins its workload starts through activation", asy
   assert.equal(templates.length + inPodGatewayRestarts, 2, "Harness 1 + Gateway 1");
 });
 
+// The pass that sees the node pair hands it to the Gateway. Activation still
+// waits for the Gateway's own report of that node, and does not nudge again.
+test("activation waits for the Gateway to report the node preparation handed it", async () => {
+  const { state, driver, revision, gatewayName, agentName, podPatches, prepare, markReady } =
+    dedicatedFirstDeployFixture();
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.connected = true;
+  // The kubelet has not refreshed the binding volume yet.
+  state.gatewayAppliesBinding = false;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(state.gatewayWorkspaceNodeId, undefined);
+  let statusReads = 0;
+  const clients = await driver.apiClients;
+  const proxy = clients.core.connectGetNamespacedPodProxyWithPath;
+  clients.core.connectGetNamespacedPodProxyWithPath = async (request) => {
+    if (request.path === "openclaw/runtime/status" && request.name.startsWith("gateway-")) {
+      statusReads++;
+      if (statusReads === 2) {
+        state.gatewayWorkspaceNodeId = "node-1";
+      }
+    }
+    return proxy(request);
+  };
+  await driver.activateRevision(revision, authContext(revision));
+  assert.equal(statusReads, 2);
+  assert.equal(podPatches.filter(({ name }) => name === "gateway-pod").length, 1);
+});
+
+// Activation that fails for want of the Gateway's ack is retried, and the worker
+// is serial: a Gateway that never acks gets one bounded wait per binding across
+// attempts, then a single read per attempt, like the pairing budget (D221).
+test("an unacknowledged workspace node binding costs at most one bounded wait across activations", async () => {
+  const clock = { now: 0 };
+  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
+    dedicatedFirstDeployFixture({ clock });
+  driver.delay = async (ms) => {
+    clock.now += ms;
+  };
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.connected = true;
+  state.gatewayAppliesBinding = false;
+  assert.equal((await prepare()).ready, true);
+  const attemptTimes = [];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const started = clock.now;
+    await assert.rejects(driver.activateRevision(revision, authContext(revision)), (error) => {
+      // D330: the worker records this wait under its own code.
+      assert.ok(error instanceof ActivationPendingError);
+      assert.equal(error.code, "WORKSPACE_NODE_BINDING_PENDING");
+      assert.match(error.message, /has not applied its workspace node/);
+      return true;
+    });
+    attemptTimes.push(clock.now - started);
+  }
+  assert.deepEqual(attemptTimes, [20_000, 0, 0, 0]);
+  // A late ack is still seen by the next single read.
+  state.gatewayWorkspaceNodeId = "node-1";
+  await driver.activateRevision(revision, authContext(revision));
+  assert.equal(clock.now, 20_000);
+});
+
+// A node that has not paired within the pass's wait leaves the pass pending; the
+// wait starts only once the setup exists and the Gateway is ready.
+test("a first dedicated deploy pass waits a bounded time for its node to pair", async () => {
+  const { state, driver, gatewayName, agentName, objects, prepare, markReady } =
+    dedicatedFirstDeployFixture();
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  assert.equal((await prepare()).ready, false);
+  assert.deepEqual(state.observeWaits, [], "no enrollment call before the Gateway is ready");
+  markReady(gatewayName);
+  const started = Date.now();
+  assert.equal((await prepare()).ready, false);
+  assert.ok(Date.now() - started >= driver.workspaceNodePairingWaitMs);
+  assert.deepEqual(state.observeWaits, [driver.workspaceNodePairingWaitMs]);
+  assert.equal(
+    [...objects.values()].some(
+      (object) => object.kind === "ConfigMap" && object.metadata.name.endsWith("-workspace-node"),
+    ),
+    false,
+    "no node is handed to the Gateway before it pairs",
+  );
+  state.connected = true;
+  assert.equal((await prepare()).ready, true);
+});
+
+// A deploy whose Pods cannot be placed says so instead of a generic wait (D224),
+// and one whose workloads are ready says it waits only for its node (D222).
+test("a pending dedicated deploy reports an unschedulable Pod or an unpaired node", async () => {
+  const clock = { now: 0 };
+  const { state, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture({
+    clock,
+  });
+  state.unschedulableRole = "agent";
+  const unschedulable = await prepare();
+  assert.equal(unschedulable.ready, false);
+  assert.equal(unschedulable.pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  state.unschedulableRole = undefined;
+  const starting = await prepare();
+  assert.equal(starting.ready, false);
+  assert.equal(starting.pendingReason, undefined);
+  markReady(agentName);
+  markReady(gatewayName);
+  const unpaired = await prepare();
+  assert.equal(unpaired.ready, false);
+  assert.equal(unpaired.pendingReason, "WORKSPACE_NODE_PENDING");
+  state.connected = true;
+  const ready = await prepare();
+  assert.equal(ready.ready, true);
+  assert.equal(ready.pendingReason, undefined);
+});
+
+// The worker is serial: every pass one Agent spends waiting for its node holds
+// up every other Agent's deploy. A node that never pairs gets one bounded wait
+// per setup, across all passes, then a single read per pass, as before #816 (D88).
+test("an unpaired workspace node costs at most one bounded wait across passes", async () => {
+  const clock = { now: 0 };
+  const { state, driver, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture(
+    { clock },
+  );
+  assert.equal(driver.workspaceNodePairingWaitMs, 8_000);
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  const passTimes = [];
+  for (let pass = 0; pass < 6; pass++) {
+    const started = clock.now;
+    assert.equal((await prepare()).ready, false);
+    passTimes.push(clock.now - started);
+  }
+  assert.deepEqual(state.observeWaits, [8_000, 0, 0, 0, 0, 0]);
+  assert.deepEqual(passTimes, [8_000, 0, 0, 0, 0, 0]);
+  // A late pairing is still seen by the next single read.
+  state.connected = true;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(clock.now, 8_000);
+});
+
+// The normal first deploy keeps #816's fast path: the node pairs within the
+// first ready pass's wait, which ends at the pairing, so no pass ends pending.
+test("a node that pairs within its wait completes the pass that delivered its setup", async () => {
+  const clock = { now: 0 };
+  const { state, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture({
+    clock,
+  });
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.pairAtMs = 3_000;
+  assert.equal((await prepare()).ready, true);
+  assert.deepEqual(state.observeWaits, [8_000]);
+  assert.equal(clock.now, 3_000, "the pass ends as soon as the node pairs");
+  assert.equal(state.gatewayWorkspaceNodeId, "node-1", "and hands the node to the Gateway");
+});
+
+// A partly spent budget carries over: a wait cut short (the Gateway restarted
+// mid-wait) leaves the next pass only the rest of it.
+test("a workspace node pairing budget carries over between passes", async () => {
+  const clock = { now: 0 };
+  const { state, gatewayName, agentName, prepare, markReady } = dedicatedFirstDeployFixture({
+    clock,
+  });
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.failAtMs = 5_000;
+  await assert.rejects(prepare(), /Gateway connection closed/);
+  state.failAtMs = undefined;
+  assert.equal((await prepare()).ready, false);
+  assert.equal((await prepare()).ready, false);
+  assert.deepEqual(state.observeWaits, [8_000, 3_000, 0]);
+  assert.equal(clock.now, 8_000);
+});
+
+test("a second Agent's deploy pass is not held up by another Agent's unpaired node", async () => {
+  const clock = { now: 0 };
+  const stuck = dedicatedFirstDeployFixture({ clock });
+  const fresh = dedicatedFirstDeployFixture({ clock });
+  for (const agent of [stuck, fresh]) {
+    assert.equal((await agent.prepare()).ready, false);
+    agent.markReady(agent.agentName);
+    agent.markReady(agent.gatewayName);
+  }
+  // The stuck Agent's first ready pass spends its one wait.
+  assert.equal((await stuck.prepare()).ready, false);
+  assert.equal(clock.now, 8_000);
+  // From here the single serial worker alternates between the two Agents. The
+  // fresh Agent's node pairs 2 s after its first ready pass starts.
+  fresh.state.pairAtMs = clock.now + 2_000;
+  const freshStarts = [];
+  let freshReady = false;
+  for (let round = 0; round < 4; round++) {
+    const before = clock.now;
+    assert.equal((await stuck.prepare()).ready, false);
+    assert.equal(clock.now, before, "the stuck Agent's pass does not wait again");
+    if (!freshReady) {
+      freshStarts.push(clock.now);
+      freshReady = (await fresh.prepare()).ready;
+    }
+  }
+  assert.equal(freshReady, true);
+  assert.deepEqual(freshStarts, [8_000], "the fresh Agent pairs within its first ready pass");
+  assert.equal(clock.now, 10_000);
+  assert.deepEqual(stuck.state.observeWaits, [8_000, 0, 0, 0, 0]);
+  assert.deepEqual(fresh.state.observeWaits, [8_000]);
+});
+
+// The worker is serial. A first deploy's pairing wait only saves a later pass,
+// so it ends as soon as another Agent's Work is due: the pass ends pending, the
+// other Agent's pass runs at once, and the first Agent's next pass spends the
+// rest of its budget and still completes on the pairing (D221).
+test("another Agent's due Work ends a first deploy's pairing wait at once", async () => {
+  const clock = { now: 0 };
+  const first = dedicatedFirstDeployFixture({ clock });
+  const second = dedicatedFirstDeployFixture({ clock });
+  for (const agent of [first, second]) {
+    agent.state.stepObservations = true;
+    assert.equal((await agent.prepare()).ready, false);
+    agent.markReady(agent.agentName);
+    agent.markReady(agent.gatewayName);
+  }
+  first.state.pairAtMs = 6_000;
+  second.state.pairAtMs = 1_500;
+  // The second Agent's Work comes due 1 s into the first Agent's pass.
+  const secondDueAt = 1_000;
+  const waiting = async () => clock.now >= secondDueAt;
+  const firstPass = await withComputeWorkWaiting(waiting, () => first.prepare());
+  assert.equal(firstPass.ready, false);
+  assert.equal(firstPass.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(clock.now, secondDueAt, "the second Agent's pass starts when its Work is due");
+  // Nothing else is waiting while the second Agent's pass runs: it keeps #816's
+  // fast path and completes on its own pairing.
+  const secondPass = await withComputeWorkWaiting(
+    async () => false,
+    () => second.prepare(),
+  );
+  assert.equal(secondPass.ready, true);
+  assert.equal(clock.now, 1_500);
+  assert.equal(second.state.gatewayWorkspaceNodeId, "node-1");
+  // The first Agent's next pass waits out the rest of its 8 s budget and sees
+  // its node pair at 6 s; the yielded second only cost what it actually waited.
+  const firstRetry = await withComputeWorkWaiting(
+    async () => false,
+    () => first.prepare(),
+  );
+  assert.equal(firstRetry.ready, true);
+  assert.equal(clock.now, 6_000);
+  assert.deepEqual(first.state.observeWaits, [8_000, 7_000]);
+  assert.equal(first.state.gatewayWorkspaceNodeId, "node-1");
+});
+
+// Activation's ack wait yields the same way: activation fails and is retried,
+// and the yielded time is not taken from the binding's ack budget. Waiting
+// never relaxes the ack check: a present ack is accepted on the first read and
+// an invalid status is still refused (D221).
+test("another Agent's due Work ends an activation's ack wait at once", async () => {
+  const clock = { now: 0 };
+  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
+    dedicatedFirstDeployFixture({ clock });
+  driver.delay = async (ms) => {
+    clock.now += ms;
+  };
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.connected = true;
+  state.gatewayAppliesBinding = false;
+  assert.equal((await prepare()).ready, true);
+  const clients = await driver.apiClients;
+  const proxy = clients.core.connectGetNamespacedPodProxyWithPath;
+  let ackAtMs;
+  let invalidStatus = false;
+  clients.core.connectGetNamespacedPodProxyWithPath = async (request) => {
+    if (ackAtMs !== undefined && clock.now >= ackAtMs) {
+      state.gatewayWorkspaceNodeId = "node-1";
+    }
+    const status = await proxy(request);
+    return invalidStatus && request.path === "openclaw/runtime/status"
+      ? { ...status, revisionId: "another-revision" }
+      : status;
+  };
+  const otherDueAt = clock.now + 500;
+  const waiting = async () => clock.now >= otherDueAt;
+  await assert.rejects(
+    withComputeWorkWaiting(waiting, () => driver.activateRevision(revision, authContext(revision))),
+    /has not applied its workspace node/,
+  );
+  assert.equal(clock.now, otherDueAt);
+  invalidStatus = true;
+  await assert.rejects(
+    withComputeWorkWaiting(waiting, () => driver.activateRevision(revision, authContext(revision))),
+    /Runtime status returned invalid data/,
+  );
+  invalidStatus = false;
+  assert.equal(clock.now, otherDueAt);
+  // With nothing waiting, the retry still has the rest of the 20 s budget and
+  // sees an ack that arrives 3 s later.
+  ackAtMs = clock.now + 3_000;
+  await withComputeWorkWaiting(
+    async () => false,
+    () => driver.activateRevision(revision, authContext(revision)),
+  );
+  assert.equal(clock.now, otherDueAt + 3_000);
+  // A present ack is accepted on the first read even with Work waiting.
+  const before = clock.now;
+  await withComputeWorkWaiting(
+    async () => true,
+    () => driver.activateRevision(revision, authContext(revision)),
+  );
+  assert.equal(clock.now, before);
+});
+
 test("activation fails with OpenClaw's reason when the Gateway cannot apply its workspace node", async () => {
   const { state, driver, revision, gatewayName, agentName, templates, prepare, markReady } =
     dedicatedFirstDeployFixture();
@@ -1541,9 +1948,10 @@ test("activation fails with OpenClaw's reason when the Gateway cannot apply its 
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
   state.connected = true;
-  assert.equal((await prepare()).ready, true);
-  // The wrapper wrote the node, but OpenClaw never reported file-transfer loaded.
+  // The wrapper writes the node it is handed in this pass, but OpenClaw never
+  // reports file-transfer loaded.
   state.gatewayAppliesBinding = false;
+  assert.equal((await prepare()).ready, true);
   state.gatewayWorkspaceNodeFailure = {
     code: "RELOAD_NOT_CONFIRMED",
     checkedAt: "2026-09-29T12:00:00.000Z",
@@ -1565,6 +1973,10 @@ test("activation fails with OpenClaw's reason when the Gateway cannot apply its 
   );
 });
 
+// The start-count ratchet for installs without network.pluginStatusProxySourceCidrs.
+// The second Gateway start is the price of omitting them: the development
+// launcher sets them (internal/occdev status_proxy_k3d.go), so its first deploys
+// take the single-start path pinned above.
 test("without a status proxy a dedicated Codex Gateway keeps its workspace node in the pod spec", async () => {
   const {
     state,
@@ -1594,6 +2006,11 @@ test("without a status proxy a dedicated Codex Gateway keeps its workspace node 
   await driver.activateRevision(revision, authContext(revision));
   const gateways = templates.filter(({ name }) => name === gatewayName);
   assert.equal(gateways.length, 2, "activation replaces the Gateway once");
+  assert.deepEqual(
+    templates.map(({ name }) => (name === agentName ? "harness" : name)),
+    [gatewayName, "harness", gatewayName],
+    "Harness 1 + Gateway 2",
+  );
   const activated = gateways.at(-1).template;
   assert.equal(environment(activated).OPENCLAW_WORKSPACE_NODE_ID, "node-1");
   assert.equal(environment(activated).OPENCLAW_WORKSPACE_NODE_PATH, undefined);
@@ -3945,6 +4362,207 @@ test("direct service account token is confined to the model container and exact 
   );
 });
 
+test("credential withdrawal revokes through the revision's exact Sandbox", async () => {
+  const withdrawals = [];
+  const sandboxDriver = {
+    id: "sandbox-openshell",
+    capability: "sandbox",
+    facets: ["networking"],
+    harnessResource({ namespace, revision }) {
+      return {
+        namespaceName: namespace.name,
+        resourceName: `os-${revision.id}`,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      };
+    },
+    async cleanup() {},
+  };
+  let reportedSource;
+  const credentialGatewayDriver = {
+    id: "credential-gateway",
+    capability: "credential_gateway",
+    async withdraw(context) {
+      withdrawals.push(context);
+      return { sourceId: reportedSource ?? context.sourceId, state: "revoked" };
+    },
+  };
+  const driver = new KubernetesComputeDriver(options(), { sandboxDriver, credentialGatewayDriver });
+  const namespace = kubernetesNamespaceName(tenant.id);
+  const namespaceResource = {
+    ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
+    status: { phase: "Active" },
+  };
+  let namespaceExists = true;
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespace() {
+        return { items: namespaceExists ? [structuredClone(namespaceResource)] : [] };
+      },
+      async readNamespace() {
+        if (!namespaceExists) {
+          throw Object.assign(new Error("Not found"), { statusCode: 404 });
+        }
+        return structuredClone(namespaceResource);
+      },
+    },
+  });
+  const revision = {
+    id: "rev-withdraw",
+    namespaceId: tenant.id,
+    agentId: "agent-withdraw",
+    compute: { id: driver.id, implementation: driver.implementation },
+    sandboxDriverId: sandboxDriver.id,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    createdAt: "2026-09-28T00:00:00.000Z",
+  };
+  const source = {
+    id: "cs_00000000-0000-4000-8000-000000000002",
+    namespaceId: tenant.id,
+    type: "openai",
+    driverId: credentialGatewayDriver.id,
+  };
+  const signal = AbortSignal.timeout(5_000);
+
+  // Compute hands the gateway the Sandbox provisioning created, in the Namespace's placement.
+  assert.deepEqual(await driver.withdrawCredentialSource(revision, source, signal), {
+    sourceId: source.id,
+    state: "revoked",
+  });
+  assert.equal(withdrawals[0].namespace.name, namespace);
+  assert.deepEqual(withdrawals[0].sandbox, {
+    namespaceName: namespace,
+    resourceName: "os-rev-withdraw",
+    agentId: revision.agentId,
+    revisionId: revision.id,
+  });
+  assert.equal(withdrawals[0].sourceId, source.id);
+  assert.equal(withdrawals[0].revision, revision);
+
+  // A gateway answer about another source is not evidence for this withdrawal.
+  reportedSource = "cs_00000000-0000-4000-8000-000000000003";
+  await assert.rejects(
+    driver.withdrawCredentialSource(revision, source, signal),
+    /withdrew another credential source/,
+  );
+
+  // Without the Namespace there is no Sandbox left to revoke, and the gateway is not called.
+  namespaceExists = false;
+  withdrawals.length = 0;
+  assert.deepEqual(await driver.withdrawCredentialSource(revision, source, signal), {
+    sourceId: source.id,
+    state: "absent",
+  });
+  assert.equal(withdrawals.length, 0);
+  await assert.rejects(
+    driver.withdrawCredentialSource(
+      { ...revision, compute: { id: "other-compute", implementation: driver.implementation } },
+      source,
+      signal,
+    ),
+    /another Compute Driver/,
+  );
+});
+
+test("OAuth Harness authentication requires Compute-owned dedicated Codex", () => {
+  const oauth = { ...apiKeyAuth, method: "oauth" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const configuration = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const driver = new KubernetesComputeDriver(options());
+  assert.equal(typeof driver.startHarnessDeviceAuthorization, "function");
+  assert.equal(typeof driver.pollHarnessDeviceAuthorization, "function");
+  driver.validateHarnessAuth(codex, oauth, configuration);
+  // Unsupported topologies fail at admission, before a deployment stops predecessors.
+  const sandboxDriver = {
+    id: "sandbox-openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    provisionHarness() {},
+  };
+  const sandboxed = new KubernetesComputeDriver(options(), { sandboxDriver });
+  for (const harness of [codex, { id: "openclaw", version: "1.0.0", mode: "dedicated" }]) {
+    assert.throws(
+      () =>
+        sandboxed.validateHarnessAuth(
+          harness,
+          oauth,
+          harness.id === "codex"
+            ? configuration
+            : createHarnessConfiguration("openclaw", "gpt-4o-mini"),
+        ),
+      /OAuth requires the Compute-owned dedicated Codex Harness/,
+    );
+  }
+});
+
+test("dedicated Codex admission rejects settings its Gateway entrypoint cannot rewrite", () => {
+  // The Gateway entrypoint refuses to start on these shapes; admitting them let
+  // a deployment replace a working Gateway with one that crash-looped (D201).
+  const oauth = { ...apiKeyAuth, method: "oauth" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const withCodexConfig = (config) => ({ ...base, plugins: { entries: { codex: { config } } } });
+  const driver = new KubernetesComputeDriver(options());
+  for (const accepted of [
+    base,
+    withCodexConfig({ codexDynamicToolsExclude: ["tts"] }),
+    withCodexConfig(null),
+    { ...withCodexConfig({}), cron: { enabled: true, triggers: { enabled: true } } },
+    { ...withCodexConfig({}), cron: null },
+    // Without the plugin entry the entrypoint leaves cron alone.
+    { ...base, cron: "off" },
+    {
+      ...base,
+      models: {
+        providers: {
+          Codex: { baseUrl: "https://model.example.test/v1", models: [{ id: "gpt-5" }] },
+          openai: {},
+          // Rows of other providers are not rewritten.
+          anthropic: "unchanged",
+        },
+      },
+    },
+  ]) {
+    driver.validateHarnessAuth(codex, oauth, accepted);
+  }
+  for (const [rejected, message] of [
+    [
+      withCodexConfig({ codexDynamicToolsExclude: "tts" }),
+      "plugins.entries.codex.config.codexDynamicToolsExclude must be a list",
+    ],
+    [withCodexConfig("on"), "plugins.entries.codex.config must be an object"],
+    [{ ...withCodexConfig({}), cron: "off" }, "cron must be an object"],
+    [{ ...withCodexConfig({}), cron: { triggers: true } }, "cron.triggers must be an object"],
+    [{ ...base, models: "none" }, "models must be an object"],
+    [{ ...base, models: { providers: [] } }, "models.providers must be an object"],
+    [
+      { ...base, models: { providers: { codex: "stub" } } },
+      "models.providers.codex must be an object",
+    ],
+    [
+      { ...base, models: { providers: { " OpenAI ": null } } },
+      "models.providers. OpenAI  must be an object",
+    ],
+    [
+      { ...base, models: { providers: { codex: { models: {} } } } },
+      "models.providers.codex.models must be a list of objects",
+    ],
+    [
+      { ...base, models: { providers: { openai: { models: ["gpt-5"] } } } },
+      "models.providers.openai.models must be a list of objects",
+    ],
+  ]) {
+    // Admission returns this message to the Configuration owner (D321).
+    assert.throws(
+      () => driver.validateHarnessAuth(codex, oauth, rejected),
+      (error) =>
+        error instanceof ConfigurationHarnessError &&
+        error.message ===
+          `Configuration setting ${message}: a dedicated Codex Gateway cannot apply it otherwise.`,
+    );
+  }
+});
+
 test("credential-source authentication renders no model Secret and requires the paired gateway", () => {
   const sandboxDriver = {
     id: "sandbox-openshell",
@@ -4417,6 +5035,7 @@ test("account-token authentication grants only the exact Codex revision outbound
   assert.deepEqual(policy.spec.egress[0].ports, [{ protocol: "TCP", port: 443 }]);
   assert.deepEqual(policy.spec.egress[0].to[0].ipBlock.except, [
     "10.0.0.0/8",
+    "100.64.0.0/10",
     "172.16.0.0/12",
     "192.168.0.0/16",
     "169.254.0.0/16",
@@ -5376,6 +5995,14 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
         save(value);
         return value;
       },
+      async deleteNamespacedSecret({ name, body }) {
+        assert.equal(objects.get(key("Secret", name))?.metadata.uid, body.preconditions.uid);
+        objects.delete(key("Secret", name));
+      },
+      async deleteNamespacedConfigMap({ name, body }) {
+        assert.equal(objects.get(key("ConfigMap", name))?.metadata.uid, body.preconditions.uid);
+        objects.delete(key("ConfigMap", name));
+      },
 
       async listNamespacedPod() {
         return { items: [] };
@@ -5529,12 +6156,43 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
     false,
   );
 
+  // The served predecessor's own per-revision copies (its model key and rendered
+  // configuration) exist until something retires them.
+  const revisionArtifacts = (target) => [
+    key("Secret", `harness-secrets-${suffix}-${digest(target.id)}`),
+    key("ConfigMap", `${gatewayName}-rev-${digest(target.id)}`),
+  ];
+  const execution = { name: namespace, plane: "execution" };
+  for (const [kind, name, ownership] of [
+    [
+      "Secret",
+      `harness-secrets-${suffix}-${digest(oldRevision.id)}`,
+      { ...agentOwnership, revisionId: oldRevision.id },
+    ],
+    ["ConfigMap", `${gatewayName}-rev-${digest(oldRevision.id)}`, gatewayOwnership],
+  ]) {
+    const seeded = driver.manifest("v1", kind, name, ownership, execution);
+    seeded.metadata.uid = `${name}-uid`;
+    save(seeded);
+  }
+  for (const artifact of revisionArtifacts(oldRevision)) {
+    assert.ok(objects.has(artifact), `${artifact} is seeded for the served predecessor`);
+  }
+
   // The guarded activation replaces the shared workload before model authentication
   // succeeds. Its failing startup may leave the Agent unavailable until redeploy.
   await assert.rejects(
     driver.activateRevision(replacement, authContext(replacement)),
     /gateway is not ready/i,
   );
+  // The Recreate Gateway no longer runs the predecessor, and a failed activation
+  // never reaches worker retirement, so its copies go with the re-render.
+  for (const artifact of revisionArtifacts(oldRevision)) {
+    assert.equal(objects.has(artifact), false, `${artifact} is removed once replaced`);
+  }
+  for (const artifact of revisionArtifacts(replacement)) {
+    assert.ok(objects.has(artifact), `${artifact} is kept for the activating revision`);
+  }
   const replaced = objects.get(key("Deployment", gatewayName));
   assert.equal(replaced.metadata.annotations["openclaw.dev/agent-revision-id"], replacement.id);
   assert.equal(replaced.spec.strategy.type, "Recreate");
@@ -5728,6 +6386,33 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
 
 test("embedded startup probes its selected provider and allows graceful Gateway shutdown", async (t) => {
   const nodeRequire = createRequire(import.meta.url);
+  function assertProbeStageDiagnostics(
+    lines,
+    expectedOtherLines,
+    elapsedMs,
+    expectedStages = ["prepare", "preflight", "spawn", "returned", "cleanup", "complete"],
+  ) {
+    const stageLines = lines.filter((line) => line.includes('"openclaw.model_probe_stage"'));
+    const stages = stageLines.map((line) => JSON.parse(line));
+    assert.deepEqual(
+      stages.map(({ stage }) => stage),
+      expectedStages,
+    );
+    let previousElapsedMs = 0;
+    for (const stage of stages) {
+      // Only this closed, nonsecret schema may leave the unexpected-stderr set.
+      assert.deepEqual(Object.keys(stage).sort(), ["capMs", "elapsedMs", "event", "stage"]);
+      assert.equal(stage.event, "openclaw.model_probe_stage");
+      assert.equal(stage.capMs, 110_000);
+      assert.ok(Number.isSafeInteger(stage.elapsedMs));
+      assert.ok(stage.elapsedMs >= previousElapsedMs && stage.elapsedMs <= elapsedMs);
+      previousElapsedMs = stage.elapsedMs;
+    }
+    assert.deepEqual(
+      lines.filter((line) => !stageLines.includes(line)),
+      expectedOtherLines,
+    );
+  }
   for (const [provider, model, credentialName] of [
     ["openai", "gpt-5", "OPENAI_API_KEY"],
     ["anthropic", "claude-sonnet-4-5", "ANTHROPIC_API_KEY"],
@@ -5737,6 +6422,8 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
       ["wrong provider result", "ok", "MODEL_PROBE_FAILED"],
       // OpenClaw buckets provider 401/403 and invalid-key responses as "auth".
       ["credentials rejected", "auth", "AUTHENTICATION_FAILED"],
+      // The provider's 401 to the upfront request ends the probe before OpenClaw starts.
+      ["credentials rejected upfront", undefined, "AUTHENTICATION_FAILED"],
       ["provider unavailable", "unknown", "MODEL_PROBE_FAILED"],
       ["provider timeout", "timeout", "MODEL_PROBE_TIMEOUT"],
       // The wrapper's cap ends the probe. Only CPU waiting for most of it makes
@@ -5751,6 +6438,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
       ],
     ]) {
       const accepted = failureCode === undefined;
+      const upfront = variant === "credentials rejected upfront";
       await t.test(`${provider}: ${variant}`, async () => {
         const driver = createKubernetesComputeDriver(options());
         const candidate = {
@@ -5803,6 +6491,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
             exit(code) {
               exits.push(code);
             },
+            execPath: "/usr/local/bin/node",
           },
           setTimeout(callback, delay) {
             timers.push({ callback, delay });
@@ -5862,6 +6551,10 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     environment: { ...options.env },
                     timeout: options.timeout,
                   });
+                  if (args[0] === "-e") {
+                    // The upfront request's child exits 3 only on the provider's 401.
+                    return { status: upfront ? 3 : 0 };
+                  }
                   if (variant.startsWith("cap exceeded")) {
                     return {
                       status: null,
@@ -5906,33 +6599,105 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           },
         });
         await Promise.resolve();
-        assert.equal(calls.length, 1);
+        assert.equal(calls.length, upfront ? 1 : 2);
         assert.equal(probeTemplate, "/approved-temporary/openclaw-auth-probe-");
-        assert.equal(calls[0].environment.TMPDIR, "/isolated-probe");
-        // 15 s model turn, 5 s slack, and 45 CPU-seconds at the 500m limit.
-        assert.equal(calls[0].timeout, 110_000);
-        assert.equal(calls[0].environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
-        assert.equal(calls[0].environment.SSL_CERT_FILE, "/run/openshell/ca-bundle.crt");
-        assert.equal(calls[0].args[calls[0].args.indexOf("--probe-provider") + 1], provider);
-        assert.equal(calls[0].environment[credentialName], "fixture-model-key");
-        assert.equal(
-          calls[0].environment[provider === "openai" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"],
-          undefined,
+        // The upfront request carries the credential as OpenClaw sends it to
+        // the provider's default endpoint, and nothing else from the environment.
+        const [upfrontCall, probeCall] = calls;
+        assert.equal(upfrontCall.command, "/usr/local/bin/node");
+        assert.equal(upfrontCall.timeout, 10_000);
+        assert.deepEqual(Object.keys(upfrontCall.environment).sort(), [
+          "H",
+          "NODE_EXTRA_CA_CERTS",
+          "SSL_CERT_FILE",
+          "U",
+        ]);
+        assert.equal(upfrontCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
+        assert.deepEqual(
+          [upfrontCall.environment.U, JSON.parse(upfrontCall.environment.H)],
+          provider === "openai"
+            ? [
+                "https://api.openai.com/v1/responses",
+                { authorization: "Bearer fixture-model-key", "content-type": "application/json" },
+              ]
+            : [
+                "https://api.anthropic.com/v1/messages",
+                {
+                  "x-api-key": "fixture-model-key",
+                  "anthropic-version": "2023-06-01",
+                  "content-type": "application/json",
+                },
+              ],
         );
-        assert.equal(
-          JSON.parse(files.get("/isolated-probe/openclaw.json")).agents.defaults.model,
-          `${provider}/${model}`,
-        );
+        if (!upfront) {
+          assert.equal(probeCall.environment.TMPDIR, "/isolated-probe");
+          // 15 s model turn, 5 s slack, and 45 CPU-seconds at the 500m limit.
+          assert.equal(probeCall.timeout, 110_000);
+          assert.equal(probeCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
+          assert.equal(probeCall.environment.SSL_CERT_FILE, "/run/openshell/ca-bundle.crt");
+          assert.equal(probeCall.args[probeCall.args.indexOf("--probe-provider") + 1], provider);
+          assert.equal(probeCall.environment[credentialName], "fixture-model-key");
+          assert.equal(
+            probeCall.environment[provider === "openai" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"],
+            undefined,
+          );
+          assert.equal(
+            JSON.parse(files.get("/isolated-probe/openclaw.json")).agents.defaults.model,
+            `${provider}/${model}`,
+          );
+        }
         assert.equal(started, accepted);
         assert.equal(held, !accepted);
         const phaseLines = errors.filter((line) => line.includes('"runtime.startup_phase"'));
         const probeLines = errors.filter((line) => line.includes('"openclaw.model_probe"'));
-        assert.deepEqual(
-          errors.filter((line) => !phaseLines.includes(line) && !probeLines.includes(line)),
-          accepted ? [] : ["Harness model authentication probe failed."],
-        );
         assert.equal(probeLines.length, 1);
         const probeLog = JSON.parse(probeLines[0]);
+        const otherLines = errors.filter(
+          (line) => !phaseLines.includes(line) && !probeLines.includes(line),
+        );
+        assertProbeStageDiagnostics(
+          otherLines,
+          accepted ? [] : ["Harness model authentication probe failed."],
+          probeLog.elapsedMs,
+          upfront ? ["prepare", "preflight", "cleanup", "complete"] : undefined,
+        );
+        if (provider === "openai" && accepted) {
+          // Mutate actual generated diagnostics: a permissive filter must not
+          // conceal malformed fields, secret-bearing records or unexpected logs.
+          const firstStage = JSON.parse(otherLines[0]);
+          for (const [name, line] of [
+            ["malformed JSON", '{"event":"openclaw.model_probe_stage"'],
+            ["unknown event", JSON.stringify({ ...firstStage, event: "unexpected.event" })],
+            ["unknown stage", JSON.stringify({ ...firstStage, stage: "unexpected" })],
+            ["secret field", JSON.stringify({ ...firstStage, credential: "fixture-model-key" })],
+            ["secret stage", JSON.stringify({ ...firstStage, stage: "fixture-model-key" })],
+            ["string time", JSON.stringify({ ...firstStage, elapsedMs: "fixture-model-key" })],
+            ["missing time", JSON.stringify({ ...firstStage, elapsedMs: undefined })],
+            ["null time", JSON.stringify({ ...firstStage, elapsedMs: null })],
+            ["negative time", JSON.stringify({ ...firstStage, elapsedMs: -1 })],
+            ["fractional time", JSON.stringify({ ...firstStage, elapsedMs: 0.5 })],
+            ["unsafe time", JSON.stringify({ ...firstStage, elapsedMs: Number.MAX_VALUE })],
+            ["late time", JSON.stringify({ ...firstStage, elapsedMs: probeLog.elapsedMs + 1 })],
+            ["wrong cap", JSON.stringify({ ...firstStage, capMs: 600_000 })],
+          ]) {
+            assert.throws(
+              () =>
+                assertProbeStageDiagnostics([line, ...otherLines.slice(1)], [], probeLog.elapsedMs),
+              { name: name === "malformed JSON" ? "SyntaxError" : "AssertionError" },
+              name,
+            );
+          }
+          for (const lines of [
+            otherLines.slice(1),
+            [...otherLines, otherLines[0]],
+            [otherLines[1], otherLines[0], ...otherLines.slice(2)],
+            [...otherLines, "unexpected fixture-model-key"],
+          ]) {
+            assert.throws(() => assertProbeStageDiagnostics(lines, [], probeLog.elapsedMs), {
+              name: "AssertionError",
+            });
+          }
+        }
         assert.deepEqual([probeLog.code, probeLog.capMs], [failureCode ?? "READY", 110_000]);
         assert.equal(
           probeLog.cpuWaitMs,
@@ -7826,7 +8591,8 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
   assert.equal(JSON.stringify(harness).includes("openclaw-gateway-state"), false);
   assert.equal(harness.spec.template.spec.securityContext.fsGroup, 1000);
   assert.equal(harness.spec.template.spec.securityContext.fsGroupChangePolicy, "OnRootMismatch");
-  // The Harness retains task files and generated images; it cannot mount Gateway transcripts.
+  // The Harness retains task files, generated images and Codex thread rollouts, so
+  // the Gateway's bound thread resumes after stop/start; it cannot mount Gateway transcripts.
   const workspaceMounts = harness.spec.template.spec.containers[0].volumeMounts.filter(
     ({ name }) => name === "openclaw-workspace",
   );
@@ -7841,6 +8607,12 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
       name: "openclaw-workspace",
       mountPath: "/home/node/.codex/generated_images",
       subPath: "generated-images",
+      readOnly: false,
+    },
+    {
+      name: "openclaw-workspace",
+      mountPath: "/home/node/.codex/sessions",
+      subPath: "codex-sessions",
       readOnly: false,
     },
   ]);
@@ -7865,7 +8637,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
   assert.equal(initialState.args[0].includes("/runtime-state/home"), true);
   assert.equal(initialState.args[0].includes("/runtime-temporary/tmp"), true);
   assert.match(initialState.args[0], /chmodSync\(path, 0o700\)/);
-  for (const directory of ["workspace", "generated-images"]) {
+  for (const directory of ["workspace", "generated-images", "codex-sessions"]) {
     assert.equal(initialState.args[0].includes(`/harness-workspace-state/${directory}`), true);
   }
   // Pod and AgentRevision replacement keep node credentials in one Agent
@@ -7948,7 +8720,7 @@ test("runtime node selector schedules gateways and their private-state initializ
   assert.equal(pod.initContainers[0].name, "prepare-private-state");
 });
 
-test("Harness claim reuse retains owned RWO and RWX storage without mutation and rejects foreign or invalid claims", async () => {
+test("Harness claim reuse retains owned RWO storage without mutation and rejects RWX, foreign or invalid claims", async () => {
   const driver = createKubernetesComputeDriver(options());
   const ownership = { namespaceId: tenant.id, agentId: "agent-workspace-ownership" };
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
@@ -7968,39 +8740,41 @@ test("Harness claim reuse retains owned RWO and RWX storage without mutation and
       },
     },
   });
-  for (const mode of ["ReadWriteOnce", "ReadWriteMany"]) {
-    observed = structuredClone(desired);
-    observed.metadata.uid = "retained-workspace";
-    observed.spec.accessModes = [mode];
-    await driver.reconcile(desired, ownership, namespace);
-    assert.deepEqual(
-      mutations,
-      [],
-      "compatible workspace claims must never be patched or replaced",
-    );
-    for (const mutate of [
-      (claim) => {
-        claim.metadata.annotations["openclaw.dev/agent-id"] = "foreign";
-      },
-      (claim) => {
-        claim.spec.accessModes = ["ReadOnlyMany"];
-      },
-      (claim) => {
-        claim.spec.volumeMode = "Block";
-      },
-      (claim) => {
-        claim.spec.resources.requests.storage = "1Gi";
-      },
-    ]) {
-      const valid = structuredClone(observed);
-      mutate(observed);
-      await assert.rejects(driver.reconcile(desired, ownership, namespace), /Refusing/);
-      assert.deepEqual(mutations, []);
-      observed = valid;
-    }
-    await driver.deleteHarnessWorkspaceClaim(ownership, namespace);
-    assert.deepEqual(mutations.pop().body.preconditions, { uid: "retained-workspace" });
+  observed = structuredClone(desired);
+  observed.metadata.uid = "retained-workspace";
+  await driver.reconcile(desired, ownership, namespace);
+  assert.deepEqual(mutations, [], "compatible workspace claims must never be patched or replaced");
+  for (const mutate of [
+    (claim) => {
+      claim.spec.accessModes = ["ReadWriteMany"];
+    },
+    (claim) => {
+      claim.spec.accessModes = ["ReadWriteOnce", "ReadWriteMany"];
+    },
+    (claim) => {
+      claim.metadata.annotations["openclaw.dev/agent-id"] = "foreign";
+    },
+    (claim) => {
+      claim.spec.accessModes = ["ReadOnlyMany"];
+    },
+    (claim) => {
+      claim.spec.volumeMode = "Block";
+    },
+    (claim) => {
+      claim.spec.resources.requests.storage = "1Gi";
+    },
+  ]) {
+    const valid = structuredClone(observed);
+    mutate(observed);
+    await assert.rejects(driver.reconcile(desired, ownership, namespace), /Refusing/);
+    // Reuse and final deletion enforce the same storage contract. Neither may
+    // modify an unsupported or foreign claim.
+    await assert.rejects(driver.deleteHarnessWorkspaceClaim(ownership, namespace), /Refusing/);
+    assert.deepEqual(mutations, []);
+    observed = valid;
   }
+  await driver.deleteHarnessWorkspaceClaim(ownership, namespace);
+  assert.deepEqual(mutations.pop().body.preconditions, { uid: "retained-workspace" });
 });
 
 test("private gateway claim reuse and deletion verify exact ownership and storage before mutation", async () => {
@@ -9497,7 +10271,7 @@ test("retirement preserves active storage and node routing and deletes exact own
 
 // These fixtures substitute Kubernetes transport only. Preparation, ownership, private delivery,
 // redaction, readiness, and completed-payload retention run through the production driver.
-function workspaceSetupFixture(embedded, runtime = true, network = undefined) {
+function workspaceSetupFixture(embedded, runtime = true, network = undefined, computeOptions = {}) {
   const state = { ready: false, secretFailure: false, failedInitializer: false };
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -9516,6 +10290,7 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined) {
       runtime: runtime
         ? { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" }
         : undefined,
+      ...computeOptions,
     }),
     {
       nodeEnrollment: {
@@ -9801,6 +10576,318 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined) {
   return { driver, revision, namespace, objects, records, state, setup, context };
 }
 
+for (const dualCluster of [false, true]) {
+  test(`Kubernetes ${dualCluster ? "two-cluster" : "single-cluster"} OAuth handoff consumes the source before native startup and reuses private storage`, async () => {
+    const { driver, revision, namespace, objects, records, state, context } = workspaceSetupFixture(
+      false,
+      true,
+      undefined,
+      dualCluster
+        ? {
+            executionCluster: {
+              authentication: { mode: "kubeconfig", kubeconfigPath, context: "execution-cluster" },
+              harnessRouting: {
+                ...gatewayRouting,
+                gatewayName: "harnesses",
+                hostname: "harness.example.test",
+              },
+              network: {
+                dns: options().network.dns,
+                harnessEndpointCidrs: ["192.0.2.2/32"],
+                gatewayEndpointCidrs: ["192.0.2.1/32"],
+                pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+              },
+            },
+          }
+        : {},
+    );
+    if (dualCluster) {
+      // Distinct transports reject requests sent to the wrong cluster. The production Driver
+      // must mutate the source on control while seeding and removing workloads on execution.
+      const transport = await driver.apiClients;
+      const scoped = (namespaceName) =>
+        Object.fromEntries(
+          Object.entries(transport).map(([group, methods]) => [
+            group,
+            Object.fromEntries(
+              Object.entries(methods).map(([method, invoke]) => [
+                method,
+                (...args) => {
+                  const request = args[0];
+                  const target =
+                    request?.namespace ??
+                    request?.metadata?.namespace ??
+                    request?.body?.metadata?.namespace;
+                  if (target !== undefined) {
+                    assert.equal(
+                      target,
+                      namespaceName,
+                      `${group}.${method} used the wrong cluster`,
+                    );
+                  }
+                  return invoke(...args);
+                },
+              ]),
+            ),
+          ]),
+        );
+      driver.apiClients = Promise.resolve(scoped(kubernetesGatewayNamespaceName(tenant.id)));
+      driver.executionApiClients = Promise.resolve(scoped(namespace));
+    }
+    const sourceKey = stageReadyOAuthSource(objects, revision, context);
+
+    // Only the trusted seed writer may run while OCE still holds a usable bundle.
+    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+    assert.equal(
+      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+    const bootstrap = [...objects.values()].find(
+      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("oauth-bootstrap-"),
+    );
+    assert.ok(bootstrap);
+    const seedPod = bootstrap.spec.template.spec;
+    assert.equal(seedPod.automountServiceAccountToken, false);
+    // Containment rests on the missing profile label: namespace default-deny then applies.
+    assert.equal(
+      bootstrap.spec.template.metadata.labels["openclaw.dev/network-profile"],
+      undefined,
+    );
+    assert.equal(seedPod.containers[0].securityContext.readOnlyRootFilesystem, true);
+    assert.deepEqual(seedPod.containers[0].securityContext.capabilities.drop, ["ALL"]);
+    // The process holding the seed sees only codex-home, never the rest of the Harness claim.
+    const seedClaim = seedPod.volumes.find(({ persistentVolumeClaim }) => persistentVolumeClaim);
+    const claimMounts = seedPod.containers[0].volumeMounts.filter(
+      ({ name }) => name === seedClaim.name,
+    );
+    assert.deepEqual(claimMounts, [
+      { name: seedClaim.name, mountPath: "/auth", subPath: "codex-home" },
+    ]);
+    assert.equal(
+      seedPod.containers[0].env.find(({ name }) => name === "CODEX_HOME").value,
+      "/auth",
+    );
+    assert.match(
+      seedPod.containers[0].readinessProbe.exec.command[2],
+      /"\/auth\/\.oce-oauth\.json"/,
+    );
+    // Only a credential-free init step sees the claim root, to create codex-home as uid 1000
+    // (a kubelet-created subPath is root-owned and world-writable).
+    assert.deepEqual(
+      seedPod.initContainers.map(({ name }) => name),
+      ["prepare-oauth-home"],
+    );
+    const [prepare] = seedPod.initContainers;
+    assert.deepEqual(prepare.volumeMounts, [
+      { name: seedClaim.name, mountPath: "/harness-workspace-state" },
+    ]);
+    assert.equal(prepare.env, undefined);
+    assert.match(prepare.args[0], /chmodSync\(path, 0o700\)/);
+    assert.match(prepare.args[0], /isDirectory\(\) === false/);
+    assert.equal(prepare.securityContext.readOnlyRootFilesystem, true);
+    assert.deepEqual(prepare.securityContext.capabilities.drop, ["ALL"]);
+    assert.equal(
+      records.some(
+        ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
+      ),
+      false,
+    );
+
+    await assert.rejects(
+      driver.prepareRevision(
+        { ...revision, agentId: `${revision.agentId}-other` },
+        { harnessAuth: context.harnessAuth },
+      ),
+      /OAuth credentials belong to another Agent/,
+    );
+
+    // Stopping an unfinished handoff removes both seed objects but retains the claimed
+    // source, so the same login can resume without another authorization exchange.
+    await driver.stopRevision(revision);
+    assert.equal(
+      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+      false,
+    );
+    assert.equal(
+      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+      "claimed",
+    );
+    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+    for (const kind of ["Deployment", "Secret"]) {
+      assert.ok(
+        [...objects.values()].some(
+          (object) => object.kind === kind && object.metadata.name.startsWith("oauth-bootstrap-"),
+        ),
+      );
+    }
+
+    // Transport reports the seed writer ready; production preparation must clear the source first.
+    state.ready = true;
+    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+    const consumed = objects.get(sourceKey);
+    const envelope = JSON.parse(Buffer.from(consumed.data.value, "base64"));
+    assert.equal(envelope.phase, "consumed");
+    assert.equal(envelope.agentId, revision.agentId);
+    assert.equal(envelope.credential, undefined);
+    assert.equal(envelope.privateState, undefined);
+    const consumeIndex = records.findIndex(
+      ({ kind, metadata }) =>
+        kind === "Secret" && metadata.annotations?.["openclaw.dev/oauth-phase"] === "consumed",
+    );
+    const launchIndex = records.findIndex(
+      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
+    );
+    assert.ok(consumeIndex >= 0 && consumeIndex < launchIndex);
+    assert.equal(
+      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+      false,
+    );
+    const harness = records[launchIndex];
+    assert.equal(
+      harness.spec.template.metadata.labels["openclaw.dev/network-profile"],
+      "broad-egress-v1",
+    );
+    const pod = harness.spec.template.spec;
+    assert.equal(
+      pod.initContainers
+        .find(({ name }) => name === "prepare-private-state")
+        .args[0].includes("codex-home"),
+      false,
+    );
+    const native = pod.containers[0];
+    assert.equal(native.env.find(({ name }) => name === "CODEX_LOGIN_MODE").value, "oauth");
+    assert.equal(
+      native.env.some(({ name }) => ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"].includes(name)),
+      false,
+    );
+    const authMount = native.volumeMounts.find(
+      ({ mountPath }) => mountPath === "/home/node/.codex",
+    );
+    assert.equal(authMount.subPath, "codex-home");
+    // OAuth keeps thread rollouts inside codex-home, which a new OAuth source empties;
+    // a separate rollout directory would outlive that reset, so it is neither mounted nor kept.
+    assert.equal(
+      native.volumeMounts.some(({ subPath }) => subPath === "codex-sessions"),
+      false,
+    );
+    assert.match(
+      pod.initContainers.find(({ name }) => name === "prepare-private-state").args[0],
+      /rmSync\("\/harness-workspace-state\/codex-sessions", \{ recursive: true, force: true \}\)/,
+    );
+    const claimName = pod.volumes.find(({ name }) => name === authMount.name).persistentVolumeClaim
+      .claimName;
+    assert.equal(
+      envelope.volumeUid,
+      objects.get(`PersistentVolumeClaim:${namespace}:${claimName}`).metadata.uid,
+    );
+    const gateway = records.find(
+      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
+    );
+    assert.equal(
+      gateway.spec.template.spec.volumes.some(({ name }) => name === authMount.name),
+      false,
+    );
+
+    // A later revision has no usable OCE bundle: it selects the same durable native generation.
+    const later = { ...revision, id: `${revision.id}-next`, revision: revision.revision + 1 };
+    const previousWrites = records.length;
+    assert.equal((await driver.prepareRevision(later, context)).ready, true);
+    assert.equal(
+      records
+        .slice(previousWrites)
+        .some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+      false,
+    );
+    const laterHarness = records
+      .slice(previousWrites)
+      .find(({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"));
+    assert.equal(
+      laterHarness.spec.template.spec.volumes.find(({ name }) => name === authMount.name)
+        .persistentVolumeClaim.claimName,
+      claimName,
+    );
+
+    // Losing/replacing the volume must fail closed; the consumed source cannot restore stale tokens.
+    objects.get(`PersistentVolumeClaim:${namespace}:${claimName}`).metadata.uid =
+      "replacement-volume";
+    await assert.rejects(
+      driver.prepareRevision(later, context),
+      /require reconnect after storage loss/,
+    );
+    assert.equal(
+      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+      false,
+    );
+  });
+}
+
+function stageReadyOAuthSource(objects, revision, context) {
+  revision.harnessAuth = { ...apiKeyAuth, method: "oauth" };
+  context.harnessAuth = authContext(revision).harnessAuth;
+  const sourceKey = `Secret:${context.harnessAuth.backendRef.namespaceName}:occ-model-key`;
+  const source = objects.get(sourceKey);
+  source.metadata.annotations = {
+    "openclaw.dev/namespace-id": tenant.id,
+    "openclaw.dev/secret-id": apiKeyAuth.source.id,
+    "openclaw.dev/secret-driver-id": apiKeyAuth.secretDriverId,
+  };
+  source.data.value = Buffer.from(
+    JSON.stringify({
+      kind: "harness_device_authorization",
+      version: 1,
+      actorId: "admin",
+      namespaceId: tenant.id,
+      harnessId: "codex",
+      phase: "ready",
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      credential: JSON.stringify({
+        version: 1,
+        provider: "codex",
+        state: "ready",
+        auth: {
+          auth_mode: "chatgpt",
+          tokens: {
+            id_token: "test-id",
+            access_token: "test-access",
+            refresh_token: "test-refresh",
+          },
+        },
+      }),
+    }),
+  ).toString("base64");
+  return sourceKey;
+}
+
+test("Kubernetes OAuth source consumed by one Agent cannot start a second Agent", async () => {
+  const { driver, revision, objects, records, state, context } = workspaceSetupFixture(false, true);
+  const sourceKey = stageReadyOAuthSource(objects, revision, context);
+  state.ready = true;
+  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  const consumed = structuredClone(objects.get(sourceKey));
+  assert.equal(consumed.metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+
+  // Admission does not enforce one Agent per login; preparation is the fence.
+  const otherAgentId = `${revision.agentId}-other`;
+  const other = { ...revision, agentId: otherAgentId, id: `${revision.id}-other` };
+  const writes = records.length;
+  await assert.rejects(
+    driver.prepareRevision(other, { harnessAuth: context.harnessAuth }),
+    /OAuth credentials belong to another Agent/,
+  );
+  // No Harness, seed writer, or seed Secret is created for the second Agent.
+  assert.deepEqual(
+    records
+      .slice(writes)
+      .filter(({ kind }) => kind === "Deployment" || kind === "Secret")
+      .map(({ kind, metadata }) => `${kind}/${metadata.name}`),
+    [],
+  );
+  assert.deepEqual(objects.get(sourceKey), consumed);
+  // The owning Agent keeps its generation.
+  const later = { ...revision, id: `${revision.id}-next`, revision: revision.revision + 1 };
+  assert.equal((await driver.prepareRevision(later, context)).ready, true);
+});
+
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} setup stays private and retains only its completion guard`, async () => {
     const { driver, revision, objects, records, state, setup, context } =
@@ -9835,6 +10922,9 @@ for (const embedded of [true, false]) {
         () => driver.harnessRequirementsFromDeployment(harness, "api_key"),
         /cannot deliver workspace initialization/,
       );
+      // Leaving OAuth removes the persisted personal login before the non-OAuth Harness starts.
+      const privateState = pod.initContainers.find(({ name }) => name === "prepare-private-state");
+      assert.match(privateState.args[0], /rmSync\("\/harness-workspace-state\/codex-home"/);
     }
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
     assert.equal(initializer.image, driver.options.images.gateway);
@@ -11046,7 +12136,13 @@ test("ordinary embedded and dedicated policy callers retain exact model and Harn
       {
         ipBlock: {
           cidr: "0.0.0.0/0",
-          except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"],
+          except: [
+            "10.0.0.0/8",
+            "100.64.0.0/10",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+          ],
         },
       },
     ],
@@ -11895,6 +12991,32 @@ test("Kubernetes runtime log and Event 403s become the typed cluster RBAC error"
     fixture.request("gateway", { previous: true }),
   );
   assert.deepEqual(empty.lines, []);
+});
+
+test("Kubernetes runtime log reads drop kubelet's untimestamped log-unavailable answer", async () => {
+  const fixture = runtimeLogDriverFixture();
+  // While the container restarts, kubelet answers 200 with its own error line, which has
+  // no timestamp. It is not container output.
+  fixture.state.logs.gateway =
+    "unable to retrieve container logs for containerd://50c25aa8e1ba378edb6953635f4b49e376f6802d3d9a49775772c89845d8a7e0";
+  const restarting = await fixture.driver.readAgentRuntimeLogs(
+    fixture.binding,
+    fixture.request("gateway", { previous: true }),
+  );
+  assert.deepEqual(restarting.lines, []);
+  // The same text printed by the container carries a timestamp and stays.
+  fixture.state.logs.gateway =
+    "2026-09-30T12:00:00Z unable to retrieve container logs for containerd://abc\n";
+  const printed = await fixture.driver.readAgentRuntimeLogs(
+    fixture.binding,
+    fixture.request("gateway", { previous: true }),
+  );
+  assert.deepEqual(printed.lines, [
+    {
+      time: "2026-09-30T12:00:00Z",
+      raw: "unable to retrieve container logs for containerd://abc",
+    },
+  ]);
 });
 
 // A first embedded deploy that never became ready (for example rejected model

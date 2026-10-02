@@ -11,7 +11,7 @@ Harness never receives the real model key. It implements the
 **This Driver does not make OpenShell a supported production path.** It removes
 the model API key from the list of [upstream blockers](openshell-sandbox.md#current-upstream-preconditions);
 the app-server token, workload identity, workspace mounts, plugin-runtime files,
-and exposed-route authorization still fail closed on stock OpenShell `v0.1.0`.
+and exposed-route authorization still fail closed on stock OpenShell `v0.1.3-pre.1`.
 
 ## Configure the Driver
 
@@ -94,6 +94,13 @@ Workspace:
 `sourceStatus` reports `ready` for an owned provider, `absent` when it is
 missing, and `failed` when a provider with that name is not owned by the source.
 
+`updateSource` requires the existing provider to be OCC-owned for the exact
+source, then calls `UpdateProvider` with the new credential values.
+`UpdateProvider` merges non-empty values into the provider, so the driver
+rejects an empty value rather than silently keep the old one. OpenShell gives
+the new value only to processes started after the update, so a running Harness
+keeps the previous value until it restarts.
+
 `removeSource` deletes the owned provider and confirms that it is gone. When no
 provider of the profile's type remains, it also deletes the profile, because
 OpenShell cannot delete a Workspace that still holds profiles.
@@ -102,7 +109,13 @@ For a revision, `attachForRevision` returns each source's provider name. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
-`pending`.
+`pending`. `withdraw` calls `DetachSandboxProvider` for the revision's Sandbox,
+then reads the status of that detach receipt. Only `REVOKED` reports `revoked`:
+the Sandbox's placeholders then stop resolving, even in running processes.
+OpenShell reports `REVOKED` only after the Sandbox supervisor reports a running
+process with the provider removed. A Sandbox with no running process, for
+example one still provisioning or crash-looping, reports `WaitingForProcess`,
+which stays `pending`. A missing Sandbox reports `absent`.
 
 In the running Sandbox, the Harness environment holds only an
 `openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
@@ -151,8 +164,9 @@ revision:
 
 ## Limits
 
-- `updateSource`, `rotateSource`, and `withdraw` fail with "not supported yet".
-  Changing a key requires a new source and a new deployment.
+- `rotateSource` fails with "not supported yet": the `openai` type is static,
+  with nothing for the gateway to refresh. A running Agent uses an updated key
+  only after its next deployment.
 - Only the `openai` API-key type exists. ChatGPT-account sign-in and other
   OpenShell source types remain unavailable.
 - Only one OpenShell Backend can be configured.

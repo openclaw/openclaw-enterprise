@@ -216,8 +216,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "new",
+      "level": "debug",
+      "message": "span new fs.read_file",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -232,8 +232,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "enter",
+      "level": "debug",
+      "message": "span enter fs.read_file",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -248,8 +248,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "exit",
+      "level": "debug",
+      "message": "span exit fs.read_file",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -264,8 +264,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "close",
+      "level": "debug",
+      "message": "span close fs.read_file",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -280,8 +280,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "new",
+      "level": "debug",
+      "message": "span new list_models",
       "subsystem": "codex_models_manager::manager"
     },
     {
@@ -296,8 +296,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "enter",
+      "level": "debug",
+      "message": "span enter list_models",
       "subsystem": "codex_models_manager::manager"
     },
     {
@@ -312,8 +312,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "exit",
+      "level": "debug",
+      "message": "span exit list_models",
       "subsystem": "codex_models_manager::manager"
     },
     {
@@ -328,8 +328,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "close",
+      "level": "debug",
+      "message": "span close list_models",
       "subsystem": "codex_models_manager::manager"
     },
     {
@@ -360,8 +360,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "new",
+      "level": "debug",
+      "message": "span new fs.get_metadata",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -376,8 +376,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "enter",
+      "level": "debug",
+      "message": "span enter fs.get_metadata",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -392,8 +392,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "exit",
+      "level": "debug",
+      "message": "span exit fs.get_metadata",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {
@@ -408,8 +408,8 @@
       },
       "contentClass": "operational",
       "kind": "codex",
-      "level": "info",
-      "message": "close",
+      "level": "debug",
+      "message": "span close fs.get_metadata",
       "subsystem": "codex_exec_server::local_file_system"
     },
     {

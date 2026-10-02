@@ -5,8 +5,8 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { request } from "node:https";
 
-const openShellVersion = "0.1.0";
-const openShellRevision = "496ebba293f5cc2bb2753444dddd534f0b4aeb6a";
+const openShellVersion = "0.1.3-pre.1";
+const openShellRevision = "dde8a9a57f34f9d998618b3d35821608165c980f";
 const agentSandboxVersion = "v0.5.2";
 const kubectlVersion = "v1.36.4";
 const k3sImage =
@@ -15,12 +15,12 @@ const openShellChartArchive = `helm-chart-${openShellVersion}.tgz`;
 const openShellWorkspaceChartArchive = `openshell-workspace-${openShellVersion}.tgz`;
 const openShellSourceArchive = `openshell-v${openShellVersion}.tar.gz`;
 const openShellSourceRoot = `OpenShell-${openShellVersion}`;
-const openShellSourceSha256 = "f2f85978af532511b9c6355e2baf3ce91a226e3badecc98578413d0ac7958cd7";
+const openShellSourceSha256 = "b140c4b6ee108ed968ac69f277ba937637ed660bdb1d536129ae5c3fcab48c4b";
 const agentSandboxManifestSha256 =
   "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b";
-const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellRevision}@sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39`;
-const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellRevision}@sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65`;
-const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellRevision}@sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f`;
+const openShellGatewayImage = `ghcr.io/nvidia/openshell/gateway:${openShellRevision}@sha256:7d03ee5b949f06fd3a3244b495c4aa07fb8720c16977c9da3f1ecdd966e84c28`;
+const openShellSandboxImage = `ghcr.io/nvidia/openshell/sandbox:${openShellRevision}@sha256:7a7fd8c765fd19cbddd61a525d08a73ce37cdbe999078f385e2892e659d684bd`;
+const openShellSupervisorImage = `ghcr.io/nvidia/openshell/supervisor:${openShellRevision}@sha256:406d9da06b506ec67993754608962f568aeffeae918ed7df0c84ba19cd904124`;
 const podSecurityAdmissionConfigName = "openshell-pod-security-admission.yaml";
 const podSecurityAdmissionContainerPath = `/etc/openclaw-ci/${podSecurityAdmissionConfigName}`;
 

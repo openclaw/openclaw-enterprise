@@ -55,7 +55,7 @@
         "name": "event",
         "label": "Event",
         "type": "custom",
-        "query": "http.completed,http.unexpected_error,worker.completed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,listening,startup-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,authentication.sign-in-limit-warning,authentication.sign-in-limited,gateway.operational,codex.operational,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
+        "query": "http.completed,http.unexpected_error,worker.completed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,listening,startup-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,authentication.sign-in-limit-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,gateway.operational,gateway.startup_failed,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
         "includeAll": true,
         "allValue": ".*",
         "multi": false,
@@ -160,13 +160,33 @@
             "selected": false
           },
           {
+            "text": "authentication.provider-unavailable-warning",
+            "value": "authentication.provider-unavailable-warning",
+            "selected": false
+          },
+          {
             "text": "gateway.operational",
             "value": "gateway.operational",
             "selected": false
           },
           {
+            "text": "gateway.startup_failed",
+            "value": "gateway.startup_failed",
+            "selected": false
+          },
+          {
             "text": "codex.operational",
             "value": "codex.operational",
+            "selected": false
+          },
+          {
+            "text": "codex.turn",
+            "value": "codex.turn",
+            "selected": false
+          },
+          {
+            "text": "codex.tool_call",
+            "value": "codex.tool_call",
             "selected": false
           },
           {

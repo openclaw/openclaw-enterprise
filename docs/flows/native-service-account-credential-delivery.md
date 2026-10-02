@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-28
-last_updated_session: authoring-run/3b7cc615-9e7b-416a-aec7-fe13c38cace1
+updated: 2026-09-30
+last_updated_session: codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
 # Harness Authentication Binding Flow
@@ -16,6 +16,9 @@ at runtime authentication and the existing guarded activation handoff. Issuance
 and source storage retain their existing owners. With `{ "method": "runtime" }`,
 the operator supplies credentials directly on an SSH host instead; OCC freezes
 only the method and performs gateway readiness without model authentication.
+
+Codex OAuth device login and its one-time credential handoff are **Experimental**;
+see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
 
 ## Entry Points
 
@@ -33,6 +36,10 @@ only the method and performs gateway readiness without model authentication.
 ```mermaid
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
+  DA["Complete device login in OCE"] --> B
+  G -->|dedicated OAuth| OA["Claim source and copy bundle to private disk"]
+  OA --> OB["Consume source and remove seed before native start"]
+  OB --> J
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
   S --> T["Check gateway readiness; model auth remains unverified"]
@@ -57,7 +64,24 @@ graph TD
 
 ## Execution Trace
 
-### 1. Save one source without issuing credentials
+### 1. Acquire or select one credential source
+
+`packages/occ/src/index.ts:OpenClawController.startAgentDeviceAuthorization`,
+`pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
+
+Device login persists actor, exact Namespace/optional Agent scope, provider state,
+and phase inside the selected Secret backend. PostgreSQL stores only the Secret
+reference. The selected Compute Driver owns the provider protocol in
+`apps/controller/src/drivers/compute/device-auth.ts:startHarnessDeviceAuthorization`
+and `pollHarnessDeviceAuthorization`. A successful exchange stores a complete
+native bundle; HTTP responses expose only the reference and device instructions.
+
+Each poll verifies current scope and Secret authority. Secret compare-and-swap
+claims one exchange, so concurrent polls cannot consume the same code. A late
+response cannot overwrite cancellation. Unknown exchange outcomes require a new
+login. Local discard never invokes upstream logout or revocation. A ready session
+can supply plugin discovery through the existing authorized catalog path before
+handoff; the Plugin Driver extracts native access and account metadata.
 
 Before saving, Console can call the selected Compute Driver's
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
@@ -72,7 +96,7 @@ catalog. Discovery does not prove that a model call will succeed.
 `authorizeHarnessAuthSource`
 
 Creation omission stores `null`; PATCH omission preserves the binding and explicit
-`null` clears it. API-key and `codex_pat` sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
+`null` clears it. API-key, `codex_pat`, and OAuth sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
 needs exact Secret `operate`; a ChatGPT binding needs exact account `read`.
 Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
@@ -94,7 +118,9 @@ reference and Driver identity. For a ChatGPT account, it verifies the issued
 access-token reference and private Backend, member Driver, and workspace
 ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
-with `runtime`; Kubernetes continues to require managed authentication.
+with `runtime`; Kubernetes continues to require managed authentication. It
+admits OAuth only for Compute-owned dedicated Codex without a Sandbox Driver,
+so an unsupported binding fails before predecessors stop.
 
 A runtime revision records only `{ "method": "runtime" }`. Host credential
 changes can affect that revision after restart without redeployment; see the
@@ -161,8 +187,17 @@ stdin; managed account login forces the admitted workspace. Direct service accou
 inputs and failed login prevent app-server startup. A bounded native turn against
 the primary model must then complete successfully. The probe ignores user rules
 and configuration, disables execution and external tools, and applies read-only
-filesystem policy without approval grants. Tool events fail the probe. Login
-state remains in the bounded ephemeral home.
+filesystem policy without approval grants. Tool events fail the probe. API-key and service-account login
+state remains in the bounded ephemeral home; OAuth reuses the persistent bundle
+described below.
+
+The dedicated wrapper retains `APP_SERVER_TOKEN` for local plugin
+authentication, but omits it from the environments of `codex login` and
+`codex app-server`. The app-server listener receives the current token's
+SHA-256 digest. When plugin status is enabled, the wrapper derives that token
+from the Agent revision and startup identity before hashing it. The token
+remains in the Pod; filtering child environments does not isolate same-UID
+processes.
 
 `startAuthenticatedCodex` gives `probeCodexAuthentication` a maximum of two
 attempts within one monotonic 61-second budget. Only the subprocess's
@@ -197,8 +232,41 @@ unchanged until preparation: deploy each
 consumer, verify a real turn, then revoke the previous key upstream. Revision
 history cannot restore historical Secret values.
 
+### 6. Transfer OAuth refresh ownership once
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareOAuthCredentials`,
+`removeOAuthBootstrap`
+
+After dedicated predecessors stop, Compute claims the source Secret with an atomic
+resource-version update, binding its immutable UID to the Agent and PVC UID.
+Source reads and updates use the control-plane Kubernetes client. The seed Secret,
+bootstrap Deployment, and private PVC use the resolved execution-plane namespace
+and client, including during bootstrap cleanup.
+A bootstrap-only Deployment runs
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT`
+and writes native auth plus a generation receipt to the private disk. Repeating
+that generation preserves the current bundle. An explicitly selected new source
+can replace it after predecessor termination: the script empties `codex-home`,
+writes through exclusive temporaries, and re-reads both files before readiness.
+A later non-OAuth revision's private-state init container removes `codex-home`.
+
+Compute observes bootstrap readiness, replaces the original Secret value with a
+consumed marker, then removes the seed Secret and waits for bootstrap Pods to
+terminate. Only then can Codex start. Its OAuth startup branch opens existing
+auth, validates the receipt, and performs the ordinary model probe. Native refresh
+writes the same persistent file. Later revisions retain the source and reopen disk;
+a missing file or changed PVC fails with reconnect required.
+
+This deliberately scoped launch path defers the token broker, which is separate
+work in progress. OCE neither refreshes a consumed bundle nor restores its seed.
+The source seal prevents ordinary Secret updates from resetting custody.
+
 ## Debugging and Verification
 
+- `node --test tests/conformance/plugin-compute.test.mjs` checks the filtered
+  Codex child environments, the startup-derived listener hash, and the wrapper's
+  retained token. The runtime-image startup test checks the native Codex shell
+  without a provider turn.
 - [Container launcher tests](../testing/docker.md#verify-codex-startup-probe-recovery)
   execute the generated launcher with a fixture CLI, real process timeouts,
   termination, and status reads. They prove recovery control flow, not provider
@@ -233,7 +301,21 @@ history cannot restore historical Secret values.
 
 ## Changelog
 
+- 2026-09-30 17:30: Preserve persistent OAuth startup alongside filtered Codex child environments in the merge integration. (codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - c724fb7fee3790d9c122eb7dc2563869bad4a56e)
+
+- 2026-09-30 23:49: Document the dedicated Codex transport-token child boundary in the accompanying change. (authoring-run/134e3f48-c97b-43d0-93ea-84497c29c940 - 704da0b47ea1973e4a9e7d18ef13d44414691eda)
+
+- 2026-09-30 17:23: Remove the Installation opt-in for Codex device login while retaining Experimental status and topology checks in the accompanying change. (codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 9ae40ce59eadfd03d52c78086de92f0034dd9974)
+
+- 2026-09-30 04:00: Record OAuth opt-in, admission topology check, clean reseed, and codex-home removal on method change. (aligner-524 - 591f553f6)
+
+- 2026-09-29 03:12: Preserve persistent OAuth startup alongside bounded model-probe timeout recovery in the merge integration. (codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 64610f19dfec8996acab483c7bb4916be36a31a1)
+
+- 2026-09-29 03:01: Keep OAuth source custody on control and bootstrap storage on execution when integrating explicit Kubernetes namespace addresses. (codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 7f02154e282919a033f7600daaf9f86972d21ac2)
+
 - 2026-09-28 18:45: Document bounded Codex model-probe recovery and sanitized attempt evidence in the accompanying change. (authoring-run/3b7cc615-9e7b-416a-aec7-fe13c38cace1 - a14435c81e0d4020dd24568babddf95aba533da7)
+
+- 2026-09-28 04:28: Add device acquisition, catalog use, and one-time persistent OAuth handoff in the accompanying change. (codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - ae31581574744bea2745066f189eea6e826fe823)
 
 - 2026-09-23 12:22: Move canonical credential sources to CP and describe revision-scoped Harness delivery in the accompanying change. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - 623d56dec26a8ef0f72b562254687cabecdbbf82)
 

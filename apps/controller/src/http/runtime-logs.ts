@@ -97,6 +97,7 @@ export function runtimeLogQuery(query: AgentRuntimeLogsQuery): RuntimeLogQuery {
         : Number(query.tailLines),
     ...(query.sinceSeconds === undefined ? {} : { sinceSeconds: Number(query.sinceSeconds) }),
     ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+    ...(query.minLevel === undefined ? {} : { minLevel: query.minLevel }),
   };
 }
 

@@ -45,13 +45,13 @@ auth:
   baseUrl: ""
   secretName: occ-auth
   secretKey: secret
-  # Existing local password administrator's user ID. Required with auth.github or
-  # auth.google; it designates the recovery account when the API first starts with
+  # Existing local password administrator's user ID. Required with auth.github,
+  # auth.google or auth.oidc; it designates the recovery account when the API first starts with
   # external sign-in.
   recoveryUserId: ""
-  # Who may sign in with a password once auth.github or auth.google is enabled: "all"
-  # (every enrolled account) or "recovery-only" (only the recovery account; everyone else
-  # uses GitHub or Google). Attach every ordinary account's external identity first:
+  # Who may sign in with a password once auth.github, auth.google or auth.oidc is enabled:
+  # "all" (every enrolled account) or "recovery-only" (only the recovery account; everyone
+  # else uses an external provider). Attach every ordinary account's external identity first:
   # accounts without one cannot sign in until an administrator attaches it.
   passwordSignIn: all
   # Optional GitHub browser sign-in for existing password accounts (API Pod only).
@@ -79,6 +79,28 @@ auth:
     # API Pod HTTPS egress for oauth2.googleapis.com and www.googleapis.com; browsers,
     # not the API, reach accounts.google.com. Empty allows TCP 443 to 0.0.0.0/0; Google
     # publishes no small stable range, so narrow it with an egress proxy.
+    egressCidrs: []
+  # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
+  # existing password accounts (API Pod only). Same requirements as auth.github; its
+  # Secret must differ from auth.github's and auth.google's. Copy issuer and the three URLs
+  # from the IdP's discovery document: each must be https on port 443 on the issuer's
+  # host, with no query or fragment. The API never runs discovery.
+  oidc:
+    enabled: false
+    # The exact "iss" value, trailing slash included where the IdP uses one.
+    issuer: ""
+    authorizationUrl: ""
+    tokenUrl: ""
+    jwksUrl: ""
+    secretName: occ-oidc-login
+    clientIdKey: client-id
+    clientSecretKey: client-secret
+    # client_secret_post (default) or client_secret_basic.
+    tokenAuth: client_secret_post
+    # Console button label ("Continue with <displayName>"); empty means "single sign-on".
+    displayName: ""
+    # API Pod HTTPS egress for the token and JWKS URLs. Empty allows TCP 443 to any
+    # address except link-local 169.254.0.0/16; list the IdP's IPv4 ranges to narrow it.
     egressCidrs: []
 
 agentNativeAdmin:

@@ -133,6 +133,8 @@ Gateway, so a redeploy interrupts service until the replacement is ready. Becaus
 Gateway is stopped or otherwise not ready, preparation starts the candidate Gateway after the
 candidate Harness is otherwise ready. That candidate Gateway provides the bootstrap endpoint; the
 revision remains not ready until the workspace node is enrolled and observed.
+A dedicated Codex Harness names its workspace node `agent-<agent digest>-workspace` on every
+start, so the Gateway's node list keeps one stable name across revisions.
 
 Dedicated Codex and dedicated OpenClaw keep separate Agent-owned Gateway and
 Harness ServiceAccounts. Compute owns the Gateway Pod; the selected SandboxDriver
@@ -208,11 +210,19 @@ runs for initial and replacement gateways. A failed check, including a provider
 timeout or rate limit, holds the gateway unready until repair and restart or a
 new deployment. Readiness polling does not repeat model requests; worker retries
 do not restart an unchanged Pod. No automatic rollback restores the predecessor.
+Embedded activation deletes the replaced predecessor's per-revision Secret and
+ConfigMap copies as soon as it re-renders the Gateway, so a replacement that never
+becomes ready (and so never reaches predecessor retirement) does not keep them.
 
 If activation, readiness, predecessor retirement, or audit completion fails,
-the worker requeues the revision with `REVISION_FINALIZATION_INCOMPLETE`; recovery
+the worker requeues the revision with `REVISION_FINALIZATION_INCOMPLETE`, or a
+known wait's own [pending code](../reference/agents/deployment.md#pending-deployment-progress); recovery
 retries activation and retirement for the already-active revision. Lost claims
-and foreign/stale workloads fail closed.
+and foreign/stale workloads fail closed. Dedicated activation waits for the
+Gateway to report the workspace node it was handed; that wait is a 20-second
+budget per revision and node across activation retries, then one status read per
+retry, so a Gateway that never applies its node cannot hold the serial worker
+on every retry. It and the pairing wait end early when other Work is claimable.
 
 When stopping a revision, the Driver stops its Gateway while leaving the Harness
 available for active work. Gateway supervision and Pod termination allow the
@@ -303,6 +313,12 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-02 14:00: End node pairing and ack waits early for claimable Work. (r7-d221)
+
+- 2026-10-02 12:00: Delete a replaced embedded predecessor's Secret and ConfigMap copies at activation re-render. (fix-d280-embedded-retire)
+
+- 2026-10-02 06:00: Budget the workspace node binding ack wait per binding across activation retries. (fix-deploy-node-pairing)
 
 - 2026-09-30 09:30: Include the Harness network profile in Service selectors for EKS policy resolution. (authoring-run/1373b7f3-e273-466a-b9da-bb197bdb469e - 0d00e8970b69)
 

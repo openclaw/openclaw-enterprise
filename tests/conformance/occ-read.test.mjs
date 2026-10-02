@@ -12,6 +12,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 const installation = Object.freeze({
@@ -123,25 +124,9 @@ async function createFixture() {
   controller.registerDriver(configurationDriver);
   controller.selectDriver("configuration", configurationDriver.id);
   const compute = {
+    ...createDevelopmentComputeDriver(),
     id: "compute-read-test",
-    capability: "compute",
     implementation: "deterministic-read-test",
-    validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
   };
   controller.registerDriver(compute);
   controller.selectDriver("compute", compute.id);

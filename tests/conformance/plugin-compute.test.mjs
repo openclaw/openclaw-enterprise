@@ -16,6 +16,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
+  startupPhaseHelper,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
@@ -354,13 +355,16 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
   const requests = [];
   const sockets = [];
   const files = new Map(options.files ?? []);
+  // options.refusedConnections models an app-server that is not listening yet.
+  const refusedConnections = options.refusedConnections ?? 0;
   class FakeWebSocket {
     constructor(url, options) {
       this.url = url;
       this.options = options;
       this.listeners = new Map();
       sockets.push(this);
-      setTimeout(() => this.dispatch("open", {}), 0);
+      const refused = sockets.length <= refusedConnections;
+      setTimeout(() => this.dispatch(refused ? "error" : "open", {}), 0);
     }
     on(name, listener) {
       const existing = this.listeners.get(name) ?? [];
@@ -1219,6 +1223,143 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
   });
 });
 
+test("Codex runtime helper disables curated plugins at once under API-key login", async () => {
+  // Codex rejects the remote catalog for API-key logins, so a selected plugin
+  // can never install: report it and serve without plugins instead of retrying.
+  const runtime = {
+    manifest: {
+      kind: "codex",
+      selections: {
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "provider_default" },
+        },
+        "codex-plugin:slack@openai-curated-remote": { enabled: false },
+      },
+    },
+  };
+  const disabledConfig = {
+    config: {
+      features: { apps: false, plugins: false, remote_plugin: false },
+      apps: { _default: { enabled: false } },
+      plugins: {},
+    },
+    origins: {},
+  };
+  const result = await runCodexRuntimeHelper(
+    runtime,
+    (method) => {
+      if (method === "initialize") {
+        return { serverInfo: { name: "codex", version: "0.149.0" } };
+      }
+      if (method === "config/read") {
+        return disabledConfig;
+      }
+      if (method === "config/batchWrite") {
+        return { status: "ok", version: "test-config-1" };
+      }
+      throw new Error(`unexpected request ${method}`);
+    },
+    { env: { CODEX_LOGIN_MODE: "api_key", OPENCLAW_PLUGIN_STATUS_PORT: "18791" } },
+  );
+
+  assert.deepEqual(plain(result.value), {
+    successfulPluginIds: [],
+    failures: [
+      { pluginId: "codex-plugin:linear@openai-curated-remote", code: "PLUGIN_AUTH_REQUIRED" },
+    ],
+  });
+  const calls = result.requests.filter((request) => request.method !== "initialize");
+  assert.deepEqual(
+    calls.map((request) => request.method),
+    ["config/read", "config/batchWrite", "config/read"],
+  );
+  assert.deepEqual(calls[1].params.edits.slice(0, 4), [
+    { keyPath: "features.apps", mergeStrategy: "replace", value: false },
+    { keyPath: "features.plugins", mergeStrategy: "replace", value: false },
+    { keyPath: "features.remote_plugin", mergeStrategy: "replace", value: false },
+    { keyPath: 'apps."_default"', mergeStrategy: "replace", value: { enabled: false } },
+  ]);
+
+  const strict = await runCodexRuntimeHelper(
+    runtime,
+    (method) => {
+      throw new Error(`unexpected request ${method}`);
+    },
+    { env: { CODEX_LOGIN_MODE: "api_key" }, captureError: true },
+  );
+  assert.match(String(strict.error?.message), /require a ChatGPT login/);
+  assert.deepEqual(strict.requests, []);
+});
+
+test("Codex runtime helper waits for a late app-server before disabling API-key plugin selections", async () => {
+  // D320: the Harness reached plugin setup before the Codex app-server accepted
+  // connections; a single attempt failed the transport and restarted Codex forever.
+  const runtime = {
+    manifest: {
+      kind: "codex",
+      selections: {
+        "codex-plugin:linear@openai-curated-remote": {
+          enabled: true,
+          toolDefaults: { approval: "provider_default" },
+        },
+      },
+    },
+  };
+  const disabledConfig = {
+    config: {
+      features: { apps: false, plugins: false, remote_plugin: false },
+      apps: { _default: { enabled: false } },
+      plugins: {},
+    },
+    origins: {},
+  };
+  const handler = (method) => {
+    if (method === "initialize") {
+      return { serverInfo: { name: "codex", version: "0.149.0" } };
+    }
+    if (method === "config/read") {
+      return disabledConfig;
+    }
+    if (method === "config/batchWrite") {
+      return { status: "ok", version: "test-config-1" };
+    }
+    throw new Error(`unexpected request ${method}`);
+  };
+  const result = await runCodexRuntimeHelper(runtime, handler, {
+    env: {
+      CODEX_LOGIN_MODE: "api_key",
+      OPENCLAW_PLUGIN_STATUS_PORT: "18791",
+      OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "5000",
+    },
+    refusedConnections: 2,
+  });
+  assert.equal(result.sockets.length, 5);
+  assert.deepEqual(plain(result.value), {
+    successfulPluginIds: [],
+    failures: [
+      { pluginId: "codex-plugin:linear@openai-curated-remote", code: "PLUGIN_AUTH_REQUIRED" },
+    ],
+  });
+  assert.deepEqual(
+    result.requests
+      .filter((request) => request.method !== "initialize")
+      .map((request) => request.method),
+    ["config/read", "config/batchWrite", "config/read"],
+  );
+
+  const neverReady = await runCodexRuntimeHelper(runtime, handler, {
+    env: { CODEX_LOGIN_MODE: "api_key", OPENCLAW_PLUGIN_STATUS_PORT: "18791" },
+    refusedConnections: Number.POSITIVE_INFINITY,
+    captureError: true,
+  });
+  assert.match(
+    String(neverReady.error?.message),
+    /plugin disable did not reach readiness: .*transport failed/,
+  );
+  assert.equal(neverReady.error?.startupCode, "PLUGIN_NOT_READY");
+});
+
 test("Codex runtime helper keeps malformed matching install responses generic", async (t) => {
   const state = codexLinearPluginState();
   const runtime = {
@@ -1338,6 +1479,7 @@ test("Codex runtime helper keeps pre-install native uncertainty generic", async 
 
   assert.match(result.error.message, /did not reach readiness/);
   assert.equal(result.error.diagnostic, undefined);
+  assert.equal(result.error.startupCode, "PLUGIN_NOT_READY");
 });
 
 test("Codex runtime keeps disabled selected plugins default-denied while preserving install identity", async () => {
@@ -1569,6 +1711,27 @@ test("Codex gateway bridge config writes through the runtime state directory wit
   });
 });
 
+test("a failed startup phase line carries only a fixed upper-case cause code", () => {
+  const lines = [];
+  vm.runInNewContext(
+    `${startupPhaseHelper("agent")}
+logStartupPhase("plugin-install", Date.now(), "failed", "PLUGIN_NOT_IN_CATALOG");
+logStartupPhase("plugin-install", Date.now(), "failed", "catalog lacks linear");
+logStartupPhase("plugin-install", Date.now(), "failed");
+logStartupPhase("native-spawn", Date.now(), "ok", "PLUGIN_NOT_IN_CATALOG");`,
+    { Date, JSON, console: { error: (line) => lines.push(JSON.parse(line)) } },
+  );
+  assert.deepEqual(
+    lines.map(({ phase, outcome, code }) => [phase, outcome, code]),
+    [
+      ["plugin-install", "failed", "PLUGIN_NOT_IN_CATALOG"],
+      ["plugin-install", "failed", undefined],
+      ["plugin-install", "failed", undefined],
+      ["native-spawn", "ok", undefined],
+    ],
+  );
+});
+
 test("Codex runtime helper fails before readiness when catalog identity is absent", async () => {
   const state = codexLinearPluginState();
   const runtime = {
@@ -1589,7 +1752,12 @@ test("Codex runtime helper fails before readiness when catalog identity is absen
         }
         throw new Error(`unexpected request ${method}`);
       }),
-    /catalog did not contain the selected plugin/,
+    (error) => {
+      assert.match(error.message, /catalog did not contain the selected plugin/);
+      // The fixed code, not the message, is what the wrapper exports remotely.
+      assert.equal(error.startupCode, "PLUGIN_NOT_IN_CATALOG");
+      return true;
+    },
   );
 });
 
@@ -2333,9 +2501,17 @@ test("embedded plugin preparation applies runtime egress before gateway readines
 test("Kubernetes plugin runtime status requires the exact ready Pod report", async (t) => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
   const candidate = revision({
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
-    plugins: openClawPluginState(),
+    plugins: {
+      ...codexLinearPluginState(),
+      plugins: {
+        ...codexSelection(),
+        [`codex-plugin:${CODEX_ASANA_NATIVE_ID}`]: {
+          enabled: true,
+          toolDefaults: { approval: "provider_default" },
+        },
+      },
+    },
   });
   const namespace = kubernetesNamespaceName(tenant.id);
   const pod = {
@@ -2343,7 +2519,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     kind: "Pod",
     metadata: {
       name: "gateway-plugin-status",
-      namespace,
+      namespace: kubernetesGatewayNamespaceName(tenant.id),
       uid: "pod-plugin-status-1",
       labels: {
         "openclaw.dev/agent": candidate.agentId,
@@ -2358,17 +2534,41 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     startupId: "startup-plugin-status-1",
     podUid: "pod-plugin-status-1",
     phase: "ready",
-    successfulPluginIds: ["occ-plugin:diffs"],
+    successfulPluginIds: [
+      `codex-plugin:${CODEX_LINEAR_NATIVE_ID}`,
+      `codex-plugin:${CODEX_ASANA_NATIVE_ID}`,
+    ],
     failures: [],
   };
+  // Gateway readiness requires the Harness's complete warning set, regardless of order.
+  const warningReport = {
+    ...readyReport,
+    successfulPluginIds: [],
+    failures: [
+      { pluginId: `codex-plugin:${CODEX_ASANA_NATIVE_ID}`, code: "PLUGIN_INSTALL_FAILED" },
+      { pluginId: `codex-plugin:${CODEX_LINEAR_NATIVE_ID}`, code: "PLUGIN_AUTH_REQUIRED" },
+    ],
+  };
 
-  for (const [name, response, expected] of [
+  for (const [name, response, expected, expectedWarnings = []] of [
     ["missing proxy", Object.assign(new Error("not found"), { code: 404 }), "not-ready"],
     ["starting phase", { ...readyReport, phase: "starting" }, "not-ready"],
     ["wrong revision", { ...readyReport, revisionId: "another-revision" }, "rejects"],
     ["wrong container", { ...readyReport, container: "agent" }, "rejects"],
     ["malformed report", { ...readyReport, successfulPluginIds: "occ-plugin:diffs" }, "rejects"],
     ["ready", readyReport, readyReport],
+    [
+      "matching warnings in another order",
+      { ...warningReport, failures: [...warningReport.failures].reverse() },
+      warningReport,
+      warningReport.failures,
+    ],
+    [
+      "different warning code keeps the runtime unready",
+      warningReport,
+      "not-ready",
+      [{ ...warningReport.failures[0], code: "PLUGIN_AUTH_REQUIRED" }, warningReport.failures[1]],
+    ],
   ]) {
     await t.test(name, async () => {
       driver.clients = async () => ({
@@ -2389,7 +2589,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
               candidate,
               { name: namespace, plane: "execution" },
               "gateway",
-              [],
+              expectedWarnings,
             ),
           DependencyUnavailableError,
         );
@@ -2398,7 +2598,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
           candidate,
           { name: namespace, plane: "execution" },
           "gateway",
-          [],
+          expectedWarnings,
         );
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
@@ -3075,6 +3275,13 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                   const isLogin = args.includes("login");
                   if (isLogin) {
                     loginCalls++;
+                    const loginEnvironment = options.env ?? sandbox.process.env;
+                    assert.equal(Object.hasOwn(loginEnvironment, "APP_SERVER_TOKEN"), false);
+                    assert.equal(
+                      loginEnvironment.CODEX_LOGIN_MODE,
+                      sandbox.process.env.CODEX_LOGIN_MODE,
+                    );
+                    assert.equal(sandbox.process.env.APP_SERVER_TOKEN, "fixture-transport-token");
                   }
                   if (isLogin && scenario.pat) {
                     assert.equal(command, "codex");
@@ -3326,8 +3533,8 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
                       .join("\n"),
                   };
             },
-            spawn(command, args) {
-              appServerSpawn = { command, args };
+            spawn(command, args, options) {
+              appServerSpawn = { command, args, options };
               return { on() {}, kill() {} };
             },
           };
@@ -3350,6 +3557,11 @@ test("Codex agent app-server uses a per-startup plugin status token", () => {
       appServerSpawn.args[appServerSpawn.args.indexOf("--ws-token-sha256") + 1];
     assert.equal(digestArgument, sha256(expectedToken));
     assert.notEqual(digestArgument, sha256(baseToken));
+    // Node inherits the wrapper environment when spawn does not supply one.
+    const childEnvironment = appServerSpawn.options.env ?? sandbox.process.env;
+    assert.equal(Object.hasOwn(childEnvironment, "APP_SERVER_TOKEN"), false);
+    assert.equal(childEnvironment.PATH, sandbox.process.env.PATH);
+    assert.equal(sandbox.process.env.APP_SERVER_TOKEN, expectedToken);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

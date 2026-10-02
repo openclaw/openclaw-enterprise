@@ -16,7 +16,11 @@ export function normalizeHarnessAuthBinding(input: unknown): HarnessAuthBinding 
 
 /** Public intent excludes private admission and delivery metadata. */
 export function harnessAuthBindingFromSnapshot(snapshot: HarnessAuthSnapshot): HarnessAuthBinding {
-  if (snapshot.method === "api_key" || snapshot.method === "codex_pat") {
+  if (
+    snapshot.method === "api_key" ||
+    snapshot.method === "codex_pat" ||
+    snapshot.method === "oauth"
+  ) {
     return { method: snapshot.method, source: snapshot.source };
   }
   if (snapshot.method === "chatgpt_service_account") {

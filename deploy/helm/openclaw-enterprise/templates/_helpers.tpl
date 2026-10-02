@@ -13,10 +13,12 @@
 {{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
 {{- if and $recoveryUserId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" $recoveryUserId)) -}}{{- fail "auth.recoveryUserId must be the existing local password administrator's user ID" -}}{{- end -}}
 {{- $google := .Values.auth.google -}}
-{{- if and $recoveryUserId (not (or (and $github $github.enabled) (and $google $google.enabled))) -}}{{- fail "auth.recoveryUserId requires auth.github.enabled or auth.google.enabled" -}}{{- end -}}
+{{- $oidc := .Values.auth.oidc -}}
+{{- $external := or (and $github $github.enabled) (and $google $google.enabled) (and $oidc $oidc.enabled) -}}
+{{- if and $recoveryUserId (not $external) -}}{{- fail "auth.recoveryUserId requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
-{{- if and (eq $passwordSignIn "recovery-only") (not (or (and $github $github.enabled) (and $google $google.enabled))) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled or auth.google.enabled" -}}{{- end -}}
+{{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- if and $github $github.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -63,6 +65,39 @@
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.google.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
 {{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
 {{- if gt (int $octet) 255 -}}{{- fail "auth.google.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $oidc $oidc.enabled -}}
+{{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
+{{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
+{{- if or (eq $oidc.secretName .Values.installation.secretName) (eq $oidc.secretName .Values.database.secretName) (eq $oidc.secretName .Values.auth.secretName) (and .Values.backend.chatgpt.enabled (eq $oidc.secretName .Values.backend.chatgpt.secretName)) (and .Values.gatewayRouting.enabled (eq $oidc.secretName .Values.gatewayRouting.apiKeySecretName)) (and $github $github.enabled (eq $oidc.secretName $github.secretName)) (and $google $google.enabled (eq $oidc.secretName $google.secretName)) -}}
+{{- fail "auth.oidc credentials must use a dedicated Secret" -}}
+{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- range $name := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
+{{- if eq $oidc.secretName (index $.Values.repositoryCredentials $name) -}}{{- fail (printf "auth.oidc credentials must use a Secret distinct from repositoryCredentials.%s" $name) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" .Values.auth.baseUrl) -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
+{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
+{{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
+{{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
+{{- $issuer := toString (default "" $oidc.issuer) -}}
+{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
+{{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
+{{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
+{{- $url := toString (default "" (index $oidc $key)) -}}
+{{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
+{{- end -}}
+{{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
+{{- if and $oidc.displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" (trim (toString $oidc.displayName)))) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
+{{- if not (kindIs "slice" (default list $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it empty for HTTPS egress to any non-link-local address" -}}{{- end -}}
+{{- range $cidr := $oidc.egressCidrs -}}
+{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
+{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
+{{- if gt (int $octet) 255 -}}{{- fail "auth.oidc.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -395,10 +430,11 @@ API sees each client's own address (for example, behind a source-preserving NLB)
 {{- $proxy := default dict .Values.api.trustedProxy -}}
 {{- $github := default dict .Values.auth.github -}}
 {{- $google := default dict .Values.auth.google -}}
+{{- $oidc := default dict .Values.auth.oidc -}}
 {{- if not $proxy.preset -}}
-{{- if or $github.enabled $google.enabled -}}
-WARNING: api.trustedProxy is not set. With GitHub or Google sign-in, failed
-password sign-ins are then limited per email only, and GitHub or Google sign-in
+{{- if or $github.enabled $google.enabled $oidc.enabled -}}
+WARNING: api.trustedProxy is not set. With GitHub, Google or OIDC sign-in, failed
+password sign-ins are then limited per email only, and external sign-in
 starts have no per-client limit, because every browser behind a proxy shares its
 address. Set api.trustedProxy unless the API sees each client's own address, as
 behind a Network Load Balancer that preserves source addresses.

@@ -260,7 +260,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.0 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.3-pre.1 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -353,7 +353,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.0",
+  openShellChartVersion = "0.1.3-pre.1",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -860,7 +860,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.0 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.3-pre.1 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -868,7 +868,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.0 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.3-pre.1 must keep its network supervisor outside the workload Pod.",
     );
     const container = compatibilityBridge
       ? pod.spec.containers.find(({ name }) => name === "agent")

@@ -128,7 +128,7 @@ arguments. Human and automatic approval integrations must bind or revalidate
 the final executed arguments and live run authority after awaited work. Existing
 transport alone does not establish that guarantee.
 
-The [native policy proposal](../../../../../specs/35-native-plugin-tool-policy.md)
+The [native policy proposal](../../../../../specs/rfcs/35-native-plugin-tool-policy.md)
 contains a possible managed configuration and semantics. Those choices remain
 proposed; they are not prerequisites already approved by this matrix.
 

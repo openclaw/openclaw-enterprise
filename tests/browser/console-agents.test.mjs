@@ -12,6 +12,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessBindingPostRequests,
@@ -89,6 +90,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.deepEqual(await optionValues(page.getByLabel("Authentication method", { exact: true })), [
     { value: "api_key", text: "OpenAI API key" },
     { value: "codex_pat", text: "Service Accounts" },
+    { value: "oauth", text: "ChatGPT OAuth (Experimental)" },
   ]);
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();
@@ -2330,6 +2332,27 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   assert.deepEqual(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`), []);
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await selectSecret(page, "Service account token Secret", discardedPatSecret);
+  await openAdvancedSettings(page);
+  await page
+    .getByLabel("Configuration JSON")
+    .fill(JSON.stringify(createHarnessConfiguration("openclaw", "gpt-5.1")));
+  // Manual Configuration changes obey the same credential boundary while keeping their model.
+  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(
+    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
+    "api_key",
+  );
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Model ID", { exact: true }).inputValue(), "gpt-5.1");
+  assert.equal(
+    JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
+    "openai/gpt-5.1",
+  );
+  await page.getByText("Advanced settings", { exact: true }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   requests.length = 0;
@@ -2648,6 +2671,7 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
   assert.match(await modeHint.textContent(), /OpenClaw supports Dedicated or Embedded/);
+  assert.match(await modeHint.textContent(), /Slack requires Dedicated execution/);
   assert.equal(
     await page.locator(".launch-runtime > summary").textContent(),
     "Runtime details · Dedicated",
@@ -2943,23 +2967,30 @@ test("Agent creation blocks an incompatible fallback after changing provider unt
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 });
 
-test("Agent creation saves explicitly selected models for both harnesses", async (t) => {
+test("Agent creation saves native models for dedicated and embedded harnesses", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Starter model", { ready: true });
   const { page } = await newPage(t, fixture);
   // Exercise the supported draft path; dedicated provisioning has separate workflow coverage.
-  await routeInstallationWithoutProvisioning(page, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture, {
+    nativeWorkers: { support: "custom-image" },
+  });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
 
   for (const [mode, provider, harness, selectedModel] of [
     ["dedicated", "codex", "codex", "gpt-6-astra"],
+    ["dedicated", "openai", "openclaw", "gpt-5.6-sol"],
     ["embedded", "openai", "openclaw", "gpt-5.6-luna"],
   ]) {
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start without Preset" }).click();
     await page.getByLabel("Harness", { exact: true }).selectOption(harness);
+    if (harness === "openclaw" && mode === "dedicated") {
+      await page.locator(".launch-runtime:not([open]) > summary").click();
+      await page.getByLabel("Execution mode").selectOption(mode);
+    }
     await page.getByLabel("Model", { exact: true }).selectOption(selectedModel);
     await page.getByLabel("Agent name").fill(`${mode}-${selectedModel}`);
     const selectedSecret = await createModelCredentialSecret(
@@ -2985,11 +3016,14 @@ test("Agent creation saves explicitly selected models for both harnesses", async
     // preserving the separate credentials for dedicated Codex execution.
     assert.equal(Object.hasOwn(configuration.data.values.gateway, "auth"), false);
     assert.deepEqual(configuration.data.values.gateway.controlUi, STARTER_CONTROL_UI);
-    if (mode === "dedicated") {
+    if (harness === "codex") {
       assert.equal(
         configuration.data.values.plugins.entries.codex.config.appServer.authToken,
         "${APP_SERVER_TOKEN}",
       );
+    } else {
+      assert.equal(configuration.data.values.plugins?.entries?.codex, undefined);
+      assert.equal(configuration.data.values.models.providers.codex, undefined);
     }
     const modelReference = `${provider}/${selectedModel}`;
     assert.equal(configuration.data.values.agents.defaults.model, modelReference);

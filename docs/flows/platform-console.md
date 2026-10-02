@@ -134,7 +134,9 @@ Debug runtime disclosures follow the same validation and retain expanded state.
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
 `showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
-with** buttons, and discovery failure keeps password login. `password: false`
+with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
+labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
+URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones. `password: false`
 (recovery-only) hides the form behind **Recovery sign-in** and changes the
 provider-error advice from "use your password" to asking an administrator. Pending login disables
 all; generations reject late redirects. With `sessionBinding`, `loadPage`

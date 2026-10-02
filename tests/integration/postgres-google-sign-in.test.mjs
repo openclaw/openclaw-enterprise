@@ -175,6 +175,7 @@ test(
         assert.deepEqual(providers.json().data, {
           github: false,
           google: true,
+          oidc: false,
           password: true,
           sessionBinding: true,
         });
@@ -508,6 +509,7 @@ test(
       assert.deepEqual((await app.inject({ url: "/api/auth/providers" })).json().data, {
         github: true,
         google: true,
+        oidc: false,
         password: true,
         sessionBinding: true,
       });

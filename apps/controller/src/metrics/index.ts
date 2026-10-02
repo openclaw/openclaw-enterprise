@@ -7,7 +7,8 @@ export type WorkKind =
   | "agent_provisioning"
   | "agent_revision"
   | "agent_stop"
-  | "agent_delete";
+  | "agent_delete"
+  | "agent_credential_withdrawal";
 export type WorkOutcome = "success" | "pending" | "retry" | "permanent" | "claim_lost" | "error";
 
 const processFamilies = new Set([

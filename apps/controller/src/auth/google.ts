@@ -1,4 +1,4 @@
-import { createHmac, createPublicKey, verify } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { authorizationCodeRequest, createAuthorizationURL } from "better-auth/oauth2";
 import {
   providerExchangeFailure,
@@ -6,6 +6,7 @@ import {
   rejected,
   type ProviderExchange,
 } from "./provider-transport.ts";
+import { verifyIdToken } from "./id-token.ts";
 
 // Google OpenID Connect, fixed endpoints (no runtime discovery):
 // https://accounts.google.com/.well-known/openid-configuration
@@ -93,115 +94,31 @@ export interface GoogleIdTokenExpectation {
   readonly now: number;
 }
 
-const segmentPattern = /^[A-Za-z0-9_-]+$/;
-const subjectPattern = /^[\x21-\x7E]{1,255}$/;
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function segmentJSON(segment: string): Record<string, unknown> | undefined {
-  return record(JSON.parse(Buffer.from(segment, "base64url").toString("utf8")));
-}
-
-function signingKey(jwks: unknown, kid: string): { kty: "RSA"; n: string; e: string } | undefined {
-  const keys = record(jwks)?.keys;
-  if (!Array.isArray(keys)) {
-    return undefined;
-  }
-  for (const candidate of keys) {
-    const key = record(candidate);
-    if (
-      key?.kid === kid &&
-      key.kty === "RSA" &&
-      (key.alg === undefined || key.alg === "RS256") &&
-      (key.use === undefined || key.use === "sig") &&
-      typeof key.n === "string" &&
-      typeof key.e === "string"
-    ) {
-      return { kty: "RSA", n: key.n, e: key.e };
-    }
-  }
-  return undefined;
-}
-
 // Returns the Google subject ("sub") of a valid ID token, or undefined. The email
 // is never an identity; token contents are never returned otherwise.
 export function verifyGoogleIdToken(
   token: string,
   expected: GoogleIdTokenExpectation,
 ): string | undefined {
-  try {
-    const segments = token.split(".");
-    if (segments.length !== 3 || !segments.every((segment) => segmentPattern.test(segment))) {
-      return undefined;
-    }
-    const [encodedHeader, encodedPayload, encodedSignature] = segments as [string, string, string];
-    const header = segmentJSON(encodedHeader);
-    if (header?.alg !== "RS256" || typeof header.kid !== "string") {
-      return undefined;
-    }
-    const jwk = signingKey(expected.jwks, header.kid);
-    if (!jwk) {
-      return undefined;
-    }
-    const key = createPublicKey({ key: jwk, format: "jwk" });
-    if (
-      key.asymmetricKeyType !== "rsa" ||
-      !verify(
-        "sha256",
-        Buffer.from(`${encodedHeader}.${encodedPayload}`),
-        key,
-        Buffer.from(encodedSignature, "base64url"),
-      )
-    ) {
-      return undefined;
-    }
-    const claims = segmentJSON(encodedPayload);
-    if (!claims || typeof claims.iss !== "string" || !issuers.has(claims.iss)) {
-      return undefined;
-    }
-    const { clientId } = expected;
-    if (Array.isArray(claims.aud)) {
-      if (!claims.aud.includes(clientId) || claims.azp !== clientId) {
-        return undefined;
-      }
-    } else if (claims.aud !== clientId) {
-      return undefined;
-    }
-    if (claims.azp !== undefined && claims.azp !== clientId) {
-      return undefined;
-    }
-    const now = Math.floor(expected.now / 1000);
-    if (
-      typeof claims.exp !== "number" ||
-      !(claims.exp > now) ||
-      typeof claims.iat !== "number" ||
-      claims.iat > now + 60 ||
-      claims.iat < now - 3600
-    ) {
-      return undefined;
-    }
-    if (expected.nonce.length === 0 || claims.nonce !== expected.nonce) {
-      return undefined;
-    }
-    if (typeof claims.sub !== "string" || !subjectPattern.test(claims.sub)) {
-      return undefined;
-    }
-    if (
-      expected.allowedDomains.length > 0 &&
-      (typeof claims.hd !== "string" ||
-        !expected.allowedDomains.includes(claims.hd.toLowerCase()) ||
-        claims.email_verified !== true)
-    ) {
-      return undefined;
-    }
-    return claims.sub;
-  } catch {
+  const claims = verifyIdToken(token, {
+    issuers,
+    clientId: expected.clientId,
+    nonce: expected.nonce,
+    jwks: expected.jwks,
+    now: expected.now,
+  });
+  if (claims === undefined) {
     return undefined;
   }
+  if (
+    expected.allowedDomains.length > 0 &&
+    (typeof claims.hd !== "string" ||
+      !expected.allowedDomains.includes(claims.hd.toLowerCase()) ||
+      claims.email_verified !== true)
+  ) {
+    return undefined;
+  }
+  return claims.sub as string;
 }
 
 export async function exchangeGoogleSubject(
@@ -226,11 +143,12 @@ export async function exchangeGoogleSubject(
       tokenEndpoint,
       { method: "POST", ...request },
       controller.signal,
+      "token",
     );
     if ("error" in data || typeof data.id_token !== "string" || !data.id_token) {
       throw rejected();
     }
-    const jwks = await providerJSON(certsEndpoint, {}, controller.signal);
+    const jwks = await providerJSON(certsEndpoint, {}, controller.signal, "jwks");
     controller.signal.throwIfAborted();
     const subject = verifyGoogleIdToken(data.id_token, {
       clientId: config.clientId,

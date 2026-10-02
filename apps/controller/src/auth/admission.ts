@@ -56,13 +56,17 @@ export function admissionKey(
     .digest("hex")}`;
 }
 
-function admissionTable() {
+function admissionTable(preserveSpent: boolean) {
   // Map order is recency order: touching an entry deletes and re-inserts it.
   const table = new Map<string, AdmissionEntry>();
 
-  function evict(pinned: readonly AdmissionEntry[]): boolean {
+  function evict(pinned: readonly AdmissionEntry[], now: number): boolean {
     for (const [key, entry] of table) {
-      if (entry.active === 0 && !pinned.includes(entry)) {
+      if (
+        entry.active === 0 &&
+        !pinned.includes(entry) &&
+        (!preserveSpent || now - entry.windowStart >= admissionWindow || entry.admitted === 0)
+      ) {
         table.delete(key);
         return true;
       }
@@ -70,14 +74,10 @@ function admissionTable() {
     return false;
   }
 
-  return function touch(
-    key: string,
-    now: number,
-    pinned: readonly AdmissionEntry[],
-  ): AdmissionEntry {
+  function touch(key: string, now: number, pinned: readonly AdmissionEntry[]): AdmissionEntry {
     let entry = table.get(key);
     if (entry === undefined) {
-      if (table.size >= admissionTableCapacity && !evict(pinned)) {
+      if (table.size >= admissionTableCapacity && !evict(pinned, now)) {
         throw tooManyRequests();
       }
       entry = admissionEntry(now);
@@ -87,27 +87,54 @@ function admissionTable() {
     }
     table.set(key, entry);
     return entry;
-  };
+  }
+  return { touch, peek: (key: string) => table.get(key) };
 }
 
 /**
  * Attempt-counting admission for the external sign-in lanes (start, callback, result):
  * every admitted request spends one unit of each key's budget, under a global concurrency cap.
  */
-export function keyedAdmission(perKey: AdmissionBudget, global: { readonly concurrent: number }) {
-  const touch = admissionTable();
+export function keyedAdmission(
+  perKey: AdmissionBudget,
+  global: { readonly concurrent: number; readonly perMinute?: number },
+) {
+  const table = admissionTable(global.perMinute !== undefined);
   let active = 0;
+  const total = admissionEntry(performance.now());
 
   return {
     async admit<T>(keys: readonly string[], work: () => Promise<T>): Promise<T> {
       const now = performance.now();
+      // Refused work must not change another key's rate budget through table eviction.
+      if (active >= global.concurrent) {
+        throw tooManyRequests();
+      }
+      if (global.perMinute !== undefined) {
+        rollWindow(total, now);
+        // Refused key churn must not touch or evict another key's entry.
+        if (total.admitted >= global.perMinute) {
+          throw tooManyRequests();
+        }
+      }
+      const distinctKeys = [...new Set(keys)];
+      // Inspect every existing limit before inserting or moving any key. A refused
+      // combination of a spent key and fresh keys cannot churn another budget away.
+      for (const key of distinctKeys) {
+        const entry = table.peek(key);
+        if (entry !== undefined) {
+          const admitted = now - entry.windowStart < admissionWindow ? entry.admitted : 0;
+          if (admitted >= perKey.perMinute || entry.active >= perKey.concurrent) {
+            throw tooManyRequests();
+          }
+        }
+      }
       const entries: AdmissionEntry[] = [];
-      for (const key of keys) {
-        entries.push(touch(key, now, entries));
+      for (const key of distinctKeys) {
+        entries.push(table.touch(key, now, entries));
       }
       // Check every limit before counting anything, so one exhausted key spends no other budget.
       if (
-        active >= global.concurrent ||
         entries.some(
           (entry) => entry.admitted >= perKey.perMinute || entry.active >= perKey.concurrent,
         )
@@ -117,6 +144,9 @@ export function keyedAdmission(perKey: AdmissionBudget, global: { readonly concu
       for (const entry of entries) {
         entry.admitted += 1;
         entry.active += 1;
+      }
+      if (global.perMinute !== undefined) {
+        total.admitted += 1;
       }
       active += 1;
       try {
@@ -147,6 +177,12 @@ export interface PasswordSignInAttempt {
    * and a slowed attempt waits on the device's slots instead of the email's.
    */
   readonly knownDevice?: string;
+  /**
+   * MAC-authenticated entry keys whose current account binding was not verified.
+   * These only add device constraints to the shared email/address lanes; they never
+   * select an exemption. The cookie verifier supplies at most three distinct keys.
+   */
+  readonly deviceConstraints?: readonly string[];
 }
 
 /**
@@ -524,6 +560,11 @@ export function passwordFailureAdmission(
           ? []
           : [[admissionKey("ip", attempt.clientAddress), options.perAddress, "address"] as const]),
         [identityKey, options.perEmail, identityLane],
+        ...(attempt.knownDevice === undefined
+          ? [...new Set(attempt.deviceConstraints ?? [])].map(
+              (key) => [admissionKey("device", key), options.perEmail, "device"] as const,
+            )
+          : []),
       ];
       // Decide from existing entries first: a refused attempt creates and moves nothing.
       const blocking: PasswordEntry[] = [];
@@ -540,13 +581,13 @@ export function passwordFailureAdmission(
       const tracked: PasswordEntry[] = [];
       let identityEntry: PasswordEntry | undefined;
       let untracked = false;
-      for (const [key, , lane] of lanes) {
+      for (const [key] of lanes) {
         const entry = table.claim(key, now);
         if (entry === undefined) {
           untracked = true;
         } else {
           tracked.push(entry);
-          if (lane !== "address") {
+          if (key === identityKey) {
             identityEntry = entry;
           }
         }

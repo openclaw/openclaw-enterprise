@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SignInRateLimited,
+  keyedAdmission,
   passwordFailureAdmission,
 } from "../../apps/controller/src/auth/admission.ts";
 
@@ -328,4 +329,157 @@ test("a known device is still bound by the client address lane", async () => {
     ),
     429,
   );
+});
+
+test("a total request window refuses key churn without evicting spent key budgets", async (t) => {
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  const limiter = keyedAdmission({ perMinute: 2, concurrent: 2 }, { perMinute: 3, concurrent: 2 });
+  let calls = 0;
+  const work = async () => {
+    calls += 1;
+    return "read";
+  };
+  clock = 30_000;
+  await limiter.admit(["existing"], work);
+  await limiter.admit(["existing"], work);
+  await limiter.admit(["other"], work);
+  for (let index = 0; index < 4097; index += 1) {
+    await assert.rejects(
+      limiter.admit([`churn-${index}`], work),
+      (error) => error.statusCode === 429,
+    );
+  }
+  assert.equal(calls, 3);
+  clock = 60_001;
+  // The total window has reset, but the existing key's later window has not.
+  await assert.rejects(limiter.admit(["existing"], work), (error) => error.statusCode === 429);
+  assert.equal(await limiter.admit(["fresh"], work), "read");
+  clock = 90_001;
+  assert.equal(await limiter.admit(["existing"], work), "read");
+});
+
+test("a new request window preserves active slots and failure releases capacity", async (t) => {
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  const limiter = keyedAdmission({ perMinute: 3, concurrent: 1 }, { perMinute: 2, concurrent: 1 });
+  const release = Promise.withResolvers();
+  const pending = limiter.admit(["held"], async () => {
+    await release.promise;
+    throw new Error("read failed");
+  });
+  const rejected = assert.rejects(pending, /read failed/);
+  clock = 60_001;
+  await assert.rejects(limiter.admit(["other"], right), (error) => error.statusCode === 429);
+  release.resolve();
+  await rejected;
+  assert.equal(await limiter.admit(["other"], right), "signed-in");
+  assert.equal(await limiter.admit(["last"], right), "signed-in");
+  await assert.rejects(limiter.admit(["excess"], right), (error) => error.statusCode === 429);
+});
+
+test("full read slots refuse key churn without evicting a spent entry", async (t) => {
+  t.mock.method(performance, "now", () => 0);
+  const limiter = keyedAdmission({ perMinute: 1, concurrent: 1 }, { perMinute: 10, concurrent: 1 });
+  await limiter.admit(["spent"], right);
+  const release = Promise.withResolvers();
+  const pending = limiter.admit(["held"], () => release.promise);
+  try {
+    for (let index = 0; index < 4097; index += 1) {
+      await assert.rejects(
+        limiter.admit([`waiting-${index}`], right),
+        (error) => error.statusCode === 429,
+      );
+    }
+  } finally {
+    release.resolve("settled");
+    await pending;
+  }
+  // Rejected work must not reset another browser's budget when the held read settles.
+  await assert.rejects(limiter.admit(["spent"], right), (error) => error.statusCode === 429);
+  assert.equal(await limiter.admit(["fresh"], right), "signed-in");
+});
+
+// A signed ticket is a resource constraint until fresh account state verifies it.
+// Losing that proof must neither reopen its spent allowance nor exempt the email.
+test("unverified signed keys retain spent device constraints without exempting email or address", async () => {
+  const limiter = admission();
+  const email = "constrained@example.test";
+  const key = "synthetic-signed-entry";
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(await status(limiter, { email, knownDevice: key }), 401);
+  }
+  assert.equal(await status(limiter, { email, deviceConstraints: [key] }), 429);
+  assert.equal(
+    await status(limiter, { email }, right),
+    200,
+    "the email was not spent by device failures",
+  );
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(await status(limiter, { email }), 401);
+  }
+  assert.equal(
+    await status(limiter, { email, deviceConstraints: ["fresh-signed-entry"] }, right),
+    429,
+  );
+  assert.equal(await status(limiter, { email, knownDevice: "fresh-verified-entry" }, right), 200);
+  const clientAddress = "192.0.2.10";
+  for (let index = 0; index < 4; index += 1) {
+    assert.equal(
+      await status(limiter, { email: `address-${index}@example.test`, clientAddress }),
+      401,
+    );
+  }
+  assert.equal(
+    await status(
+      limiter,
+      { email: "other@example.test", clientAddress, deviceConstraints: ["another-signed-entry"] },
+      right,
+    ),
+    429,
+  );
+});
+
+test("reserved correct passwords remain checkable with an unverified spent device constraint", async () => {
+  const email = "reserved@example.test";
+  const limiter = admission({ administrators: [email] });
+  const key = "reserved-signed-entry";
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(await status(limiter, { email, knownDevice: key }), 401);
+  }
+  assert.equal(await status(limiter, { email, deviceConstraints: [key] }), 429);
+  assert.equal(await status(limiter, { email, deviceConstraints: [key] }, right), 200);
+});
+
+test("shared-lane success still resets the email when extra device constraints are present", async () => {
+  const limiter = admission();
+  const email = "success@example.test";
+  assert.equal(await status(limiter, { email }), 401);
+  assert.equal(await status(limiter, { email, deviceConstraints: ["signed-entry"] }, right), 200);
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(await status(limiter, { email }), 401, "the earlier email failure was cleared");
+  }
+});
+
+test("a spent key with fresh companions cannot churn a request budget out of the table", async () => {
+  const limiter = keyedAdmission(
+    { perMinute: 1, concurrent: 1 },
+    { perMinute: 10000, concurrent: 2 },
+  );
+  await limiter.admit(["victim"], async () => undefined);
+  await limiter.admit(["spent"], async () => undefined);
+  let ran = 0;
+  for (let index = 0; index < 4200; index += 1) {
+    await assert.rejects(
+      limiter.admit([`fresh-${index}`, "spent"], async () => {
+        ran += 1;
+      }),
+    );
+  }
+  await assert.rejects(
+    limiter.admit(["victim"], async () => {
+      ran += 1;
+    }),
+  );
+  assert.equal(ran, 0);
 });

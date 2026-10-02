@@ -11,9 +11,9 @@ Add a small controller-hosted browser console for login, Namespace selection, an
 
 Source baseline: fetched `origin/main` **`b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d`**. The [workspace](../../pnpm-workspace.yaml) and [authentication reference](../../docs/reference/authentication.md#session-lifecycle) contain an existing backend but no active console. Provider discovery is proposed below, not baseline behavior. Implementation base: `origin/main` `a222ae3182a3dfd7dd8cd56c34f20b0e9b5ed09e`, integrated in `97911d3`; the Provider abstraction is present there. Provider discovery and the console remain the work defined here.
 
-![UI wireframe reference](../assets/18-platform-console-wireframe-reference.png)
+![UI wireframe reference](https://raw.githubusercontent.com/openclaw/openclaw-enterprise/785544cee72f5d022c38fa55271c727644a99f23/specs/assets/18-platform-console-wireframe-reference.png)
 
-[Earlier wireframe](../assets/18-platform-console-wireframe.png). These images guide the layout; their create/detail annotations remain deferred under this spec's scope.
+[Earlier wireframe](https://github.com/openclaw/openclaw-enterprise/blob/785544cee72f5d022c38fa55271c727644a99f23/specs/assets/18-platform-console-wireframe.png). These images guide the layout; their create/detail annotations remain deferred under this spec's scope.
 
 ## Scope
 

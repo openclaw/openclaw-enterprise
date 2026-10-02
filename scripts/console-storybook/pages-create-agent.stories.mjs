@@ -64,7 +64,8 @@ export const CreatePresetWorkspaceFiles = {
   name: "Preset workspace files",
 };
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
-export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
+export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
+export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
 export const CreateDedicatedOpenclawExperimental = {
   ...story("createDedicatedOpenclawExperimental"),
   name: "Experimental Dedicated OpenClaw",
@@ -118,6 +119,13 @@ export const CreateAnthropic = {
   name: "Anthropic with OpenClaw harness",
 };
 export const CreateCodexPat = { ...story("createCodexPat"), name: "Service Accounts" };
+export const CreateOAuth = story("createOAuth");
+export const CreateOAuthPending = story("createOAuthPending");
+export const CreateOAuthReady = story("createOAuthReady");
+export const CreateOAuthDenied = story("createOAuthDenied");
+export const CreateOAuthUnavailable = story("createOAuthUnavailable");
+export const CreateOAuthError = story("createOAuthError");
+export const CreateOAuthExpired = story("createOAuthExpired");
 export const CreatePatToOpenClaw = {
   ...story("createPatToOpenClaw"),
   name: "Switch from Service Accounts to OpenClaw",

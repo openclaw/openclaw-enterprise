@@ -232,7 +232,7 @@ ownership and do not rewrite existing credentials.
 
 Unsupported state predating Backend composition requires explicit cleanup and recreation of the
 selected disposable state, as recorded in the
-[implementation specification](../../specs/17-provider-driver-abstraction/contract.md#migration-and-implementation-boundaries).
+[implementation specification](../../specs/plans/17-provider-driver-abstraction/contract.md#migration-and-implementation-boundaries).
 Ownership is never inferred or backfilled. Draft edits and API shutdown do not
 stop workloads; exact upstream cleanup still needs the original configuration.
 

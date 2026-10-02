@@ -18,13 +18,10 @@ backend: []
 # Omitted or false disables seeding; existing Presets are retained.
 presets:
   includeDefaults: true
-  # Optional: load custom DevDay presets, or mount your own JSON beside this YAML.
+  # Optional: load the SWE Agent preset, or mount your own JSON beside this YAML.
   # Relative paths resolve beside installation.yaml; mount files for API and worker.
   # files:
-  #   - /app/deploy/presets/devday.json # SWE Agent
-  #   - /app/deploy/presets/devday-partners.json # Community Agent
-  #   - /app/deploy/presets/devday-qa.json # Q&A Agent
-  #   - /app/deploy/presets/devday-oncall.json # Oncall Agent
+  #   - /app/deploy/presets/swe-preset.json # SWE Agent
 
 # Bundled Drivers omit `package`; selection IDs and options are trusted startup inputs.
 # See [Driver selections](../../../docs/reference/drivers/selection.md#supported-selections).
@@ -74,10 +71,10 @@ drivers:
         gateway:
           requests:
             cpu: 100m
-            memory: 128Mi
+            memory: 1280Mi
           limits:
             cpu: "4"
-            memory: 2Gi
+            memory: 3Gi
         agent:
           requests:
             cpu: 100m

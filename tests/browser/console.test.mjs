@@ -730,6 +730,12 @@ test("console retained views clear after session expiry and exact Agent denial",
   await expectRetainedPreview(page, "Denied retained Agent");
   await releaseHeldRoute(page, detailPattern, deniedAgent);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  // Someone else's Agent link says what the reader can do, not that a collection is unreadable.
+  await page
+    .getByText(
+      "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you.",
+    )
+    .waitFor();
   await expectNoText(page, /Configuration draft|Selected revision/);
 });
 
@@ -873,6 +879,69 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
 
   await page.goto(`${fixture.origin}/console/?authError=google`);
   await page.getByText("Could not sign in with Google. Try again or use your password.").waitFor();
+});
+
+test("OIDC sign-in uses the discovered label and accepts only the discovered endpoint", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const requests = [];
+  page.on("request", (request) => requests.push(new URL(request.url()).pathname));
+  const envelope = (data) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data, meta: { requestId: "browser-oidc" } }),
+  });
+  const endpoint = "https://sso.example.test/realms/acme/protocol/openid-connect/auth";
+  let discovery = {
+    github: false,
+    google: false,
+    oidc: true,
+    oidcSignIn: { label: "Acme SSO", authorizationUrl: endpoint },
+    sessionBinding: true,
+  };
+  // This controller has no OIDC configuration; discovery and start are modelled here.
+  await page.route("**/api/auth/providers", (route) => route.fulfill(envelope(discovery)));
+  const attemptId = "c".repeat(43);
+  const starts = [
+    "https://sso.example.test/realms/other/protocol/openid-connect/auth",
+    `${endpoint}?client_id=fixture&state=s`,
+  ];
+  await page.route("**/api/auth/providers/oidc/start", (route) =>
+    route.fulfill(envelope({ url: starts.shift(), attemptId })),
+  );
+  // Models the IdP redirecting back to Console after the callback set its cookies.
+  await page.route("https://sso.example.test/**", (route) =>
+    route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
+  );
+  await page.goto(`${fixture.origin}/console/login`);
+  const oidc = page.getByRole("button", { name: "Continue with Acme SSO" });
+  await oidc.click();
+  await page
+    .getByText("Acme SSO sign-in is unavailable. Try again or use your password.")
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Continue with Google" }).count(), 0);
+
+  const result = page.waitForResponse(
+    (candidate) => new URL(candidate.url()).pathname === "/api/auth/providers/oidc/result",
+  );
+  await oidc.click();
+  const refused = await result;
+  assert.equal(refused.request().postDataJSON().attemptId, attemptId);
+  assert.equal(refused.status(), 403);
+  await page
+    .getByText("Could not sign in with Acme SSO. Try again or use your password.")
+    .waitFor();
+  assert.equal(requests.includes("/api/auth/providers/google/result"), false);
+
+  // A non-HTTPS discovered endpoint offers no OIDC button at all.
+  discovery = {
+    ...discovery,
+    oidcSignIn: { label: "Acme SSO", authorizationUrl: "http://sso.example.test/auth" },
+  };
+  await page.goto(`${fixture.origin}/console/login`);
+  await page.getByLabel("Username").waitFor();
+  await expectNoText(page, /Continue with Acme SSO/);
 });
 
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {

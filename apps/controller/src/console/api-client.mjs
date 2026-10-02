@@ -63,6 +63,14 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
       }
+      const detailPaths = Array.isArray(payload?.error?.details)
+        ? payload.error.details
+            .map((detail) => detail?.path)
+            .filter((path) => typeof path === "string" && /^\/[A-Za-z0-9_/~-]{0,128}$/.test(path))
+        : [];
+      if (detailPaths.length > 0) {
+        error.detailPaths = detailPaths;
+      }
       const retryAfter = response.headers.get("retry-after");
       if (retryAfter !== null && /^[1-9][0-9]{0,4}$/.test(retryAfter)) {
         error.retryAfterSeconds = Number(retryAfter);

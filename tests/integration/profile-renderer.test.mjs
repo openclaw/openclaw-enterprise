@@ -232,6 +232,13 @@ const tenantRuntimeResources = {
   requests: { cpu: "100m", memory: "128Mi" },
   limits: { cpu: "4", memory: "2Gi" },
 };
+// An OpenClaw Gateway settles near 1.2 GiB once it has served a few turns, so
+// its memory request reserves that much. A dedicated Codex Gateway with native
+// admin chat peaked at 1.9 GiB and was OOM-killed at 2Gi, so its limit is 3Gi.
+const gatewayResources = {
+  requests: { cpu: "100m", memory: "1280Mi" },
+  limits: { cpu: "4", memory: "3Gi" },
+};
 
 test("profiles give tenant runtimes four-core CPU limits over unchanged 100m requests", () => {
   const example = loadYaml(
@@ -246,7 +253,7 @@ test("profiles give tenant runtimes four-core CPU limits over unchanged 100m req
     ["production example", example],
   ]) {
     const { resources } = installation.drivers.compute.configuration;
-    assert.deepEqual(resources.gateway, tenantRuntimeResources, `${name} Gateway`);
+    assert.deepEqual(resources.gateway, gatewayResources, `${name} Gateway`);
     assert.deepEqual(resources.agent, tenantRuntimeResources, `${name} Harness`);
     assert.deepEqual(
       resources.namespace.containerDefaults,
@@ -410,11 +417,11 @@ test(
     const original = render("codex", codexInput());
     const changed = render(
       "codex",
-      codexInput({ presets: { files: ["/app/deploy/presets/devday.json"] } }),
+      codexInput({ presets: { files: ["/app/deploy/presets/swe-preset.json"] } }),
     );
     assert.match(
       changed.installation,
-      /presets:\n {2}includeDefaults: true\n {2}files:\n {4}- \/app\/deploy\/presets\/devday.json/,
+      /presets:\n {2}includeDefaults: true\n {2}files:\n {4}- \/app\/deploy\/presets\/swe-preset.json/,
     );
     const originalManifests = helmTemplate(original);
     const changedManifests = helmTemplate(changed);
@@ -736,7 +743,7 @@ test(
     assert.match(recoveryOnly.values, /passwordSignIn: recovery-only/);
     assert.match(
       recoveryOnly.preflight.prerequisites.join("\n"),
-      /GitHub or Google identity attached to every ordinary account/,
+      /GitHub, Google or OIDC identity attached to every ordinary account/,
     );
     assert.match(
       helmTemplate(recoveryOnly),
@@ -760,6 +767,34 @@ test(
     assert.doesNotMatch(google.values, /github:/);
     assert.match(helmTemplate(google), /name: OCC_AUTH_GOOGLE_ALLOWED_DOMAINS/);
 
+    const oidc = render(
+      "openclaw",
+      externalSignInInput({
+        github: undefined,
+        oidc: {
+          issuer: "https://sso.example.com/realms/acme",
+          authorizationUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/auth",
+          tokenUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/token",
+          jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs",
+          tokenAuth: "client_secret_basic",
+          displayName: "Acme SSO",
+          egressCidrs: ["198.51.100.0/24"],
+        },
+      }),
+    );
+    assert.equal(oidc.summary.ok, true, oidc.preflight.errors.join("\n"));
+    assert.match(oidc.values, /oidc:\n {4}enabled: true\n/);
+    assert.match(oidc.values, /issuer: https:\/\/sso\.example\.com\/realms\/acme\n/);
+    assert.doesNotMatch(oidc.values, /github:/);
+    const oidcManifests = helmTemplate(oidc);
+    assert.match(
+      oidcManifests,
+      /name: OCC_AUTH_OIDC_ISSUER\n\s+value: "https:\/\/sso\.example\.com\/realms\/acme"/,
+    );
+    assert.match(oidcManifests, /name: OCC_AUTH_OIDC_TOKEN_AUTH\n\s+value: "client_secret_basic"/);
+    assert.match(oidcManifests, /name: OCC_AUTH_OIDC_DISPLAY_NAME\n\s+value: "Acme SSO"/);
+    assert.match(oidcManifests, /name: openclaw-enterprise-api-oidc-login-egress/);
+
     // Password-only installs behind ingress-nginx keep native admin and still trust the proxy.
     const nativeAdmin = render(
       "openclaw",
@@ -775,7 +810,7 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
   assert.equal(github.summary.ok, true);
   assert.match(
     github.preflight.warnings.join("\n"),
-    /controlPlane\.trustedProxy is not set: .*GitHub or Google sign-in starts have no per-client limit/,
+    /controlPlane\.trustedProxy is not set: .*external sign-in starts have no per-client limit/,
   );
   assert.doesNotMatch(github.values, /trustedProxy:/);
   const password = render("openclaw", baseInput());
@@ -790,17 +825,17 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   assertPreflightFailure(
     "openclaw",
     externalSignInInput({ recoveryUserId: undefined }),
-    /controlPlane.recoveryUserId is required with controlPlane.github or controlPlane.google/,
+    /controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc/,
   );
   assertPreflightFailure(
     "openclaw",
     baseInput({ controlPlane: { ...baseInput().controlPlane, recoveryUserId: "admin" } }),
-    /controlPlane.recoveryUserId requires controlPlane.github or controlPlane.google/,
+    /controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc/,
   );
   assertPreflightFailure(
     "openclaw",
     baseInput({ controlPlane: { ...baseInput().controlPlane, passwordSignIn: "recovery-only" } }),
-    /controlPlane.passwordSignIn requires controlPlane.github or controlPlane.google/,
+    /controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc/,
   );
   assertPreflightFailure(
     "openclaw",
@@ -821,6 +856,45 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     "openclaw",
     externalSignInInput({ github: { clientSecret: "inline" } }),
     /controlPlane.github.clientSecret is not supported/,
+  );
+  const oidc = {
+    issuer: "https://tenant.idp.example.test/",
+    authorizationUrl: "https://tenant.idp.example.test/authorize",
+    tokenUrl: "https://tenant.idp.example.test/oauth/token",
+    jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
+  };
+  for (const [override, message] of [
+    [
+      { issuer: "http://tenant.idp.example.test/" },
+      /controlPlane.oidc.issuer must be an https URL/,
+    ],
+    [{ issuer: "https://203.0.113.10/" }, /controlPlane.oidc.issuer must be an https URL/],
+    [
+      { tokenUrl: "https://other.example.test/token" },
+      /controlPlane.oidc.tokenUrl must be an https URL on port 443 on the issuer's host/,
+    ],
+    [
+      { jwksUrl: "https://tenant.idp.example.test:8443/jwks" },
+      /controlPlane.oidc.jwksUrl must be an https URL on port 443 on the issuer's host/,
+    ],
+    [
+      { authorizationUrl: "https://tenant.idp.example.test/authorize?x=1" },
+      /controlPlane.oidc.authorizationUrl must be an https URL/,
+    ],
+    [{ tokenAuth: "private_key_jwt" }, /controlPlane.oidc.tokenAuth must be client_secret_post/],
+    [{ displayName: "x".repeat(41) }, /controlPlane.oidc.displayName must be 1 to 40/],
+    [{ discoveryUrl: "https://tenant.idp.example.test/" }, /controlPlane.oidc.discoveryUrl/],
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({ github: undefined, oidc: { ...oidc, ...override } }),
+      message,
+    );
+  }
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ github: undefined, oidc: { ...oidc, jwksUrl: undefined } }),
+    /controlPlane.oidc.jwksUrl must be a nonempty string/,
   );
   assertPreflightFailure(
     "openclaw",

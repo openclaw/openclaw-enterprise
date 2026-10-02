@@ -211,7 +211,7 @@ function configuration() {
     throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
   }
 
-  // { github?, google? }: each configured provider carries the recovery user ID.
+  // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(process.env);
   const clientAddress = clientAddressConfiguration(process.env);
   if (mode === "production") {

@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { AuthorizationDeniedError, ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  AuthorizationDeniedError,
+  ResourceConflictError,
+  ResourceStateConflictError,
+  ScopeViolationError,
+} from "../errors.ts";
 import type { PlatformUnitOfWork } from "./platform-state.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
@@ -171,16 +176,43 @@ const pendingAttemptCapacity = 1000;
 const userColumns = `u.id AS user_id, u.email, u.name, u.email_verified, u.image,
   u.created_at AS user_created_at, u.updated_at AS user_updated_at`;
 
+export interface PostgresHumanAuthenticationOptions {
+  /**
+   * Provider instance IDs of the external sign-in providers configured now (for example
+   * `github:<client id digest>` or `oidc:<issuer and client id digest>`). A session signed in
+   * through an external method of any other instance does not authenticate. Absent means no
+   * external provider is configured: only password sessions authenticate.
+   */
+  readonly externalProviderIds?: readonly string[];
+}
+
 /** Authentication persistence shares the original State transaction and audit writer. */
 export class PostgresHumanAuthentication {
   private readonly state: PostgresPlatformState;
   private readonly installationId: string;
   private readonly issuer: string;
+  private readonly externalProviderIds: readonly string[];
 
-  constructor(state: PostgresPlatformState, installationId: string, issuer: string) {
+  constructor(
+    state: PostgresPlatformState,
+    installationId: string,
+    issuer: string,
+    options: PostgresHumanAuthenticationOptions = {},
+  ) {
     this.state = state;
     this.installationId = installationId;
     this.issuer = issuer;
+    const externalProviderIds = options.externalProviderIds ?? [];
+    if (
+      !Array.isArray(externalProviderIds) ||
+      externalProviderIds.some(
+        (providerId) =>
+          typeof providerId !== "string" || providerId.length === 0 || providerId === "credential",
+      )
+    ) {
+      throw new ScopeViolationError("The configured external sign-in providers are invalid.");
+    }
+    this.externalProviderIds = Object.freeze([...new Set(externalProviderIds)]);
   }
 
   private async query(
@@ -628,6 +660,8 @@ export class PostgresHumanAuthentication {
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
       if (
+        (proof.providerId !== "credential" &&
+          !this.externalProviderIds.includes(proof.providerId)) ||
         session.userId !== proof.userId ||
         current === undefined ||
         current.proof.principalId !== proof.principalId ||
@@ -668,13 +702,23 @@ export class PostgresHumanAuthentication {
     });
   }
 
+  /**
+   * The session for `token` when it still authenticates. A session whose external sign-in
+   * method belongs to a provider instance that is no longer configured (the provider was
+   * removed, or its issuer or client ID changed) is ended here and audited once; password
+   * sessions do not depend on provider configuration. The check is part of the one session
+   * query, so it adds no round trip and never calls an identity provider.
+   */
   async currentSession(
     token: string,
   ): Promise<(HumanAuthenticationSession & { user: HumanAuthenticationUser }) | undefined> {
     return this.state.transact(async (unit) => {
       const [row] = await this.query(
         unit,
-        `SELECT s.*, ${userColumns} FROM occ.session s
+        `SELECT s.*, ${userColumns}, h.principal_id AS session_principal_id,
+           m.id AS session_method_id, m.provider_id AS session_provider_id,
+           (NOT m.identity_only OR m.provider_id = ANY($4::text[])) AS provider_configured
+         FROM occ.session s
          JOIN occ.human_authentication_sessions b ON b.session_id = s.id AND b.user_id = s.user_id
          JOIN occ.human_authentication_accounts h ON h.user_id = s.user_id AND h.version = b.version
          JOIN occ.account m ON m.id = b.method_id AND m.user_id = s.user_id AND m.authentication_version = b.method_version
@@ -682,9 +726,36 @@ export class PostgresHumanAuthentication {
          JOIN occ.iam_identities p ON p.id = h.principal_id AND p.kind = 'principal' AND p.issuer = $2 AND p.subject = s.user_id
          WHERE s.token = $1 AND s.expires_at > clock_timestamp() AND NOT h.disabled AND h.installation_id = $3
          AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> '') OR m.identity_only)`,
-        [token, this.issuer, this.installationId],
+        [token, this.issuer, this.installationId, this.externalProviderIds],
       );
-      return row === undefined ? undefined : { ...sessionFromRow(row), user: userFromRow(row) };
+      if (row === undefined) {
+        return undefined;
+      }
+      if (row.provider_configured !== true) {
+        await this.endUnconfiguredSession(unit, row);
+        return undefined;
+      }
+      return { ...sessionFromRow(row), user: userFromRow(row) };
+    });
+  }
+
+  /** Ends one session whose sign-in provider instance is gone; only the deleting call audits. */
+  private async endUnconfiguredSession(unit: PlatformUnitOfWork, row: Row): Promise<void> {
+    const userId = row.user_id as string;
+    await this.lockUser(unit, userId);
+    const [deleted] = await this.query(
+      unit,
+      `DELETE FROM occ.session WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [row.id, userId],
+    );
+    if (deleted === undefined) {
+      return;
+    }
+    await this.audit(unit, "authentication.session.end", row.session_principal_id as string, {
+      userId,
+      methodId: row.session_method_id,
+      providerId: row.session_provider_id,
+      reason: "PROVIDER_NOT_CONFIGURED",
     });
   }
 
@@ -733,7 +804,7 @@ export class PostgresHumanAuthentication {
         expectedVersion < 1 ||
         account.version !== expectedVersion)
     ) {
-      throw new ResourceConflictError(
+      throw new ResourceStateConflictError(
         "The authentication account version changed. Read its current state before a new action.",
       );
     }
@@ -760,8 +831,16 @@ export class PostgresHumanAuthentication {
        JOIN occ.iam_identities p ON p.id = h.principal_id AND p.kind = 'principal' AND p.issuer = $4 AND p.subject = s.user_id
        WHERE s.id = $1 AND s.user_id = $2 AND h.principal_id = $3 AND h.installation_id = $5
        AND s.expires_at > clock_timestamp() AND NOT h.disabled
-       AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> '') OR m.identity_only)`,
-      [actor.sessionId, actor.userId, actor.principalId, this.issuer, this.installationId],
+       AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> '')
+         OR (m.identity_only AND m.provider_id = ANY($6::text[])))`,
+      [
+        actor.sessionId,
+        actor.userId,
+        actor.principalId,
+        this.issuer,
+        this.installationId,
+        this.externalProviderIds,
+      ],
     );
     if (current === undefined) {
       throw new AuthorizationDeniedError("The human administrator session is no longer current.");
@@ -805,12 +884,12 @@ export class PostgresHumanAuthentication {
       throw new ScopeViolationError("An external method cannot replace a password.");
     }
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     return this.state.transact(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       if (account.disabled !== false) {
-        throw new ResourceConflictError("The authentication account is disabled.");
+        throw new ResourceStateConflictError("The authentication account is disabled.");
       }
       const [existing] = await this.query(
         unit,
@@ -852,7 +931,7 @@ export class PostgresHumanAuthentication {
     expectedVersion: number,
   ): Promise<{ methodId: string; providerId: string }> {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     return this.state.transact(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
@@ -867,7 +946,7 @@ export class PostgresHumanAuthentication {
         method.identity_only !== true ||
         method.provider_id === "credential"
       ) {
-        throw new ResourceConflictError("Only an attached external identity can be detached.");
+        throw new ResourceStateConflictError("Only an attached external identity can be detached.");
       }
       // Bindings cascade with the method; the recovery credential is never identity-only.
       await this.query(unit, `DELETE FROM occ.account WHERE id = $1`, [methodId]);
@@ -895,7 +974,7 @@ export class PostgresHumanAuthentication {
     expectedVersion: number,
   ): Promise<void> {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     await this.state.transact(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
@@ -906,11 +985,11 @@ export class PostgresHumanAuthentication {
           [userId],
         );
         if (recovery !== undefined) {
-          throw new ResourceConflictError("The recovery account cannot be disabled.");
+          throw new ResourceStateConflictError("The recovery account cannot be disabled.");
         }
       }
       if (operation === "enable" && account.disabled !== true) {
-        throw new ResourceConflictError("The authentication account is not disabled.");
+        throw new ResourceStateConflictError("The authentication account is not disabled.");
       }
       await this.query(
         unit,
@@ -957,7 +1036,7 @@ export class PostgresHumanAuthentication {
     expectedVersion: number,
   ): Promise<HumanAuthenticationRecovery & { changed: boolean; email: string }> {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     return this.state.transact(async (unit) => {
       // The same lock serializes activation, so a designation cannot appear or move concurrently.
@@ -973,7 +1052,7 @@ export class PostgresHumanAuthentication {
         throw new ScopeViolationError("The recovery designation is unavailable.");
       }
       if (designation.user_id !== expectedCurrentUserId) {
-        throw new ResourceConflictError(
+        throw new ResourceStateConflictError(
           "The recovery designation changed. Read its current state before a new action.",
         );
       }
@@ -983,7 +1062,7 @@ export class PostgresHumanAuthentication {
         throw new ScopeViolationError("The recovery account is unavailable.");
       }
       if (account.disabled !== false) {
-        throw new ResourceConflictError("The authentication account is disabled.");
+        throw new ResourceStateConflictError("The authentication account is disabled.");
       }
       // The database has no composite key tying method_id to user_id, so the method is only
       // ever derived here from the target's own credential rows, never taken from input.
@@ -1013,7 +1092,7 @@ export class PostgresHumanAuthentication {
         [this.installationId, userId, principalId, method.id, designation.user_id],
       );
       if (updated === undefined) {
-        throw new ResourceConflictError(
+        throw new ResourceStateConflictError(
           "The recovery designation changed. Read its current state before a new action.",
         );
       }
@@ -1041,7 +1120,7 @@ export class PostgresHumanAuthentication {
       if (!enrolment.enrolled) {
         throw enrolment.reason === "PRINCIPAL_MISSING"
           ? new ScopeViolationError("The authentication Principal is unavailable.")
-          : new ResourceConflictError("The account requires exactly one password method.");
+          : new ResourceStateConflictError("The account requires exactly one password method.");
       }
       const { principalId, version, created } = enrolment;
       if (created) {
@@ -1148,7 +1227,11 @@ export class PostgresHumanAuthentication {
     });
   }
 
-  async recordDenied(reason: HumanAuthenticationDenial): Promise<void> {
+  /** `provider` names the external sign-in provider whose callback was refused. */
+  async recordDenied(
+    reason: HumanAuthenticationDenial,
+    provider?: "github" | "google" | "oidc",
+  ): Promise<void> {
     if (
       ![
         "INVALID_CREDENTIALS",
@@ -1156,7 +1239,8 @@ export class PostgresHumanAuthentication {
         "EXTERNAL_IDENTITY_REJECTED",
         "SESSION_REJECTED",
         "PROVIDER_UNAVAILABLE",
-      ].includes(reason)
+      ].includes(reason) ||
+      (provider !== undefined && !["github", "google", "oidc"].includes(provider))
     ) {
       throw new ScopeViolationError("The authentication denial classification is invalid.");
     }
@@ -1172,6 +1256,7 @@ export class PostgresHumanAuthentication {
         resource: { kind: "installation", id: this.installationId },
         outcome: "denied",
         reasonCode: reason,
+        ...(provider === undefined ? {} : { details: { provider } }),
       }),
     );
   }

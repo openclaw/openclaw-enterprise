@@ -169,19 +169,17 @@ const MAX_WATCH_BYTES = 32 * 1024 * 1024;
 const MAX_ACTIVITY_RECORDS = 200;
 const MAX_ACTIVITY_FILES = 40;
 
-function watchLines(text) {
-  const values = [];
+function* watchLines(text) {
   for (const line of text.split("\n")) {
     try {
       const value = JSON.parse(line);
       if (value?.object?.metadata !== undefined) {
-        values.push(value);
+        yield value;
       }
     } catch {
       // A stopped watch can leave one partial line; a tail read can start mid-line.
     }
   }
-  return values;
 }
 
 function podStatus(type, pod) {

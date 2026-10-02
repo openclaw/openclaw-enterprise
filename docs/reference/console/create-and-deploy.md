@@ -1,12 +1,11 @@
 # Create and deploy Agents in the console
 
-Use the [platform console](../console.md) to create an Agent and provision supported
-Dedicated runtimes. On Kubernetes, check the
-[production Agent prerequisites](../../guides/deploy/production-agents.md#prepare-each-namespace):
-a ready Namespace and configured Secret storage. New tokens require
-Secret creation permission. First-time provisioning grants access to accepted
-Secret references; ordinary draft creation also requires permission to grant
-Agent key access. After deployment, [verify this same
+Use the [platform console](../console.md) to create Agents and provision supported
+Dedicated runtimes. Kubernetes requires a
+[ready Namespace and Secret storage](../../guides/deploy/production-agents.md#prepare-each-namespace).
+Creating tokens requires Secret creation permission. Provisioning grants accepted
+Secret access; ordinary draft creation also requires permission to grant Agent
+key access. After deployment, [verify the same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
@@ -20,52 +19,59 @@ Do not expose the gateway publicly. **Open native admin UI** requires
 and the exact Agent HTTPS origin. Loopback origins alone are insufficient.
 Presets and edited Configuration JSON retain their settings.
 
+Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
+and full-facet Sandbox provisioning. The pinned runtime lacks this support;
+Console withholds Dedicated until an operator declares a compatible custom image.
+[Sandbox delivery limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
+still block initial workspace files and Secret-backed environment projection.
+
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
-2. To reuse a [Preset](../presets.md), choose one, fill its variables, and select
-   **Use Preset**. Review defaults and choose an existing or new model Secret.
+2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
+   Review defaults and choose an existing or new model Secret.
    Select **Start without Preset** for standard defaults.
 3. Enter a unique name within the Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** by default and **OpenClaw**;
    Anthropic offers only **OpenClaw**. **Execution mode** is Dedicated for Codex,
-   Embedded for Anthropic OpenClaw, and selectable for OpenAI OpenClaw. Dedicated
-   OpenClaw is experimental. Verify its runtime supports native worker inference;
-   released images may not.
-   For Codex, choose **OpenAI API key** or **Service Accounts**. OpenClaw uses
-   the provider's API key.
-   For API keys, use [OpenAI API keys](https://platform.openai.com/api-keys). For
-   Service Accounts, open [OpenAI admin](https://admin.openai.com/), choose your
-   workspace, open **Service accounts**, and create a token with Codex scope.
-   Choose an existing model credential Secret or **Create new Secret...**.
-   It saves immediately, even if you cancel Agent creation.
+   and selecting OpenClaw starts in Embedded mode. For OpenAI OpenClaw, a supported
+   Installation also offers **Dedicated** under **Runtime details**. Anthropic
+   OpenClaw stays Embedded.
+   For Codex, choose **OpenAI API key**, **Service Accounts**, or **ChatGPT
+   OAuth** ([experimental](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)).
+   OpenClaw uses the provider's API key.
+   Use [OpenAI API keys](https://platform.openai.com/api-keys), or
+   [OpenAI admin](https://admin.openai.com/) → your workspace → **Service accounts**
+   to create a token with Codex scope.
+   Choose a model Secret or **Create new Secret...**.
+   New Secrets persist after cancellation.
    Choose a model from the starter list or select **Enter model ID manually**.
-   The list appears before credential entry without a preselected model. Confirm
-   credential and runtime support; credentials stay outside Configuration.
+   No model is preselected. Confirm credential and runtime support;
+   credentials stay outside Configuration.
 4. Confirm your Installation has access to the chosen model. Primary and fallback
    models must use the same supported provider and Harness. For custom settings,
    open **Advanced settings**. Selection changes preserve unrelated JSON edits;
    **Reset template** replaces them.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their access levels. Kubernetes supports Codex (Dedicated) or OpenClaw
-   (Embedded), without a Sandbox Driver. Use Codex for Slack. Leave repositories
-   unselected to create an ordinary Agent without repository access.
+   (Embedded), without a Sandbox Driver. Dedicated OpenClaw requires a Sandbox
+   Driver, so repository credentials remain unsupported. Use Codex for repositories
+   with Slack. Leave repositories unselected if none are needed.
 
-6. If you need Slack, use OpenAI with the **Codex** harness and its channel card.
+6. If you need Slack, select **Dedicated** execution and use its channel card.
    Each token menu selects a readable Namespace Secret or **Create new Secret...**.
    New Secrets persist even if you cancel Agent creation.
    **Apply channel settings** stages settings and bindings into the form;
    cancelling the drawer discards its selections.
-   Channel settings and selected Secret bindings are saved with the Configuration;
+   Settings and Secret bindings are saved with the Configuration;
    plugin selections belong to the Agent. You can also supply Slack
    credentials from the Agent's **Credentials** tab after creation.
-7. Optionally configure plugins as described below, or open **Advanced settings**
-   to review Configuration JSON and **Workspace files**. Preset workspace
-   overrides prefill their matching fields; omitted files use OpenClaw defaults.
-   Edit any of the four files, keep the text to submit that default, or clear a
-   field to create an empty file. The browser submits LF newlines. See
+7. Optionally configure plugins below or open **Advanced settings** for
+   Configuration JSON and **Workspace files**. Presets prefill overrides;
+   omitted files use OpenClaw defaults. Keep or edit each file, or clear its field
+   for an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
-8. Select **Create Agent**. Supported Dedicated runtimes submit inline Configuration,
-   Secret references, Agent inputs, repositories, and workspace files for provisioning.
+8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
+   repositories, and workspace files for supported Dedicated provisioning.
    After provisioning, Console opens Agent details while deployment continues.
    Follow startup and failures with **Deployment activity → Refresh deployment**.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
@@ -101,18 +107,20 @@ Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agen
 responses, and browser storage. Provisioning creates exact grants; ordinary drafts
 require IAM administration permission.
 
-Presets with only an authentication method preselect that method and require a
-model credential Secret selection. Presets with saved authentication bindings
-retain them. Bound API-key and Service Accounts Presets
-fix the provider, including JSON edits; saved service account tokens also fix Codex.
+Presets preselect their authentication method or retain saved bindings.
+Method-only Presets require a model Secret. Bound API-key and Service Accounts
+Presets fix the provider, including JSON edits; saved service account tokens also fix Codex.
+OpenClaw Presets retain their configured Harness independently of execution mode.
+Without model runtime policy, Presets keep the default Harness.
+Mode changes preserve provider transport settings.
 Operator-managed credentials fix OpenClaw across provider changes. Start without a
 Preset to change these choices, or edit authentication later in **Credentials**.
 
-Provider changes reset Harness, credential, and model; authentication-method changes
-reset credential/model. Switching an unsaved PAT to OpenClaw selects API-key auth
-and clears token/model. API-key Harness changes preserve both. Credential edits
-preserve model selection. Select or enter a model before saving; the starter list
-does not prove runtime compatibility or provider acceptance.
+Provider changes reset Harness, credential, and model; authentication changes
+reset credential/model. Selecting OpenClaw clears an unsaved PAT and model and
+selects API-key auth; JSON edits preserve their explicit model. API-key Harness
+changes preserve both. Credential edits preserve the selected model.
+The starter list proves neither runtime compatibility nor provider acceptance.
 
 The optional model-discovery API requires Namespace Agent `create`, sends
 credentials upstream without saving them, and lists Codex models for `codex_pat`.
@@ -137,9 +145,9 @@ has no managed Secret storage or model-key delivery. Saving a key does not prove
 provider acceptance or runtime readiness. See
 [harness authentication](../agents.md#harness-authentication).
 
-Each successful draft-save step retains its resource ID and freezes saved inputs,
-including authentication. Correct a conflicting name or restore permission, then
-retry using those resources. If model/Slack Secret grants fail after Agent creation,
+Successful draft-save steps retain IDs and freeze inputs, including authentication.
+Correct conflicting names or permissions, then retry those resources.
+If model/Slack Secret grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 Uncertain responses block another attempt: check displayed IDs and the Agents list;
 give the request ID to your operator if the outcome remains unknown. Leaving the
@@ -205,7 +213,7 @@ ID, if available, to your operator.
 
 ## Use repositories and Slack on the same Agent
 
-Select **Dedicated**, the approved repositories and an explicit access level.
+Select **Codex**, **Dedicated**, the approved repositories and an explicit access level.
 Configure Slack and select its saved token Secrets in the creation form, then
 choose a compatible model-authentication source. With supported provisioning
 and successful repository discovery, **Create Agent** queues setup and follows

@@ -763,19 +763,12 @@ test(
 );
 
 async function boundControlFixture(t, limits = {}) {
-  const reservation = createNetServer();
-  await new Promise((resolve, reject) => {
-    reservation.once("error", reject);
-    reservation.listen(0, "127.0.0.1", resolve);
-  });
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
   const fixture = await startRegistryCredentialServiceFixture(t, {
     namespaceId: `ns_${randomUUID()}`,
     autoOpen: false,
     maximumDurationSeconds: 1200,
     durationSeconds: 600,
-    gateway: { listen: `127.0.0.1:${port}` },
+    gateway: { listen: "127.0.0.1:0" },
     limits,
   });
   const { resolveGitHubRepositoryBinding } = await githubProviderModule("registry");

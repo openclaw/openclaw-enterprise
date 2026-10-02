@@ -1,6 +1,7 @@
 import type {
   PluginCatalogEntry,
   PluginCatalogPage,
+  PluginDiscoveryAuthentication,
   PluginToolCatalogEntry,
 } from "@openclaw-enterprise/contracts";
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
@@ -17,6 +18,56 @@ const PLUGIN_SETUP = {
   label: "OCE plugin setup",
   url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
 };
+
+function oauthIdentity(value: string): {
+  accessToken: string;
+  accountId: string;
+  isFedramp: boolean;
+} {
+  try {
+    const wrapper = asRecord(JSON.parse(value));
+    const auth = asRecord(wrapper?.auth);
+    const tokens = asRecord(auth?.tokens);
+    if (
+      wrapper?.version !== 1 ||
+      wrapper.provider !== "codex" ||
+      wrapper.state !== "ready" ||
+      auth?.auth_mode !== "chatgpt" ||
+      !isNonEmptyString(tokens?.access_token) ||
+      tokens.access_token.length > 16384 ||
+      /[\s\p{Cc}]/u.test(tokens.access_token) ||
+      !isNonEmptyString(tokens.account_id) ||
+      tokens.account_id.length > 256 ||
+      /[\s\p{Cc}]/u.test(tokens.account_id) ||
+      !isNonEmptyString(tokens.id_token)
+    ) {
+      throw new Error();
+    }
+    const segments = tokens.id_token.split(".");
+    if (segments.length !== 3) {
+      throw new Error();
+    }
+    // This is native login state supplied by the server, never browser-provided identity.
+    const claims = asRecord(JSON.parse(Buffer.from(segments[1]!, "base64url").toString("utf8")));
+    const identity = asRecord(claims?.["https://api.openai.com/auth"]);
+    if (
+      !claims ||
+      (identity?.chatgpt_account_id !== undefined &&
+        identity.chatgpt_account_id !== tokens.account_id) ||
+      (identity?.chatgpt_account_is_fedramp !== undefined &&
+        typeof identity.chatgpt_account_is_fedramp !== "boolean")
+    ) {
+      throw new Error();
+    }
+    return {
+      accessToken: tokens.access_token,
+      accountId: tokens.account_id,
+      isFedramp: identity?.chatgpt_account_is_fedramp === true,
+    };
+  } catch {
+    throw new PluginDiscoveryError("credentials_rejected");
+  }
+}
 
 function invalid(): never {
   throw new PluginDiscoveryError("invalid_response");
@@ -81,35 +132,51 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
 }
 
 async function withCredential<T>(
-  accessToken: string,
+  input: PluginDiscoveryAuthentication,
   signal: AbortSignal | undefined,
   run: (request: (path: string, body?: unknown) => Promise<Record<string, unknown>>) => Promise<T>,
 ): Promise<T> {
-  if (!accessToken.startsWith("at-") || /[\s\p{Cc}]/u.test(accessToken)) {
+  if (
+    (input.accessToken === undefined) === (input.credential === undefined) ||
+    (input.accessToken !== undefined &&
+      (!input.accessToken.startsWith("at-") || /[\s\p{Cc}]/u.test(input.accessToken)))
+  ) {
     throw new PluginDiscoveryError("credentials_rejected");
   }
   const deadline = AbortSignal.timeout(15_000);
   const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
   try {
-    // Account authority comes from the PAT issuer, never a browser-provided account ID.
-    const identity = await readResponse(
-      await fetch("https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        redirect: "error",
-        signal: requestSignal,
-      }),
-    );
-    const accountId = text(identity.chatgpt_account_id, 256);
-    if (/[\s\p{Cc}]/u.test(accountId) || typeof identity.chatgpt_account_is_fedramp !== "boolean") {
-      invalid();
+    let accessToken: string;
+    let accountId: string;
+    let isFedramp: boolean;
+    if (input.credential !== undefined) {
+      ({ accessToken, accountId, isFedramp } = oauthIdentity(input.credential.value));
+    } else {
+      accessToken = input.accessToken!;
+      // Account authority comes from the PAT issuer, never a browser-provided account ID.
+      const identity = await readResponse(
+        await fetch("https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          redirect: "error",
+          signal: requestSignal,
+        }),
+      );
+      accountId = text(identity.chatgpt_account_id, 256);
+      if (
+        /[\s\p{Cc}]/u.test(accountId) ||
+        typeof identity.chatgpt_account_is_fedramp !== "boolean"
+      ) {
+        invalid();
+      }
+      isFedramp = identity.chatgpt_account_is_fedramp;
     }
     const headers = {
       Authorization: `Bearer ${accessToken}`,
       "ChatGPT-Account-ID": accountId,
       "OAI-Product-Sku": "codex",
-      ...(identity.chatgpt_account_is_fedramp ? { "X-OpenAI-Fedramp": "true" } : {}),
+      ...(isFedramp ? { "X-OpenAI-Fedramp": "true" } : {}),
     };
-    return await run(async (path, body) =>
+    const result = await run(async (path, body) =>
       readResponse(
         await fetch(`${CATALOG_URL}${path}`, {
           method: body === undefined ? "GET" : "POST",
@@ -123,6 +190,11 @@ async function withCredential<T>(
         }),
       ),
     );
+    // The opaque OAuth wrapper differs from the bearer value an upstream response could echo.
+    if (JSON.stringify(result)?.includes(JSON.stringify(accessToken).slice(1, -1))) {
+      invalid();
+    }
+    return result;
   } catch (error) {
     // Upstream errors can contain credentials, URLs, or private metadata. Expose only a reason.
     throw error instanceof PluginDiscoveryError ? error : new PluginDiscoveryError("unavailable");
@@ -210,10 +282,10 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
 }
 
 export async function discoverHostedPlugins(
-  input: { readonly accessToken: string; readonly cursor?: string; readonly q?: string },
+  input: PluginDiscoveryAuthentication & { readonly cursor?: string; readonly q?: string },
   signal?: AbortSignal,
 ): Promise<PluginCatalogPage> {
-  return withCredential(input.accessToken, signal, async (request) => {
+  return withCredential(input, signal, async (request) => {
     const query = new URLSearchParams({ scope: "GLOBAL", limit: String(PAGE_SIZE) });
     const search = input.q?.trim();
     if (search) {
@@ -233,7 +305,7 @@ export async function discoverHostedPlugins(
       nextCursor,
       setup: {
         message:
-          "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this PAT and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
+          "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this credential and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
         links: [
           WORKSPACE_PLUGINS,
           { label: "Service account credentials", url: "https://admin.openai.com/" },
@@ -245,10 +317,10 @@ export async function discoverHostedPlugins(
 }
 
 export async function getHostedPlugin(
-  input: { readonly accessToken: string; readonly pluginId: string },
+  input: PluginDiscoveryAuthentication & { readonly pluginId: string },
   signal?: AbortSignal,
 ): Promise<PluginCatalogEntry> {
-  return withCredential(input.accessToken, signal, async (request) => {
+  return withCredential(input, signal, async (request) => {
     const pluginId = text(input.pluginId, 256);
     // Request complete declarations for compatibility checks; artifact URLs never leave this Driver.
     const response = await request(

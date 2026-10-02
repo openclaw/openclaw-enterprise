@@ -118,12 +118,7 @@ operators using trusted-proxy gateways can then [verify a model response](operat
   the exact operation. A Namespace-scoped key cannot call `/installation` or
   `/namespaces`; use the exact Namespace URL instead.
 - HTTP `503`: For the GET requests in this guide, OCC could not reach a required
-  dependency; retry after the operator has checked the control plane. For
-  workspace-file writes, check `error.code`: `UNKNOWN_OUTCOME` means the write
-  may have succeeded. Read the same file and compare its content before deciding
-  whether to retry; if it matches, do not retry. If you cannot read it yet, wait
-  or ask someone with `read` permission on the Agent to check. See the
-  [workspace-file PUT reference](../reference/api.md#put-namespacesnamespaceidagentsagentidworkspacefilesname).
+  dependency; retry after the operator has checked the control plane.
 - HTTP `3xx`: The helper rejects redirects, even if the response contains JSON.
   Check the approved OCC origin before retrying; do not forward the key to the
   redirect target.

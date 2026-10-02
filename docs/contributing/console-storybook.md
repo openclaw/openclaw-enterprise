@@ -109,7 +109,7 @@ and a [switching walkthrough](../assets/console-namespace-selector/namespace-swi
 
 Compare **New version queued**, **Deployment waiting for runtime**, and
 **Deployment retry after dependency failure**; switch versions and check
-**Last checked**.
+**Since**.
 
 **First deployment creates credentials** accepts **Deploy new version** without
 a separate credential action. Its initial state is not a Stop request; OCC
@@ -123,15 +123,14 @@ Secret, selects a model, edits IDENTITY.md, and clears USER.md before creation.
 OpenClaw and unsupported-runtime stories retain the draft workflow: provision
 credentials and deploy from Agent detail.
 
-DevDay previews SWE, Community, Q&A, Oncall, and standard presets with models,
-workspace templates, six Slack channels, model Secrets, Linear, and repository
-choices. The simulated catalog works with any Preset or Secret choice.
+DevDay previews SWE Agent and standard presets with models, workspace templates,
+model Secrets, Linear, and repository choices. SWE Agent starts without configured
+Slack channels; the rehearsal adds a simulated channel explicitly. The simulated catalog works with any Preset or Secret choice.
 **Plugins Curated** exercises token-free discovery with simulated Driver responses;
 actual access remains unverified. Hosted discovery requires an eligible Codex
 service-account token. Workspace and Standard OpenClaw stories preview file and
 harness settings. Preset Secret stories cover existing, pending, denied, and
-empty results while retaining new-token entry. Community, Q&A, and Oncall Agents
-remain disabled in the example Installation YAML.
+empty results while retaining new-token entry.
 
 Use the [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
 for presenter actions, expected visible states, and fallbacks.

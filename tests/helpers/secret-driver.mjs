@@ -68,6 +68,25 @@ export function createTestSecretDriver(options = {}) {
       }
       entries.set(key, { ...entry, value });
     },
+    async compareAndSwap(secret, expected, value) {
+      calls.push({ operation: "compareAndSwap", secret: clone(secret), expected, value });
+      if (options.updateError !== undefined) {
+        throw options.updateError;
+      }
+      const key = keyOf(secret);
+      const entry = entries.get(key);
+      if (entry === undefined) {
+        throw new Error("Secret does not exist.");
+      }
+      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
+        throw new Error("Secret backend identity changed.");
+      }
+      if (entry.value !== expected) {
+        return false;
+      }
+      entries.set(key, { ...entry, value });
+      return true;
+    },
     async delete(secret) {
       calls.push({ operation: "delete", secret: clone(secret) });
       if (options.deleteError !== undefined) {

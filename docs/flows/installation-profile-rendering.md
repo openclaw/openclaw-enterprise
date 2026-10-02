@@ -101,7 +101,7 @@ bootstrap administrator, database and cluster egress CIDRs, API client
 selectors, DNS peer, metrics, native admin, private gateway routing, optional
 ChatGPT Backend mounting, optional logging collector, and optional repository
 credential sidecar. Gateway routing is always enabled. Native admin is enabled
-unless `controlPlane.github` or `controlPlane.google` renders external sign-in
+unless `controlPlane.github`, `controlPlane.google` or `controlPlane.oidc` renders external sign-in
 with `auth.recoveryUserId`, which Helm requires with native admin off. An
 optional `controlPlane.trustedProxy` renders `api.trustedProxy`.
 

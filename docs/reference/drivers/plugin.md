@@ -165,4 +165,4 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 
 - [Bundled Driver source](../../../apps/controller/src/drivers/plugin/index.ts), [runtime translator](../../../apps/controller/src/drivers/plugin/runtime-translator.ts), and [trusted selection](../../../apps/controller/src/composition/installation-config.ts)
 - [Agent plugin runtime flow](../../flows/agent-plugins.md), [deployment](../../guides/deploy.md), and [verification guide](../../testing/plugins.md)
-- [Implementation proof requirements](../../../specs/16-plugin-driver.md#verification)
+- [Implementation proof requirements](../../../specs/plans/16-plugin-driver.md#verification)

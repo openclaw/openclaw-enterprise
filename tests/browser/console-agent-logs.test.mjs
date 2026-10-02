@@ -129,6 +129,10 @@ test("level chips and the text filter narrow only the loaded window; download sa
     line(4, `plain output with ${secret}`),
     line(5, '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"hi"}}'),
     line(6, "Harness model authentication probe failed."),
+    line(
+      7,
+      '{"time":"2026-09-30T12:00:07Z","level":"debug","message":"heartbeat tick","subsystem":"gateway"}',
+    ),
   ];
 
   const { page } = await newPage(t, fixture);
@@ -141,6 +145,9 @@ test("level chips and the text filter narrow only the loaded window; download sa
     .getByText("Filters search only the lines loaded in this view, not the whole container log.")
     .waitFor();
   const reads = logRequests(requests, revisionId).length;
+  // By default the server returns info and above; debug lines are never loaded.
+  assert.ok(logRequests(requests, revisionId).every(({ path }) => path.includes("minLevel=info")));
+  assert.equal(await pane.getByText("heartbeat tick").count(), 0);
 
   // Level chips hide lines client-side; withheld rows stay visible.
   const filters = page.getByRole("group", { name: "Log filters" });
@@ -185,6 +192,7 @@ test("level chips and the text filter narrow only the loaded window; download sa
   assert.deepEqual(Object.fromEntries(requested.searchParams), {
     source: "gateway",
     pod: computeDriver.podName({ id: revisionId }),
+    minLevel: "info",
     download: "true",
   });
   assert.equal(request.method(), "GET");
@@ -196,6 +204,12 @@ test("level chips and the text filter narrow only the loaded window; download sa
   assert.match(body, /WITHHELD 1 unrecognised_structured/);
   assert.equal(body.includes(secret), false);
   assert.equal(body.includes("jsonrpc"), false);
+  assert.equal(body.includes("heartbeat tick"), false);
+
+  // Include debug starts a new server read without the level floor.
+  await page.getByLabel("Include debug").check();
+  await pane.getByText("heartbeat tick").waitFor();
+  assert.equal(logRequests(requests, revisionId).at(-1).path.includes("minLevel="), false);
 });
 
 test("an operator without administer sees status but no log text and is never re-polled", async (t) => {

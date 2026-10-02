@@ -33,11 +33,31 @@ const MAX_JSON_DEPTH = 8;
 const TRUNCATION_MARK = "…[truncated]";
 
 const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  "runtime.startup_phase": ["container", "phase", "outcome", "ms", "sinceStartMs"],
+  "runtime.startup_phase": ["container", "phase", "outcome", "ms", "sinceStartMs", "code"],
   "openclaw.model_probe": ["elapsedMs", "capMs", "cpuWaitMs", "code"],
   "codex.model_probe": ["attempt", "elapsedMs", "exitCode", "signal", "code"],
   "runtime.workspace_node": ["container", "outcome", "code"],
+  "runtime.gateway_settings_overridden": ["container"],
 });
+
+// `runtime.gateway_settings_overridden` names (never values) the owner settings a
+// Gateway replaced. A name can carry an owner-typed key, so the list is kept only
+// when every item is a short key path; otherwise the event keeps no list.
+const OVERRIDDEN_SETTING =
+  /^[A-Za-z][A-Za-z0-9_-]{0,63}(?:(?:\[\])?\.[A-Za-z][A-Za-z0-9_-]{0,63}){0,7}$/;
+const MAX_OVERRIDDEN_SETTINGS = 32;
+
+function overriddenSettings(value: unknown): string | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_OVERRIDDEN_SETTINGS ||
+    !value.every((item) => typeof item === "string" && OVERRIDDEN_SETTING.test(item))
+  ) {
+    return undefined;
+  }
+  return scalar(value.join(", ")) as string;
+}
 
 // Fixed plain-text failure lines the runtime wrapper prints next to its structured
 // events (`runtime-entrypoints.ts`). They are wrapper errors, not `unknown` text.
@@ -62,6 +82,22 @@ const STRUCTURED_FIELDS: ReadonlySet<string> = new Set([
   "url",
   "method",
 ]);
+
+// Codex tool-call fields (`codex_core::tools::parallel`): names and timings only.
+const CODEX_FIELDS: readonly string[] = ["tool_name", "turn_id", "total_duration_ms"];
+// Codex tracing prints span lifecycle records (`new`, `enter`, `exit`, `close`)
+// as events whose message is the lifecycle word and whose `span` names the span.
+const CODEX_SPAN_EVENTS: ReadonlySet<string> = new Set(["new", "enter", "exit", "close"]);
+const CODEX_SPAN_NAME = /^[A-Za-z_][\w.:-]{0,63}$/;
+// Fields of Codex's `turn` span (`codex_core::tasks`) kept on its start and end.
+const CODEX_TURN_FIELDS: Readonly<Record<string, string>> = Object.freeze({
+  model: "model",
+  "turn.id": "turn_id",
+  "codex.turn.token_usage.input_tokens": "input_tokens",
+  "codex.turn.token_usage.output_tokens": "output_tokens",
+  "codex.turn.token_usage.total_tokens": "total_tokens",
+  "time.busy": "busy",
+});
 
 const LEVELS: Readonly<Record<string, RuntimeLogLevel>> = Object.freeze({
   fatal: "error",
@@ -117,9 +153,16 @@ function truncateBytes(value: string, limit: number): { text: string; truncated:
   return { text: `${text}${TRUNCATION_MARK}`, truncated: true };
 }
 
-/** Redacts, then bounds, one retained string. */
+/**
+ * Redacts, then bounds, one retained string. argv credentials (`curl -u user:pass`,
+ * `-p pass`) have no key the text rules can see, so they are masked first, for every
+ * source and field.
+ */
 export function sanitizeRuntimeLogText(value: string, limit = RUNTIME_LOG_MAX_OUTPUT_BYTES) {
-  return truncateBytes(redactRuntimeLogText(stripRuntimeLogControls(value)), limit);
+  return truncateBytes(
+    redactRuntimeLogText(redactArgvCredentials(stripRuntimeLogControls(value))),
+    limit,
+  );
 }
 
 function scalar(value: unknown): string | number | boolean | undefined {
@@ -181,14 +224,20 @@ type Classified =
 function classifyStructured(value: Readonly<Record<string, unknown>>): Classified {
   const event = value.event;
   if (typeof event === "string" && Object.hasOwn(WRAPPER_FIELDS, event)) {
-    const fields = pickFields(value, WRAPPER_FIELDS[event]!);
+    let fields = pickFields(value, WRAPPER_FIELDS[event]!);
+    const overridden = event === "runtime.gateway_settings_overridden";
+    const settings = overridden ? overriddenSettings(value.settings) : undefined;
+    if (settings !== undefined) {
+      fields = Object.freeze({ ...fields, settings });
+    }
     const failed =
       value.outcome === "failed" ||
       (typeof value.code === "string" && value.code !== "READY" && event.endsWith("model_probe"));
     return {
       type: "line",
       kind: "wrapper",
-      level: failed ? "error" : "info",
+      // The Gateway ignored owner settings: the owner should see it at the default level.
+      level: failed ? "error" : overridden ? "warn" : "info",
       message: event,
       ...(fields === undefined ? {} : { fields }),
     };
@@ -198,13 +247,25 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
       return codexRecord(value, value.message);
     }
     // OpenClaw JSON console style: `{ ...meta, time, level, subsystem?, message }`.
+    const recordLevel = level(value.level);
+    const subsystem =
+      typeof value.subsystem === "string" && value.subsystem.length > 0
+        ? value.subsystem
+        : undefined;
+    if (subsystem === undefined && recordLevel !== "error" && recordLevel !== "warn") {
+      // Without a subsystem this is a `runtime.log` stdout write, not a logger record:
+      // the agent command prints reply payloads that way (the OpenAI-compatible chat
+      // endpoint). Errors and warnings stay, since `Gateway failed to start: ...` has no
+      // subsystem either.
+      return { type: "withheld", reason: "unrecognised_structured" };
+    }
     const fields = pickFields(value, STRUCTURED_FIELDS);
     return {
       type: "line",
       kind: "openclaw",
-      level: level(value.level),
+      level: recordLevel,
       message: value.message,
-      ...(typeof value.subsystem === "string" ? { subsystem: value.subsystem } : {}),
+      ...(subsystem === undefined ? {} : { subsystem }),
       ...(fields === undefined ? {} : { fields }),
     };
   }
@@ -218,6 +279,10 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
   ) {
     const nested = value.fields as Readonly<Record<string, unknown>>;
     if (typeof nested.message === "string") {
+      const span = codexSpanLifecycle(value, nested);
+      if (span !== undefined) {
+        return span;
+      }
       return codexRecord({ ...nested, level: value.level, target: value.target }, nested.message);
     }
   }
@@ -225,8 +290,68 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
   return { type: "withheld", reason: "unrecognised_structured" };
 }
 
+/**
+ * A Codex span lifecycle record. The `turn` span's start and end are the turn's
+ * operational events (info, with model, IDs, token counts and busy time); every
+ * other lifecycle record is debug noise, labelled with the span name. Span fields
+ * other than those listed never leave OCC.
+ */
+function codexSpanLifecycle(
+  value: Readonly<Record<string, unknown>>,
+  nested: Readonly<Record<string, unknown>>,
+): Classified | undefined {
+  const event = nested.message as string;
+  const span = value.span;
+  if (
+    !CODEX_SPAN_EVENTS.has(event) ||
+    span === null ||
+    typeof span !== "object" ||
+    Array.isArray(span)
+  ) {
+    return undefined;
+  }
+  const spanFields = span as Readonly<Record<string, unknown>>;
+  const name =
+    typeof spanFields.name === "string" && CODEX_SPAN_NAME.test(spanFields.name)
+      ? spanFields.name
+      : "span";
+  const subsystem = value.target as string;
+  if (
+    name === "turn" &&
+    subsystem === "codex_core::tasks" &&
+    (event === "new" || event === "close")
+  ) {
+    const source: Readonly<Record<string, unknown>> = {
+      ...spanFields,
+      ...(event === "close" ? { "time.busy": nested["time.busy"] } : {}),
+    };
+    const fields: Record<string, string | number | boolean> = {};
+    for (const [from, to] of Object.entries(CODEX_TURN_FIELDS)) {
+      const kept = Object.hasOwn(source, from) ? scalar(source[from]) : undefined;
+      if (kept !== undefined) {
+        fields[to] = kept;
+      }
+    }
+    return {
+      type: "line",
+      kind: "codex",
+      level: level(value.level),
+      message: event === "new" ? "turn started" : "turn completed",
+      subsystem,
+      ...(Object.keys(fields).length === 0 ? {} : { fields: Object.freeze(fields) }),
+    };
+  }
+  return {
+    type: "line",
+    kind: "codex",
+    level: "debug",
+    message: `span ${event} ${name}`,
+    subsystem,
+  };
+}
+
 function codexRecord(value: Readonly<Record<string, unknown>>, message: string): Classified {
-  const fields = pickFields(value, STRUCTURED_FIELDS);
+  const fields = pickFields(value, [...STRUCTURED_FIELDS, ...CODEX_FIELDS]);
   return {
     type: "line",
     kind: "codex",
@@ -358,7 +483,11 @@ export interface SanitizedRuntimeLogChunk {
  */
 export function sanitizeRuntimeLogChunk(
   chunk: Pick<AgentRuntimeLogChunk, "stream" | "lines" | "truncated">,
-): SanitizedRuntimeLogChunk {
+  pemContext?: {
+    readonly open: boolean | undefined;
+    readonly canClose?: readonly boolean[] | undefined;
+  },
+): SanitizedRuntimeLogChunk & { readonly pemOpen?: boolean } {
   const stream = cleanStream(chunk.stream);
   let lines = chunk.lines;
   // The byte limit cuts the final line; a partial line may end inside a token.
@@ -372,10 +501,12 @@ export function sanitizeRuntimeLogChunk(
   // Classify in order: an open pretty-printed JSON block carries across lines.
   const classifiedLines = lines.map((line) => classify(line.raw, block));
   // A key printed over several lines is split across records; mask the whole block.
+  const pemState = { open: pemContext?.open, canClose: pemContext?.canClose };
   const pem = maskPemBlockLines(
     classifiedLines.map((classified) =>
       classified.type === "line" && classified.kind === "text" ? classified.message : undefined,
     ),
+    pemState,
   );
   for (const [index, line] of lines.entries()) {
     const classified = classifiedLines[index]!;
@@ -419,7 +550,11 @@ export function sanitizeRuntimeLogChunk(
   if (run !== undefined) {
     records.push(brand(run));
   }
-  return Object.freeze({ records: Object.freeze(records), withheld });
+  return Object.freeze({
+    records: Object.freeze(records),
+    withheld,
+    ...(pemState.open === undefined ? {} : { pemOpen: pemState.open }),
+  });
 }
 
 // Sandbox policy and supervisor records (OpenShell OCSF shorthand and tracing fields).

@@ -271,6 +271,13 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     id: "runtime-log-previous",
     disabled: true,
   });
+  // Off by default: the server returns info and above (and lines of unknown level),
+  // so debug span records do not crowd a page out.
+  const includeDebug = element("input", {
+    type: "checkbox",
+    id: "runtime-log-debug",
+    disabled: true,
+  });
   const followButton = button("Follow", () => setFollow(!following), {
     "aria-pressed": "false",
     disabled: true,
@@ -354,6 +361,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (previous.checked) {
       query.set("previous", "true");
     }
+    if (!includeDebug.checked) {
+      query.set("minLevel", "info");
+    }
     return query;
   }
 
@@ -436,6 +446,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
     const readable = !logsDenied && readableSelection();
     sourceSelect.disabled = logsDenied || description.sources.length === 0;
+    includeDebug.disabled = logsDenied || description.sources.length === 0;
     refreshButton.disabled = !readable;
     downloadButton.disabled = !readable;
     followButton.disabled = !readable || previous.checked;
@@ -663,7 +674,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
             : lines === 0 && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
               : lines === 0
-                ? `No output in the last ${TAIL_LINES} lines.`
+                ? `No ${includeDebug.checked ? "" : "info-or-higher "}output in the last ${TAIL_LINES} lines.`
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
@@ -720,6 +731,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     renderPickers();
     void readLogs({ restart: true });
   });
+  // The level floor is part of every read; changing it starts a new view.
+  includeDebug.addEventListener("change", () => void readLogs({ restart: true }));
   previous.addEventListener("change", () => {
     if (previous.checked) {
       setFollow(false);
@@ -746,6 +759,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       podLabel,
       podSelect,
       element("label", { className: "checkbox" }, previous, " Previous instance"),
+      element("label", { className: "checkbox" }, includeDebug, " Include debug"),
       followButton,
       refreshButton,
       downloadButton,

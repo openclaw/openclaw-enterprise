@@ -49,7 +49,7 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.0";
+const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.3-pre.1";
 const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
@@ -693,6 +693,10 @@ function credentialJobName(revisionId) {
   return `openshell-cred-${hash(revisionId)}`;
 }
 
+function bridgedNodeStateParent(agentId) {
+  return `.openclaw/openshell-bootstrap/nodes/${hash(agentId, 32)}`;
+}
+
 function pluginRuntimeConfigMapName(context) {
   return `plugin-runtime-${hash(context.revision.agentId)}-rev-${hash(context.revision.id)}`;
 }
@@ -853,7 +857,9 @@ function credentialBridgeResource(context, claimName, subPath) {
                 [
                   "umask 077",
                   ...(needsPluginRuntime ? ["mkdir -p /bootstrap/plugin-runtime"] : []),
-                  "mkdir -p /bootstrap/node-state",
+                  // Match Compute's Agent-scoped node identity so a replacement reconnects
+                  // with the device already recorded by the Gateway instead of redeeming twice.
+                  "mkdir -p /agent-node-state/node-state",
                   "mkdir -p /bootstrap/runtime-assets",
                   "mkdir -p /bootstrap/openclaw-home",
                   ...(needsNativeTemporary ? ["mkdir -p /bootstrap/native-tmp"] : []),
@@ -862,7 +868,7 @@ function credentialBridgeResource(context, claimName, subPath) {
                   ...(needsPluginRuntime
                     ? ["chmod 0700 /bootstrap/plugin-runtime /bootstrap/service-principal"]
                     : ["chmod 0700 /bootstrap/service-principal"]),
-                  "chmod 0700 /bootstrap/node-state",
+                  "chmod 0700 /agent-node-state/node-state",
                   ...(needsNativeTemporary ? ["chmod 0700 /bootstrap/native-tmp"] : []),
                   "chmod 0600 /bootstrap/app-server-token /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem 2>/dev/null || true",
                   ...(needsPluginRuntime
@@ -915,6 +921,11 @@ function credentialBridgeResource(context, claimName, subPath) {
               volumeMounts: [
                 { name: "bootstrap", mountPath: "/bootstrap", subPath },
                 { name: "bootstrap", mountPath: "/workspace-home", subPath: "workspace" },
+                {
+                  name: "node-state-bootstrap",
+                  mountPath: "/agent-node-state",
+                  subPath: bridgedNodeStateParent(context.revision.agentId),
+                },
                 ...(needsPluginRuntime
                   ? [
                       {
@@ -939,6 +950,7 @@ function credentialBridgeResource(context, claimName, subPath) {
           ],
           volumes: [
             { name: "bootstrap", persistentVolumeClaim: { claimName } },
+            { name: "node-state-bootstrap", persistentVolumeClaim: { claimName } },
             ...(needsPluginRuntime
               ? [
                   {
@@ -1125,7 +1137,7 @@ ${runtimeCommand[programIndex]}`;
       },
       {
         claimName,
-        subPath: `${subPath}/node-state`,
+        subPath: `${bridgedNodeStateParent(context.revision.agentId)}/node-state`,
         mountPath: effectiveNodeStateMountPath,
         readOnly: false,
       },
@@ -1432,11 +1444,11 @@ function assertBridgedWorkspaceMounts(pod) {
       ({ mountPath, readOnly, subPath }) =>
         mountPath === nodeStateMountPath &&
         readOnly === false &&
-        subPath.startsWith(".openclaw/openshell-bootstrap/") &&
+        subPath.startsWith(".openclaw/openshell-bootstrap/nodes/") &&
         subPath.endsWith("/node-state"),
     ),
     true,
-    "the stock OpenShell bridge requires revision-scoped writable node state.",
+    "the stock OpenShell bridge requires Agent-scoped writable node state.",
   );
   assert.equal(
     mounts.some(
@@ -1490,7 +1502,7 @@ function assertBridgedNativeStateMount(pod) {
       ({ mountPath, readOnly }) => mountPath === bridgedNodeStateMountPath && readOnly !== true,
     ),
     true,
-    "the native bridge requires revision-scoped writable node state.",
+    "the native bridge requires Agent-scoped writable node state.",
   );
   assert.equal(
     mounts.some(({ mountPath }) => mountPath === nodeStateMountPath),
@@ -1709,6 +1721,14 @@ function createIntegrationSandboxDriverFactory(
           backend: backendFor(undefined),
         }).configureAgent(configuration, harness);
       },
+      harnessResource(context) {
+        // The bridge provisions through the real Driver, so its Sandbox identity is the same.
+        return new OpenShellSandboxDriver(selection.configuration, {
+          id: selection.id,
+          implementation: "openshell",
+          backend: backendFor(undefined),
+        }).harnessResource(context);
+      },
       async ensureNamespace(context) {
         try {
           const endpoint = await endpointForNamespace(context);
@@ -1822,7 +1842,7 @@ function createIntegrationSandboxDriverFactory(
                 [
                   "chmod -R u+w /bootstrap/plugin-runtime /bootstrap/service-principal",
                   "rm -f /bootstrap/app-server-token /bootstrap/openclaw-node-setup-code /bootstrap/openclaw-node-ca.pem",
-                  "rm -rf /bootstrap/plugin-runtime /bootstrap/service-principal /bootstrap/node-state /bootstrap/runtime-assets /bootstrap/native-tmp /bootstrap/openclaw-home",
+                  "rm -rf /bootstrap/plugin-runtime /bootstrap/service-principal /bootstrap/runtime-assets /bootstrap/native-tmp /bootstrap/openclaw-home",
                 ].join("\n"),
               ];
               container.volumeMounts = container.volumeMounts.filter(
@@ -2425,9 +2445,11 @@ async function prepareProductionInstallation(
   assert.equal(gatewayPods.length, 1, "the Compute-owned Agent gateway must still be separate.");
   if (harnessId === "codex") {
     const agentService = await resource("service", agentServiceName, placement);
+    // Compute keeps provider-owned Harnesses outside its ordinary egress grants.
     assert.deepEqual(agentService.spec.selector, {
       "openclaw.dev/agent": agent.data.id,
       "openclaw.dev/namespace": namespaceId,
+      "openclaw.dev/network-profile": "provider-fenced-v1",
       "openclaw.dev/revision": deployed.data.id,
       "openclaw.dev/workload-role": "agent",
     });
@@ -2446,7 +2468,129 @@ async function prepareProductionInstallation(
     appServerToken: transport.appServerToken,
     controllerUrl,
     credentials: adminCredentials,
+    diagnoseRevision: (revisionId) =>
+      writeWorkerCompletionDiagnostics({
+        pool: observerPool,
+        events,
+        namespaceId,
+        agentId: agent.data.id,
+        revisionId,
+      }),
   };
+}
+
+/**
+ * Updates the source through the API, then withdraws it from the running Agent. After the
+ * worker records `revoked`, a completed turn from the same running Codex app server must
+ * fail this test. A rejected turn alone does not establish the cause of rejection.
+ */
+async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
+  const { request, namespaceId } = topology;
+  const agentId = topology.agent.id;
+  const sourceId = topology.agent.harnessAuth.sourceId;
+  const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const revision = { id: current.data.activeRevisionId, agentId };
+  assert.ok(revision.id, "the replaced Agent must have an active revision");
+  const harnessPod = await waitForProviderHarnessPod(topology.placement, revision);
+  const turn = (prompt) =>
+    requestCodexTurnFromOpenShellHarnessPod({
+      namespace: topology.placement,
+      harnessPod: harnessPod.metadata.name,
+      providerModel,
+      appServerTokenPath: `${credentialMountPath}/app-server-token`,
+      prompt,
+    });
+  const before = `OCC-OPENSHELL-BEFORE-${randomUUID()}`;
+  assert.match((await turn(`Reply with exactly ${before}.`)).assistant, new RegExp(before));
+  // The same Pod and containers must serve both turns: revocation reaches the running Harness.
+  const harnessProcess = async () => {
+    const pod = await resource("pod", harnessPod.metadata.name, topology.placement);
+    return {
+      uid: pod.metadata.uid,
+      restarts: (pod.status?.containerStatuses ?? []).map(({ name, restartCount }) => [
+        name,
+        restartCount,
+      ]),
+    };
+  };
+  const servingBefore = await harnessProcess();
+
+  // A bare update re-sends the current Secret value; a replacement switches the source's Secret.
+  const resynced = await request(
+    "PATCH",
+    `/namespaces/${namespaceId}/credential-sources/${sourceId}`,
+    {},
+  );
+  assert.equal(resynced.status, 200, JSON.stringify(resynced.error));
+  assert.deepEqual(resynced.data.status, { state: "ready" });
+  const replacement = await request("POST", `/namespaces/${namespaceId}/secrets`, {
+    name: `openshell-model-replacement-${randomUUID()}`,
+    value: process.env.OPENAI_API_KEY,
+  });
+  assert.equal(replacement.status, 201, JSON.stringify(replacement.error));
+  const replaced = await request(
+    "PATCH",
+    `/namespaces/${namespaceId}/credential-sources/${sourceId}`,
+    { secrets: { api_key: replacement.data.ref } },
+  );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.error));
+  assert.deepEqual(replaced.data.secrets, { api_key: replacement.data.ref });
+  assert.equal(JSON.stringify(replaced).includes(process.env.OPENAI_API_KEY), false);
+
+  // The API records the withdrawal; only the worker's confirmed detach makes it revoked.
+  const withdrawalPath = `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${sourceId}`;
+  const requested = await request("POST", `${withdrawalPath}/withdraw`);
+  assert.equal(requested.status, 202, JSON.stringify(requested.error));
+  assert.equal(requested.data.revisionId, revision.id);
+  assert.equal(typeof requested.data.requestedBy, "string");
+  const revoked = await waitFor(
+    "the worker to confirm credential revocation",
+    async () => {
+      const observed = await request("GET", `${withdrawalPath}/withdrawal`);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      return observed.data.state === "revoked" ? observed.data : undefined;
+    },
+    180_000,
+  );
+  assert.ok(revoked.completedAt);
+  assert.equal(revoked.requestedBy, requested.data.requestedBy);
+  assert.equal(revoked.reason, "CREDENTIALS_WITHDRAWN");
+  const unchanged = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+  assert.equal(unchanged.data.activeRevisionId, revision.id, "withdrawal must not redeploy");
+
+  // A successful turn after withdrawal violates the live-revocation boundary.
+  const after = `OCC-OPENSHELL-AFTER-${randomUUID()}`;
+  let observation;
+  let result;
+  let rejected = false;
+  try {
+    result = await turn(`Reply with exactly ${after}.`);
+  } catch (error) {
+    rejected = true;
+    observation = error instanceof Error ? error.message : String(error);
+  }
+  if (!rejected) {
+    observation = JSON.stringify(result);
+  }
+  assert.equal(
+    String(observation).includes(process.env.OPENAI_API_KEY),
+    false,
+    "a revoked turn must not expose the model key",
+  );
+  assert.equal(rejected, true, "a turn must not complete after credential withdrawal");
+  assert.deepEqual(
+    await harnessProcess(),
+    servingBefore,
+    "withdrawal must revoke from the running Harness without replacing or restarting it",
+  );
+
+  // The active revision still references the source, so it cannot be deleted yet.
+  const deletion = await request(
+    "DELETE",
+    `/namespaces/${namespaceId}/credential-sources/${sourceId}`,
+  );
+  assert.equal(deletion.status, 409, JSON.stringify(deletion.error));
 }
 
 async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
@@ -2751,14 +2895,31 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   );
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
   assert.notEqual(redeployed.data.id, topology.revision.id);
-  await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-    const observed = await topology.request(
-      "GET",
-      `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
+  try {
+    await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
+      const observed = await topology.request(
+        "GET",
+        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
+      );
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
+    });
+  } catch (error) {
+    await topology.diagnoseRevision(redeployed.data.id);
+    throw error;
+  }
+  // Activation requires the replacement's real workspace node to reconnect. Its identity
+  // mount must survive retiring the prior revision's separate startup credentials.
+  const replacementPod = await waitForProviderHarnessPod(topology.placement, redeployed.data);
+  const nodeMount = (pod) =>
+    bridgedHarnessContainer(pod).volumeMounts.find(
+      ({ mountPath }) => mountPath === nodeStateMountPath,
     );
-    assert.equal(observed.status, 200, JSON.stringify(observed.error));
-    return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
-  });
+  assert.equal(
+    nodeMount(replacementPod)?.subPath,
+    `${bridgedNodeStateParent(topology.agent.id)}/node-state`,
+  );
+  assert.equal(nodeMount(replacementPod)?.subPath, nodeMount(topology.harnessPod)?.subPath);
   const activeSandboxName = `os-${hash(redeployed.data.id, 16)}`;
   const retiredSandboxName = `os-${hash(topology.revision.id, 16)}`;
   // The revision becomes active before the worker finishes retiring its predecessor. Observe the
@@ -2766,6 +2927,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   const expectedActiveSelector = {
     "openclaw.dev/agent": topology.agent.id,
     "openclaw.dev/namespace": topology.namespaceId,
+    "openclaw.dev/network-profile": "provider-fenced-v1",
     "openclaw.dev/revision": redeployed.data.id,
     "openclaw.dev/workload-role": "agent",
   };
@@ -2961,7 +3123,7 @@ test(
         "OpenShell integration: checking create-time service exposure authentication boundary.\n",
       );
       assert.match(topology.harnessServiceUrl, /^https?:\/\//);
-      // OpenShell v0.1.0 consumes gateway Authorization and strips it before proxying. An
+      // The Driver omits authorization_mode, so OpenShell defaults to STRIP before proxying. An
       // authentication rejection from the protected Codex endpoint proves the route reaches the
       // real app server without weakening its bearer-token requirement or accepting a gateway 5xx.
       let lastServiceObservation = "no response";
@@ -3005,6 +3167,13 @@ test(
         "OpenShell integration: tool filesystem and egress verified; testing Pod-absent replacement and cleanup.\n",
       );
       await assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology);
+      process.stderr.write(
+        "OpenShell integration: replacement verified; testing credential source update and live withdrawal.\n",
+      );
+      await assertCredentialSourceUpdateAndLiveWithdrawal(topology);
+      process.stderr.write(
+        "OpenShell integration: withdrawal recorded and post-withdrawal turn did not complete; testing embedded fail-closed.\n",
+      );
       await assertEmbeddedOpenShellFailsClosed(topology);
       return;
     }

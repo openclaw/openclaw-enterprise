@@ -46,7 +46,7 @@ test("new Slack configuration defaults to threaded replies without changing exis
 });
 
 test("bundled Slack presets supply threaded replies", async () => {
-  for (const name of ["devday", "devday-qa", "devday-oncall"]) {
+  for (const name of ["swe-preset"]) {
     const preset = JSON.parse(
       await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
     );

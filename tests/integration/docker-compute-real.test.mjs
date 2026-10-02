@@ -1651,7 +1651,6 @@ test(
             [OTEL_RESOURCE.revisionId]: dedicated.revision.id,
           },
           attributes: { "event.name": "codex.operational" },
-          body: "codex.operational",
         },
       ],
     });

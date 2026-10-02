@@ -1,29 +1,62 @@
 # RFC template
 
-Copy this page into a new RFC and replace the prompts with the actual decision.
+Start `specs/rfcs/<number>-<topic>.md` with the YAML frontmatter below, without
+the code fences, followed by the proposal scaffold. Replace the prompts with
+the actual decision. Allocate the number using the
+[specification process](specifications.md#files-and-numbering).
+If the RFC needs companion files, use `<number>-<topic>/index.md` instead.
 Adapt the headings to the change and remove sections that do not apply. See the
 [RFC process](rfcs.md) for review, length, and diagram guidance.
 
+Adapted from the [OpenClaw RFC template](https://github.com/openclaw/rfcs/blob/main/rfcs/0000-template.md).
+Use OCE's numbering, decision statuses, and separate implementation plans as
+defined in the specification process.
+
 ---
 
-# RFC: [Decision or capability]
+```yaml
+---
+status: Proposed
+---
+```
 
-- **Status:** [Proposed / Implementing / Implemented]
+# Proposal: [Decision or capability]
+
+- **ID:** RFC-[number]
 - **Owner:** [Responsible person or team]
+- **Created:** [YYYY-MM-DD]
+- **Last updated:** [YYYY-MM-DD]
+- **RFC PR:** [Review URL when available]
+- **Implementation plan:** [Relative link when a separate plan exists]
 - **Related:** [Relevant issue, implementation PR, and existing contracts]
 
-## Problem and decision
+<a id="problem-and-decision"></a>
+
+## Summary
+
+[Explain the proposed decision and the result a caller can observe in one
+paragraph.]
+
+## Motivation
 
 [Who needs to do what? Describe the current behavior, the gap, and the proposed
-decision. State the result a caller can observe and why this choice addresses
-the problem.]
+change's value. Link evidence from current source or contracts.]
 
-## Scope
+<a id="scope"></a>
 
-[Describe the smallest connected result, remaining selected work, and genuine
-non-goals. Identify material dependencies and assumptions.]
+## Goals
 
-## Design
+[List the outcomes this proposal must achieve and how a reviewer can recognize
+success. Identify material dependencies and assumptions.]
+
+## Non-goals
+
+[Name adjacent work intentionally excluded from this decision. Omit this
+section if there are no meaningful scope boundaries to clarify.]
+
+<a id="design"></a>
+
+## Proposal
 
 [Name the owners of decisions, state, effects, and cleanup. Describe the actual
 entry point, the changed interfaces, what is reused, and the request through its
@@ -93,6 +126,11 @@ sequenceDiagram
 
 ## Delivery and verification
 
+[For a bigger feature, link its implementation plan and keep only delivery
+boundaries and required outcomes here. Put detailed steps, progress, and results
+in the plan. A small change may keep delivery here with a separate delivery
+status. Planning or implementing the RFC does not change its decision status.]
+
 1. [Describe a small step and its real prerequisite.]
 2. [Connect the capability to its supported caller.]
 3. [Name any remaining selected work and qualification.]
@@ -100,11 +138,17 @@ sequenceDiagram
 [Pair each required outcome with evidence for success and consequential denial,
 failure, or recovery. State what has run and what remains unverified.]
 
-## Alternatives and open decisions
+<a id="alternatives-and-open-decisions"></a>
 
-[Explain meaningful alternatives and tradeoffs. For each open decision, name
-the deciding owner, consequence, and any invariant that remains binding. Omit
-this section when there are no material alternatives or open decisions.]
+## Rationale and alternatives
+
+[Explain why this approach is preferred. Compare meaningful alternatives,
+including retaining current behavior when relevant, and their tradeoffs.]
+
+## Unresolved questions
+
+[For each open decision, name the deciding owner, consequence, and any invariant
+that remains binding. Omit this section when no material questions remain.]
 
 ## References
 

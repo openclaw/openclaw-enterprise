@@ -2313,9 +2313,9 @@ test(
         /auth\.github\.enabled requires auth\.recoveryUserId/,
       ],
       [
-        "a recovery user without GitHub or Google sign-in",
+        "a recovery user without GitHub, Google or OIDC sign-in",
         { "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ" },
-        /auth\.recoveryUserId requires auth\.github\.enabled or auth\.google\.enabled/,
+        /auth\.recoveryUserId requires auth\.github\.enabled, auth\.google\.enabled or auth\.oidc\.enabled/,
       ],
       [
         "GitHub sign-in with an invalid recovery user",

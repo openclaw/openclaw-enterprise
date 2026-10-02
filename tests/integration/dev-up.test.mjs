@@ -749,9 +749,9 @@ function runDevDown(env) {
   });
 }
 
-async function kubernetesFixture(t, scenario = "success") {
-  const fixture = await createFixture(t);
-  await prepareLifecycleCommands(fixture, scenario);
+async function kubernetesFixture(t, scenario = "success", options = {}) {
+  const fixture = await createFixture(t, options);
+  await prepareLifecycleCommands(fixture, scenario, options);
   fixture.env.OCC_DEVELOPMENT_COMPUTE_DRIVER = "kubernetes";
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
   fixture.requestLog = await installationServer(t, fixture, scenario);
@@ -798,6 +798,9 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   const compute = installation.drivers.compute.configuration;
   KubernetesComputeDriver.validateConfiguration(compute);
   assert.deepEqual(compute.network.gatewayTrustedProxyCidrs, ["127.0.0.1/32"]);
+  // The API server's Pod proxy source, so Compute can read private status and a
+  // dedicated Codex Gateway starts once on a first deploy.
+  assert.deepEqual(compute.network.pluginStatusProxySourceCidrs, ["10.42.0.1/32"]);
   assert.match(config, /transportSecretPrefix: openclaw-agent-transport/);
   assert.doesNotMatch(config, /modelSecretPrefix/);
   const startupCommands = await readJsonLines(fixture.env.SAFETY_LOG);
@@ -1121,6 +1124,53 @@ test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before re
   const cleaned = runDevDown(fixture.env);
   assert.equal(cleaned.status, 0, cleaned.stderr);
   await assert.rejects(stat(directory), { code: "ENOENT" });
+});
+
+test("Kubernetes dev-up imports images by the name Podman recorded", async (t) => {
+  const fixture = await kubernetesFixture(t, "success", { engine: "podman" });
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
+  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
+
+  const result = runDevUp([], fixture.env);
+
+  assert.equal(result.status, 0, result.stderr);
+  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+  const imports = commands.filter(
+    ({ command, args }) => command === "k3d" && args[0] === "image" && args[1] === "import",
+  );
+  // Podman stores an unqualified local build under the `localhost` registry and
+  // k3d matches the recorded name exactly, so importing the requested name
+  // finds no image at all. Every name-based import must carry the prefix.
+  const runtimeImport = imports.find(({ args }) => args[2].endsWith("kubernetes-quickstart"));
+  assert.ok(runtimeImport, "the runtime image is imported by name");
+  assert.equal(
+    runtimeImport.args[2],
+    "localhost/openclaw-enterprise-runtime:kubernetes-quickstart",
+  );
+  assert.equal(
+    imports.some(({ args }) => args[2] === "openclaw-enterprise-runtime:kubernetes-quickstart"),
+    false,
+    "the unqualified name k3d cannot resolve is never imported",
+  );
+
+  // The digest-pinned OpenShell images stage through a local tag, which Podman
+  // qualifies the same way. containerd records the qualified reference, so the
+  // verification that follows the import has to look for it under `localhost`.
+  assert.equal(
+    commands.filter(
+      ({ command, args }) =>
+        command === "podman" &&
+        args[0] === "exec" &&
+        args.includes("tag") &&
+        args.some((arg) => arg.startsWith("localhost/openclaw-development/openshell-")),
+    ).length,
+    3,
+    "each staged OpenShell digest is registered inside k3s under its recorded name",
+  );
+
+  const cleaned = runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
 });
 
 test("Kubernetes-only dev-up keeps PostgreSQL and its egress policy valid across a cluster restart", async (t) => {

@@ -77,11 +77,52 @@ function fixture(t, change, initial = {}, initialModes = {}) {
     writeFileSync(output, "prior=value\n");
     const selected = run(["--github-output", output], overrides);
     assert.equal(selected.status, 0, selected.stderr);
-    assert.equal(readFileSync(output, "utf8"), `prior=value\nmode=${mode}\n`, selected.stdout);
+    assert.match(
+      readFileSync(output, "utf8"),
+      new RegExp(
+        `^prior=value\nmode=${mode}\nreason=(?:docs_only|ineligible_change|non_pr_event|invalid_event|invalid_identity|event_unavailable|checkout_mismatch|git_inspection_failed|bootstrap_non_pr_event|bootstrap_event_unavailable|bootstrap_invalid_identity|bootstrap_checkout_mismatch|bootstrap_git_inspection_failed|bootstrap_policy_unavailable|malformed_diff|empty_diff|unsupported_change|filename_not_utf8|unavailable)\n$`,
+      ),
+      selected.stdout,
+    );
     assert.equal(run(["--verify-mode", mode], overrides).status, 0);
     assert.notEqual(run(["--verify-mode", mode === "docs" ? "full" : "docs"], overrides).status, 0);
   };
   return { dir, repo, git, event, eventPath, base, head, tested, run, expect };
+}
+
+// Preserve raw path identity so out-of-scope BOM names select full coverage.
+for (const [name, pathBytes, expected] of [
+  ["root BOM docs", Buffer.from("\uFEFFdocs/example.md"), "full"],
+  ["root BOM README", Buffer.from("\uFEFFREADME.md"), "full"],
+  ["ordinary docs", Buffer.from("docs/example.md"), "docs"],
+  ["nested BOM docs", Buffer.from("docs/\uFEFFexample.md"), "docs"],
+  ["unknown path", Buffer.from("src/example.md"), "full"],
+  [
+    "invalid UTF-8",
+    Buffer.concat([Buffer.from("docs/"), Buffer.from([0xff]), Buffer.from(".md")]),
+    "full",
+  ],
+]) {
+  test(`raw filename bytes: ${name}`, (t) => {
+    const f = fixture(t, ({ repo }) => {
+      mkdirSync(join(repo, "docs"), { recursive: true });
+      mkdirSync(join(repo, "src"), { recursive: true });
+      mkdirSync(join(repo, "\uFEFFdocs"), { recursive: true });
+      writeFileSync(Buffer.concat([Buffer.from(`${repo}/`), pathBytes]), "text\n");
+    });
+    const raw = spawnSync("git", ["diff", "--raw", "-z", "--no-renames", f.base, f.tested, "--"], {
+      cwd: f.repo,
+      encoding: null,
+    });
+    assert.equal(raw.status, 0);
+    const firstNul = raw.stdout.indexOf(0);
+    assert.notEqual(firstNul, -1);
+    assert.deepEqual(
+      raw.stdout.subarray(firstNul + 1),
+      Buffer.concat([pathBytes, Buffer.from([0])]),
+    );
+    f.expect(expected);
+  });
 }
 
 test("verified merge selects documentation and handles unusual names and deletions", (t) => {
@@ -341,7 +382,13 @@ function shallowBootstrap(t, f) {
   const expect = (mode, overrides = {}) => {
     const selected = run("select", "", overrides);
     assert.equal(selected.status, 0, selected.stderr);
-    assert.equal(selected.output, `mode=${mode}\n`, selected.stdout);
+    assert.match(
+      selected.output,
+      new RegExp(
+        `^mode=${mode}\n(?:reason=(?:docs_only|ineligible_change|non_pr_event|invalid_event|invalid_identity|event_unavailable|checkout_mismatch|git_inspection_failed|bootstrap_non_pr_event|bootstrap_event_unavailable|bootstrap_invalid_identity|bootstrap_checkout_mismatch|bootstrap_git_inspection_failed|bootstrap_policy_unavailable|malformed_diff|empty_diff|unsupported_change|filename_not_utf8|unavailable)\n)?$`,
+      ),
+      selected.stdout,
+    );
     assert.equal(run("verify", mode, overrides).status, 0);
     assert.notEqual(run("verify", mode === "docs" ? "full" : "docs", overrides).status, 0);
   };
@@ -535,8 +582,12 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     const bootstrap = shallowBootstrap(t, f);
     const selected = bootstrap.run("select");
     assert.equal(selected.status, 0, selected.stderr);
-    assert.match(selected.output, /^mode=(docs|full)\n$/);
-    const mode = selected.output.trim().split("=")[1];
+    const match =
+      /^mode=(docs|full)\nreason=(docs_only|ineligible_change|non_pr_event|invalid_event|invalid_identity|event_unavailable|checkout_mismatch|git_inspection_failed|bootstrap_non_pr_event|bootstrap_event_unavailable|bootstrap_invalid_identity|bootstrap_checkout_mismatch|bootstrap_git_inspection_failed|bootstrap_policy_unavailable|malformed_diff|empty_diff|unsupported_change|filename_not_utf8|unavailable)\n$/.exec(
+        selected.output,
+      );
+    assert.ok(match);
+    const mode = match[1];
     assert.equal(mode, expected);
     assert.equal(bootstrap.run("verify", mode).status, 0);
 
@@ -667,5 +718,386 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         JSON.parse(failedJob.stdout).issues.some((issue) => issue.code === "need-not-success"),
       );
     }
+  }
+});
+
+function summarizeImpact(t, outcome, mode, reason) {
+  const dir = mkdtempSync(join(tmpdir(), "ci-impact-summary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const summary = join(dir, "summary");
+  writeFileSync(summary, "");
+  const result = spawnSync(
+    "bash",
+    ["-e", "-o", "pipefail", "-c", workflowBootstrap("      - name: Summarize impact selection\n")],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_STEP_SUMMARY: summary,
+        SELECT_OUTCOME: outcome,
+        SELECT_MODE: mode,
+        SELECT_REASON: reason,
+      },
+    },
+  );
+  return { ...result, summary: readFileSync(summary, "utf8") };
+}
+
+function assertSummary(t, outcome, mode, reason, expectedMode, expectedReason) {
+  const result = summarizeImpact(t, outcome, mode, reason);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.summary,
+    `### CI impact selection (advisory)\n\nMode: ${expectedMode}\n\nReason category: ${expectedReason}\n\nThis PR-controlled workflow is not trusted enforcement.\n`,
+  );
+}
+
+test("impact summary reports real selector categories from shallow merge checkout", (t) => {
+  const policy = readFileSync(selector, "utf8");
+  for (const [path, mode, reason] of [
+    ["docs/change.md", "docs", "docs_only"],
+    ["src/change.ts", "full", "ineligible_change"],
+  ]) {
+    const f = fixture(t, ({ put }) => put(path), { "scripts/ci/impact.mjs": policy });
+    const selected = shallowBootstrap(t, f).run("select");
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(selected.output, `mode=${mode}\nreason=${reason}\n`);
+    assertSummary(t, "success", mode, reason, mode, reason);
+  }
+  const f = fixture(t, ({ put }) => put("docs/change.md"));
+  const shallow = shallowBootstrap(t, f);
+  for (const [overrides, reason] of [
+    [{}, "bootstrap_policy_unavailable"],
+    [{ GITHUB_SHA: "invalid;$(touch injected)" }, "bootstrap_invalid_identity"],
+  ]) {
+    const selected = shallow.run("select", "", overrides);
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(selected.output, `mode=full\nreason=${reason}\n`);
+    assertSummary(t, "success", "full", reason, "full", reason);
+  }
+  assert.equal(existsSync(join(shallow.checkout, "injected")), false);
+});
+
+test("legacy base output and selector failures remain honest", (t) => {
+  const policy = readFileSync(selector, "utf8").replace(
+    '`mode=${result.mode}\\nreason=${result.category ?? "unavailable"}\\n`',
+    "`mode=${result.mode}\\n`",
+  );
+  const f = fixture(t, ({ put }) => put("docs/change.md"), { "scripts/ci/impact.mjs": policy });
+  const selected = shallowBootstrap(t, f).run("select");
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.output, "mode=docs\n");
+  assertSummary(t, "success", "docs", "", "docs", "unavailable");
+  const failed = fixture(t, ({ put }) => put("docs/change.md"), {
+    "scripts/ci/impact.mjs": "process.exit(37);\n",
+  });
+  const result = shallowBootstrap(t, failed).run("select");
+  assert.equal(result.status, 37);
+  assert.equal(result.output, "");
+  assertSummary(t, "failure", "docs", "docs_only", "unavailable", "unavailable");
+  assertSummary(t, "cancelled", "full", "ineligible_change", "unavailable", "unavailable");
+});
+
+test("impact summary accepts only fixed, consistent literals", (t) => {
+  for (const reason of [
+    "",
+    "unknown",
+    "docs_only\n## injected",
+    "$(touch injected)",
+    "ineligible_change",
+    "bootstrap_non_pr_event",
+    "bootstrap_event_unavailable",
+    "bootstrap_invalid_identity",
+    "bootstrap_checkout_mismatch",
+    "bootstrap_git_inspection_failed",
+    "bootstrap_policy_unavailable",
+  ]) {
+    assertSummary(t, "success", "docs", reason, "docs", "unavailable");
+  }
+  for (const mode of ["", "unknown", "docs\n## injected", "$(touch injected)"]) {
+    assertSummary(t, "success", mode, "docs_only", "unavailable", "unavailable");
+  }
+  assertSummary(t, "success\n", "docs", "docs_only", "unavailable", "unavailable");
+});
+
+test("real shallow bootstrap reports exact safe reasons for each guard", (t) => {
+  const policy = readFileSync(selector, "utf8");
+  const f = fixture(t, ({ put }) => put("docs/change.md"), { "scripts/ci/impact.mjs": policy });
+  const shallow = shallowBootstrap(t, f);
+  const check = (reason, overrides = {}) => {
+    const selected = shallow.run("select", "", overrides);
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(selected.output, `mode=full\nreason=${reason}\n`);
+    assert.equal(shallow.run("verify", "full", overrides).status, 0);
+    assert.notEqual(shallow.run("verify", "docs", overrides).status, 0);
+    assertSummary(t, "success", "full", reason, "full", reason);
+  };
+  check("bootstrap_non_pr_event", { GITHUB_EVENT_NAME: "push" });
+  check("bootstrap_event_unavailable", { GITHUB_EVENT_PATH: join(f.dir, "missing") });
+  check("bootstrap_invalid_identity", { GITHUB_SHA: "invalid;$(touch injected)" });
+  check("bootstrap_checkout_mismatch", { GITHUB_SHA: f.head });
+  writeFileSync(
+    f.eventPath,
+    JSON.stringify({ pull_request: { base: { sha: f.head }, head: { sha: f.base } } }),
+  );
+  check("bootstrap_checkout_mismatch");
+  writeFileSync(f.eventPath, "{");
+  check("bootstrap_event_unavailable");
+  writeFileSync(f.eventPath, JSON.stringify(f.event));
+  const objects = join(f.dir, "empty-objects");
+  mkdirSync(objects);
+  check("bootstrap_git_inspection_failed", {
+    GIT_OBJECT_DIRECTORY: objects,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: "",
+  });
+  assert.equal(existsSync(join(shallow.checkout, "injected")), false);
+  const missing = fixture(t, ({ put }) => put("docs/change.md"));
+  const selected = shallowBootstrap(t, missing).run("select");
+  assert.equal(selected.status, 0);
+  assert.equal(selected.output, "mode=full\nreason=bootstrap_policy_unavailable\n");
+});
+
+test("selector distinguishes conservative inspection outcomes", (t) => {
+  const f = fixture(t, ({ put }) => put("docs/change.md"));
+  const select = (overrides = {}) => {
+    const output = join(f.dir, "selector-output");
+    writeFileSync(output, "");
+    const result = f.run(["--github-output", output], overrides);
+    assert.equal(result.status, 0, result.stderr);
+    return readFileSync(output, "utf8");
+  };
+  assert.equal(select(), "mode=docs\nreason=docs_only\n");
+  assert.equal(select({ GITHUB_EVENT_NAME: "push" }), "mode=full\nreason=non_pr_event\n");
+  assert.equal(select({ GITHUB_SHA: "invalid" }), "mode=full\nreason=invalid_identity\n");
+  assert.equal(select({ GITHUB_SHA: f.head }), "mode=full\nreason=checkout_mismatch\n");
+  const objects = join(f.dir, "missing-objects");
+  mkdirSync(objects);
+  assert.equal(
+    select({ GIT_OBJECT_DIRECTORY: objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: "" }),
+    "mode=full\nreason=git_inspection_failed\n",
+  );
+  const empty = fixture(t, () => {});
+  const out = join(empty.dir, "out");
+  writeFileSync(out, "");
+  assert.equal(empty.run(["--github-output", out]).status, 0);
+  assert.equal(readFileSync(out, "utf8"), "mode=full\nreason=empty_diff\n");
+});
+
+test("summary accepts only mode and reason pairings", (t) => {
+  for (const reason of [
+    "non_pr_event",
+    "invalid_event",
+    "invalid_identity",
+    "event_unavailable",
+    "checkout_mismatch",
+    "git_inspection_failed",
+    "malformed_diff",
+    "empty_diff",
+    "unsupported_change",
+    "filename_not_utf8",
+    "ineligible_change",
+    "bootstrap_non_pr_event",
+    "bootstrap_event_unavailable",
+    "bootstrap_invalid_identity",
+    "bootstrap_checkout_mismatch",
+    "bootstrap_git_inspection_failed",
+    "bootstrap_policy_unavailable",
+  ]) {
+    assertSummary(t, "success", "full", reason, "full", reason);
+    assertSummary(t, "success", "docs", reason, "docs", "unavailable");
+  }
+  for (const reason of [
+    "docs_only",
+    "unknown",
+    "invalid_event\n## leak",
+    "$(touch injected)",
+    "",
+  ]) {
+    assertSummary(t, "success", "full", reason, "full", "unavailable");
+  }
+});
+
+test("malformed raw diff is conservative and never enters the summary", (t) => {
+  const f = fixture(t, ({ put }) => put("docs/change.md"));
+  const bin = join(f.dir, "shim-bin");
+  mkdirSync(bin);
+  const shim = join(bin, "git");
+  writeFileSync(
+    shim,
+    '#!/bin/sh\nif [ "$1" = diff ]; then printf "malformed SECRET-DO-NOT-PRINT\\000docs/evil\\nname.md\\000"; else exec /usr/bin/git "$@"; fi\n',
+  );
+  chmodSync(shim, 0o755);
+  const output = join(f.dir, "malformed-output");
+  writeFileSync(output, "");
+  const selected = f.run(["--github-output", output], { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(readFileSync(output, "utf8"), "mode=full\nreason=malformed_diff\n");
+  assertSummary(t, "success", "full", "malformed_diff", "full", "malformed_diff");
+  const summary = summarizeImpact(t, "success", "full", "malformed_diff");
+  assert.doesNotMatch(summary.summary, /SECRET|evil|name\.md/);
+});
+
+test("real Git empty, type-change and non-UTF-8 diffs have accurate conservative categories", (t) => {
+  const cases = [
+    [fixture(t, () => {}), "empty_diff", null],
+    [
+      fixture(
+        t,
+        ({ repo }) => {
+          rmSync(join(repo, "docs/SECRET-type.md"));
+          symlinkSync("target", join(repo, "docs/SECRET-type.md"));
+        },
+        { "docs/SECRET-type.md": "regular\n" },
+      ),
+      "unsupported_change",
+      / T\0docs\/SECRET-type\.md\0$/,
+    ],
+    [
+      fixture(t, ({ repo }) => {
+        mkdirSync(join(repo, "docs"), { recursive: true });
+        writeFileSync(
+          Buffer.concat([
+            Buffer.from(`${repo}/docs/SECRET-`),
+            Buffer.from([0xff]),
+            Buffer.from(".md"),
+          ]),
+          "x",
+        );
+      }),
+      "filename_not_utf8",
+      null,
+    ],
+  ];
+  for (const [f, reason, pattern] of cases) {
+    const raw = spawnSync("git", ["diff", "--raw", "-z", "--no-renames", f.base, f.tested, "--"], {
+      cwd: f.repo,
+      encoding: null,
+    });
+    assert.equal(raw.status, 0);
+    if (reason === "empty_diff") {
+      assert.equal(raw.stdout.length, 0);
+    }
+    if (pattern) {
+      assert.match(raw.stdout.toString("binary"), pattern);
+    }
+    if (reason === "filename_not_utf8") {
+      assert.ok(raw.stdout.includes(Buffer.from([0xff])));
+    }
+    const output = join(f.dir, "edge-output");
+    writeFileSync(output, "");
+    const selected = f.run(["--github-output", output]);
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(readFileSync(output, "utf8"), `mode=full\nreason=${reason}\n`);
+    f.expect("full");
+    const summary = summarizeImpact(t, "success", "full", reason);
+    assert.equal(summary.status, 0);
+    assertSummary(t, "success", "full", reason, "full", reason);
+    assert.doesNotMatch(summary.summary, /SECRET|type\.md/);
+  }
+});
+
+test("identity failures remain distinct from malformed JSON and failed jq", (t) => {
+  const policy = readFileSync(selector, "utf8");
+  const f = fixture(t, ({ put }) => put("docs/SECRET-change.md"), {
+    "scripts/ci/impact.mjs": policy,
+  });
+  const shallow = shallowBootstrap(t, f);
+  const check = (selectorReason, bootstrapReason, overrides = {}) => {
+    const output = join(f.dir, "identity-output");
+    writeFileSync(output, "");
+    const selected = f.run(["--github-output", output], overrides);
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(readFileSync(output, "utf8"), `mode=full\nreason=${selectorReason}\n`);
+    assert.equal(f.run(["--verify-mode", "full"], overrides).status, 0);
+    assert.notEqual(f.run(["--verify-mode", "docs"], overrides).status, 0);
+    const boot = shallow.run("select", "", overrides);
+    assert.equal(boot.status, 0, boot.stderr);
+    assert.equal(boot.output, `mode=full\nreason=${bootstrapReason}\n`);
+    assert.equal(shallow.run("verify", "full", overrides).status, 0);
+    assert.notEqual(shallow.run("verify", "docs", overrides).status, 0);
+    for (const reason of [selectorReason, bootstrapReason]) {
+      assertSummary(t, "success", "full", reason, "full", reason);
+      assertSummary(t, "success", "docs", reason, "docs", "unavailable");
+      assert.doesNotMatch(
+        summarizeImpact(t, "success", "full", reason).summary,
+        /SECRET|change\.md|injected/,
+      );
+    }
+  };
+  check("invalid_identity", "bootstrap_invalid_identity", {
+    GITHUB_SHA: "invalid;$(touch injected)",
+  });
+  for (const key of ["base", "head"]) {
+    const event = JSON.parse(JSON.stringify(f.event));
+    event.pull_request[key].sha = "invalid";
+    writeFileSync(f.eventPath, JSON.stringify(event));
+    check("invalid_identity", "bootstrap_invalid_identity");
+  }
+  writeFileSync(f.eventPath, "{");
+  check("invalid_event", "bootstrap_event_unavailable");
+  writeFileSync(f.eventPath, JSON.stringify(f.event));
+  const bin = join(f.dir, "identity-jq-shim");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "jq"), "#!/bin/sh\nexit 127\n");
+  chmodSync(join(bin, "jq"), 0o755);
+  const overrides = { PATH: `${bin}:${process.env.PATH}` };
+  const failedJq = shallow.run("select", "", overrides);
+  assert.equal(failedJq.status, 0, failedJq.stderr);
+  assert.equal(failedJq.output, "mode=full\nreason=bootstrap_event_unavailable\n");
+  assert.equal(shallow.run("verify", "full", overrides).status, 0);
+  assert.notEqual(shallow.run("verify", "docs", overrides).status, 0);
+  assertSummary(
+    t,
+    "success",
+    "full",
+    "bootstrap_event_unavailable",
+    "full",
+    "bootstrap_event_unavailable",
+  );
+  assert.equal(existsSync(join(shallow.checkout, "injected")), false);
+});
+
+test("event inspection failures in actual bootstrap and selector are unavailable", (t) => {
+  const policy = readFileSync(selector, "utf8");
+  const f = fixture(t, ({ put }) => put("docs/SECRET-change.md"), {
+    "scripts/ci/impact.mjs": policy,
+  });
+  const shallow = shallowBootstrap(t, f);
+  const bin = join(f.dir, "jq-shim");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "jq"), "#!/bin/sh\nexit 127\n");
+  chmodSync(join(bin, "jq"), 0o755);
+  for (const overrides of [
+    { PATH: `${bin}:${process.env.PATH}` },
+    { GITHUB_EVENT_PATH: join(f.dir, "missing-SECRET-event") },
+    { GITHUB_EVENT_PATH: f.dir },
+  ]) {
+    const selected = shallow.run("select", "", overrides);
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(selected.output, "mode=full\nreason=bootstrap_event_unavailable\n");
+    assert.equal(shallow.run("verify", "full", overrides).status, 0);
+    assert.notEqual(shallow.run("verify", "docs", overrides).status, 0);
+    const summary = summarizeImpact(t, "success", "full", "bootstrap_event_unavailable");
+    assertSummary(
+      t,
+      "success",
+      "full",
+      "bootstrap_event_unavailable",
+      "full",
+      "bootstrap_event_unavailable",
+    );
+    assert.doesNotMatch(summary.summary, /SECRET|change\.md/);
+  }
+  for (const eventPath of [join(f.dir, "missing-SECRET-event"), f.dir]) {
+    const output = join(f.dir, "event-output");
+    writeFileSync(output, "");
+    const selected = f.run(["--github-output", output], { GITHUB_EVENT_PATH: eventPath });
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(readFileSync(output, "utf8"), "mode=full\nreason=event_unavailable\n");
+    assertSummary(t, "success", "full", "event_unavailable", "full", "event_unavailable");
+    assert.doesNotMatch(
+      summarizeImpact(t, "success", "full", "event_unavailable").summary,
+      /SECRET/,
+    );
   }
 });

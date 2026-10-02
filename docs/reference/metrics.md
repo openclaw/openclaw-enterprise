@@ -46,7 +46,7 @@ routes stay templates. Methods are `GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|OTHER
 status classes are `1xx|2xx|3xx|4xx|5xx|other`. Status classes cannot distinguish
 401/403 from other 4xx failures. These are not model-turn or WebSocket durations.
 
-Work kinds are `namespace_ensure|namespace_delete|agent_revision|agent_stop|agent_delete`. Outcomes are
+Work kinds are `namespace_ensure|namespace_delete|agent_revision|agent_stop|agent_delete|agent_credential_withdrawal`. Outcomes are
 `success|pending|retry|permanent|claim_lost|error`. Pending convergence, retries,
 maintenance, and superseded work may generate multiple passes per deployment.
 Durations exclude queue wait and time between passes. Idle polling and stale

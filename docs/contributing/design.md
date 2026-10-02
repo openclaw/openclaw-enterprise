@@ -23,9 +23,9 @@ behavior from approved requirements that are not yet supported.
   requests, deploys Agents, and runs background work.
 - [Repository layout](../layout.md) maps packages and source directories to
   their owners.
-- [Implementation specifications](../../specs/README.md) record individual
-  proposals and delivery history. They are not proof that a capability exists in
-  the current product.
+- [RFCs and implementation plans](specifications.md) explains how to record
+  decisions and delivery. The [specification index](../../specs/README.md) links
+  individual workstreams; their recorded status is not proof of availability.
 
 Keep architecture pages about components, ownership, trust boundaries, and major
 interactions. Put a feature's detailed behavior in its current reference and

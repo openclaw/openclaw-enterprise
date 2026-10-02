@@ -181,7 +181,8 @@ test(
         'const { appendFileSync } = require("node:fs");',
         "const [events, kind, args] = process.argv.slice(2);",
         "appendFileSync(events, JSON.stringify({ kind, pid: process.pid, args: JSON.parse(args),",
-        "hasSetupPath: process.env.OPENCLAW_NODE_SETUP_PATH !== undefined }) + '\\n');",
+        "hasSetupPath: process.env.OPENCLAW_NODE_SETUP_PATH !== undefined,",
+        "hasDisplayName: process.env.OPENCLAW_NODE_DISPLAY_NAME !== undefined }) + '\\n');",
         "setInterval(() => {}, 1_000);",
       ].join("\n"),
     );
@@ -210,6 +211,7 @@ test(
         HOME: directory,
         OPENCLAW_NODE_STATE_DIR: join(directory, "node-state"),
         OPENCLAW_NODE_SETUP_PATH: setupPath,
+        OPENCLAW_NODE_DISPLAY_NAME: "agent-0123456789ab-workspace",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -264,6 +266,7 @@ test(
       rows.some(({ kind }) => kind === "codex"),
     );
     assert.equal(codex.hasSetupPath, false, "Codex does not learn where the setup code lives");
+    assert.equal(codex.hasDisplayName, false);
     await delay(pollInterval);
     assert.deepEqual(nodes(await events()), [], "no node without a setup or a saved identity");
 
@@ -290,6 +293,9 @@ test(
       "--pair-if-needed",
       code,
     ]);
+    // Every start names the node after the Agent, not the first Pod's host name.
+    const displayName = (args) => args[args.indexOf("--display-name") + 1];
+    assert.equal(displayName(paired.args), "agent-0123456789ab-workspace");
     assert.match(output, /"phase":"node-setup"/);
 
     // After pairing the controller removes the code and the kubelet removes the
@@ -303,6 +309,7 @@ test(
     assert.deepEqual(restarted.args.slice(0, 3), ["/app/openclaw.mjs", "node", "run"]);
     assert.equal(restarted.args.includes("--pair-if-needed"), false);
     assert.equal(restarted.args.includes(code), false);
+    assert.equal(displayName(restarted.args), "agent-0123456789ab-workspace");
     assert.equal((await events()).filter(({ kind }) => kind === "codex").length, 1);
 
     supervisor.kill("SIGTERM");
