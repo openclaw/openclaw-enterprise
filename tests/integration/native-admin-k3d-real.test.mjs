@@ -881,10 +881,10 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   });
   assert.equal(ownSession.ok, true, JSON.stringify(ownSession));
   assert.equal(ownSession.payload.session.label, ownLabel);
-  const adminConfig = await nativeRequest(unaffected.nativePage, "config.get");
-  assert.equal(adminConfig.ok, true, JSON.stringify(adminConfig));
+  const adminApprovals = await nativeRequest(unaffected.nativePage, "exec.approvals.get");
+  assert.equal(adminApprovals.ok, true, JSON.stringify(adminApprovals));
   assertMissingNativeScope(
-    await nativeRequest(withdrawn.nativePage, "config.get"),
+    await nativeRequest(withdrawn.nativePage, "exec.approvals.get"),
     "operator.admin",
   );
   const otherSession = await nativeRequest(unaffected.nativePage, "sessions.describe", {
@@ -951,7 +951,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   );
   assert.deepEqual(reviewerScopes, ["operator.read"]);
   assertMissingNativeScope(
-    await nativeRequest(withdrawn.nativePage, "config.get"),
+    await nativeRequest(withdrawn.nativePage, "exec.approvals.get"),
     "operator.admin",
   );
   assertMissingNativeScope(
