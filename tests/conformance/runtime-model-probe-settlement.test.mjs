@@ -44,7 +44,7 @@ test("actual starved-case callback accepts READY; guard-removal control does not
     "utf8",
   );
   const body = source.slice(
-    source.indexOf('"runtime image embedded Gateway reports a CPU-starved model probe at its cap"'),
+    source.indexOf('"runtime image embedded Gateway settles its model probe under CPU contention"'),
   );
   const start = body.indexOf("until: ") + 7;
   const end = body.indexOf("\n      },", start) + 8;
