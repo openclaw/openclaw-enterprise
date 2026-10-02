@@ -160,6 +160,10 @@ requires a current nonempty repository selection before retrying. GitHub App
 setup, Namespace approvals, runtime images, and credential-service networking
 remain operator prerequisites; the fixture does not verify them.
 
+### Sharing
+
+Open **Change OpenClaw role** or **OpenClaw roles unavailable**.
+
 ### Return to loaded pages
 
 Use **Pages/Navigation → Return to loaded pages** to revisit loaded pages during
@@ -355,5 +359,3 @@ shows organization-wide policy restrictions. Existing missing-credential,
 read-only, and save-failure stories still cover those surrounding states.
 Capture the final interactions and native values outside the repository;
 attach reviewable screenshots and video to the task and PR.
-
-Role previews: **Sharing Role Changed** and **Sharing Roles Unavailable**.
