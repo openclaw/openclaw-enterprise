@@ -252,14 +252,12 @@ Non-Slack cases cover dedicated Codex, embedded OpenClaw, and Secret lifecycle.
 Both topologies use OCC Secret-backed Agent `harnessAuth` bindings. The Secret API
 case covers native SecretRefs, grants, denial, sharing, rotation, and redeployment.
 
-The ordinary suite uses the real production API and worker in the Node test
-process. The gateway-routing suite runs the API as a Kubernetes Deployment so
-it reaches Envoy through the normal ClusterIP Service endpoint; its worker and
-test coordinator remain in the Node test process. Neither suite installs the
-controller with Helm. Missing selected-suite
-prerequisites fail; an unselected suite skips. Default Codex version expectation
-is `0.158.0`; see [runtime settings](#kubernetes-real-runtime-test-environment)
-for version assertions and alternate image variables.
+The ordinary suite runs the production API and worker in Node. Gateway-routing
+deploys the API in Kubernetes for normal Envoy-to-Service routing; its worker
+and coordinator run in Node. Neither installs the controller with Helm.
+Selected suites fail on missing prerequisites; unselected suites skip.
+Codex defaults to `0.158.0`; see [runtime settings](#kubernetes-real-runtime-test-environment)
+for version assertions and alternate images.
 
 ### Candidate Skill source lifecycle
 
@@ -276,13 +274,11 @@ through OCC redeploy. No conversation turn; unsupported runtime images fail.
 
 ### Transcript persistence
 
-Both Harness topologies require a gateway image that stores transcripts in
-SQLite. The persistence cases query the test conversation through
-`session_nodes` and `transcript_events`, then verify its history and media after
-gateway Pod replacement. An older image that writes JSONL transcripts cannot
-exercise this storage path, even if it uses SQLite for authentication or memory.
-Setting `OCC_TEST_KUBERNETES_OPENCLAW_VERSION` alone does not verify transcript
-storage behavior.
+Both Harness topologies require SQLite transcripts. Persistence cases query
+`session_nodes` and `transcript_events`, then verify conversation history and media
+after gateway Pod replacement. Images with JSONL transcripts cannot exercise
+this path, even with SQLite authentication or memory.
+`OCC_TEST_KUBERNETES_OPENCLAW_VERSION` alone does not verify transcript storage.
 
 For Secret changes, run the API and PostgreSQL suites as well as the real
 Kubernetes runtime cases. Route/schema checks and documentation checks alone do
