@@ -1528,6 +1528,12 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const nativeStatusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  const deniedNativeStatus = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${nativeStatusPath}` &&
+      response.request().method() === "GET",
+  );
 
   await login(
     page,
@@ -1537,6 +1543,8 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  assert.equal((await deniedNativeStatus).status(), 403);
+  assert.equal(requests.filter((request) => request.path === nativeStatusPath).length, 1);
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
@@ -1583,12 +1591,11 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(stopped.data.activeRevisionId, active.revision.id);
   assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
   assert.equal(stopped.data.configurationId, agent.configurationId);
-  // Changing only the requested runtime state must reload dependent panels,
-  // even while the selected revision remains unchanged pending worker shutdown.
-  const stopIndex = requests.findIndex((request) => request.path.endsWith("/stop"));
-  assert.ok(
-    requests.findIndex((request) => request.path.endsWith("/native-admin")) > stopIndex,
-    "native admin status must be reread after stop admission",
+  // Stop refreshes the Agent while previously denied OpenClaw access stays cached.
+  assert.equal(
+    requests.some((request) => request.path === nativeStatusPath),
+    false,
+    "stop admission must not repeat an audited OpenClaw access denial",
   );
   const revisions = await fixture.request(
     "GET",
