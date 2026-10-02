@@ -94,6 +94,21 @@ test(
       );
       assert.equal(routeAfter.metadata.uid, routeBefore.metadata.uid);
       assert.deepEqual(routeAfter.spec, routeBefore.spec);
+      // Pod readiness precedes the existing Harness node's asynchronous reconnect.
+      // Wait for that read-only dependency, then verify every persisted file below.
+      await waitFor("workspace node to reconnect after Gateway Pod replacement", async () => {
+        const name = "AGENTS.md";
+        const observed = await topology.workspaceRequest(
+          "GET",
+          `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/workspace/files/${name}`,
+        );
+        if (observed.status === 503) {
+          return undefined;
+        }
+        assert.equal(observed.status, 200, JSON.stringify(observed.error));
+        assert.deepEqual(observed.data, { name, content: proof.files.get(name) });
+        return true;
+      });
       await assertRoutedWorkspaceFileReads(topology, proof.files);
       await assertRoutedWorkspaceModelTurn(topology, connection, proof.marker);
       await connection.assertNodeAuthentication();
