@@ -48,6 +48,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
   let temporaryDirectory = 0;
+  const gatewayUnavailable = new Error("Gateway unavailable");
   const sandbox = {
     AbortController,
     Buffer,
@@ -76,11 +77,12 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
     require(specifier) {
       if (specifier === "openclaw/plugin-sdk/gateway-runtime") {
         return {
+          isGatewayTransportError: (error) => error === gatewayUnavailable,
           async callGatewayFromCli(method, rpcOptions, params, extra) {
             calls.push({ method, params });
             const value = await options.gatewayCall?.(method, extra.signal);
             if (value === undefined) {
-              throw new Error("Gateway unavailable");
+              throw gatewayUnavailable;
             }
             return value;
           },
