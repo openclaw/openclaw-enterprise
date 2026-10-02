@@ -69,6 +69,10 @@ export function failure(
   return new RequestFailure(status, code, message, details);
 }
 
+export function dependencyUnavailable(): RequestFailure {
+  return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+}
+
 export function jsonPointer(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }

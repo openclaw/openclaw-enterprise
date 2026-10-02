@@ -195,7 +195,9 @@ recovery user; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
 
 With `auth.oidc.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except `169.254.0.0/16`. Rendering fails on values the API refuses,
+allows any address except `169.254.0.0/16`. The port is the destination Pod's port; an
+IdP inside the cluster on another target port needs
+[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
 a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
 with OIDC, or an HTTP base URL.
 

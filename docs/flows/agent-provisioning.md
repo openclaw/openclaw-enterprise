@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: "2026-09-30"
-last_updated_session: "Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa"
+updated: "2026-10-01"
+last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
 ---
 
 # Agent provisioning flow
@@ -15,7 +15,7 @@ This flow ends at deployment submission. The [controller worker](controller-work
 ## Entry Points
 
 - Console: `apps/controller/src/console/agents/create.mjs`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
-- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/index.ts:createFastifyApp`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
+- API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
 - Preconditions: a ready Namespace, supported Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
 
 ## Flow
@@ -66,6 +66,8 @@ On ordinary draft creation paths, Console creates the Configuration and Agent, t
 ### 2. OCC admits one job
 
 `packages/occ/src/index.ts:OpenClawController.provisionAgent`
+
+`apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
 OCC validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. Before a new API request enters the write transaction, the selected ChannelDriver checks configured credentials through authorized Secret callbacks. The Slack Driver checks token roles and bot authentication; this does not pin Secret versions or add worker revalidation. The repository Driver validates current Namespace selections before job admission and again when the worker creates the Agent; deployment checks the exact Harness topology through the Compute Driver. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
 
@@ -126,6 +128,8 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 17:20: Point provisioning admission at the extracted Agent HTTP handlers. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 
 - 2026-09-30 17:31: Reconcile Console Harness selection with Embedded defaults, native-worker admission, and current provisioning navigation. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa - a0970577)
 

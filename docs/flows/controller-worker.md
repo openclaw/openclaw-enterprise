@@ -83,7 +83,7 @@ finalization independently of logging; see the [metrics contract](../reference/m
 
 ### 2. Commit API admission and the durable work record
 
-`apps/controller/src/index.ts:perform`,
+`apps/controller/src/http/agents.ts:createAgentHandlers`,
 `packages/occ/src/index.ts:OpenClawController`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
@@ -382,6 +382,8 @@ cannot strand provisioning.
 ## Changelog
 
 - 2026-10-02 06:30: Name Compute's pending reason in deployment progress and slow rechecks for long-pending revisions. (fix-deploy-pending-reasons)
+
+- 2026-10-01 17:20: Point Agent lifecycle admission at its HTTP owner; deployment audit keeps the admitted authorization. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 
 - 2026-10-01 04:06: Document metrics client error ownership through release. (authoring-run/d0545dc8-f524-4ce5-a3ce-918838dddd92 - 97dfb6b9)
 

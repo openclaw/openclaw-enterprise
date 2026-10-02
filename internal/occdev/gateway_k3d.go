@@ -129,11 +129,51 @@ func (r *runner) waitDevelopmentGatewayAPICRDs(ctx context.Context, timeout time
 		if err != nil {
 			return fmt.Errorf("wait for k3s Gateway API CRD %s to be created: %w", crd, err)
 		}
-		if err := r.run(ctx, "kubectl", "wait", "--for=condition=Established", "crd/"+crd, "--timeout", timeout.String()); err != nil {
-			return fmt.Errorf("wait for k3s Gateway API CRD %s to be established: %w", crd, err)
+		if err := r.waitForCRDEstablished(ctx, crd, timeout); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// kubectl wait --for=condition=Established returns immediately when
+// status.conditions is nil. A CRD is in that state just after it is applied.
+// Read the object until Established is True or the timeout expires.
+func (r *runner) waitForCRDEstablished(ctx context.Context, crd string, timeout time.Duration) error {
+	err := poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		data, err := r.output(ctx, "kubectl", "get", "crd", crd, "--ignore-not-found", "-o", "json")
+		if err != nil {
+			return false, err
+		}
+		return developmentCRDEstablished(data)
+	})
+	if err != nil {
+		return fmt.Errorf("wait for CRD %s to be established: %w", crd, err)
+	}
+	return nil
+}
+
+func developmentCRDEstablished(data []byte) (bool, error) {
+	if len(data) == 0 {
+		return false, nil
+	}
+	var object struct {
+		Status struct {
+			Conditions []struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return false, fmt.Errorf("invalid CRD status")
+	}
+	for _, condition := range object.Status.Conditions {
+		if condition.Type == "Established" && condition.Status == "True" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state *developmentState, timeout time.Duration) (string, error) {
@@ -171,7 +211,7 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 			deployments = []string{"envoy-gateway"}
 		}
 		for _, crd := range crds {
-			if err := r.run(ctx, "kubectl", "wait", "--for=condition=Established", "crd/"+crd, "--timeout", timeout.String()); err != nil {
+			if err := r.waitForCRDEstablished(ctx, crd, timeout); err != nil {
 				return "", err
 			}
 		}

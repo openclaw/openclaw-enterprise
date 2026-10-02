@@ -19,8 +19,8 @@ WebSocket traffic through the API process.
 
 - Trigger: Console renders an Agent detail tab, calls the native admin availability API, and opens the returned Agent URL.
 - Source: `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
-- Source: `apps/controller/src/index.ts:resolveNativeAdminAvailability`
-- Source: `apps/controller/src/index.ts:handleNativeAdminUpgrade`
+- Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
+- Source: `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 - Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getAgentRuntimeAccess` value.
 
 ## Flow
@@ -71,14 +71,16 @@ The panel warns that native edits do not update durable OCE configuration.
 
 ### 2. OCC protects the availability route
 
-`apps/controller/src/index.ts:nativeAdminStatusOperation`
+`apps/controller/src/http/native-admin.ts:nativeAdminStatusOperation`
+
+`createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. It reads the current controller through a getter so an app created before bootstrap uses the initialized controller on later requests. Shared route admission remains in `apps/controller/src/index.ts`.
 
 `GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires exact Agent `use` through the ordinary `admit` and `resolveIdentity` middleware. `read` or `operate` alone cannot admit the caller. Even `disabled` requires authorized Agent existence; it adds no unauthenticated discovery or separate `read` path.
 
 ### 3. Shared availability resolver checks feature and active revision state
 
-`apps/controller/src/index.ts:getNativeAdminStatus`
-`apps/controller/src/index.ts:resolveNativeAdminAvailability`
+`apps/controller/src/http/native-admin.ts:getNativeAdminStatus`
+`apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getUsableActiveAgentRevision`
 
 The handler validates the human session and exact Agent `use` before calling `resolveNativeAdminAvailability`; only then can it return `disabled`. Enabled access requires a public origin and native admin domain. `controller.getUsableActiveAgentRevision` authorizes `use`, loads the Agent, and selects its active revision and newest successor. A stopped Agent without `activeRevisionId` raises `ResourceConflictError`, producing only `status: "stopped"`, including before first deployment. `DependencyUnavailableError` instead produces `unavailable`, such as while a running Agent awaits activation. The panel reports the active revision independently of the viewed snapshot. Authorization denial returns `403` with the human IAM denial audit.
@@ -115,7 +117,7 @@ A domain-scoped session cookie cannot use a host-only `__Host-` prefix. The cont
 
 ### 6. OCC intercepts native-host HTTP requests
 
-`apps/controller/src/index.ts:interceptNativeAdminHttp`
+`apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
 The `onRequest` hook calls `interceptNativeAdminHttp` before normal OCC route
 handling. For hosts beneath the configured native admin domain, that early
@@ -138,7 +140,7 @@ The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatchi
 
 ### 7. OCC proxies native WebSocket upgrades
 
-`apps/controller/src/index.ts:handleNativeAdminUpgrade`
+`apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
 The API process intercepts `upgrade` before Fastify routing. It accepts only derived Agent hosts, reuses the shared-session admission path, captures the current active revision at connection admission, and builds the same private proxy transport context. Active sockets are tracked so `preClose` destroys them during API shutdown.
 
@@ -213,6 +215,8 @@ The init container cannot write through the gateway's later mount path.
 ## Changelog
 
 - 2026-10-02 11:55: Trace per-person OpenClaw role assignments, disjoint human routing, verified profile admission, session scope intersection and connection revocation. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
+- 2026-10-01 17:20: Move native-admin admission, availability, sockets and shutdown ownership into the HTTP module. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
+
 - 2026-10-01 21:00: Reported `unavailable` while a newer exclusive revision replaces the active workload, including after that replacement fails.
 - 2026-10-01 18:20: Answered unreachable user-photo fallbacks with `404` instead of `502`.
 
