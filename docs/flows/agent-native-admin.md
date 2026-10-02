@@ -13,7 +13,7 @@ detail tab, OCC checks the user's exact Agent use grant and runtime assignment, 
 the active gateway revision, returns a stable per-Agent URL, and the Agent host
 reuses the same OCE session cookie as the console. OCC resolves the requested
 host to the exact Agent, rechecks authorization, and proxies native HTTP and
-WebSocket traffic through the API process. Live runtime proof remains separate.
+WebSocket traffic through the API process.
 
 ## Entry Points
 
@@ -67,13 +67,13 @@ graph TD
 
 The Agent detail page inserts the OpenClaw panel on its tabs, including Configuration and Workspace files. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped, unavailable, or unsupported states, and shows the **Open OpenClaw** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
 
-The warning text tells people that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
+The panel warns that native edits do not update durable OCE configuration.
 
 ### 2. OCC protects the availability route
 
 `apps/controller/src/index.ts:nativeAdminStatusOperation`
 
-The route is `GET /namespaces/:namespaceId/agents/:agentId/native-admin`. Its operation metadata requires Agent `use`, targets the exact Agent, and runs through the same `admit` and `resolveIdentity` middleware as other protected OCC routes. A caller with only `read` or `operate` does not reach the handler as an administrator. The disabled feature state is still behind OCC exact-Agent `use` authorization and existence checks; `disabled` is not an unauthenticated discovery result and does not add a separate Agent `read` permission path.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires exact Agent `use` through the ordinary `admit` and `resolveIdentity` middleware. `read` or `operate` alone cannot admit the caller. Even `disabled` requires authorized Agent existence; it adds no unauthenticated discovery or separate `read` path.
 
 ### 3. Shared availability resolver checks feature and active revision state
 
@@ -81,7 +81,9 @@ The route is `GET /namespaces/:namespaceId/agents/:agentId/native-admin`. Its op
 `apps/controller/src/index.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getUsableActiveAgentRevision`
 
-The status handler validates the human session, preserves the OCC exact-Agent `use` authorization and existence boundary, then delegates to `resolveNativeAdminAvailability`. The resolver returns `disabled` only after that protected boundary succeeds. When enabled, it requires a configured public origin and native admin domain, then calls `controller.getUsableActiveAgentRevision`. That controller method authorizes exact Agent `use` and loads the Agent before inspecting its state. If the Agent is stopped and has no `activeRevisionId`, it raises `ResourceConflictError`; the resolver returns only `status: "stopped"`. This covers new Agents and completed stops. If active-revision selection instead raises `DependencyUnavailableError`, as for a desired-running Agent awaiting activation, the resolver returns `unavailable` in a successful status envelope. The console asks the operator to check the Agent's deployment and refresh access; private gateway routing has not been evaluated. The panel always reports the Agent's active revision, independently of the viewed snapshot. Authorization denial remains a protected-route `403` and preserves the human IAM denial audit.
+The handler validates the human session and exact Agent `use` before calling `resolveNativeAdminAvailability`; only then can it return `disabled`. Enabled access requires a public origin and native admin domain. `controller.getUsableActiveAgentRevision` authorizes `use`, loads the Agent, and selects its active revision and newest successor. A stopped Agent without `activeRevisionId` raises `ResourceConflictError`, producing only `status: "stopped"`, including before first deployment. `DependencyUnavailableError` instead produces `unavailable`, such as while a running Agent awaits activation. The panel reports the active revision independently of the viewed snapshot. Authorization denial returns `403` with the human IAM denial audit.
+
+A newer successor on a Compute Driver requiring stopped predecessors also produces `unavailable`: the worker removes the old workload before starting its replacement. A failed replacement leaves the old revision recorded as active without a serving workload. Both status and proxy admission check this boundary.
 
 After active revision selection succeeds, OCC derives the native target. If the Agent's desired runtime state is not `running`, the resolver returns `stopped` with the derived host and origin. Compute qualifies trusted-proxy identity and role headers, enabled device approval, and approval scopes covering the selected role. If it cannot supply that descriptor or `nativeAdminConfigurationSupported` rejects `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. A missing endpoint or one that is not a clean private `wss:` URL also returns `unsupported`. Only `available` carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits it from the browser response.
 
@@ -155,7 +157,7 @@ The patched Gateway verifies trusted-proxy authentication and the configured rol
 
 WebSocket admission intersects client-requested operator scopes with the proxy ceiling using OpenClaw's native scope semantics. A broad UI request can therefore receive narrower session scopes without gaining general configuration or administrator access. Non-operator connections retain exact scope matching.
 
-The proxy renews OCE entry authority every 25 seconds with a five-second check deadline. A changed assignment or descriptor closes the old connection within 30 seconds; new HTTP requests and upgrades resolve current policy immediately. Native profile updates occur at reconnect, not as an OCE database side effect.
+The same lease closes changed assignments or descriptors within 30 seconds. New HTTP requests and upgrades resolve current policy immediately; native profiles update at reconnect.
 
 ### 9. Runtime renders HTML on a separate origin
 
@@ -185,7 +187,7 @@ The init container cannot write through the gateway's later mount path.
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to invalid native admin enablement, missing public origin, invalid Agent domain, invalid shared cookie parent domain, invalid Better Auth cookie scope, or insufficient auth secret material.
 - `disabled` means the Installation has not enabled the feature.
 - `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
-- `unavailable` means active revision selection raised `DependencyUnavailableError` before OCC could derive the Agent target, or a newer revision exists whose Compute Driver `requiresStoppedPredecessors` (Kubernetes dedicated). That worker stops the active revision's workload before the newer one starts, so nothing serves until the newer revision activates; if it fails, the old revision stays recorded as active with no workload.
+- `unavailable` means active revision selection failed or an exclusive Compute Driver is replacing the active workload. Check Deployment activity, including failed replacements, then refresh access.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests should not contain native-admin exchange, bootstrap, callback, launch-code, state, verifier, or Agent-specific session-cookie traffic.
@@ -194,7 +196,7 @@ The init container cannot write through the gateway's later mount path.
 - `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
 - Browser tests cover panel visibility, warning copy, available status, and opening the returned URL. Integration proof should cover shared-cookie admission, denied service API keys, unknown host denial, proxied asset loads, WebSocket reconnect, the 25-second authorization lease, revision-change closure and reconnect, and a reversible native admin edit on a disposable Agent.
-- The flow is source-backed only here. Live runtime proof remains separate.
+- This source trace does not establish live runtime proof.
 
 ## Related docs
 

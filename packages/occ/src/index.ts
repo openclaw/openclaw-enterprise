@@ -3010,12 +3010,12 @@ export class OpenClawController {
       if (!revision) {
         throw new DependencyUnavailableError("The active Agent revision is unavailable.");
       }
-      if (action !== "administer") {
+      if (action !== "administer" && action !== "use") {
         return Object.freeze({ agent, revision });
       }
-      // Native admin status must know whether a newer deployment is replacing this revision.
+      // Runtime access must know whether a newer deployment is replacing this revision.
       // Only the newest later revision is decoded strictly, so an unreadable older snapshot
-      // cannot make a healthy Agent's native admin unavailable.
+      // cannot make a healthy Agent's runtime access unavailable.
       const newest = (await state.revisions.listRevisionsForBrowsing(namespace.id, agent.id))
         .filter((candidate) => candidate.revision > revision.revision)
         .sort((left, right) => right.revision - left.revision)[0];
