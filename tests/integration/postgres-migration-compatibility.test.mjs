@@ -2317,29 +2317,20 @@ test(
         [`binding_admin_${randomUUID()}`, principalId, entry.id],
       );
     }
-    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const stored = (
+      await pool.query("SELECT permissions FROM occ.iam_roles WHERE id = $1", [stock.id])
+    ).rows[0].permissions;
+    assert.equal(
+      stored.some(({ action, resourceKind }) => action === "create" && resourceKind === "preset"),
+      false,
+    );
+    assert.equal(
+      stored.some(
+        ({ action, resourceKind }) => action === "administer" && resourceKind === "installation",
+      ),
+      true,
+    );
     const presetId = `pre_${randomUUID()}`;
-    const authorize = (principalId, action, kind = "preset") =>
-      iam.authorize({
-        principalId,
-        action,
-        resource: {
-          kind,
-          id:
-            kind === "installation"
-              ? installationId
-              : kind === "preset" && action !== "create"
-                ? presetId
-                : namespaceId,
-          ...(kind === "installation" ? {} : { namespaceId }),
-        },
-      });
-    assert.equal((await authorize(principals[0], "create")).allowed, false);
-    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
 
     // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
     await pool.query(await readFile(join(migrationsDirectory, "0024_agent_presets.sql"), "utf8"));
@@ -2358,6 +2349,33 @@ test(
           : entry.permissions,
       });
     }
+    // Current adapters require the current schema; keep the exact 0024 checks above historical.
+    const remainingMigrations = (await readdir(migrationsDirectory))
+      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name > "0024_agent_presets.sql")
+      .sort();
+    for (const name of remainingMigrations) {
+      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
+    }
+    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const authorize = (principalId, action, kind = "preset") =>
+      iam.authorize({
+        principalId,
+        action,
+        resource: {
+          kind,
+          id:
+            kind === "installation"
+              ? installationId
+              : kind === "preset" && action !== "create"
+                ? presetId
+                : namespaceId,
+          ...(kind === "installation" ? {} : { namespaceId }),
+        },
+      });
     for (const { action } of presetPermissions) {
       assert.equal((await authorize(principals[0], action)).allowed, true);
       assert.equal((await authorize(principals[1], action)).allowed, false);
