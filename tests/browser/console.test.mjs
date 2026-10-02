@@ -589,6 +589,14 @@ test("console keeps loaded route families visible while return reads refresh", a
   await releaseHeldRoute(page, sessionPattern, sessionHold);
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
 
+  const nativeStatusUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  let nativeStatusReads = 0;
+  page.on("request", (request) => {
+    if (request.url() === nativeStatusUrl) {
+      nativeStatusReads += 1;
+    }
+  });
+  const deniedNativeStatus = page.waitForResponse((response) => response.url() === nativeStatusUrl);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("link", { name: "Retained route Agent", exact: true }).click();
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
@@ -596,8 +604,8 @@ test("console keeps loaded route families visible while return reads refresh", a
   const workspaceNotice =
     "Workspace files require a deployed Agent with an active revision and a reachable gateway.";
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
-  await page.locator(".native-admin-access").waitFor({ state: "attached" });
-  const originalNativePanel = await page.locator(".native-admin-access").elementHandle();
+  assert.equal((await deniedNativeStatus).status(), 403);
+  await page.locator(".native-admin-access").waitFor({ state: "hidden" });
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const detailPattern = "**/namespaces/" + namespace.id + "/agents/" + agent.id;
@@ -611,11 +619,13 @@ test("console keeps loaded route families visible while return reads refresh", a
   assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
   await releaseHeldRoute(page, detailPattern, detailHold);
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await page.locator(".native-admin-access").waitFor({ state: "attached" });
   assert.equal(
-    await originalNativePanel.evaluate((node) => node.isConnected),
+    await page.locator(".native-admin-access").isHidden(),
     true,
-    "Native admin access is not reconstructed after admission succeeds",
+    "Denied OpenClaw access remains hidden after route admission",
   );
+  assert.equal(nativeStatusReads, 1, "return navigation does not repeat the audited denial");
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
 
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
