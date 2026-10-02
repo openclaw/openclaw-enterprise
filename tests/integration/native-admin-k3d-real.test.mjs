@@ -1154,7 +1154,9 @@ test(
     const page = await browserContext.newPage();
     await login(page, ingress.origin, topology.credentials, agentDetailPath(topology));
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
-    await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
+    await page
+      .getByText("OpenClaw uses your assigned role to control conversations, tools and settings.")
+      .waitFor();
     const popupPromise = page.waitForEvent("popup");
     await page.getByRole("link", { name: "Open OpenClaw" }).click();
     const nativePage = await popupPromise;

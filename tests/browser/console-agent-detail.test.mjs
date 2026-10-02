@@ -970,12 +970,18 @@ test("Agent detail saves plugin changes for the next revision without changing a
 
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
-  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
+  assert.deepEqual(
+    JSON.parse(await page.locator(".agent-version-detail pre").textContent()),
+    editedPlugins,
+  );
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
-  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
+  assert.deepEqual(
+    JSON.parse(await page.locator(".agent-version-detail pre").textContent()),
+    originalPlugins,
+  );
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
