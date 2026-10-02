@@ -34,6 +34,7 @@ import {
   createOtelLogObservation,
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
+import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -3156,6 +3157,77 @@ async function gatewayCall(topology, method, params) {
   return result;
 }
 
+async function assertDedicatedSkillSources(topology) {
+  const configurationPath = `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`;
+  const original = await topology.request("GET", configurationPath);
+  assert.equal(original.status, 200);
+  const enabled = structuredClone(original.data.values);
+  (enabled.skills ??= {}).install ??= {};
+  enabled.skills.install.allowUploadedArchives = true;
+  async function deploy(values) {
+    const updated = await topology.request("PATCH", configurationPath, { values });
+    assert.equal(updated.status, 200, JSON.stringify(updated.error));
+    const revision = await topology.request(
+      "POST",
+      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
+    );
+    assert.equal(revision.status, 202, JSON.stringify(revision.error));
+    await waitFor(`Skill policy deployment ${revision.data.id}`, () =>
+      topology.events.find(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === revision.data.id &&
+          event.outcome === "success",
+      ),
+    );
+    topology.gatewayPod = await waitForReadyGatewayPod(topology, revision.data.id);
+    topology.harnessPod = await waitForReadyAgentPod(topology, revision.data.id);
+    topology.revision = revision.data;
+  }
+  async function readFileOrMissing(namespace, pod, path) {
+    return JSON.parse(
+      await execNode(
+        namespace,
+        pod,
+        `try { process.stdout.write(JSON.stringify(require("node:fs").readFileSync(${JSON.stringify(path)}, "utf8"))); }
+         catch (error) { if (error.code !== "ENOENT") throw error; process.stdout.write("null"); }`,
+      ),
+    );
+  }
+  try {
+    await deploy(enabled);
+    return await assertDedicatedSkillSourceLifecycle({
+      callGateway: (method, params) => gatewayCall(topology, method, params),
+      readHarnessFile: (path) =>
+        readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
+      readGatewayFile: (path) =>
+        readFileOrMissing(topology.gatewayPlacement, topology.gatewayPod.metadata.name, path),
+      withNodeWritesDenied: async (run) => {
+        const snapshot = await gatewayCall(topology, "config.get", {});
+        const effective = snapshot.config.plugins.entries["file-transfer"].config;
+        const nodeId = effective.workspaces.main.nodeId;
+        assert.equal(typeof nodeId, "string");
+        const policy = effective.nodes[nodeId] ?? effective.nodes["*"];
+        assert.ok(policy, "the workspace must have an effective node policy");
+        const denied = structuredClone(enabled);
+        const transfer = (denied.plugins.entries["file-transfer"] ??= {});
+        transfer.enabled = true;
+        (transfer.config ??= {}).nodes = {
+          "*": { ...structuredClone(policy), allowWritePaths: [] },
+        };
+        try {
+          await deploy(denied);
+          await run();
+        } finally {
+          await deploy(enabled);
+        }
+      },
+    });
+  } finally {
+    await deploy(original.data.values);
+  }
+}
+
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
   const actualModel = JSON.parse(
     await execNode(
@@ -5445,6 +5517,7 @@ export {
   assertLegacyModelSecretBindingDenied,
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
+  assertDedicatedSkillSources,
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,

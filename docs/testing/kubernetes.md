@@ -248,12 +248,9 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-Three non-Slack runtime cases must pass: dedicated Codex, embedded OpenClaw,
-and the extended Secret lifecycle case. Both topologies use OCC Secret-backed
-Agent `harnessAuth` bindings. The Secret API case verifies native SecretRefs, exact grants and denial,
-shared Secrets, rotation, and redeployment. It prepares those Secrets and grants
-itself. Routing, Slack and OTLP cases live in separate files, so this invocation
-contains only its three required runtime cases.
+Non-Slack cases cover dedicated Codex, embedded OpenClaw, and Secret lifecycle.
+Both topologies use OCC Secret-backed Agent `harnessAuth` bindings. The Secret API
+case covers native SecretRefs, grants, denial, sharing, rotation, and redeployment.
 
 The ordinary suite uses the real production API and worker in the Node test
 process. The gateway-routing suite runs the API as a Kubernetes Deployment so
@@ -263,6 +260,19 @@ controller with Helm. Missing selected-suite
 prerequisites fail; an unselected suite skips. Default Codex version expectation
 is `0.158.0`; see [runtime settings](#kubernetes-real-runtime-test-environment)
 for version assertions and alternate image variables.
+
+### Candidate Skill source lifecycle
+
+Use candidate images supporting paired-node Skill uploads and local `zip`:
+
+```sh
+OCC_TEST_SKILL_SOURCE_LIFECYCLE=1 node --env-file="$TEST_ENV_FILE" --test \
+  --test-name-pattern='candidate dedicated Skill source' \
+  tests/integration/harness-topology-k3d-real.test.mjs
+```
+
+Verifies source replacement, denied writes preserving bytes/lockfiles, and recovery
+through OCC redeploy. No conversation turn; unsupported runtime images fail.
 
 ### Transcript persistence
 
