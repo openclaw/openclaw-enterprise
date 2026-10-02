@@ -22,6 +22,7 @@ const { WebSocketServer } = require("ws");
     }),
   );
   let hold = false;
+  let failRequest = false;
   let received = 0;
   server.on("connection", (socket) => {
     socket.send(
@@ -56,8 +57,10 @@ const { WebSocketServer } = require("ws");
             JSON.stringify({
               type: "res",
               id: request.id,
-              ok: true,
-              payload: { generation: 2, plugins: [] },
+              ok: !failRequest,
+              ...(failRequest
+                ? { error: { code: "UNAVAILABLE", message: "RPC handler failed" } }
+                : { payload: { generation: 2, plugins: [] } }),
             }),
           );
         }
@@ -76,7 +79,14 @@ const { WebSocketServer } = require("ws");
     assert.equal(server.clients.size, 0, "the timed-out SDK connection closes");
     hold = false;
     assert.equal((await probe("plugins.list", {}, 3000)).ok, true);
-    assert.equal(received, 3);
+    failRequest = true;
+    assert.deepEqual(await probe("plugins.list", {}, 3000), { ok: false, code: "PROBE_FAILED" });
+    assert.equal(received, 4);
+    for (const socket of server.clients) {
+      socket.terminate();
+    }
+    await new Promise((resolve) => server.close(resolve));
+    assert.deepEqual(await probe("plugins.list", {}, 3000), { ok: false, code: "UNAVAILABLE" });
     assert.equal(
       readFileSync(`/proc/self/task/${process.pid}/children`, "utf8").trim(),
       "",

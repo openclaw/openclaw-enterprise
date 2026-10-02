@@ -67,7 +67,8 @@ request. Collection has a ten-second deadline and a 64 KiB response limit.
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
 Gateway container. It maps live configuration, authentication, and connectivity
 to safe codes without sending a message. The call cancels after six seconds or
-when the HTTP caller disconnects. Failed queries return unknown checks; local
+when the HTTP caller disconnects. Transport failures return `UNAVAILABLE`; RPC failures return `PROBE_FAILED`.
+Both produce unknown checks; local
 configuration is not substituted for the live response. The Agent container
 currently returns no channel checks.
 

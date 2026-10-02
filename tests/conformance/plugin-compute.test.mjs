@@ -2472,6 +2472,8 @@ test("gateway runtime status maps native Slack channel status without provider d
   let statusHandler;
   let channelStatus;
   let channelStatusCalls = 0;
+  let channelError;
+  const transportError = new Error("connection refused");
   let holdChannelStatusResponse = false;
   let pendingChannelSignal;
   let rpcTimeout;
@@ -2536,11 +2538,15 @@ test("gateway runtime status maps native Slack channel status without provider d
       }
       if (specifier === "openclaw/plugin-sdk/gateway-runtime") {
         return {
+          isGatewayTransportError: (error) => error === transportError,
           async callGatewayFromCli(method, options, params, { signal }) {
             assert.equal(method, "channels.status");
             assert.deepEqual(plain(params), { channel: "slack", probe: true, timeoutMs: 5000 });
             channelStatusCalls += 1;
             pendingChannelSignal = signal;
+            if (channelError) {
+              throw channelError;
+            }
             // A stuck transport must not hold the HTTP response or the next probe.
             if (holdChannelStatusResponse) {
               return new Promise(() => {});
@@ -2678,6 +2684,19 @@ test("gateway runtime status maps native Slack channel status without provider d
     "malformed live response",
   );
 
+  for (const [error, code] of [
+    [transportError, "UNAVAILABLE"],
+    [new Error("RPC failed"), "PROBE_FAILED"],
+  ]) {
+    channelError = error;
+    const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
+    assert.deepEqual(
+      diagnostics.checks.map(({ state, code }) => ({ state, code })),
+      Array.from({ length: 3 }, () => ({ state: "unknown", code })),
+    );
+  }
+  channelError = undefined;
+
   holdChannelStatusResponse = true;
   const timedOutRequest = readRuntimeChannelChecksFromHandler(statusHandler);
   await Promise.resolve();
@@ -2720,7 +2739,7 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(pendingChannelSignal.aborted, true);
   await abortedRequest;
   responseListeners.close?.();
-  assert.equal(channelStatusCalls, 9);
+  assert.equal(channelStatusCalls, 11);
 });
 
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {

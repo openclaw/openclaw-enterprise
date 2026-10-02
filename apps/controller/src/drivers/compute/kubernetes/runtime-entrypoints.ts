@@ -333,6 +333,7 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
     const controller = new AbortController();
     let settled = false;
     let timer;
+    let gatewayRuntime;
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -352,8 +353,8 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
     abortSignal?.addEventListener?.("abort", cancel, { once: true });
     Promise.resolve().then(async () => {
       if (settled) return;
-      const { callGatewayFromCli } = require("openclaw/plugin-sdk/gateway-runtime");
-      const value = await callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
+      gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
+      const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
         progress: false,
         signal: controller.signal,
       });
@@ -363,7 +364,10 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
         return;
       }
       finish({ ok: true, value });
-    }).catch(() => finish({ ok: false, code: "PROBE_FAILED" }));
+    }).catch((error) => finish({
+      ok: false,
+      code: gatewayRuntime?.isGatewayTransportError(error) ? "UNAVAILABLE" : "PROBE_FAILED",
+    }));
   });
 }
 
