@@ -73,7 +73,26 @@ export function renderAgentList(context) {
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
-  view.replaceChildren(element("div", { className: "agent-toolbar" }, search, create), rows);
+  const createNote = element(
+    "p",
+    { className: "muted", role: "status", hidden: true },
+    "Your access does not include creating Agents in this Namespace.",
+  );
+  view.replaceChildren(
+    element("div", { className: "agent-toolbar" }, search, create),
+    createNote,
+    rows,
+  );
+  // Gating only: the API still authorizes creation, so an unknown answer keeps the control.
+  void context.request(`${namespacePath(context.namespaceId)}/permissions`).then(
+    (permissions) => {
+      if (context.isCurrent() && permissions?.agents?.create === false) {
+        create.disabled = true;
+        createNote.hidden = false;
+      }
+    },
+    () => {},
+  );
   function render() {
     const query = search.value.trim().toLowerCase();
     const matches = items

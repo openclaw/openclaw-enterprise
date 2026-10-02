@@ -4,7 +4,9 @@ import { message } from "./list.mjs";
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
 
-export function createAgentDeletion(context, path, agent, onDeleting) {
+// `allowed` resolves to false when the caller's permission summary lacks Agent delete; the API
+// still authorizes the request, so an unknown answer leaves the control enabled.
+export function createAgentDeletion(context, path, agent, onDeleting, allowed = null) {
   const section = element("section", {
     className: "agent-card deletion-note",
     "aria-labelledby": "agent-deletion-title",
@@ -17,6 +19,7 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
     deleting: agent.status === "deleting",
     pending: false,
     needsRefresh: false,
+    forbidden: false,
     notice: "",
     error: null,
   };
@@ -36,7 +39,9 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
   function render() {
     const status = state.deleting
       ? "Deletion in progress. Cleanup runs in the background; this Agent cannot be edited or deployed."
-      : state.notice;
+      : state.forbidden
+        ? "Your access does not include deleting this Agent."
+        : state.notice;
     feedback.replaceChildren(
       ...(status ? [element("p", { className: "notice", role: "status" }, status)] : []),
       ...(state.error
@@ -52,7 +57,7 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
           ]
         : []),
     );
-    remove.disabled = state.pending || state.needsRefresh;
+    remove.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh deletion status";
     if (state.deleting) {
@@ -243,5 +248,11 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
   if (state.deleting) {
     schedulePoll();
   }
+  void allowed?.then((permitted) => {
+    if (permitted === false && context.isCurrent()) {
+      state.forbidden = true;
+      render();
+    }
+  });
   return section;
 }

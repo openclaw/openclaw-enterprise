@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, setCookieHeaders } from "../helpers/auth-session.mjs";
@@ -160,6 +161,89 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
     (await fixture.request("GET", alphaImages, { session: limitedSession })).status,
     403,
   );
+});
+
+test("caller permission summaries report each primary action without auditing denials", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Permission summaries");
+  const agent = await fixture.createAgent(namespace.id, "Summarized agent");
+  const other = await fixture.createAgent(namespace.id, "Unshared agent");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  const namespacePath = `/namespaces/${namespace.id}/permissions`;
+
+  const admin = await fixture.request("GET", agentPath);
+  assert.equal(admin.status, 200);
+  assert.deepEqual(admin.data, { update: true, deploy: true, operate: true, delete: true });
+  const adminNamespace = await fixture.request("GET", namespacePath);
+  assert.equal(adminNamespace.status, 200);
+  assert.deepEqual(adminNamespace.data, { agents: { create: true } });
+
+  // Namespace read plus exact read and deploy on one Agent: only deploy is reported.
+  const limited = await fixture.createAccountWithPolicy("permission-summary", (principal) => {
+    fixture.policy.roles.push(
+      {
+        id: "role-permission-summary-namespace",
+        namespaceId: namespace.id,
+        permissions: [{ action: "read", resourceKind: "namespace" }],
+      },
+      {
+        id: "role-permission-summary-agent",
+        namespaceId: namespace.id,
+        permissions: [
+          { action: "read", resourceKind: "agent" },
+          { action: "deploy", resourceKind: "agent" },
+        ],
+      },
+    );
+    fixture.policy.bindings.push(
+      {
+        id: "binding-permission-summary-namespace",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: "role-permission-summary-namespace",
+      },
+      {
+        id: "binding-permission-summary-agent",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: "role-permission-summary-agent",
+        resourceKind: "agent",
+        resourceId: agent.id,
+      },
+    );
+  });
+  const session = await fixture.signIn(limited.credentials);
+  const summary = await fixture.request("GET", agentPath, { session });
+  assert.equal(summary.status, 200);
+  assert.deepEqual(summary.data, { update: false, deploy: true, operate: false, delete: false });
+  const namespaceSummary = await fixture.request("GET", namespacePath, { session });
+  assert.equal(namespaceSummary.status, 200);
+  assert.deepEqual(namespaceSummary.data, { agents: { create: false } });
+  // A false flag is an answer, not an attempted operation, so nothing is audited as denied.
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  assert.equal(denials().length, 0);
+
+  // The summary itself requires Agent read and an existing Agent.
+  const unshared = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${other.id}/permissions`,
+    { session },
+  );
+  assert.equal(unshared.status, 403);
+  assert.equal(unshared.body.error.code, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.agents.permissions.read"],
+  );
+  const missing = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/agt_00000000-0000-4000-8000-000000000000/permissions`,
+  );
+  assert.equal(missing.status, 404);
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {

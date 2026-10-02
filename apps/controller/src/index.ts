@@ -1772,6 +1772,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return { selected, target, decision };
   }
 
+  // Answers whether the caller holds one primary permission, for console control gating.
+  // A denied probe is not an attempted operation, so it is not audited as a denial.
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return decision.allowed;
+  }
+
   async function denial(
     operation: OccApiRoute,
     request: FastifyRequest,
@@ -2226,6 +2251,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: await controller.getNamespace(context.actorId, namespaceId),
         meta: { requestId: request.id },
       });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // The Agent creation target matches operationTarget() for createAgent.
+      const create = await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      });
+      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
       return;
     }
 
@@ -2753,6 +2790,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return clientAgent(deleting);
       });
       reply.status(202).send({ data: agent, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, operate, remove] = await Promise.all(
+        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+      );
+      reply.send({
+        data: { update, deploy, operate, delete: remove },
+        meta: { requestId: request.id },
+      });
       return;
     }
 

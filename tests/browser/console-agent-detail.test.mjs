@@ -1763,6 +1763,24 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
 });
 
+// Without a caller-permission summary the console keeps controls enabled, so the API's own
+// denial is what the reader sees.
+async function withholdPermissionSummary(page, fixture, namespaceId, agentId) {
+  await page.route(
+    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/permissions`,
+    async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
+          meta: { requestId: "req_test_permissions" },
+        }),
+      });
+    },
+  );
+}
+
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Stop denial");
   const agent = await fixture.createAgent(
@@ -1795,6 +1813,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
 
   await login(
     page,
@@ -2110,6 +2129,7 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
 
   await login(
     page,
@@ -2138,6 +2158,78 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.status, "active");
+});
+
+test("a read-only principal sees Agent mutation controls disabled before any denial", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Read-only controls", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Read-only Agent", nativeValues("ro"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const viewer = await fixture.createAccountWithPolicy("agent-controls-viewer", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-console-agent-controls-viewer",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "read", resourceKind: "agent_revision" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-console-agent-controls-viewer",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-console-agent-controls-viewer",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, viewer.credentials);
+  await page.getByText("Your access does not include creating Agents in this Namespace.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+
+  const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  await page.goto(current.href);
+  await page.getByRole("heading", { name: "Read-only Agent" }).waitFor();
+  await page
+    .getByText("Your access does not include creating new versions of this Agent.")
+    .waitFor();
+  // The header action is disabled; the version list keeps a read-only draft entry.
+  const newVersion = page.getByRole("button", { name: "Create new version" });
+  assert.equal(await newVersion.count(), 1);
+  assert.equal(await newVersion.isDisabled(), true);
+  await page.getByRole("button", { name: "View draft" }).waitFor();
+  await page.getByText("Your access does not include stopping this Agent.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
+  await page.getByText("Your access does not include deleting this Agent.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+
+  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await page.goto(draft.href);
+  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+
+  // The summary is a probe, not an attempted operation: no write was sent and nothing was
+  // audited as a denial for the summary or the gated operations.
+  assert.equal(nonAuthWriteRequests(requests).length, 0);
+  const deniedActions = auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial")
+    .map((event) => event.action);
+  for (const action of [
+    "openclaw.namespaces.permissions.read",
+    "openclaw.agents.permissions.read",
+    "openclaw.agents.delete",
+    "openclaw.agents.stop",
+    "openclaw.agents.deploy",
+  ]) {
+    assert.equal(deniedActions.includes(action), false, action);
+  }
 });
 
 test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {
@@ -3048,6 +3140,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
     },
   });
   assert.equal(operateBinding.status, 201);
+  // The permission summary is read with the page, so a new grant applies after a reload.
+  await recipient.reload();
+  await recipient.getByRole("heading", { name: "Configuration unavailable" }).waitFor();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")
@@ -3777,7 +3872,8 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  // This reader lacks Agent update, so the draft entry is a view link.
+  await page.getByRole("button", { name: "View draft", exact: true }).click();
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);

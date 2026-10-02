@@ -271,6 +271,13 @@ owns initialization, retries, and cleanup. Live editing requires deployment.
 
 ### 7. Request a stop and read back the Agent
 
+`renderAgentDetail` reads the exact Agent's `/permissions` summary
+([RFC-0043](../../../specs/rfcs/0043-caller-permission-summaries.md)). A `false` flag
+disables **Create new version** (`update`), **Deploy new version** (`deploy`), **Stop
+Agent** (`operate`), or **Delete Agent** (`delete`) with a reason; without `update`
+the version list offers **View draft**. The summary is read once per page load. A failed
+read leaves controls enabled; the controller still authorizes every request.
+
 `apps/controller/src/console/agents/stop.mjs:createAgentStop` renders the control
 composed by `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`. Confirmation sends a
 bodyless `POST` to the exact Agent's `/stop` route. OCC's

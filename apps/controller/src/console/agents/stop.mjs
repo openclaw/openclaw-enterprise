@@ -1,7 +1,16 @@
 import { button, element } from "../dom.mjs";
 import { message, shortId } from "./list.mjs";
 
-export function createAgentStop(context, path, agent, onDeleting, onAgentChanged = () => {}) {
+// `allowed` resolves to false when the caller's permission summary lacks Agent operate; the
+// API still authorizes the request, so an unknown answer leaves the control enabled.
+export function createAgentStop(
+  context,
+  path,
+  agent,
+  onDeleting,
+  onAgentChanged = () => {},
+  allowed = null,
+) {
   const section = element("section", {
     className: "agent-card stop-note",
     "aria-labelledby": "agent-stop-title",
@@ -14,6 +23,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     agent,
     pending: false,
     needsRefresh: false,
+    forbidden: false,
     notice: "",
     error: null,
   };
@@ -58,6 +68,15 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
             ),
           ]
         : []),
+      ...(state.forbidden && !requested
+        ? [
+            element(
+              "p",
+              { className: "notice", role: "status" },
+              "Your access does not include stopping this Agent.",
+            ),
+          ]
+        : []),
       ...(state.notice
         ? [element("p", { className: "notice", role: "status" }, state.notice)]
         : []),
@@ -74,7 +93,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh;
+    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     if (requested || state.needsRefresh) {
@@ -257,6 +276,12 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   }
 
   render();
+  void allowed?.then((permitted) => {
+    if (permitted === false && context.isCurrent()) {
+      state.forbidden = true;
+      render();
+    }
+  });
   return {
     section,
     updateAgent(next) {

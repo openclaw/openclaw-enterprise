@@ -47,6 +47,7 @@ recorded status is not proof of current implementation or release availability.
 | Asynchronous Agent provisioning                             | —                                                           | [Plan / record](plans/35-agent-provisioning.md)                           |
 | Basic RBAC for personal and team Agents                     | [Decision](rfcs/31-basic-rbac/index.md)                           | —                                                                               |
 | Bootstrap administrator service account                     | —                                                           | [Plan / record](plans/16-bootstrap-admin-service-account/index.md)              |
+| Caller permission summaries for Console control gating      | [Proposal](rfcs/0043-caller-permission-summaries.md)        | —                                                                               |
 | Common OpenTelemetry logging                                | —                                                           | [Plan / record](plans/20-common-otel-logging/index.md)                          |
 | ComputeDriver matrix refresh                                | —                                                           | [Plan / record](plans/2026-09-16-compute-driver-matrix.md)                |
 | Console Agent plugin selection                              | —                                                           | [Plan / record](plans/27-console-agent-plugins.md)                        |
