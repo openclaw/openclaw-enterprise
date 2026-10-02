@@ -8,12 +8,10 @@ last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
 
 ## Overview
 
-This flow traces Agent native admin UI access. A console user opens an Agent
-detail tab, OCC checks the user's exact Agent use grant and runtime assignment, selects
-the active gateway revision, returns a stable per-Agent URL, and the Agent host
-reuses the same OCE session cookie as the console. OCC resolves the requested
-host to the exact Agent, rechecks authorization, and proxies native HTTP and
-WebSocket traffic through the API process.
+OCC checks a Console user's exact Agent `use` grant and runtime assignment,
+then returns the active Gateway's stable per-Agent URL. That host authenticates
+the shared OCE session cookie, resolves the exact Agent, rechecks authorization,
+and proxies native HTTP and WebSocket traffic.
 
 ## Entry Points
 
@@ -65,7 +63,7 @@ graph TD
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-The Agent detail page inserts the OpenClaw panel on its tabs, including Configuration and Workspace files. The panel starts hidden while it requests `${path}/native-admin`. The UI hides disabled and denied states, reports stopped, unavailable, or unsupported states, and shows the **Open OpenClaw** link only when the API returns `status: "available"` with an Agent URL. The link opens that URL in a new tab with `noopener noreferrer`; opening it makes no additional availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
+Agent detail tabs request `${path}/native-admin` with the OpenClaw panel initially hidden. Disabled and denied states hide it; stopped, unavailable and unsupported states display feedback. Only `available` with an Agent URL shows **Open OpenClaw**, which opens a new tab with `noopener noreferrer` without another availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
 
 The panel warns that native edits do not update durable OCE configuration.
 
