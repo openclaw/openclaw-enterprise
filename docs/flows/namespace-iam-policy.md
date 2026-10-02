@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-10-01"
-last_updated_session: "authoring-run/6a494c30-770d-4d46-98d6-434af8c87997"
+updated: "2026-10-02"
+last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
 ---
 
 # Namespace IAM Policy Flow
@@ -151,9 +151,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
-- 2026-10-01 01:02: Preserve duplicate runtime-assignment conflicts before the IAM error boundary. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
-
-- 2026-09-30 23:48: Trace runtime-role updates and assignment audit fields in the accompanying change. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
+- 2026-10-02 11:55: Trace atomic runtime-role updates, assignment audit fields and duplicate-assignment conflicts. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)

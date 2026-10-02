@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: "2026-10-02"
-last_updated_session: "authoring-run/66ff371d-c0b6-4cbf-acae-2d90c387b5d9"
+last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
 ---
 
 # Agent Native Admin UI Flow
@@ -208,11 +208,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
-- 2026-10-02 08:41: Trace native scope intersection for session-only roles in the accompanying fix. (authoring-run/66ff371d-c0b6-4cbf-acae-2d90c387b5d9 - 5e863d050775d4e72827ce8f2145129cb1a7869c)
-
-- 2026-10-01 01:02: Trace disjoint human routing and verified native profile authority in the accompanying fixes. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
-
-- 2026-09-30 23:38: Trace per-person runtime assignment, human routing and native admission in the accompanying change. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
+- 2026-10-02 11:55: Trace per-person OpenClaw role assignments, disjoint human routing, verified profile admission, session scope intersection and connection revocation. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 
 - 2026-09-30 19:00: Remembered a denied availability read per tab and session owner so reloads do not add an audited denial per view.
 

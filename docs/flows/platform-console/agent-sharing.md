@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-10-01"
-last_updated_session: "authoring-run/6a494c30-770d-4d46-98d6-434af8c87997"
+updated: "2026-10-02"
+last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
 ---
 
 # Console Agent sharing and removal
@@ -106,9 +106,7 @@ The panel retains discovery grants and explains other possible access sources.
 
 ## Changelog
 
-- 2026-10-01 01:02: Trace read grants on reused assignments and catalog-independent removal. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
-
-- 2026-09-30 23:38: Trace role catalog selection and atomic assignment changes. (authoring-run/fec0d413-7248-474b-a00a-3e61bb3e9874 - 7b3563bc5f414079509b059e847560b9847e57b6)
+- 2026-10-02 11:55: Trace configured role selection, atomic assignment changes, read grants on reused assignments and removal when the role catalog is unavailable. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 
 - 2026-09-28 01:39: Move the sharing trace out of the parent and editing flows to keep them within the length limit. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
 
