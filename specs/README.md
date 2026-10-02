@@ -75,6 +75,7 @@ recorded status is not proof of current implementation or release availability.
 | Provider and related Drivers                                | —                                                           | [Plan / record](plans/17-provider-driver-abstraction/index.md)                  |
 | Recover repository credential cleanup after broker loss     | [Decision](rfcs/39-repository-credential-recovery.md)       | —                                                                               |
 | Repository credentials for ordinary Agents                  | [Decision](rfcs/31-repository-credentials/index.md)               | —                                                                               |
+| Repository options without a repository Driver              | [Proposal](rfcs/0049-repository-options-without-driver.md)  | —                                                                               |
 | Repository selection and inherited access                   | —                                                           | [Plan / record](plans/37-repository-picker-and-access.md)                 |
 | SSH Compute Driver for raw hosts                            | —                                                           | [Plan / record](plans/21-ssh-compute-driver/index.md)                           |
 | Storage split: shared interface and integration             | —                                                           | [Plan / record](plans/30-storage-split-integration.md)                    |

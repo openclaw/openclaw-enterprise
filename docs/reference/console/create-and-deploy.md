@@ -185,7 +185,7 @@ Failed rediscovery and navigation retain unsaved repository choices.
 current policy. **Start over** discards selections.
 
 Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no selected repositories permits
-saving a draft; provisioning requires successful discovery.
+saving a draft, without retry; provisioning requires successful discovery.
 Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
 distinct. Each subsequent write rechecks authorization.
