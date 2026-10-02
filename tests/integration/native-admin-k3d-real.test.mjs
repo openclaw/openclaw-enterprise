@@ -895,10 +895,11 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   const hiddenSession = await nativeRequest(withdrawn.nativePage, "sessions.describe", {
     key: unaffected.sessionKey,
   });
-  assert.equal(hiddenSession.ok, true, JSON.stringify(hiddenSession));
+  assert.equal(hiddenSession.ok, false, JSON.stringify(hiddenSession));
+  assert.equal(hiddenSession.error.code, "INVALID_REQUEST");
   assert.equal(
-    hiddenSession.payload.session,
-    null,
+    hiddenSession.error.message,
+    `Session "${unaffected.sessionKey}" was not found.`,
     "researcher cannot read another person's session",
   );
 
