@@ -52,7 +52,8 @@ from [AGENTS.md](../AGENTS.md#running-integration-tests) instead.
 
 ## Active specifications
 
-[Per-person runtime-role assignments](42-agent-runtime-role-assignments.md) — Draft implementation; Gateway-entry portion of Agent-access checkpoint 3.
+[Per-person runtime-role assignments](42-agent-runtime-role-assignments.md) — Implementing;
+per-person OpenClaw role assignments for Agent access.
 
 [Repository selection and inherited access](37-repository-picker-and-access.md) — Proposed;
 adaptive repository discovery, selected cards, and explicit per-repository overrides.

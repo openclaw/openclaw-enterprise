@@ -1,6 +1,6 @@
 # Per-person Agent runtime-role assignments
 
-Status: Draft implementation for fork review; not checkpoint 3 completion.
+Status: Implementing; awaiting upstream integration and review.
 
 ## Problem and scope
 
@@ -22,7 +22,9 @@ This is an extension of the existing sharing path into checkpoint 3, not a repla
 
 Checkpoint 1/2 session-currentness through every sharing COMMIT and durable unknown-outcome receipts remain existing gaps; the UI still treats readback as current configuration, not a historical receipt. This PR does not declare those checkpoints accepted or the wider RFC complete.
 
-Before merge, qualify the patched packaged runtime on an installed enforcing Kubernetes route, run the credentialed regular Agent workflow, complete hosted CI and attach reviewer-accessible Console screenshots/video. Actual native Gateway/SQLite tests and proxy/database tests establish only their stated boundaries. The runtime patch must be reviewed and its policy normalization mismatch behavior retained as fail-closed.
+Local verification on 2026-10-02 at `a946032a` passed the native Gateway/SQLite, PostgreSQL migration and Console browser checks. All three installed gateway-routing cases passed with Helm, PostgreSQL, Envoy, enforcing NetworkPolicies, rebuilt runtime images and genuine model turns. They proved distinct human profiles and roles, downgrade/reconnect, selective revocation and retained platform workspace access. An additional installed diagnostic passed session-only permissions and a real model turn. Results are recorded in [PR #1](https://github.com/raw-labs/openclaw-enterprise/pull/1).
+
+Before merge, integrate current upstream and validate the resulting revision, complete outstanding CI and platform checks, and attach current Console screenshots and video. The initial runtime startup suite had one timeout; an unchanged focused rerun passed, but its cause and earlier repository-clone failures remain unresolved. The runtime patch still requires maintainer review, and policy normalization mismatches must continue to fail closed.
 
 ## Manual Notes
 
