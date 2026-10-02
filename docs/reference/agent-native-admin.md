@@ -67,7 +67,11 @@ For native authenticated HTTP, creating a profile or changing its role retires t
 
 Role definitions live in the admitted `gateway.roles` Configuration. The person-to-role mapping lives in the exact Agent's OCE AccessBinding `runtimeRole` field. A native role edit does not change that assignment; the next proxied admission reapplies the OCE role. Profiles linked to different OCE people cannot admit them as one person. `GET /namespaces/:namespaceId/agents/:agentId/runtime-roles` lists assignable names and permission summaries from the active revision. An Installation administrator changes an assignment with `PATCH /namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role`; deleting that binding revokes entry. There is at most one assignment per person/Agent. Groups, service identities, broad bindings and Installation administration do not select a native role.
 
+The Kubernetes Driver configures `gateway.auth.trustedProxy.managedIdentityPrefixes: ["oce:"]` and `managedIdentities: ["occ-workspace-files"]`. The runtime bridge accepts role assignments only for identities in this declared scope and rejects profiles linked to more than one managed identity. Selectors must be nonempty, trimmed lowercase values; at least one prefix or exact identity is required when role headers are enabled. The Driver rejects conflicting selectors.
+
 Kubernetes retains the separate `occ-workspace-files` identity with the reserved `oce-service` role for server operations. The role catalog excludes that reserved role. OCE core consumes opaque role names and Compute descriptors; native profile details stay in the runtime and Driver.
+
+The bridge computes its policy digest as SHA-256 of the UTF-8 JSON role definition. It recursively sorts object keys with English locale comparison and preserves array order. The Driver and runtime use the same rules; the digest checks agreement with native policy, while verified proxy authentication establishes authority.
 
 Native admin changes affect gateway-local state outside OCE Configurations and
 immutable AgentRevisions. Manage durable configuration through OCE. In the

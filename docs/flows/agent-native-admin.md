@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: "2026-10-02"
-last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
+last_updated_session: "authoring-run/32e6f4fe-d1a7-4d1a-96f4-282e75750412"
 ---
 
 # Agent Native Admin UI Flow
@@ -153,7 +153,7 @@ The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitiz
 
 The Driver selects `/people/namespaces/<namespaceId>/agents/<agentId>` and supplies `oce:<Principal ID>`, the assigned role and its policy digest. Service traffic uses a disjoint `/namespaces` route, so a missing human route rejects entry. OCC replaces browser role/identity headers with verified values.
 
-The patched Gateway verifies trusted-proxy authentication and the configured role digest. It finds the human profile, checks identity authority asynchronously, commits the selected role and requires matching authority before admission. Linked OCE people cannot share one profile. The same checks precede HTTP authorization; native role publication retires the request's earlier authority, returning `401` before its handler runs. A separate request uses the committed role; OCC never replays it. OpenClaw enforces its configured permissions. Backend service connections retain `oce-service`; independently authenticated local owners retain their existing access.
+The Driver declares the managed `oce:` prefix and exact `occ-workspace-files` identity in trusted-proxy configuration. The Gateway verifies authentication and the role digest, rejects undeclared identities and profiles linked to multiple managed identities, then commits the role through native identity authority before admission. The same checks precede HTTP authorization; native role publication retires the request's earlier authority, returning `401` before its handler runs. A separate request uses the committed role; OCC never replays it. OpenClaw enforces its configured permissions. Backend service connections retain `oce-service`; independently authenticated local owners retain their existing access.
 
 WebSocket admission intersects client-requested operator scopes with the proxy ceiling using OpenClaw's native scope semantics. A broad UI request can therefore receive narrower session scopes without gaining general configuration or administrator access. Non-operator connections retain exact scope matching.
 
@@ -212,7 +212,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
-- 2026-10-02 11:55: Trace per-person OpenClaw role assignments, disjoint human routing, verified profile admission, session scope intersection and connection revocation. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
+- 2026-10-02 14:32: Trace per-person roles, configured managed identities, disjoint routing, verified admission, scope intersection and revocation. (authoring-run/32e6f4fe-d1a7-4d1a-96f4-282e75750412 - 3b2369155e55b0e9bed49de9e46d68a958dc5278)
 - 2026-10-01 17:20: Move native-admin admission, availability, sockets and shutdown ownership into the HTTP module. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 
 - 2026-10-01 21:00: Reported `unavailable` while a newer exclusive revision replaces the active workload, including after that replacement fails.

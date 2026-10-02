@@ -3081,6 +3081,44 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.equal(human.endpoint, `wss://${gatewayRouting.hostname}${humanPath}`);
   assert.equal(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
   assert.equal(human.headers["x-occ-role"], "researcher");
+  const managedConfiguration = driver.kubernetesGatewayConfigurationDocument(
+    humanRevision.configuration,
+  );
+  assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentityPrefixes, [
+    "oce:",
+  ]);
+  assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentities, [
+    "occ-workspace-files",
+  ]);
+  // The Driver supplies omitted selectors but rejects a conflicting identity boundary.
+  const implicitScope = structuredClone(humanRevision.configuration);
+  delete implicitScope.gateway.auth.trustedProxy.managedIdentityPrefixes;
+  delete implicitScope.gateway.auth.trustedProxy.managedIdentities;
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      { ...humanRevision, configuration: implicitScope },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "researcher",
+    ),
+    human,
+  );
+  for (const scope of [
+    { managedIdentityPrefixes: [] },
+    { managedIdentityPrefixes: ["other:"] },
+    { managedIdentities: ["other-service"] },
+  ]) {
+    const configuration = structuredClone(humanRevision.configuration);
+    Object.assign(configuration.gateway.auth.trustedProxy, scope);
+    assert.throws(
+      () =>
+        driver.getAgentRuntimeAccess(
+          { ...humanRevision, configuration },
+          "prn_00000000-0000-4000-8000-000000000003",
+          "researcher",
+        ),
+      /must match the Driver's managed identities/u,
+    );
+  }
   // Native device pairing intersects these scope names literally. An admin-only
   // approval cap cannot admit a fresh browser with the researcher's read/write cap.
   for (const approval of [

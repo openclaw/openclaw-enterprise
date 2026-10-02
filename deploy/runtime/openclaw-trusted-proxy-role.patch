@@ -1,8 +1,23 @@
 diff --git a/src/config/zod-schema.gateway.ts b/src/config/zod-schema.gateway.ts
-index c895a08d..dc02a28c 100644
+index c895a08..a5e23c1 100644
 --- a/src/config/zod-schema.gateway.ts
 +++ b/src/config/zod-schema.gateway.ts
-@@ -275,6 +275,16 @@ export const GatewayConfigSchema = z
+@@ -26,6 +26,14 @@ import {
+ import { SecretInputSchema } from "./zod-schema.secret-input.js";
+ import { sensitive } from "./zod-schema.sensitive.js";
+
++const ManagedProxyIdentitySchema = z
++  .string()
++  .min(1)
++  .refine(
++    (value) => value === value.trim().toLowerCase(),
++    "Managed proxy identities and prefixes must be normalized lowercase values",
++  );
++
+ const OperatorScopeSchema = z.enum([
+   ADMIN_SCOPE,
+   READ_SCOPE,
+@@ -275,6 +283,20 @@ export const GatewayConfigSchema = z
               * Common values: "x-forwarded-user", "x-remote-user", "x-pomerium-claim-email"
               */
              userHeader: z.string().min(1, "userHeader is required for trusted-proxy mode"),
@@ -16,26 +31,36 @@ index c895a08d..dc02a28c 100644
 +              .string()
 +              .regex(/^[a-z0-9-]{1,128}$/u)
 +              .optional(),
++            /** Native aliases in these namespaces are managed by the verified proxy. */
++            managedIdentityPrefixes: z.array(ManagedProxyIdentitySchema).optional(),
++            /** Exact native aliases managed by the verified proxy, including service identities. */
++            managedIdentities: z.array(ManagedProxyIdentitySchema).optional(),
              /**
               * Additional headers that MUST be present for the request to be trusted.
               * Use this to verify the request actually came through the proxy.
-@@ -537,6 +547,22 @@ export const GatewayConfigSchema = z
+@@ -537,6 +559,28 @@ export const GatewayConfigSchema = z
        .optional(),
    })
    .superRefine((gateway, ctx) => {
 +    const proxy = gateway.auth?.trustedProxy;
-+    if (proxy?.roleHeader || proxy?.rolePolicyHashHeader) {
++    if (
++      proxy?.roleHeader ||
++      proxy?.rolePolicyHashHeader ||
++      proxy?.managedIdentityPrefixes !== undefined ||
++      proxy?.managedIdentities !== undefined
++    ) {
 +      if (
 +        gateway.auth?.mode !== "trusted-proxy" ||
 +        !proxy.roleHeader ||
 +        !proxy.rolePolicyHashHeader ||
-+        !gateway.roles
++        !gateway.roles ||
++        !(proxy.managedIdentityPrefixes?.length || proxy.managedIdentities?.length)
 +      ) {
 +        ctx.addIssue({
 +          code: "custom",
 +          path: ["auth", "trustedProxy", "roleHeader"],
 +          message:
-+            "Proxy role assignment requires trusted-proxy auth, both role headers, and configured roles",
++            "Proxy role assignment requires trusted-proxy auth, both role headers, configured roles, and managed identities",
 +        });
 +      }
 +    }
@@ -43,7 +68,7 @@ index c895a08d..dc02a28c 100644
      if (!ingress) {
        return;
 diff --git a/src/gateway/server/ws-connection/connect-user-profile.ts b/src/gateway/server/ws-connection/connect-user-profile.ts
-index d987e9a5..b1687bc8 100644
+index d987e9a..71cb201 100644
 --- a/src/gateway/server/ws-connection/connect-user-profile.ts
 +++ b/src/gateway/server/ws-connection/connect-user-profile.ts
 @@ -16,6 +16,10 @@ import {
@@ -73,7 +98,7 @@ index d987e9a5..b1687bc8 100644
    authResult: GatewayAuthResult;
    resolveAuthenticatedGitHubIdentity: ReturnType<typeof createAuthenticatedGitHubIdentitySync>;
    assertCurrent?: () => void;
-+  proxyRole?: string;
++  proxyRole?: NonNullable<ReturnType<typeof resolveVerifiedProxyRole>>;
 +  onRoleCommitted?: (profileId: string) => void;
  }) {
    params.assertCurrent?.();
@@ -87,7 +112,7 @@ index d987e9a5..b1687bc8 100644
 +      ? await prepareVerifiedProxyRoleProfile({
 +          profileId,
 +          user: params.authenticatedUserId!,
-+          role: params.proxyRole,
++          ...params.proxyRole,
 +          assertCurrent: params.assertCurrent,
 +          onRoleCommitted: params.onRoleCommitted,
 +        })
@@ -173,7 +198,7 @@ index d987e9a5..b1687bc8 100644
        await rejectUnavailableProfileConnect(context, error);
        return { ok: false };
 diff --git a/src/gateway/server.auth.identity-scopes.test.ts b/src/gateway/server.auth.identity-scopes.test.ts
-index d994ebe6..8b1b8eba 100644
+index d994ebe..24e4fbb 100644
 --- a/src/gateway/server.auth.identity-scopes.test.ts
 +++ b/src/gateway/server.auth.identity-scopes.test.ts
 @@ -1,3 +1,4 @@
@@ -200,7 +225,7 @@ index d994ebe6..8b1b8eba 100644
    connectReq,
    CONTROL_UI_CLIENT,
    installGatewayTestHooks,
-@@ -755,3 +759,292 @@ describe("gateway identity scope grants", () => {
+@@ -755,3 +759,299 @@ describe("gateway identity scope grants", () => {
      );
    });
  });
@@ -240,12 +265,14 @@ index d994ebe6..8b1b8eba 100644
 +  const setup = () =>
 +    configureGatewayAuth(
 +      {
-+        ...proxyAuth({ "occ-workspace-files": ["operator.admin"] }),
++        ...proxyAuth({ "gateway-workspace": ["operator.admin"] }),
 +        password: "proxy-owner-password",
 +        trustedProxy: {
 +          ...proxyAuth().trustedProxy!,
-+          roleHeader: "x-occ-role",
-+          rolePolicyHashHeader: "x-occ-role-policy",
++          roleHeader: "x-proxy-role",
++          rolePolicyHashHeader: "x-proxy-role-policy",
++          managedIdentityPrefixes: ["team:", "directory:"],
++          managedIdentities: ["gateway-workspace"],
 +          deviceAutoApprove: {
 +            enabled: true,
 +            scopes: [
@@ -275,8 +302,8 @@ index d994ebe6..8b1b8eba 100644
 +          ...TRUSTED_PROXY_HEADERS,
 +          "x-forwarded-user": identity,
 +          "x-openclaw-scopes": definitions[role].scopes.join(","),
-+          "x-occ-role": encodeURIComponent(role),
-+          "x-occ-role-policy": roleHash(role),
++          "x-proxy-role": encodeURIComponent(role),
++          "x-proxy-role-policy": roleHash(role),
 +        };
 +        if (backend) {
 +          delete headers.origin;
@@ -296,10 +323,10 @@ index d994ebe6..8b1b8eba 100644
 +      try {
 +        // Fresh human devices use the proxy's real scope cap and autoapproval,
 +        // without pre-pairing. The default role grants nothing before assignment.
-+        const joe = await connect("oce:prn_joe", "researcher");
-+        const jo = await connect("oce:prn_jo", "réviseur");
++        const joe = await connect("team:prn_joe", "researcher");
++        const jo = await connect("team:prn_jo", "réviseur");
 +        // Match the workspace-files caller: backend client, no device or requested scopes.
-+        const service = await connect("occ-workspace-files", "administrator", true);
++        const service = await connect("gateway-workspace", "administrator", true);
 +        expect(responseAuth(joe.connected)?.scopes).toEqual(["operator.read", "operator.write"]);
 +        expect(responseAuth(jo.connected)?.scopes).toEqual(["operator.read"]);
 +        expect((await rpcReq(joe.ws, "status", {})).ok).toBe(true);
@@ -327,7 +354,7 @@ index d994ebe6..8b1b8eba 100644
 +        expect((await rpcReq(service.ws, "config.get", {})).ok).toBe(true);
 +        // The stock UI asks for broad scopes. A session-only assignment must retain
 +        // its narrower permissions without gaining general read or administration.
-+        const sessions = await connect("oce:prn_sessions", "sessionWriter");
++        const sessions = await connect("team:prn_sessions", "sessionWriter");
 +        expect(responseAuth(sessions.connected)?.scopes).toEqual([
 +          "operator.sessions.read",
 +          "operator.sessions.write",
@@ -362,7 +389,7 @@ index d994ebe6..8b1b8eba 100644
 +        expect((await rpcReq(sessions.ws, "config.get", {})).ok).toBe(false);
 +        expect((await rpcReq(sessions.ws, "exec.approvals.get", {})).ok).toBe(false);
 +        // A read-only client request still caps the same write-capable role.
-+        const sessionRead = await connect("oce:prn_sessions", "sessionWriter", false, [
++        const sessionRead = await connect("team:prn_sessions", "sessionWriter", false, [
 +          "operator.read",
 +        ]);
 +        expect(responseAuth(sessionRead.connected)?.scopes).toEqual(["operator.sessions.read"]);
@@ -384,7 +411,7 @@ index d994ebe6..8b1b8eba 100644
 +        ).toBe(false);
 +        // Reconnecting with a changed assignment updates the persisted native profile and closes its old authority.
 +        const closed = waitForWsClose(joe.ws, 5_000);
-+        const changed = await connect("oce:prn_joe", "reviewer");
++        const changed = await connect("team:prn_joe", "reviewer");
 +        expect(await closed).toBe(true);
 +        expect(responseAuth(changed.connected)?.scopes).toEqual(["operator.read"]);
 +        const changedProfile = await rpcReq<UsersSelfResult>(changed.ws, "users.self", {});
@@ -415,7 +442,7 @@ index d994ebe6..8b1b8eba 100644
 +  test("rejects a competing role publication and ambiguous managed identities before admission", async () => {
 +    await setup();
 +    await withGatewayServer(async ({ port }) => {
-+      const profile = ensureProfileForEmail("oce:prn_raced");
++      const profile = ensureProfileForEmail("team:prn_raced");
 +      setUserProfileRole(profile.id, "administrator");
 +      let raced = false;
 +      const stop = onUserProfilesChanged(() => {
@@ -430,8 +457,8 @@ index d994ebe6..8b1b8eba 100644
 +        const ws = await openWs(port, {
 +          ...TRUSTED_PROXY_HEADERS,
 +          "x-forwarded-user": identity,
-+          "x-occ-role": "researcher",
-+          "x-occ-role-policy": roleHash("researcher"),
++          "x-proxy-role": "researcher",
++          "x-proxy-role-policy": roleHash("researcher"),
 +        });
 +        try {
 +          await expect(
@@ -446,20 +473,25 @@ index d994ebe6..8b1b8eba 100644
 +        }
 +      };
 +      try {
-+        await connect("oce:prn_raced");
++        await connect("team:prn_raced");
 +        expect(raced).toBe(true);
 +      } finally {
 +        stop();
 +      }
-+      const ambiguous = ensureProfileForEmail("oce:prn_ambiguous");
++      // A valid proxy and role cannot assign authority to an undeclared identity.
++      const unmanaged = ensureProfileForEmail("unmanaged@example.test");
++      setUserProfileRole(unmanaged.id, "administrator");
++      await connect("unmanaged@example.test");
++      expect(getUserProfileRole(unmanaged.id)).toBe("administrator");
++      const ambiguous = ensureProfileForEmail("team:prn_ambiguous");
 +      setUserProfileRole(ambiguous.id, "administrator");
-+      linkEmail("oce:prn_other", ambiguous.id);
-+      await connect("oce:prn_ambiguous");
++      linkEmail("directory:prn_other", ambiguous.id);
++      await connect("team:prn_ambiguous");
 +      expect(getUserProfileRole(ambiguous.id)).toBe("administrator");
-+      const service = ensureProfileForEmail("occ-workspace-files");
++      const service = ensureProfileForEmail("gateway-workspace");
 +      setUserProfileRole(service.id, "administrator");
-+      linkEmail("oce:prn_service_alias", service.id);
-+      await connect("oce:prn_service_alias");
++      linkEmail("team:prn_service_alias", service.id);
++      await connect("team:prn_service_alias");
 +      expect(getUserProfileRole(service.id)).toBe("administrator");
 +    });
 +  });
@@ -468,11 +500,11 @@ index d994ebe6..8b1b8eba 100644
 +    { label: "missing assignment", headers: {} },
 +    {
 +      label: "unknown role",
-+      headers: { "x-occ-role": "unknown", "x-occ-role-policy": roleHash("reviewer") },
++      headers: { "x-proxy-role": "unknown", "x-proxy-role-policy": roleHash("reviewer") },
 +    },
 +    {
 +      label: "changed native policy",
-+      headers: { "x-occ-role": "reviewer", "x-occ-role-policy": "0".repeat(64) },
++      headers: { "x-proxy-role": "reviewer", "x-proxy-role-policy": "0".repeat(64) },
 +    },
 +  ];
 +  test.each(rejectedAssignments)("rejects $label before admission", async ({ headers }) => {
@@ -494,7 +526,7 @@ index d994ebe6..8b1b8eba 100644
 +  });
 +});
 diff --git a/src/gateway/http-auth-user-profile.ts b/src/gateway/http-auth-user-profile.ts
-index a2265ef5..b171aa99 100644
+index a2265ef..8e43d21 100644
 --- a/src/gateway/http-auth-user-profile.ts
 +++ b/src/gateway/http-auth-user-profile.ts
 @@ -29,6 +29,7 @@ import {
@@ -529,7 +561,7 @@ index a2265ef5..b171aa99 100644
 +        ? await prepareVerifiedProxyRoleProfile({
 +            profileId,
 +            user: authenticatedUserId,
-+            role: proxyRole,
++            ...proxyRole,
 +            assertCurrent,
 +          })
 +        : undefined;
@@ -556,7 +588,7 @@ index a2265ef5..b171aa99 100644
    if (!authority?.isCurrent()) {
      throw new Error("HTTP profile authority changed during acquisition");
 diff --git a/src/gateway/server.plugin-http-role-scopes.test.ts b/src/gateway/server.plugin-http-role-scopes.test.ts
-index aacb5b89..db528da1 100644
+index aacb5b8..99ecd4c 100644
 --- a/src/gateway/server.plugin-http-role-scopes.test.ts
 +++ b/src/gateway/server.plugin-http-role-scopes.test.ts
 @@ -1,16 +1,23 @@
@@ -584,7 +616,7 @@ index aacb5b89..db528da1 100644
  import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
  import { resolveGatewayAuth } from "./auth.js";
  import { authorizeOperatorScopesForMethod, CLI_DEFAULT_OPERATOR_SCOPES } from "./method-scopes.js";
-@@ -353,3 +360,144 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
+@@ -353,3 +360,161 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
      invalidateOperatorRolePolicy(profile.id);
    });
  });
@@ -597,8 +629,9 @@ index aacb5b89..db528da1 100644
 +      trustedProxy: {
 +        ...proxyAuth.trustedProxy,
 +        allowLoopback: true,
-+        roleHeader: "x-occ-role",
-+        rolePolicyHashHeader: "x-occ-role-policy",
++        roleHeader: "x-proxy-role",
++        rolePolicyHashHeader: "x-proxy-role-policy",
++        managedIdentities: ["person@example.test", "other@example.test"],
 +      },
 +    };
 +    const definitions = {
@@ -659,10 +692,10 @@ index aacb5b89..db528da1 100644
 +            path: routePath,
 +            remoteAddress: proxyAddress,
 +            headers: {
-+              "x-forwarded-user": "oce:prn_http_person",
++              "x-forwarded-user": "person@example.test",
 +              "x-forwarded-for": "198.51.100.20",
-+              "x-occ-role": role,
-+              "x-occ-role-policy": createHash("sha256")
++              "x-proxy-role": role,
++              "x-proxy-role-policy": createHash("sha256")
 +                .update(JSON.stringify(canonical(definitions[role])))
 +                .digest("hex"),
 +              "x-openclaw-scopes": "operator.admin,operator.read,operator.write",
@@ -689,7 +722,7 @@ index aacb5b89..db528da1 100644
 +            (
 +              await sendRequest(server, {
 +                ...request,
-+                headers: { ...request.headers, "x-occ-role-policy": "0".repeat(64) },
++                headers: { ...request.headers, "x-proxy-role-policy": "0".repeat(64) },
 +              })
 +            ).res.statusCode,
 +          ).toBe(401);
@@ -706,18 +739,34 @@ index aacb5b89..db528da1 100644
 +          adminAllowed: true,
 +        });
 +
++        const beforeUnmanaged = calls;
++        const unmanaged = await sendRequest(server, {
++          path: routePath,
++          remoteAddress: proxyAddress,
++          headers: {
++            "x-forwarded-user": "unmanaged@example.test",
++            "x-forwarded-for": "198.51.100.20",
++            "x-proxy-role": "reviewer",
++            "x-proxy-role-policy": createHash("sha256")
++              .update(JSON.stringify(canonical(definitions.reviewer)))
++              .digest("hex"),
++          },
++        });
++        expect(unmanaged.res.statusCode).toBe(401);
++        expect(calls).toBe(beforeUnmanaged);
++
 +        // Native linking is an administrator-owned API, but it must never let
 +        // one proxy principal overwrite another principal's single native role.
-+        linkEmail("oce:prn_http_other", profileId!);
++        linkEmail("other@example.test", profileId!);
 +        const beforeAmbiguous = calls;
 +        const ambiguous = await sendRequest(server, {
 +          path: routePath,
 +          remoteAddress: proxyAddress,
 +          headers: {
-+            "x-forwarded-user": "oce:prn_http_person",
++            "x-forwarded-user": "person@example.test",
 +            "x-forwarded-for": "198.51.100.20",
-+            "x-occ-role": "administrator",
-+            "x-occ-role-policy": createHash("sha256")
++            "x-proxy-role": "administrator",
++            "x-proxy-role-policy": createHash("sha256")
 +              .update(JSON.stringify(canonical(definitions.administrator)))
 +              .digest("hex"),
 +          },
@@ -731,10 +780,10 @@ index aacb5b89..db528da1 100644
 +});
 diff --git a/src/gateway/trusted-proxy-role.ts b/src/gateway/trusted-proxy-role.ts
 new file mode 100644
-index 00000000..0b815c63
+index 0000000..9e23ac2
 --- /dev/null
 +++ b/src/gateway/trusted-proxy-role.ts
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,120 @@
 +import { createHash } from "node:crypto";
 +import type { IncomingHttpHeaders } from "node:http";
 +import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -749,7 +798,7 @@ index 00000000..0b815c63
 +  headers: IncomingHttpHeaders,
 +  authenticated: boolean,
 +  user: string | undefined,
-+): string | undefined {
++) {
 +  const proxy = cfg.gateway?.auth?.trustedProxy;
 +  if (!proxy?.roleHeader) {
 +    return undefined;
@@ -784,7 +833,16 @@ index 00000000..0b815c63
 +  if (policyHash !== digest) {
 +    throw new Error("Verified proxy role differs from runtime policy");
 +  }
-+  return role;
++  const managedIdentityPrefixes = proxy.managedIdentityPrefixes ?? [];
++  const managedIdentities = proxy.managedIdentities ?? [];
++  const identity = normalizeProfileEmail(user);
++  if (
++    !managedIdentityPrefixes.some((prefix) => identity.startsWith(prefix)) &&
++    !managedIdentities.includes(identity)
++  ) {
++    throw new Error("Verified proxy identity is outside the managed identity scope");
++  }
++  return { role, managedIdentityPrefixes, managedIdentities };
 +}
 +
 +/** Bind proxy admission to one canonical principal and its exact verified assignment. */
@@ -792,6 +850,8 @@ index 00000000..0b815c63
 +  profileId: string;
 +  user: string;
 +  role: string;
++  managedIdentityPrefixes: readonly string[];
++  managedIdentities: readonly string[];
 +  assertCurrent?: () => void;
 +  onRoleCommitted?: (profileId: string) => void;
 +}) {
@@ -805,13 +865,11 @@ index 00000000..0b815c63
 +      // These facts belong to the retained async catalog owner; guards do not read SQLite.
 +      const { profile } = identity.readCurrentFacts(bindingIds);
 +      const managed = profile.emails.filter(
-+        (candidate) => candidate.startsWith("oce:") || candidate === "occ-workspace-files",
++        (candidate) =>
++          params.managedIdentityPrefixes.some((prefix) => candidate.startsWith(prefix)) ||
++          params.managedIdentities.includes(candidate),
 +      );
-+      if (
-+        !profile.emails.includes(email) ||
-+        managed.length > 1 ||
-+        (managed.length === 1 && managed[0] !== email)
-+      ) {
++      if (managed.length !== 1 || managed[0] !== email) {
 +        throw new Error("Verified proxy identity has an ambiguous native profile");
 +      }
 +      return profile;
@@ -847,7 +905,7 @@ index 00000000..0b815c63
 +  }
 +}
 diff --git a/src/gateway/server/ws-connection/connect-admission.ts b/src/gateway/server/ws-connection/connect-admission.ts
-index 3d2c7c5b..7a4520ae 100644
+index 3d2c7c5..7a4520a 100644
 --- a/src/gateway/server/ws-connection/connect-admission.ts
 +++ b/src/gateway/server/ws-connection/connect-admission.ts
 @@ -23,7 +23,7 @@ import {
@@ -887,7 +945,7 @@ index 3d2c7c5b..7a4520ae 100644
      upgradeReq: params.upgradeReq,
    });
 diff --git a/src/gateway/server/ws-connection/connect-auth.ts b/src/gateway/server/ws-connection/connect-auth.ts
-index fa1ca69d..9a2e56e0 100644
+index fa1ca69..9a2e56e 100644
 --- a/src/gateway/server/ws-connection/connect-auth.ts
 +++ b/src/gateway/server/ws-connection/connect-auth.ts
 @@ -501,7 +501,7 @@ async function authenticateGatewayConnectCore(
@@ -900,7 +958,7 @@ index fa1ca69d..9a2e56e0 100644
    }
    const controlUiPairingKind = shouldSkipControlUiPairing({
 diff --git a/src/gateway/server/ws-connection/connect-device-pairing.ts b/src/gateway/server/ws-connection/connect-device-pairing.ts
-index 7853af39..aa26a10e 100644
+index 7853af3..aa26a10 100644
 --- a/src/gateway/server/ws-connection/connect-device-pairing.ts
 +++ b/src/gateway/server/ws-connection/connect-device-pairing.ts
 @@ -190,7 +190,7 @@ export async function authorizeGatewayConnectDevice(
@@ -912,3 +970,61 @@ index 7853af39..aa26a10e 100644
        };
        const plan = await resolvePairingApprovalPlan(pairingPlanParams);
        // Same-key reconnects reuse paired grants without pairing or false upgrade audits.
+diff --git a/src/config/zod-schema.gateway-auth.test.ts b/src/config/zod-schema.gateway-auth.test.ts
+index 820a684..2b01351 100644
+--- a/src/config/zod-schema.gateway-auth.test.ts
++++ b/src/config/zod-schema.gateway-auth.test.ts
+@@ -223,3 +223,53 @@ describe("gateway operator role config", () => {
+     }
+   });
+ });
++
++describe("verified proxy role identity scope config", () => {
++  const role = { sessions: { others: "none" }, agents: [], scopes: [] };
++  const proxy = {
++    userHeader: "x-forwarded-user",
++    roleHeader: "x-proxy-role",
++    rolePolicyHashHeader: "x-proxy-role-policy",
++    managedIdentityPrefixes: ["team:"],
++    managedIdentities: ["gateway-workspace"],
++  };
++  test.each([
++    { name: "prefix and exact identities", scope: {}, success: true },
++    { name: "prefix identities only", scope: { managedIdentities: undefined }, success: true },
++    { name: "exact identities only", scope: { managedIdentityPrefixes: undefined }, success: true },
++    {
++      name: "missing identity scope",
++      scope: { managedIdentityPrefixes: undefined, managedIdentities: undefined },
++      success: false,
++    },
++    {
++      name: "empty identity scope",
++      scope: { managedIdentityPrefixes: [], managedIdentities: [] },
++      success: false,
++    },
++    { name: "blank prefix", scope: { managedIdentityPrefixes: [""] }, success: false },
++    { name: "uppercase prefix", scope: { managedIdentityPrefixes: ["Team:"] }, success: false },
++    {
++      name: "untrimmed identity",
++      scope: { managedIdentities: [" person@example.test "] },
++      success: false,
++    },
++    { name: "missing role header", scope: { roleHeader: undefined }, success: false },
++    { name: "missing policy header", scope: { rolePolicyHashHeader: undefined }, success: false },
++    { name: "different auth mode", scope: {}, mode: "password", success: false },
++    { name: "missing role catalog", scope: {}, roles: false, success: false },
++  ])("validates $name", ({ scope, success, mode, roles }) => {
++    // Opting into role publication requires an explicit identity boundary;
++    // an empty scope must never become a wildcard or default-role fallback.
++    expect(
++      OpenClawSchema.safeParse({
++        gateway: {
++          auth: { mode: mode ?? "trusted-proxy", trustedProxy: { ...proxy, ...scope } },
++          ...(roles === false
++            ? {}
++            : { roles: { default: "denied", definitions: { denied: role } } }),
++        },
++      }).success,
++    ).toBe(success);
++  });
++});

@@ -11,6 +11,8 @@ import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
 export const RUNTIME_ROLE_HEADER = "x-occ-role";
 export const RUNTIME_ROLE_POLICY_HEADER = "x-occ-role-policy";
+export const RUNTIME_PERSON_IDENTITY_PREFIX = "oce:";
+export const RUNTIME_SERVICE_IDENTITY = "occ-workspace-files";
 export const RUNTIME_SERVICE_ROLE = "oce-service";
 export const RUNTIME_SERVICE_POLICY = Object.freeze({
   sessions: { others: "write" },
@@ -106,6 +108,8 @@ export function humanRuntimeAccess(
     proxy?.userHeader !== "x-occ-identity" ||
     proxy?.roleHeader !== RUNTIME_ROLE_HEADER ||
     proxy.rolePolicyHashHeader !== RUNTIME_ROLE_POLICY_HEADER ||
+    !isDeepStrictEqual(proxy.managedIdentityPrefixes, [RUNTIME_PERSON_IDENTITY_PREFIX]) ||
+    !isDeepStrictEqual(proxy.managedIdentities, [RUNTIME_SERVICE_IDENTITY]) ||
     !/^prn_[A-Za-z0-9-]{1,196}$/u.test(principalId)
   ) {
     return undefined;
@@ -129,7 +133,7 @@ export function humanRuntimeAccess(
   return {
     endpoint,
     headers: {
-      "x-occ-identity": `oce:${principalId}`,
+      "x-occ-identity": `${RUNTIME_PERSON_IDENTITY_PREFIX}${principalId}`,
       [RUNTIME_ROLE_HEADER]: encodeURIComponent(runtimeRole),
       [RUNTIME_ROLE_POLICY_HEADER]: runtimeRolePolicyHash(role.permissions),
       "x-openclaw-scopes": scopes.join(","),

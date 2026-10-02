@@ -11,6 +11,8 @@ import {
   managedRuntimeRoles,
   RUNTIME_ROLE_HEADER,
   RUNTIME_ROLE_POLICY_HEADER,
+  RUNTIME_PERSON_IDENTITY_PREFIX,
+  RUNTIME_SERVICE_IDENTITY,
   RUNTIME_SERVICE_ROLE,
   RUNTIME_SERVICE_POLICY,
   runtimeRolePolicyHash,
@@ -698,7 +700,7 @@ const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compi
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
-const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
+const TRUSTED_PROXY_IDENTITY = RUNTIME_SERVICE_IDENTITY;
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
@@ -8528,6 +8530,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `Kubernetes native trustedProxy.userHeader must be ${TRUSTED_PROXY_HEADER}.`,
       );
     }
+    for (const [field, expected] of [
+      ["managedIdentityPrefixes", [RUNTIME_PERSON_IDENTITY_PREFIX]],
+      ["managedIdentities", [RUNTIME_SERVICE_IDENTITY]],
+    ] as const) {
+      if (
+        trustedProxy[field] !== undefined &&
+        (roles === undefined || !isDeepStrictEqual(trustedProxy[field], expected))
+      ) {
+        throw new ConfigurationFailure(
+          `Kubernetes native trustedProxy.${field} must match the Driver's managed identities and requires gateway.roles.`,
+        );
+      }
+    }
     if (
       trustedProxy.allowUsers !== undefined &&
       !isDeepStrictEqual(
@@ -8572,6 +8587,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               : {
                   roleHeader: RUNTIME_ROLE_HEADER,
                   rolePolicyHashHeader: RUNTIME_ROLE_POLICY_HEADER,
+                  managedIdentityPrefixes: [RUNTIME_PERSON_IDENTITY_PREFIX],
+                  managedIdentities: [RUNTIME_SERVICE_IDENTITY],
                 }),
           },
           identityScopes: { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
