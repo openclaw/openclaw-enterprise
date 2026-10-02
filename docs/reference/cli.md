@@ -73,7 +73,7 @@ input is not supported. The server validates document fields against the
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                          |
 | `occ agent deploy ID`                                  | Requests deployment and creates an immutable revision.                                                                                                           |
 | `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs) with configuration generation, deployment status, and `*` on the active one.                              |
-| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status and error of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                                                     |
+| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                           |
 | `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                        |
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                    |
 | `occ agent credential-withdrawal request ID SOURCE_ID` | Revokes a credential source from the Agent's active revision; see [withdrawal](credential-sources.md#withdraw-a-source-from-an-agent).                           |
@@ -108,9 +108,12 @@ claimed.
 ## Runtime status and logs
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the
-[Agent logs](../guides/topics/agent-logs.md) routes. Both use the Agent's active
-revision unless you pass `--revision ID`; without an active revision they use the
-latest revision and print a notice to stderr. `runtime` accepts `-o table|json|yaml`
+[Agent logs](../guides/topics/agent-logs.md) routes. Without `--revision ID`,
+both read the latest revision when it is newer than the active one and has Pods
+(a deploy in progress or a failed replacement, whose Pods hold the failure),
+else the active revision, else the latest revision. They print the revision they
+read to stderr; a reader without Agent `operate` cannot check for Pods, so the
+notice names the newer revision to pass. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
@@ -120,7 +123,7 @@ audited.
 | `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--source SOURCE`      | Required: `gateway`, `agent` (dedicated Harness container) or `sandbox` (OpenShell policy decisions; no `--pod` or `--previous`).                                                                          |
-| `--revision ID`        | Revision to read; defaults to the active revision, else the latest revision.                                                                                                                               |
+| `--revision ID`        | Revision to read; defaults as described above.                                                                                                                                                             |
 | `--pod NAME`           | Pod to read when the source has more than one.                                                                                                                                                             |
 | `--previous`           | Read the container instance before the last restart.                                                                                                                                                       |
 | `--tail N`             | Lines from the end of the stream, 1 to 1000 (default 200).                                                                                                                                                 |

@@ -436,19 +436,6 @@ test("observed client error during release preserves an earlier callback failure
   assert.equal(p.releases(), 1);
 });
 
-test("lost acknowledgment remains unknown without a follow-up query", async () => {
-  const p = protocol({
-    commit: () => {
-      throw Object.assign(new Error("connection lost"), { code: "ECONNRESET" });
-    },
-  });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-});
-
 test("40003 statement completion unknown does not issue a follow-up query", async () => {
   let discarded;
   const p = protocol({

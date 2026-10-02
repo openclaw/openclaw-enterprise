@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: 2026-09-30
-last_updated_session: "authoring-run/00e5c01e-b8c9-46df-a8ac-45aa0e6932da"
+last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
 ---
 
 # Agent repository credential flow
@@ -131,7 +131,7 @@ preserves them and an empty array clears them.
 `packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
 re-resolves the draft, validates Compute topology and freezes Driver identity,
 grants and an absolute deadline unaffected by renewal or recovery. Duration
-`86400` allows 24 hours. `apps/controller/src/index.ts:clientRevision` returns
+`86400` allows 24 hours. `apps/controller/src/http/agents.ts:clientRevision` returns
 only Driver identity, references, profiles and deadline.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
@@ -347,6 +347,8 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 17:20: Point the safe revision response projection at its Agent HTTP owner. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 
 - 2026-09-30 05:21: Deliver broker CA settings to both repository consumers. (01a0ed9e-6c22-7671-9ee1-a58e1df39acd - ab0a1838)
 

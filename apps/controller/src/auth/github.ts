@@ -621,6 +621,7 @@ export function createHumanLogin(
               ctx.setCookie(
                 receiptCookie,
                 signLoginReceipt(ctx.context.secret, {
+                  providerId: provider.providerId,
                   sessionId: session.id,
                   attemptId: loginAttemptId(ctx.context.secret, digest(stateValue)),
                   expiresAt: Date.now() + LOGIN_RECEIPT_LIFETIME_SECONDS * 1000,
@@ -640,6 +641,7 @@ export function createHumanLogin(
             const receipt = verifyLoginReceipt(
               ctx.context.secret,
               ctx.getCookie(receiptCookie),
+              provider.providerId,
               now,
             );
             if (

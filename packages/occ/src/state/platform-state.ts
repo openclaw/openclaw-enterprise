@@ -60,6 +60,8 @@ import {
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   DependencyUnavailableError,
+  IAMPolicyValidationError,
+  IAMRoleInUseError,
   ResourceConflictError,
   ScopeViolationError,
 } from "../errors.ts";
@@ -2400,7 +2402,7 @@ function repositories(
           (binding) => binding.namespaceId === namespaceId && binding.roleId === roleId,
         )
       ) {
-        throw new ResourceConflictError("The IAM Role is referenced by an AccessBinding.");
+        throw new IAMRoleInUseError();
       }
       snapshot.roles.delete(key);
       return true;
@@ -2427,17 +2429,24 @@ function repositories(
       }
       const role = await iamPolicy.getRole(namespace.id, binding.roleId);
       if (role === undefined) {
-        throw new ScopeViolationError("The IAM AccessBinding references an unavailable Role.");
+        throw new IAMPolicyValidationError(
+          "/roleId",
+          "The IAM AccessBinding Role does not exist in this Namespace.",
+        );
       }
       if (binding.resourceKind === "namespace" && namespaceRoleGrantsBeyondRead(role)) {
-        throw new ScopeViolationError("Namespace IAM Roles support only Namespace read.");
+        throw new IAMPolicyValidationError(
+          "/roleId",
+          "Namespace IAM Roles support only Namespace read.",
+        );
       }
       if (
         binding.subjectKind !== "identity" ||
         !policySubjectExists(namespace.id, binding.subjectId)
       ) {
-        throw new ScopeViolationError(
-          "The IAM AccessBinding subject does not belong to the exact Namespace.",
+        throw new IAMPolicyValidationError(
+          "/subjectId",
+          "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.",
         );
       }
       if (
@@ -2445,8 +2454,9 @@ function repositories(
         binding.resourceId === undefined ||
         !(await managedPolicyResourceExists(namespace.id, binding.resourceKind, binding.resourceId))
       ) {
-        throw new ScopeViolationError(
-          "The IAM AccessBinding target does not belong to the exact Namespace.",
+        throw new IAMPolicyValidationError(
+          "/resourceId",
+          "The IAM AccessBinding target does not exist in this Namespace or is being deleted.",
         );
       }
       const key = iamPolicyKey(namespace.id, binding.id);

@@ -103,9 +103,11 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   `installation:administer`. The configured external service enforces its own access.
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
-every action name on `agent`, `agent_revision`, `configuration`,
-`credential_source`, `preset`, `secret`, and `service_account`, including
-combinations no current operation checks. On `namespace` it accepts only `read`.
+the per-kind actions in the table above on `agent`, `agent_revision`,
+`configuration`, `credential_source`, `preset`, `secret`, and `service_account`.
+It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
+checks, such as `secret:read_logs` or `configuration:deploy`, because it would
+grant nothing. On `namespace` it accepts only `read`.
 It can bind an existing human Principal or a Namespace-local ServicePrincipal
 to an existing exact resource, including the path Namespace itself. Exact
 Namespace access does not grant access to child resources.

@@ -1884,6 +1884,111 @@ test(
 );
 
 test(
+  "PostgreSQL native admin ignores unreadable older revisions when checking for a successor",
+  requiresPostgres,
+  async (context) => {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const api = await startController(context);
+    const { controller, state } = await createDurableController(pool);
+    const actor = await pool.query(
+      `SELECT identity.id
+       FROM occ.iam_identities AS identity
+       JOIN occ."user" AS auth_user ON auth_user.id = identity.subject
+       WHERE auth_user.email = $1`,
+      [adminEmail],
+    );
+    assert.equal(actor.rowCount, 1);
+    const principalId = actor.rows[0].id;
+    const namespace = await request(api, "POST", "/namespaces", {
+      name: `native-admin-successor-${randomUUID()}`,
+    });
+    assert.equal(namespace.status, 201);
+    const namespaceId = namespace.data.id;
+    const { agent, configuration } = await createConfiguredAgent(
+      api,
+      namespaceId,
+      "Native admin successor",
+      undefined,
+      { harnessAuth: { method: "runtime" } },
+    );
+    const plugins = {
+      "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+    };
+    // A previously accepted approval enum that the current contract no longer decodes.
+    const malformedPlugins = {
+      "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
+    };
+    const createRevision = (revision) =>
+      state.transact((unit) =>
+        unit.revisions.createRevision({
+          id: `rev_${randomUUID()}`,
+          namespaceId,
+          agentId: agent.id,
+          revision,
+          backendId: null,
+          configurationId: configuration.id,
+          configurationKind: "agent",
+          configurationGeneration: 1,
+          configuration: configuration.values,
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          compute: {
+            id: "compute-local-development",
+            implementation: "deterministic-local-development",
+          },
+          harnessAuth: { method: "runtime" },
+          servicePrincipalId: agent.servicePrincipalId,
+          plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    // Revisions are immutable to the application role, so seed unreadable rows as copies.
+    const insertUnreadable = async (template, revision) => {
+      const id = `rev_${randomUUID()}`;
+      await pool.query(
+        `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+         SELECT $1, namespace_id, agent_id, $2, backend_id,
+                jsonb_set(admitted_spec, '{plugins,plugins}', $4::jsonb, false), admitted_at
+         FROM occ.agent_revisions WHERE id = $3`,
+        [id, revision, template.id, JSON.stringify(malformedPlugins)],
+      );
+      return id;
+    };
+    const active = await createRevision(2);
+    await insertUnreadable(active, 1);
+    await pool.query("UPDATE occ.agents SET active_revision_id = $2 WHERE id = $1", [
+      agent.id,
+      active.id,
+    ]);
+
+    // An unreadable older snapshot must not make a healthy active revision unavailable.
+    const selection = await controller.getAdministerableActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agent.id,
+    );
+    assert.equal(selection.revision.id, active.id);
+    assert.equal(selection.successor, undefined);
+
+    // Only the newest later revision is decoded strictly, and it fails closed when unreadable.
+    const newer = await createRevision(3);
+    const withSuccessor = await controller.getAdministerableActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agent.id,
+    );
+    assert.equal(withSuccessor.successor?.id, newer.id);
+    await insertUnreadable(active, 4);
+    await assert.rejects(
+      controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id),
+      { name: "DependencyUnavailableError" },
+    );
+  },
+);
+
+test(
   "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
   requiresPostgres,
   async (context) => {

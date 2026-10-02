@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-30
-last_updated_session: authoring-run/b38fdf7a-4e45-40ac-a7d7-7da3aa8e0070
+updated: 2026-10-01
+last_updated_session: authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213
 ---
 
 # Bootstrap and human authentication flow
@@ -197,14 +197,14 @@ email, login name, and tokens do not become identity or policy. Success redirect
 to exactly `/console/`; failure redirects to the fixed
 Console URL with a sanitized error marker.
 
-Start also returns `attemptId`, an HMAC of the attempt's state digest. Success sets
-a signed two-minute `SameSite=Strict` receipt naming the new session and that
-`attemptId`. The Console's same-origin `POST /api/auth/providers/github/result`
-reaches `oceGithubResult`, which checks the receipt signature and expiry, the
-posted `attemptId`, and that the session cookie still resolves to the named
-session. It then records the receipt in a process-local ledger until expiry,
-clears the cookie, and returns the session key, without issuing or extending a
-session. Password sign-in in this profile returns the same key. Callback denials are audited as
+`attemptId` authenticates the attempt-state digest with HMAC. Success sets a signed, two-minute
+`SameSite=Strict` v2 receipt binding provider instance, session and attempt. The
+same-origin result handler verifies signature, expiry and configured provider
+before State lookup; unfinished legacy sign-ins must restart. Wrong-provider refusals
+neither consume nor clear the receipt. Matching attempt and current cookie session
+permit one exchange per process-local ledger: record consumption until expiry,
+clear the receipt; return the session key without issuing or extending sessions. Password sign-in returns
+it. Callback denials are audited as
 `INVALID_ATTEMPT` (malformed, unbound, replayed, or expired), `PROVIDER_UNAVAILABLE`
 (transport failure, deadline, 429/5xx, malformed body), or `EXTERNAL_IDENTITY_REJECTED`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
@@ -331,6 +331,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
 
 - 2026-09-30 20:57: Receive landed PR751 while preserving bounded device proofs and both documentation histories. (authoring-run/b38fdf7a-4e45-40ac-a7d7-7da3aa8e0070 - 0e59bf4479aabfa0d00c6940c55be760fa19a200)
 

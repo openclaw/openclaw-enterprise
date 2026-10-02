@@ -56,6 +56,8 @@ import {
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import {
   DependencyUnavailableError,
+  IAMPolicyValidationError,
+  IAMRoleInUseError,
   ResourceConflictError,
   ScopeViolationError,
 } from "../errors.ts";
@@ -1463,6 +1465,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "claim",
       "heartbeat",
       "pending",
+      "claimableWorkWaiting",
       "complete",
       "completeAgentDeletion",
       "defer",
@@ -3340,7 +3343,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           [namespaceId, roleId],
         );
         if (references.rowCount !== 0) {
-          throw new ResourceConflictError("The IAM Role is referenced by an AccessBinding.");
+          throw new IAMRoleInUseError();
         }
         const deleted = await client.query(
           "DELETE FROM occ.iam_roles WHERE namespace_id = $1 AND id = $2",
@@ -3409,20 +3412,28 @@ export class PostgresPlatformState implements PlatformStateStore {
           [namespace.id, binding.subjectId],
         );
         if (identity.rowCount !== 1) {
-          throw new ScopeViolationError(
-            "The IAM AccessBinding subject does not belong to the exact Namespace.",
+          throw new IAMPolicyValidationError(
+            "/subjectId",
+            "The IAM AccessBinding subject must be a human Principal, a non-Agent ServicePrincipal of this Namespace, or the ServicePrincipal of a live Agent here.",
           );
         }
         const role = await iamPolicy.getRole(namespace.id, binding.roleId);
         if (role === undefined) {
-          throw new ScopeViolationError("The IAM AccessBinding references an unavailable Role.");
+          throw new IAMPolicyValidationError(
+            "/roleId",
+            "The IAM AccessBinding Role does not exist in this Namespace.",
+          );
         }
         if (binding.resourceKind === "namespace" && namespaceRoleGrantsBeyondRead(role)) {
-          throw new ScopeViolationError("Namespace IAM Roles support only Namespace read.");
+          throw new IAMPolicyValidationError(
+            "/roleId",
+            "Namespace IAM Roles support only Namespace read.",
+          );
         }
         if (!(await lockTarget(namespace.id, binding.resourceKind, binding.resourceId))) {
-          throw new ScopeViolationError(
-            "The IAM AccessBinding target does not belong to the exact Namespace.",
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "The IAM AccessBinding target does not exist in this Namespace or is being deleted.",
           );
         }
         await client.query(

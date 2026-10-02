@@ -46,7 +46,7 @@ test("memory policy refuses new grants to an Agent after deletion admission", as
         id: `binding_${randomUUID()}`,
       }),
     ),
-    /target does not belong to the exact Namespace/,
+    /target does not exist in this Namespace or is being deleted/,
   );
 });
 

@@ -1386,7 +1386,7 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
   // Only the binding on a live resource still holds the Role.
   await assert.rejects(
     store.transact((transaction) => transaction.iamPolicy.deleteRole(namespace.id, role.id)),
-    /referenced by an AccessBinding/,
+    /referenced by AccessBindings/,
   );
   await store.transact(async (transaction) => {
     assert.equal(await transaction.iamPolicy.deleteAccessBinding(namespace.id, surviving.id), true);

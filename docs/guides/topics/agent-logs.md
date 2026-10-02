@@ -47,8 +47,8 @@ as a text file named `<agent>-<revision>-<source>-<pod>.log`, using IDs. The
 file holds the same classified and redacted records as the page, one per line
 (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, plus `GAP` and `WITHHELD`
 rows), after a `#` header naming the Agent, revision, Pod and container.
-Only **Include debug** applies to the download. Each download is a separate audited read;
-nothing is kept on the server. The saved file stays on your device, and
+Only **Include debug** applies to the download. Each download is a separate audited read.
+The saved file stays on your device, and
 redaction is best-effort, so handle it as sensitive and delete it when done.
 
 The HTTP API has the same two reads:
@@ -68,8 +68,7 @@ always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 
 ## Command line
 
-`occ agent runtime AGENT_ID` prints the Pods, sources and Events (with the
-container each concerns); `occ agent logs
+`occ agent runtime AGENT_ID` prints the Pods, sources and Events; `occ agent logs
 AGENT_ID --source gateway` prints one page, and `--follow` keeps polling every
 2 seconds until Ctrl-C:
 
@@ -79,11 +78,12 @@ occ agent logs agt_... --source agent --previous -o json
 occ agent logs agt_... --source sandbox --follow
 ```
 
-Both use the active revision unless you pass `--revision`; without one, such as
-after a failed first deployment, they use the latest revision and say so on
-stderr. `--level` sets the `minLevel` floor. Gaps and withheld counts are
-stderr notices; `-o json` prints NDJSON records. The
-command waits out `429` responses and exits nonzero on `501` and `503`. See the
+Without `--revision`, both read a newer revision that has Pods (a deploy in
+progress or failed), else the active one, else the latest, and name it on stderr.
+Checking Pods needs Agent `operate`; otherwise stderr names the newer revision.
+`--level` sets the `minLevel` floor. Gaps and withheld counts are
+stderr notices; `-o json` prints NDJSON records. The command waits out `429`
+and exits nonzero on `501` and `503`. See the
 [CLI reference](../../reference/cli.md#runtime-status-and-logs).
 
 ## Who can see what
@@ -94,18 +94,17 @@ command waits out `429` responses and exits nonzero on `501` and `503`. See the
 | Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`   | Once per view as `openclaw.agents.runtime_logs.view`      |
 | Log download                                                               | Same as log text                                      | Every download as `openclaw.agents.runtime_logs.download` |
 
-Installation administrators hold Agent `administer`. The same principals can
-already open the [native admin UI](../../reference/agent-native-admin.md), whose
-Logs page shows Gateway log text. To let someone read logs without that
-access, bind a Namespace Role with Agent `read_logs` and `read` to the exact
-Agent. It covers every version of that Agent, including later deployments.
-Runtime status still needs `read` bound to each exact version. A `read_logs`
-Restriction blocks log text for everyone, administrators included. Without
-`operate`, the Logs tab shows no runtime strip and no Pod picker: it offers
-every source, reads the source's current Pod, and says so when this version
-lacks a source. Service principals may call both routes under the same grants.
-Every request, including each follow poll, is authorized again, so revoking a
-grant stops the next poll. See
+Installation administrators hold Agent `administer` and can already read Gateway
+log text in the [native admin UI](../../reference/agent-native-admin.md). To
+delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
+the exact Agent; it covers every version, including later deployments. To open
+the Agent in the console the person also needs Namespace `read` bound to that
+Namespace; without it the page says "Namespace unavailable". Runtime status
+needs `read` bound to each exact version. A `read_logs` Restriction blocks log
+text even for administrators. Without `operate`, the Logs tab has no runtime
+strip or Pod picker; it reads each source's current Pod and says when this
+version lacks a source. Service principals use the same grants. Each request and
+follow poll is authorized again, so revoking a grant stops the next poll. See
 [authorization](../../reference/authorization.md).
 
 ## What the output contains
@@ -120,7 +119,9 @@ returning it:
 - **openclaw**: Gateway JSON console records (level, subsystem, message and a
   short list of operational fields such as `status`, `method` and `durationMs`).
   Payload keys such as `prompt`, `content`, `messages`, `args` and `headers` are
-  dropped.
+  dropped. `info` and `debug` records without a subsystem carry reply text (for
+  example from the OpenAI-compatible chat endpoint) and are withheld; such
+  errors and warnings, like `Gateway failed to start: ...`, are kept.
 - **codex**: Codex tracing records (level, target, message). Turns show as
   `turn started` and `turn completed` (info, with model, turn ID, tokens and
   busy time); tool calls keep their name and duration. Other span records are
@@ -136,25 +137,23 @@ and so is a pretty-printed (multi-line) JSON value: its opening line, every memb
 line and its closing line become one withheld row.
 
 Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
-and cookie header values, `Bearer` tokens, JWTs, known token prefixes (`sk-`, `ghp_`, `ghs_`,
-`github_pat_`, `xoxb-`, `AKIA` and others), URL user information, every URL
-query value and fragment, `password=`/`token:`/`"api_key":`-style values, and
-long base64 or hex runs with `[redacted:<pattern>]`. A PEM block printed over
-several lines is masked from an observed BEGIN through END, including across
-follow polls in the same container view. Ordered lines newer than the prior cursor
-frontier can close a carried block at END or the first line that is not base64,
-a PEM header or blank. BEGIN and END on one ordered page can therefore close at
-the same timestamp if it is newer than that prior frontier. Replayed overlap and
-timestamps at or before the prior frontier do not establish forward progress.
-Missing, invalid or out-of-order times cannot close a block known to be open.
-PEM-shaped lines may stay masked conservatively for the rest of that view, while
-ordinary operational text stays visible. A restart, Pod
-change, expired cursor or new view starts without the old masking context.
-An initial tail or older cursor may begin inside a block whose BEGIN was never
-seen; the reader cannot reconstruct that missing history. Redaction is best-effort
-pattern masking: an opaque token under 40 characters with no known prefix and no
-key name or `Bearer` next to it stays visible. Do not rely on redaction to make
-a runtime that prints secrets safe.
+and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
+known token prefixes (`sk-`, `sk_live_`, `rk_live_`, `ghp_`, `ghs_`,
+`github_pat_`, `hf_`, `xoxb-`, `AKIA` and others), URL user information, every
+URL query value and fragment, `password=`/`token:`/`"api_key":`-style values,
+upper-case `*_KEY=` assignments, netrc `login <user> password <secret>` values,
+the value after a command-line credential flag such as `curl -u user:password`
+(listed under [Sandbox source](#sandbox-source)), and long base64 or hex runs
+with `[redacted:<pattern>]`. A PEM block printed over several lines is masked
+from an observed BEGIN through END, across follow polls in the same container
+view. Only ordered lines newer than the prior cursor position can close it, at
+END or at the first line that is not base64, a PEM header or blank; replayed or
+undated lines cannot. PEM-shaped lines may stay masked for the rest of that view.
+A restart, Pod change, expired cursor or new view starts without that context,
+and a page that begins inside a block whose BEGIN it never saw cannot mask it.
+Redaction is best-effort pattern masking: an opaque token under 40 characters
+with no known prefix and no key name or `Bearer` next to it stays visible. Do
+not rely on redaction to make a runtime that prints secrets safe.
 Control characters are removed and messages are capped at 8 KiB.
 
 Kubernetes Event messages in the runtime status are redacted the same way, and
@@ -182,12 +181,12 @@ Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
 line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). The limit and the
-operator switch are checked before authorization, so a caller without grants can
-spend only its own budget and learns only whether the feature is on.
+operator switch apply before authorization, so a caller without grants spends
+only its own budget and learns only whether the feature is on.
 
-Kubernetes keeps only the current and the previous instance of each container.
-Output from deleted Pods and older restarts is gone. For history, use your
-[observability backend](../observability.md).
+Kubernetes keeps only each container's current and previous instance; for
+older output use your [observability backend](../observability.md). While a
+container crash-loops, the previous instance can briefly read as empty.
 
 ## Sandbox source
 

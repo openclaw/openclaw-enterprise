@@ -1,5 +1,5 @@
 import type { SecretMetadata } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientSecret(secret: Readonly<SecretMetadata>): Record<string, unknown> {
   return {
@@ -58,9 +58,16 @@ export const secretHandlers = {
   },
   async deleteSecret({ controller, context, reply, params, namespaceId, mutationEvent }) {
     await controller.transact(async (unit) => {
-      await controller.deleteSecret(context.actorId, namespaceId, params.secretId as string);
+      const removed = await controller.deleteSecret(
+        context.actorId,
+        namespaceId,
+        params.secretId as string,
+      );
       await unit.audit.append(
-        mutationEvent({ kind: "secret", id: params.secretId as string, namespaceId }),
+        mutationEvent(
+          { kind: "secret", id: params.secretId as string, namespaceId },
+          removedAccessBindingDetails(removed),
+        ),
       );
     });
     reply.status(204).send();

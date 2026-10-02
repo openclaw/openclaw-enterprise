@@ -168,15 +168,14 @@ elapsed milliseconds, exit code, recognized termination signal, and final code
 `UNAVAILABLE`). Logs omit credentials and raw provider output. The existing runtime
 failure status is published only after retries end.
 
-The runtime failure code is `AUTHENTICATION_FAILED` only when the provider
-rejected the credential: an OpenClaw probe status `auth` (provider 401/403 or
-invalid key), or a Codex probe `turn.failed` event or access-token login error
-reporting HTTP 401 or 403. The worker then fails the deployment with
-`RUNTIME_AUTHENTICATION_FAILED` instead of waiting for the convergence deadline.
-A CPU-starved OpenClaw probe reports `MODEL_PROBE_CPU_STARVED`, failing with
-`RUNTIME_CPU_STARVED`.
-Other timeouts, provider server errors, and transport failures keep `MODEL_PROBE_TIMEOUT`,
-`MODEL_PROBE_FAILED`, or `LOGIN_FAILED` and remain pending.
+`AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
+probe status `auth` (401/403 or invalid key), 401 to OpenClaw's first, empty
+request to a default OpenAI or Anthropic endpoint, or a Codex `turn.failed`
+event or access-token login error reporting 401 or 403. A CPU-starved OpenClaw
+probe reports `MODEL_PROBE_CPU_STARVED`. Timeouts, provider server errors,
+and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
+`LOGIN_FAILED`. The worker fails deployment at once on each held
+[code](drivers/compute.md#startup-failure-evidence); after a timeout, redeploy.
 
 Gateway and Harness startup wrappers also emit one `runtime.startup_phase` log
 per phase (login, model probe, peer plugin status, plugin install, workspace

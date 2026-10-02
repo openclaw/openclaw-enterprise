@@ -32,11 +32,18 @@ Both profiles enable:
 
 Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
 tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit, with `128Mi` memory requests and `2Gi` memory limits. The limit only
+CPU limit. Harness Pods and the container default have `2Gi` memory limits.
+Gateway Pods request `1280Mi` of memory and are limited to `3Gi`: an embedded
+OpenClaw Gateway measured about 1 GiB after start, peaked at 1.6 GiB during its
+first turns, and settled near 1.2 GiB; dedicated Gateways used 0.8 to 1.2 GiB
+idle, but a dedicated Codex Gateway serving native admin chat peaked at 1.9 GiB
+and was OOM-killed at a `2Gi` limit on its first coding turn. Denying the 11 bundled plugins an OpenAI-only Agent does not
+use (`plugins.deny`) saved only about 50 MiB. Harness Pods and the container
+default request `128Mi`. The CPU limit only
 permits bursts: an embedded OpenClaw Gateway runs a full agent turn as its
 startup model probe, about 16 CPU-seconds of local work, and was ready 24 to 30
 seconds after start at one core against 51 to 72 seconds at `500m`. The probe
-uses about one core, so cores beyond the first serve later work, not startup. The request
+uses about one core, so cores beyond the first serve later work, not startup. The CPU request
 sets the scheduling reservation, so the higher limit reserves no node capacity.
 The trade-off is overcommit: several busy runtimes on one node can each take up
 to four cores from their neighbors, and a `limits.cpu` namespace quota counts

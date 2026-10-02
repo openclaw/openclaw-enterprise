@@ -36,6 +36,54 @@ const externalAttemptStorageKeys = {
 // The last discovered OIDC label, kept per tab so messages after the IdP round trip, which
 // reloads the Console before discovery answers, name the provider the person chose.
 const oidcLabelStorageKey = "occ.console.oidcLabel";
+// Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
+// GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
+function providerIcon(provider) {
+  if (provider !== "github" && provider !== "google") {
+    return null;
+  }
+  const namespace = "http://www.w3.org/2000/svg";
+  const node = (tag, attributes) => {
+    const item = document.createElementNS(namespace, tag);
+    for (const [name, value] of Object.entries(attributes)) {
+      item.setAttribute(name, value);
+    }
+    return item;
+  };
+  const svg = node("svg", {
+    class: "auth-provider-icon",
+    "aria-hidden": "true",
+    focusable: "false",
+    viewBox: provider === "github" ? "0 0 24 24" : "0 0 23.5 24",
+  });
+  if (provider === "github") {
+    svg.append(
+      node("path", {
+        d: "M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943",
+      }),
+    );
+    return svg;
+  }
+  const clip = node("clipPath", { id: "auth-google-logo-clip" });
+  clip.append(
+    node("path", {
+      d: "M12 10v4.5h6.47c-.5 2.7-3 4.74-6.47 4.74-3.9 0-7.1-3.3-7.1-7.25S8.1 4.75 12 4.75c1.8 0 3.35.6 4.6 1.8l3.4-3.4C18 1.2 15.24 0 12 0 5.4 0 0 5.4 0 12s5.4 12 12 12c7 0 11.5-4.9 11.5-11.7 0-.8-.1-1.54-.2-2.3z",
+    }),
+  );
+  const filter = node("filter", { id: "auth-google-logo-blur" });
+  filter.append(node("feGaussianBlur", { stdDeviation: "1" }));
+  const group = node("g", { "clip-path": "url(#auth-google-logo-clip)" });
+  const colors = node("foreignObject", {
+    filter: "url(#auth-google-logo-blur)",
+    width: "28",
+    height: "28",
+    transform: "translate(-2 -2)",
+  });
+  colors.append(element("div", { className: "auth-google-colors" }));
+  group.append(colors, node("path", { fill: "#3186FF", d: "M11 8h16v8H11z" }));
+  svg.append(clip, filter, group);
+  return svg;
+}
 const externalProviders = {
   github: {
     label: "GitHub",
@@ -532,6 +580,10 @@ function showLogin(message = "", returnPath = null) {
         setDisabled(false);
       }
     });
+    const icon = providerIcon(provider);
+    if (icon !== null) {
+      control.prepend(icon);
+    }
     return control;
   };
   const github = providerButton("github");
@@ -1167,12 +1219,15 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
               : current.feature === "backends"
                 ? "Backend discovery unavailable"
                 : "Request unavailable";
+    const agentDenied = current.agentId && error.status === 403;
     panel(
       shell.view,
       title,
-      error.status === 403
-        ? "You do not have permission to read this collection."
-        : "The read could not be completed. Retry to check current access and saved state.",
+      agentDenied
+        ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
+        : error.status === 403
+          ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+          : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),
       error.requestId,

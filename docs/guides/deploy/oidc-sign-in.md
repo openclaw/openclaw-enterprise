@@ -90,6 +90,38 @@ the API refuses the same values at startup. The chart adds the API-only NetworkP
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `egressCidrs` allows any
 address except link-local `169.254.0.0/16`; list the IdP's ranges to narrow it.
 
+The policy matches the destination Pod port after the Service forwards the connection,
+not the Service port. An IdP outside the cluster is reached on 443. For an IdP that runs
+in the cluster behind a Service whose `targetPort` is not 443 (for example, an ingress
+gateway Service mapping 443 to Pod port 10443), the API's connection is refused, and
+sign-in fails with audit reason `PROVIDER_UNAVAILABLE`. `egressCidrs` cannot help,
+because the port is fixed. Add your own egress policy for the API Pod to the IdP's Pods
+on their target port:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-api-in-cluster-idp-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: idp-gateway # the IdP Service's Namespace
+          podSelector:
+            matchLabels:
+              app: idp-gateway # the Pods behind the IdP Service
+      ports:
+        - protocol: TCP
+          port: 10443 # the Service's targetPort
+```
+
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#oidc-sign-in):
 

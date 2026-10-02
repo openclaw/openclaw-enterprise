@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -60,7 +62,7 @@ async function fixture(t, sandboxDriver) {
   delete env.NODE_TEST_CONTEXT;
   delete env.OCC_SERVICE_KEY_FILE;
   delete env.OCC_URL;
-  return { engineLog, env };
+  return { directory, engineLog, env };
 }
 
 function runFirstAgent(env) {
@@ -92,4 +94,69 @@ test("first-Agent rejects OpenShell development state before external calls", as
     /does not support the OpenShell Sandbox Driver.*OCC_DEVELOPMENT_SANDBOX_DRIVER=none/,
   );
   await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+});
+
+test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) => {
+  const { directory, engineLog, env } = await fixture(t, "none");
+  const server = createServer((request, response) => {
+    const data = {
+      "/installation": { id: "ins_test" },
+      "/namespaces": [{ id: "ns_test", name: "default" }],
+      "/namespaces/ns_test": { id: "ns_test", status: "ready" },
+      "/namespaces/ns_test/agents": [],
+    }[request.url];
+    response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
+  await writeFile(
+    join(directory, "state.json"),
+    `${JSON.stringify({
+      ...state,
+      deploymentMode: "k3d",
+      composeProject: "",
+      platformNamespace: "occ-system",
+      apiPort: server.address().port,
+    })}\n`,
+    { mode: 0o600 },
+  );
+  const context = "k3d-occ-dev-first-agent-test";
+  await writeFile(
+    join(directory, "tools", "kubectl"),
+    `#!/bin/sh
+case "$*" in
+  *" config view "*) printf '%s' '${JSON.stringify({
+    "current-context": context,
+    clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }],
+  })}' ;;
+  *" exec "*) printf "%s\\n" "$*" > "$FIRST_AGENT_TEST_ENGINE_LOG"; exit 23 ;;
+  *) exit 64 ;;
+esac
+`,
+    { mode: 0o700 },
+  );
+
+  // spawnSync would block this process's fake controller, so wait asynchronously.
+  const child = spawn(process.execPath, [firstAgent, "state-contract-test"], {
+    cwd: repository,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  const [status] = await once(child, "close");
+
+  assert.equal(status, 1, output);
+  assert.match(output, /kubectl did not complete successfully \(exit 23\)/);
+  assert.match(
+    await readFile(engineLog, "utf8"),
+    new RegExp(
+      `^--kubeconfig \\S+ --context ${context} -n occ-system exec -i statefulset/postgres -c postgres -- psql `,
+    ),
+  );
 });

@@ -42,7 +42,9 @@ import {
   PostgresPlatformState,
   PostgresWorkQueue,
   OpenClawController,
+  ActivationPendingError,
   SandboxRevisionUnsupportedError,
+  TransientDependencyError,
   WorkClaimLostError,
   CREDENTIAL_WITHDRAWAL_TARGET,
   isCredentialWithdrawalWork,
@@ -62,12 +64,17 @@ import {
 } from "@openclaw-enterprise/occ";
 import {
   backendDefinitionMap,
+  removeNamespacePolicy,
+  removedPolicyDetails,
   validateBackendDefinitions,
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
-import { withComputeAbortSignal } from "./drivers/compute/operation-context.ts";
+import {
+  withComputeAbortSignal,
+  withComputeWorkWaiting,
+} from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
 import {
   RepositoryCredentialAuthorityError,
@@ -94,9 +101,98 @@ type Observation = NamespaceEnsureResult | NamespaceDeleteResult;
 type Outcome = "success" | "pending" | "retry" | "permanent";
 
 // A revision whose runtime is not ready yet is progress, not a failure. Recheck
-// it on a short fixed cadence so earlier transient failures on the same Work do
-// not stretch readiness waits through the queue's exponential retry backoff.
+// it on a short cadence so earlier transient failures on the same Work do not
+// stretch readiness waits through the queue's exponential retry backoff. The
+// worker is serial and each recheck is a full preparation pass (0.2-1.7 s live),
+// so the cadence grows with the deployment's age, from 500 ms to 5 s at 200 s:
+// a runtime that stays unready for minutes cannot take half the worker (D223).
 const REVISION_READINESS_RECHECK_MS = 500;
+const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
+const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
+
+// Pending reason codes for an unready revision. Compute may say why it waits.
+const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
+  WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
+  WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+});
+const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
+  "REVISION_INCOMPLETE",
+  "WORKSPACE_NODE_BINDING_PENDING",
+  ...Object.values(REVISION_PENDING_CODES),
+]);
+
+const LOGGED_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
+
+/**
+ * Log fields that say which dependency failed and why, without provider text:
+ * a transient dependency names itself and a closed reason; any other failure
+ * gives only its error class and, for an HTTP SDK error, the status.
+ */
+function revisionFailureLogFields(error: unknown): {
+  readonly dependency?: string;
+  readonly cause?: string;
+  readonly status?: number;
+} {
+  if (error instanceof TransientDependencyError) {
+    return { dependency: error.dependency, cause: error.reason };
+  }
+  const record = error !== null && typeof error === "object" ? error : undefined;
+  const name =
+    record === undefined
+      ? undefined
+      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
+          (candidate): candidate is string =>
+            typeof candidate === "string" &&
+            candidate !== "Error" &&
+            LOGGED_ERROR_NAME.test(candidate),
+        );
+  // Kubernetes SDK errors carry the HTTP status in `code`.
+  const status = (record as { readonly code?: unknown } | undefined)?.code;
+  const httpStatus =
+    typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status
+      : undefined;
+  return {
+    cause: name ?? "Error",
+    ...(httpStatus === undefined ? {} : { status: httpStatus }),
+  };
+}
+
+/**
+ * The pending result of an activation pass that did not finish: a dependency
+ * that is converging and a known activation wait keep their own codes (D330);
+ * anything else stays REVISION_FINALIZATION_INCOMPLETE.
+ */
+function activationPendingResult(error: unknown): {
+  readonly outcome: "pending";
+  readonly code: string;
+  readonly dependencyFailure?: TransientDependencyError;
+} {
+  if (error instanceof TransientDependencyError) {
+    return { outcome: "pending", code: error.code, dependencyFailure: error };
+  }
+  if (error instanceof ActivationPendingError) {
+    return { outcome: "pending", code: error.code };
+  }
+  return { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" };
+}
+
+function revisionPendingCode(observation: unknown): string {
+  const reason = (observation as { readonly pendingReason?: unknown }).pendingReason;
+  return typeof reason === "string" && Object.hasOwn(REVISION_PENDING_CODES, reason)
+    ? REVISION_PENDING_CODES[reason]!
+    : "REVISION_INCOMPLETE";
+}
+
+function revisionReadinessRecheckMs(ageMs: number): number {
+  return Math.min(
+    REVISION_READINESS_RECHECK_MAX_MS,
+    Math.max(
+      REVISION_READINESS_RECHECK_MS,
+      Math.round(ageMs / REVISION_READINESS_RECHECK_AGE_DIVISOR),
+    ),
+  );
+}
 
 interface DispatchResult {
   readonly outcome: Outcome;
@@ -107,6 +203,8 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
+  /** A transient dependency failure, retried until the convergence deadline. */
+  readonly dependencyFailure?: TransientDependencyError;
   readonly data?: Readonly<Record<string, unknown>>;
   readonly resultData?: Readonly<Record<string, unknown>>;
   readonly revision?: Readonly<AgentRevision>;
@@ -369,6 +467,28 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
   );
 }
 
+// Deployment failure codes for runtime failures that Kubernetes runtime
+// entrypoints hold until restart. AUTHENTICATION_FAILED is a provider 401/403 or
+// invalid-key rejection; MODEL_PROBE_CPU_STARVED ran out of a CPU budget sized
+// for the container's CPU limit; the others are a probe timeout or failure, a
+// failed Codex login, a missing probe configuration, and an invalid plugin
+// approver configuration. Unknown codes stay pending until the deadline.
+const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
+  AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",
+  MODEL_PROBE_CPU_STARVED: "RUNTIME_CPU_STARVED",
+  MODEL_PROBE_TIMEOUT: "RUNTIME_MODEL_PROBE_TIMEOUT",
+  MODEL_PROBE_FAILED: "RUNTIME_MODEL_PROBE_FAILED",
+  LOGIN_FAILED: "RUNTIME_LOGIN_FAILED",
+  UNAVAILABLE: "RUNTIME_STARTUP_FAILED",
+  INCOMPATIBLE_RESPONSE: "RUNTIME_STARTUP_FAILED",
+});
+
+function heldRuntimeFailureCode(code: string): string | undefined {
+  return Object.hasOwn(HELD_RUNTIME_FAILURE_CODES, code)
+    ? HELD_RUNTIME_FAILURE_CODES[code]
+    : undefined;
+}
+
 function convergenceDeadlineResultData(
   timeoutMs: number,
   runtimeFailure: RuntimeFailureEvidence | undefined,
@@ -398,6 +518,7 @@ function uniqueSecretRefs(bindings: SecretBindings): SecretReference[] {
 }
 
 const MAX_STOPPED_PREDECESSOR_RECORDS = 4_096;
+const MAX_AUDITED_PENDING_LIFECYCLE_RECORDS = 4_096;
 
 export class ControllerWorker {
   private readonly metrics: OccMetrics | undefined;
@@ -451,6 +572,13 @@ export class ControllerWorker {
     { readonly stoppedAt: number; readonly restopAfterMs: number }
   >();
   private readonly deployTimings = new Map<string, DeployTiming>();
+  /**
+   * The last pending Namespace lifecycle observation this process audited, by work
+   * key. A teardown waits for Kubernetes namespaces to terminate over many passes;
+   * a pass that observes the same pending state again is not audited again. The
+   * terminal pass and a changed pending state are always audited.
+   */
+  private readonly auditedPendingLifecycle = new Map<string, string>();
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -2203,6 +2331,7 @@ export class ControllerWorker {
   private async processRevision(claim: ClaimedWork): Promise<void> {
     this.beginDeployPass(claim);
     let result: RevisionDispatchResult;
+    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -2429,7 +2558,7 @@ export class ControllerWorker {
             await this.finalizeActiveRevision(
               claim,
               revision,
-              "REVISION_INCOMPLETE",
+              revisionPendingCode(observation),
               runtimeFailureFromObservation(observation),
             );
             return;
@@ -2451,7 +2580,13 @@ export class ControllerWorker {
           ) {
             throw error;
           }
-          await this.finalizeActiveRevision(claim, revision, "REVISION_FINALIZATION_INCOMPLETE");
+          const pending = activationPendingResult(error);
+          await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
+            ...(pending.dependencyFailure === undefined
+              ? {}
+              : { dependencyFailure: pending.dependencyFailure }),
+            failureLogFields: revisionFailureLogFields(error),
+          });
           return;
         }
         await this.completeActivatedRevision(claim, {
@@ -2484,13 +2619,22 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      result =
+      if (
         error instanceof RepositoryCredentialAuthorityError ||
         error instanceof SandboxRevisionUnsupportedError
-          ? { outcome: "permanent", code: error.code }
-          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      ) {
+        result = { outcome: "permanent", code: error.code };
+      } else if (error instanceof TransientDependencyError) {
+        // A dependency that recovers by itself must not spend the attempt budget:
+        // five quick retries end long before a Gateway route or an API server
+        // that is converging under load comes back (D28).
+        result = { outcome: "pending", code: error.code, dependencyFailure: error };
+      } else {
+        result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      }
+      failureLogFields = revisionFailureLogFields(error);
     }
-    await this.finalizeRevision(claim, result);
+    await this.finalizeRevision(claim, result, failureLogFields);
   }
 
   private async authorizeRevision(
@@ -2714,7 +2858,7 @@ export class ControllerWorker {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
           outcome: "pending",
-          code: "REVISION_INCOMPLETE",
+          code: revisionPendingCode(observation),
           ...(runtimeFailure === undefined ? {} : { data: { runtimeFailure } }),
         };
       }
@@ -2921,7 +3065,14 @@ export class ControllerWorker {
     // health() serializes its own updates and reports failures separately.
     void this.health(false);
     try {
-      return await withComputeAbortSignal(operation.signal, () => effect(operation.signal));
+      // The worker is serial: Compute may end an optional in-pass wait early
+      // when other Work could be claimed, instead of holding it back (D221).
+      return await withComputeAbortSignal(operation.signal, () =>
+        withComputeWorkWaiting(
+          () => this.queue.claimableWorkWaiting(),
+          () => effect(operation.signal),
+        ),
+      );
     } finally {
       clearInterval(heartbeat);
       this.abort.signal.removeEventListener("abort", abandon);
@@ -2984,6 +3135,7 @@ export class ControllerWorker {
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
+    failureLogFields?: Readonly<Record<string, string | number>>,
   ): Promise<void> {
     const runtimeFailure =
       result.outcome === "pending"
@@ -2992,25 +3144,29 @@ export class ControllerWorker {
     const expired =
       result.outcome === "pending" &&
       Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
-    // Runtime entrypoints publish AUTHENTICATION_FAILED only for provider 401/403
-    // or invalid-key rejections, and MODEL_PROBE_CPU_STARVED only when the model
-    // probe ran out of a CPU budget sized for the container's CPU limit while it
-    // waited for CPU. Both hold unready until restart, and a restart gets the same
-    // credential and CPU, so waiting for the deadline cannot change the result.
-    // Other failures may recover.
-    let resolved: RevisionDispatchResult =
-      runtimeFailure?.code === "AUTHENTICATION_FAILED"
-        ? { outcome: "permanent", code: "RUNTIME_AUTHENTICATION_FAILED" }
-        : runtimeFailure?.code === "MODEL_PROBE_CPU_STARVED"
-          ? { outcome: "permanent", code: "RUNTIME_CPU_STARVED" }
-          : expired
-            ? {
-                ...result,
-                outcome: "permanent",
-                code: "CONVERGENCE_DEADLINE_EXCEEDED",
-                data: convergenceDeadlineResultData(this.convergenceTimeoutMs, runtimeFailure),
-              }
-            : result;
+    // Runtime entrypoints publish a runtime failure only after their own retries
+    // end, and then hold the container unready until an explicit restart that
+    // nothing performs: no liveness probe or controller restarts it. Waiting for
+    // the convergence deadline therefore cannot change the result, so every held
+    // failure ends the deployment at once with a code naming its cause.
+    const heldFailureCode =
+      runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
+    let resolved: RevisionDispatchResult;
+    if (heldFailureCode !== undefined) {
+      resolved = { outcome: "permanent", code: heldFailureCode };
+    } else if (expired && result.dependencyFailure !== undefined) {
+      // The dependency was still failing at the deadline: name it, not the deadline.
+      resolved = { outcome: "permanent", code: result.code };
+    } else if (expired) {
+      resolved = {
+        ...result,
+        outcome: "permanent",
+        code: "CONVERGENCE_DEADLINE_EXCEEDED",
+        data: convergenceDeadlineResultData(this.convergenceTimeoutMs, runtimeFailure),
+      };
+    } else {
+      resolved = result;
+    }
     if (resolved.outcome === "success" && resolved.revision?.repositoryCredentials !== undefined) {
       try {
         await this.assertRepositoryAuthority(claim, resolved.revision);
@@ -3098,10 +3254,15 @@ export class ControllerWorker {
           ...(resolved.resultData === undefined ? {} : { resultData: resolved.resultData }),
         });
       } else if (resolved.outcome === "pending") {
+        const ageMs = Date.now() - claim.createdAt.getTime();
         await queue.defer(
           claim,
           { code: resolved.code },
-          resolved.code === "REVISION_INCOMPLETE" ? { delayMs: REVISION_READINESS_RECHECK_MS } : {},
+          // A transient dependency failure is rechecked on the readiness cadence:
+          // like an unready runtime, it waits for convergence, not for a fix.
+          resolved.dependencyFailure !== undefined || REVISION_READINESS_CODES.has(resolved.code)
+            ? { delayMs: revisionReadinessRecheckMs(ageMs) }
+            : {},
         );
       } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
         await queue.fail(claim, {
@@ -3152,10 +3313,11 @@ export class ControllerWorker {
           await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
           return;
         }
-        await this.finalizeRevision(claim, {
-          outcome: "pending",
-          code: "REVISION_FINALIZATION_INCOMPLETE",
-        });
+        await this.finalizeRevision(
+          claim,
+          activationPendingResult(error),
+          revisionFailureLogFields(error),
+        );
         return;
       }
       await this.completeActivatedRevision(claim, resolved);
@@ -3170,6 +3332,7 @@ export class ControllerWorker {
       result: resolved.outcome,
       outcome: resolved.outcome,
       code: resolved.code,
+      ...failureLogFields,
       ...this.deployTimingFields(claim),
     });
   }
@@ -3283,6 +3446,10 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
     code: string,
     runtimeFailure?: RuntimeFailureEvidence,
+    failure: {
+      readonly dependencyFailure?: TransientDependencyError;
+      readonly failureLogFields?: Readonly<Record<string, string | number>>;
+    } = {},
   ): Promise<void> {
     if (
       this.revisionMaintenanceInterval(revision) === undefined ||
@@ -3290,11 +3457,18 @@ export class ControllerWorker {
         claim.idempotencyKey,
       )
     ) {
-      await this.finalizeRevision(claim, {
-        outcome: "pending",
-        code,
-        ...(runtimeFailure === undefined ? {} : { data: { runtimeFailure } }),
-      });
+      await this.finalizeRevision(
+        claim,
+        {
+          outcome: "pending",
+          code,
+          ...(runtimeFailure === undefined ? {} : { data: { runtimeFailure } }),
+          ...(failure.dependencyFailure === undefined
+            ? {}
+            : { dependencyFailure: failure.dependencyFailure }),
+        },
+        failure.failureLogFields,
+      );
       return;
     }
     let superseded = false;
@@ -3346,6 +3520,7 @@ export class ControllerWorker {
       result: "pending",
       outcome: "pending",
       code,
+      ...failure.failureLogFields,
     });
   }
 
@@ -3543,6 +3718,11 @@ export class ControllerWorker {
     const resolved: DispatchResult = expired
       ? { ...result, outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" }
       : result;
+    const pendingAudit =
+      resolved.outcome === "pending" && resolved.observation !== undefined
+        ? JSON.stringify([claim.namespaceTarget, resolved.code, resolved.observation])
+        : undefined;
+    let auditedPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
@@ -3565,14 +3745,23 @@ export class ControllerWorker {
           (resolved.outcome === "permanent" || exhausted)
         ) {
           await unit.namespaces.transitionNamespaceStatus(current.id, "provisioning", "failed");
-        } else if (claim.namespaceTarget === "deleted" && resolved.outcome === "success") {
+        }
+        let removedPolicy;
+        if (claim.namespaceTarget === "deleted" && resolved.outcome === "success") {
           await unit.namespaces.markNamespaceDeleted(current.id, new Date().toISOString());
+          // No grant outlives its Namespace; the lifecycle event records what was removed.
+          removedPolicy = await removeNamespacePolicy(unit, current.id);
         }
 
         if (resolved.decision !== undefined) {
           await this.appendDenial(unit, claim, current, resolved);
-        } else if (resolved.observation !== undefined) {
-          await this.appendObservation(unit, claim, current, resolved);
+        } else if (
+          resolved.observation !== undefined &&
+          (pendingAudit === undefined ||
+            this.auditedPendingLifecycle.get(claim.idempotencyKey) !== pendingAudit)
+        ) {
+          await this.appendObservation(unit, claim, current, resolved, removedPolicy);
+          auditedPending = pendingAudit !== undefined;
         }
       }
 
@@ -3586,6 +3775,17 @@ export class ControllerWorker {
         await queue.retry(claim, { code: resolved.code });
       }
     }, this.queueOptions);
+    // Recorded after commit: a rolled-back audit row is written again next pass.
+    if (pendingAudit === undefined) {
+      this.auditedPendingLifecycle.delete(claim.idempotencyKey);
+    } else if (auditedPending) {
+      this.auditedPendingLifecycle.delete(claim.idempotencyKey);
+      if (this.auditedPendingLifecycle.size >= MAX_AUDITED_PENDING_LIFECYCLE_RECORDS) {
+        // Drop the oldest; at worst that work's next identical pass is audited again.
+        this.auditedPendingLifecycle.delete(this.auditedPendingLifecycle.keys().next().value!);
+      }
+      this.auditedPendingLifecycle.set(claim.idempotencyKey, pendingAudit);
+    }
     this.passOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
@@ -3605,6 +3805,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     namespace: Readonly<Namespace>,
     result: DispatchResult,
+    removedPolicy?: Parameters<typeof removedPolicyDetails>[0],
   ): Promise<void> {
     const installation = this.installation;
     if (installation === undefined) {
@@ -3621,6 +3822,7 @@ export class ControllerWorker {
         : { namespaceDeleted: observation.namespaceDeleted }),
       ...(observation.failure === undefined ? {} : { failure: observation.failure }),
       ...(result.outcome === "pending" ? { convergencePending: true } : {}),
+      ...removedPolicyDetails(removedPolicy),
     };
     const event: AuditEvent = {
       id: `aud_${randomUUID()}`,

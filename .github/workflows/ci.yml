@@ -296,6 +296,61 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
 
+  # Real Local Setup install on every PR and merge, with a stand-in model
+  # provider and no secrets. Deliberately not a CI Required dependency yet.
+  first-agent-smoke:
+    name: First Agent Smoke
+    needs: impact
+    if: ${{ needs.impact.outputs.mode == 'full' }}
+    # Local Setup refuses gateway trust unless NetworkPolicies are enforced,
+    # which needs the bridge netfilter support of this runner kernel.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # The runner starts with about 90 GB free; the smoke uses far less, so it
+      # skips the SDK removal the large image lanes need.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up CI tools
+        run: bash scripts/ci/setup-tools.sh k3d
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Enable Kubernetes bridge packet filtering
+        run: |
+          if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+            sudo modprobe br_netfilter
+          fi
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+      - name: Build OCC CLI
+        run: go build -trimpath -o bin/occ ./cmd/occ
+      - name: Expose image cache credentials
+        id: image-cache
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const url = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !url) {
+              throw new Error('GitHub Actions cache credentials are unavailable');
+            }
+            core.setSecret(token);
+            core.setOutput('token', token);
+            core.setOutput('url', url);
+      - name: Build checkout images
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
+          ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        run: node scripts/ci/first-agent-smoke.mjs images
+      - name: Install, deploy, chat, stop and start
+        run: node scripts/ci/first-agent-smoke.mjs run
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-22.04

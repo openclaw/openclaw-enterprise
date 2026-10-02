@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { AuthorizationDeniedError, ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  AuthorizationDeniedError,
+  ResourceConflictError,
+  ResourceStateConflictError,
+  ScopeViolationError,
+} from "../errors.ts";
 import type { PlatformUnitOfWork } from "./platform-state.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
@@ -799,7 +804,7 @@ export class PostgresHumanAuthentication {
         expectedVersion < 1 ||
         account.version !== expectedVersion)
     ) {
-      throw new ResourceConflictError(
+      throw new ResourceStateConflictError(
         "The authentication account version changed. Read its current state before a new action.",
       );
     }
@@ -879,12 +884,12 @@ export class PostgresHumanAuthentication {
       throw new ScopeViolationError("An external method cannot replace a password.");
     }
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     return this.state.transact(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
       if (account.disabled !== false) {
-        throw new ResourceConflictError("The authentication account is disabled.");
+        throw new ResourceStateConflictError("The authentication account is disabled.");
       }
       const [existing] = await this.query(
         unit,
@@ -926,7 +931,7 @@ export class PostgresHumanAuthentication {
     expectedVersion: number,
   ): Promise<{ methodId: string; providerId: string }> {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     return this.state.transact(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
@@ -941,7 +946,7 @@ export class PostgresHumanAuthentication {
         method.identity_only !== true ||
         method.provider_id === "credential"
       ) {
-        throw new ResourceConflictError("Only an attached external identity can be detached.");
+        throw new ResourceStateConflictError("Only an attached external identity can be detached.");
       }
       // Bindings cascade with the method; the recovery credential is never identity-only.
       await this.query(unit, `DELETE FROM occ.account WHERE id = $1`, [methodId]);
@@ -969,7 +974,7 @@ export class PostgresHumanAuthentication {
     expectedVersion: number,
   ): Promise<void> {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     await this.state.transact(async (unit) => {
       const account = await this.guardAccounts(unit, userId, actor, expectedVersion);
@@ -980,11 +985,11 @@ export class PostgresHumanAuthentication {
           [userId],
         );
         if (recovery !== undefined) {
-          throw new ResourceConflictError("The recovery account cannot be disabled.");
+          throw new ResourceStateConflictError("The recovery account cannot be disabled.");
         }
       }
       if (operation === "enable" && account.disabled !== true) {
-        throw new ResourceConflictError("The authentication account is not disabled.");
+        throw new ResourceStateConflictError("The authentication account is not disabled.");
       }
       await this.query(
         unit,
@@ -1031,7 +1036,7 @@ export class PostgresHumanAuthentication {
     expectedVersion: number,
   ): Promise<HumanAuthenticationRecovery & { changed: boolean; email: string }> {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-      throw new ResourceConflictError("A current account version is required.");
+      throw new ResourceStateConflictError("A current account version is required.");
     }
     return this.state.transact(async (unit) => {
       // The same lock serializes activation, so a designation cannot appear or move concurrently.
@@ -1047,7 +1052,7 @@ export class PostgresHumanAuthentication {
         throw new ScopeViolationError("The recovery designation is unavailable.");
       }
       if (designation.user_id !== expectedCurrentUserId) {
-        throw new ResourceConflictError(
+        throw new ResourceStateConflictError(
           "The recovery designation changed. Read its current state before a new action.",
         );
       }
@@ -1057,7 +1062,7 @@ export class PostgresHumanAuthentication {
         throw new ScopeViolationError("The recovery account is unavailable.");
       }
       if (account.disabled !== false) {
-        throw new ResourceConflictError("The authentication account is disabled.");
+        throw new ResourceStateConflictError("The authentication account is disabled.");
       }
       // The database has no composite key tying method_id to user_id, so the method is only
       // ever derived here from the target's own credential rows, never taken from input.
@@ -1087,7 +1092,7 @@ export class PostgresHumanAuthentication {
         [this.installationId, userId, principalId, method.id, designation.user_id],
       );
       if (updated === undefined) {
-        throw new ResourceConflictError(
+        throw new ResourceStateConflictError(
           "The recovery designation changed. Read its current state before a new action.",
         );
       }
@@ -1115,7 +1120,7 @@ export class PostgresHumanAuthentication {
       if (!enrolment.enrolled) {
         throw enrolment.reason === "PRINCIPAL_MISSING"
           ? new ScopeViolationError("The authentication Principal is unavailable.")
-          : new ResourceConflictError("The account requires exactly one password method.");
+          : new ResourceStateConflictError("The account requires exactly one password method.");
       }
       const { principalId, version, created } = enrolment;
       if (created) {

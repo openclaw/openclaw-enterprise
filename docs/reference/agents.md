@@ -77,19 +77,21 @@ Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
 - `succeeded`: original work activated the revision or found it already active.
 - `failed`: terminal failure or completion without activation.
 
-Pending `progress.lastAttempt` contains the latest exact-work result's `at`,
-allowlisted `code`, and fixed `message`, even when deferral resets the retry
-count. Null means no bound evidence, not proof work never ran. Maintenance and
+Pending `progress.lastAttempt` contains the latest exact-work result's
+allowlisted `code`, fixed `message`, and `at`, when first recorded; repeated
+deferrals record once ([readiness codes](agents/deployment.md#pending-deployment-progress)). Null means no bound evidence, not proof work never ran. Maintenance and
 cleanup results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; it is null while claimed. Terminal `progress`
-is null. Results describe recorded checks, not current runtime health.
+is null. Results describe recorded checks, not runtime health.
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
 `runtimeFailure` (`component`, `check`, `checkedAt`, `code`) captured by Compute
-from that revision. The primary error remains unchanged; missing evidence
-leaves the cause unspecified. `RUNTIME_AUTHENTICATION_FAILED` (rejected credential, HTTP 401/403) and
-`RUNTIME_CPU_STARVED` (too little CPU) end deployment early; fix and redeploy. Success can include [plugin warnings](agent-plugins.md#lifecycle)
+from that revision; missing evidence leaves the cause unspecified. Held runtime
+failures end deployment early: `RUNTIME_AUTHENTICATION_FAILED` (rejected
+credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, or
+`RUNTIME_STARTUP_FAILED`; fix and redeploy. Success can include [plugin warnings](agent-plugins.md#lifecycle)
 with a closed code and admitted `pluginId`.
 
 Polling reads persisted state without runtime, provider, or model probes.
@@ -334,10 +336,11 @@ and Secrets survive. Deletion releases its name;
 [repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
 
 Teardown retries are bounded. After permanent failure or exhaustion, the Agent
-stays `deleting`. Once the cause is corrected, the initiating caller can repeat
+stays `deleting`. After a fix, the initiating caller can repeat
 DELETE to replenish the attempt budget. OCC and the worker recheck permission.
 Another permitted actor takes over only once the initiator lost permission.
-Prior failure audits remain; the retry adds an audit event. Namespace deletion
+Until then it gets `403`, audited with the `initiatingActorId`.
+Prior failure audits remain; each retry is audited. Namespace deletion
 has the same [recovery](namespaces.md#failure-semantics-and-limitations), including takeover.
 
 ## Editable configuration

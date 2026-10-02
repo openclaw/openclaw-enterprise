@@ -50,6 +50,7 @@ recorded status is not proof of current implementation or release availability.
 | Common OpenTelemetry logging                                | —                                                           | [Plan / record](plans/20-common-otel-logging/index.md)                          |
 | ComputeDriver matrix refresh                                | —                                                           | [Plan / record](plans/2026-09-16-compute-driver-matrix.md)                |
 | Console Agent plugin selection                              | —                                                           | [Plan / record](plans/27-console-agent-plugins.md)                        |
+| Contributor recognition                                     | —                                                           | [Plan](plans/0042-contributor-recognition.md)                                      |
 | Control-plane Gateway placement execution plan              | —                                                           | [Plan / record](plans/36-control-plane-gateways-plan.md)                  |
 | Credential Gateway Driver for Sandbox-injected credentials  | [Decision](rfcs/39-sandbox-credential-injection.md)         | —                                                                               |
 | Dedicated Harness RWO workspace execution plan              | —                                                           | [Plan / record](plans/38-harness-rwo-workspace-plan.md)                   |

@@ -211,6 +211,48 @@ func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	}
 }
 
+func TestDeploymentStatusTableShowsStartupWarnings(t *testing.T) {
+	// D331: a succeeded deployment that disabled a plugin must not look clean.
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses := map[string]string{
+		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
+			`","namespaceId":"` + testNamespaceID + `","status":"succeeded","warnings":[` +
+			`{"code":"PLUGIN_AUTH_REQUIRED","pluginId":"linear@openai-curated-remote"},` +
+			`{"code":"PLUGIN_INSTALL_FAILED","pluginId":"diffs@openai-curated"}]}`,
+	}
+	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "WARNINGS") {
+		t.Fatalf("expected a WARNINGS column:\n%s", out)
+	}
+	if !strings.HasSuffix(lines[1], "linear@openai-curated-remote (PLUGIN_AUTH_REQUIRED), diffs@openai-curated (PLUGIN_INSTALL_FAILED)") {
+		t.Fatalf("expected each warning in the table row:\n%s", out)
+	}
+
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
+		`","namespaceId":"` + testNamespaceID + `","status":"succeeded"}`
+	out, _, err = runOCC(t, responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) != 2 || len(strings.Fields(lines[1])) != 5 || !strings.HasSuffix(lines[1], " -") {
+		t.Fatalf("expected empty ERROR and WARNINGS cells:\n%s", out)
+	}
+
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `{"deploymentId":"` + testRevision2ID +
+		`","status":"succeeded","warnings":[{"code":"PLUGIN_AUTH_REQUIRED","pluginId":"linear@openai-curated-remote"}]}`
+	out, _, err = runOCC(t, responses, "--namespace", testNamespaceID, "--output", "json", "agent", "deployment-status", testAgentID, testRevision2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"pluginId": "linear@openai-curated-remote"`) {
+		t.Fatalf("expected structured warnings unchanged:\n%s", out)
+	}
+}
+
 func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 	_, _, err := runOCC(t, map[string]string{
 		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions": `[]`,

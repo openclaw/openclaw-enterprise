@@ -279,7 +279,7 @@ function buildCodexBwrapProfileArtifact({ baseline, codexVersion }) {
       architectures: profile.architectures,
       runtimeDefaultSha256: sha256Hex(baselineJson),
       profileSha256: sha256Hex(profileJson),
-      addedRules: codexBwrapAdditionalSyscalls().length,
+      addedRules: profile.syscalls.length - baseline.syscalls.length,
       proofLimits: [
         "Generated from an operator-captured RuntimeDefault OCI seccomp profile.",
         "Architecture proof is limited to native x86_64 with x86/x32 compat entries or native aarch64 with ARM compat entries.",

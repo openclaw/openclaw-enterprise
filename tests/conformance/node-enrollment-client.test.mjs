@@ -104,3 +104,62 @@ test("a waiting setup observation stops when its owner aborts", async () => {
   setTimeout(() => owner.abort(new Error("claim lost")), 50);
   await assert.rejects(observeNodeSetup(request, "setup-1", owner.signal, 5_000), /claim lost/);
 });
+
+// The worker is serial: other Work waiting for it ends the wait early (D221).
+// Every wait still reads the Gateway at least once.
+test("a waiting setup observation ends early once other work is waiting", async () => {
+  const unpaired = gateway();
+  let asked = 0;
+  const started = Date.now();
+  assert.equal(
+    await observeNodeSetup(
+      unpaired.request,
+      "setup-1",
+      AbortSignal.timeout(5_000),
+      5_000,
+      async () => {
+        asked++;
+        return asked >= 3;
+      },
+    ),
+    undefined,
+  );
+  assert.equal(asked, 3);
+  assert.equal(unpaired.calls.length, 3, "one reading before each question");
+  assert.ok(Date.now() - started < 5_000 - NODE_SETUP_POLL_MS, "it does not wait out its budget");
+  // Work already waiting: one reading, and a paired device is still reported.
+  const disconnected = gateway({ pairedAt: 1, connectedAt: Infinity });
+  assert.deepEqual(
+    await observeNodeSetup(
+      disconnected.request,
+      "setup-1",
+      AbortSignal.timeout(5_000),
+      5_000,
+      async () => true,
+    ),
+    { deviceId: "node-1", connected: false },
+  );
+  assert.deepEqual(disconnected.calls, ["device.pair.setupStatus", "node.describe"]);
+  // A connected node returns without asking; validation is unchanged.
+  const connected = gateway({ pairedAt: 1 });
+  assert.deepEqual(
+    await observeNodeSetup(connected.request, "setup-1", AbortSignal.timeout(5_000), 5_000, () =>
+      assert.fail("not asked once the node is connected"),
+    ),
+    { deviceId: "node-1", connected: true },
+  );
+  const invalid = gateway({
+    pairedAt: 1,
+    completion: { setupId: "another-setup", access: "node", deviceId: "node-1" },
+  });
+  await assert.rejects(
+    observeNodeSetup(
+      invalid.request,
+      "setup-1",
+      AbortSignal.timeout(5_000),
+      5_000,
+      async () => true,
+    ),
+    /invalid node setup completion/,
+  );
+});

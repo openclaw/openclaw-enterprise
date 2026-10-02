@@ -89,7 +89,10 @@ gateway during HTTP admission. A development worker can subsequently create or
 reuse exactly one gateway for the owning Agent during revision preparation.
 When Kubernetes Compute owns that gateway, it creates a distinct immutable,
 Agent-owned ConfigMap from the admitted configuration and mounts it
-read-only at `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`. It never mounts
+read-only at `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`. The gateway
+wrapper (`GATEWAY_RUNTIME_ENTRYPOINT` in `kubernetes/runtime-entrypoints.ts`)
+starts OpenClaw with `OPENCLAW_CONFIG_READONLY=1` whenever that file's directory
+is not writable, so OpenClaw skips its last-known-good backup. It never mounts
 the mutable Configuration Driver ConfigMap; each changed admitted generation
 selects a new immutable snapshot and rolls the stable Agent gateway. Previous
 snapshots remain until Namespace deletion because earlier Pods may still mount

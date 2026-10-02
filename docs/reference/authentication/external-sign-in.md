@@ -126,6 +126,14 @@ enabled accounts, other than the recovery account, that lack one, in the
    identities; that takes effect without a restart. Setting `all` again and upgrading restores
    passwords.
 
+The setting gates new password sign-ins only. Password sessions that already
+exist keep working until they expire (at most 8 hours): those of ordinary
+accounts after the switch to `recovery-only`, and the former holder's after
+`POST /api/auth/recovery` moves the designation. To end them at once, call
+`POST /api/auth/accounts/:userId/revoke` for each account, which ends all of its
+sessions, or run `purge-sessions` with
+[stopped maintenance](../../guides/deploy/auth-maintenance.md).
+
 New accounts need an identity too: create them with `github.subject`, or attach
 one straight after creation.
 
@@ -139,7 +147,7 @@ a provider, or changing its client ID (or OIDC issuer), ends that instance's ses
 next request, audited once as `authentication.session.end` with reason
 `PROVIDER_NOT_CONFIGURED`. Password sessions are unaffected. Activation is one-way:
 removing every provider fails startup, and the database refuses sessions from older
-binaries. Returning to password-only sign-in needs [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-github-sign-in).
+binaries. Returning to password-only sign-in needs [stopped maintenance](../../guides/deploy/auth-maintenance.md#deactivate-external-sign-in).
 
 The recovery user needs one local password, its Installation Principal, and
 native IAM Installation `administer`; disabling it returns `409`. Keep its password

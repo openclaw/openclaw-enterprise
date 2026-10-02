@@ -249,7 +249,7 @@ test(
           /designation cannot be changed/,
         );
         await assert.rejects(changeAccount(recoveryUser.id, "disable"), {
-          name: "ResourceConflictError",
+          name: "ResourceStateConflictError",
           message: /recovery account cannot be disabled/,
         });
         await assert.rejects(pool.query('DELETE FROM occ."user" WHERE id=$1', [recoveryUser.id]), {
@@ -427,7 +427,7 @@ test(
         );
         await assert.rejects(
           peer.attachExternal(person.id, providerId, subject, admin, target.version),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         assert.equal(attachment.created, true);
         assert.deepEqual(
@@ -824,7 +824,7 @@ test(
         // This is current state, not a receipt attributing the effect to a request.
         assert.equal((await peer.readAccount(person.id, admin)).version, target.version + 1);
         await assert.rejects(peer.changeAccount(person.id, "revoke", admin, target.version), {
-          name: "ResourceConflictError",
+          name: "ResourceStateConflictError",
         });
       },
     );
@@ -846,7 +846,7 @@ test(
         const disabledTarget = await persistence.readAccount(person.id, admin);
         await assert.rejects(
           persistence.attachExternal(person.id, providerId, "99", admin, disabledTarget.version),
-          { name: "ResourceConflictError", message: /account is disabled/ },
+          { name: "ResourceStateConflictError", message: /account is disabled/ },
         );
         assert.deepEqual(await persistence.readAccount(person.id, admin), disabledTarget);
         const audits = await state.transact((unit) => unit.audit.list());
@@ -933,15 +933,15 @@ test(
             admin,
             disabled.version,
           ),
-          { name: "ResourceConflictError", message: /account is disabled/ },
+          { name: "ResourceStateConflictError", message: /account is disabled/ },
         );
         await assert.rejects(
           persistence.replaceRecovery(successor.id, successorPrincipal, successor.id, admin, 1),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         await assert.rejects(
           persistence.replaceRecovery(successor.id, successorPrincipal, recoveryUser.id, admin, 2),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         await assert.rejects(
           persistence.replaceRecovery(successor.id, seed.principal.id, recoveryUser.id, admin, 1),
@@ -968,7 +968,7 @@ test(
         assert.equal(replaced[0].value.email, `successor-${suffix}@example.test`);
         assert.equal(
           results.find((result) => result.status === "rejected").reason.name,
-          "ResourceConflictError",
+          "ResourceStateConflictError",
         );
         const designations = (
           await pool.query(
@@ -1018,7 +1018,7 @@ test(
         );
         await signInAdmin();
         await assert.rejects(changeAccount(successor.id, "disable"), {
-          name: "ResourceConflictError",
+          name: "ResourceStateConflictError",
           message: /recovery account cannot be disabled/,
         });
         // The application role cannot delete the designation, only move it.
@@ -1071,10 +1071,10 @@ test(
       assert.equal(enabled.version, disabled.version + 1);
       assert.ok(await persistence.snapshotPassword(person.email));
       await assert.rejects(peer.changeAccount(person.id, "enable", admin, enabled.version), {
-        name: "ResourceConflictError",
+        name: "ResourceStateConflictError",
       });
       await assert.rejects(peer.changeAccount(person.id, "enable", admin, disabled.version), {
-        name: "ResourceConflictError",
+        name: "ResourceStateConflictError",
       });
     });
 
@@ -1166,12 +1166,12 @@ test(
         ]) {
           const version = (await persistence.readAccount(userId, admin)).version;
           await assert.rejects(persistence.detachExternal(userId, methodId, admin, version), {
-            name: "ResourceConflictError",
+            name: "ResourceStateConflictError",
           });
         }
         await assert.rejects(
           persistence.detachExternal(person.id, external.proof.methodId, admin, target.version - 1),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         assert.deepEqual(
           await peer.detachExternal(person.id, external.proof.methodId, admin, target.version),

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
@@ -439,7 +439,7 @@ test(
           const attached = await attach(both.id, subject, provider);
           assert.equal(attached.statusCode, 200, attached.body);
         }
-        await assertSignIn(bothSubject, both.id);
+        const viaOidc = await assertSignIn(bothSubject, both.id);
         const viaGoogle = await googleSignIn(
           app,
           origin,
@@ -450,6 +450,96 @@ test(
         assert.equal(viaGoogle.callback.headers.location, "/console/", viaGoogle.callback.body);
         const viaGithub = await githubSignIn(app, origin, bothGithubSubject, address());
         assert.equal(viaGithub.callback.headers.location, "/console/", viaGithub.callback.body);
+        for (const [provider, signIn] of [
+          ["oidc", viaOidc],
+          ["google", viaGoogle],
+          ["github", viaGithub],
+        ]) {
+          const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
+          const confirm = (name, headers = {}, payload = { attemptId: signIn.attemptId }) =>
+            app.inject({
+              method: "POST",
+              url: `/api/auth/providers/${name}/result`,
+              remoteAddress: address(),
+              headers: { origin, cookie, ...headers },
+              payload,
+            });
+          // All providers are configured and the session/attempt are valid. Only
+          // the callback's provider may exchange this receipt, without consuming
+          // it on a refusal and denying the correct route its subsequent exchange.
+          for (const other of ["github", "google", "oidc"].filter((name) => name !== provider)) {
+            const refused = await confirm(other);
+            assert.equal(
+              refused.statusCode,
+              401,
+              `${provider} receipt at ${other}: ${refused.body}`,
+            );
+            assert.equal(refused.headers["set-cookie"], undefined, "refusal preserves the receipt");
+          }
+          assert.equal(
+            (await confirm(provider, { origin: "https://other.example.test" })).statusCode,
+            403,
+          );
+          assert.equal(
+            (await confirm(provider, {}, { attemptId: "x".repeat(43) })).statusCode,
+            401,
+          );
+
+          const receipt = cookie
+            .split("; ")
+            .find((part) => part.startsWith("__Host-occ_login_receipt="))
+            .slice("__Host-occ_login_receipt=".length);
+          const [encoded] = receipt.split(".");
+          const fields = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+          const receiptCookie = (value) =>
+            cookie.replace(
+              `__Host-occ_login_receipt=${receipt}`,
+              `__Host-occ_login_receipt=${value}`,
+            );
+          // Correctly authenticated legacy or mismatched fields must still fail.
+          // These deliberately malformed inputs isolate validation from MAC failure.
+          const signed = (value) => {
+            const payload = Buffer.from(JSON.stringify(value)).toString("base64url");
+            const signature = createHmac("sha256", authSecret)
+              .update(`occ-login-receipt\0${payload}`)
+              .digest("base64url");
+            return `${payload}.${signature}`;
+          };
+          for (const invalid of [
+            { s: fields.s, a: fields.a, e: fields.e },
+            { ...fields, v: 1 },
+            { ...fields, p: "" },
+            { ...fields, p: null },
+            { ...fields, p: `${provider}:${"0".repeat(64)}` },
+            { ...fields, e: Date.now() - 1 },
+          ]) {
+            assert.equal(
+              (await confirm(provider, { cookie: receiptCookie(signed(invalid)) })).statusCode,
+              401,
+            );
+          }
+          const tampered = `${encoded}.${"x".repeat(43)}`;
+          assert.equal(
+            (await confirm(provider, { cookie: receiptCookie(tampered) })).statusCode,
+            401,
+          );
+          // A valid receipt cannot use a different live cookie session either.
+          assert.equal(
+            (
+              await confirm(provider, {
+                cookie: `${adminHeaders.cookie}; __Host-occ_login_receipt=${receipt}`,
+              })
+            ).statusCode,
+            401,
+          );
+          const exchanged = await confirm(provider);
+          assert.equal(exchanged.statusCode, 200, exchanged.body);
+          assert.equal(
+            exchanged.json().data.sessionKey,
+            (await currentSession(app, cookie)).sessionKey,
+          );
+          assert.equal((await confirm(provider)).statusCode, 401, "a receipt exchanges only once");
+        }
         const methods = (
           await pool.query(
             `SELECT provider_id FROM occ.account

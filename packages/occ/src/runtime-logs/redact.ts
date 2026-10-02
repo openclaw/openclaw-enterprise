@@ -112,6 +112,22 @@ const RULES: readonly Rule[] = [
     replace: (match, prefix, value) => (/[0-9]/.test(value) ? `${prefix}${mark("bearer")}` : match),
   },
   {
+    // `Basic <base64 of user:password>` outside a header. Only a value that decodes to a
+    // `user:password` pair is masked, so prose such as `basic authentication` stays.
+    name: "basic",
+    pattern: /\b(basic\s+)(?!\[redacted:)([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/gi,
+    replace: (match, prefix, value) =>
+      Buffer.from(value, "base64").toString("latin1").includes(":")
+        ? `${prefix}${mark("basic")}`
+        : match,
+  },
+  {
+    // netrc lines: `machine <host> login <user> password <secret>`.
+    name: "netrc",
+    pattern: /\b(login\s+\S{1,512}\s+password\s+)(?!\[redacted:)\S+/gi,
+    replace: (_match, prefix) => `${prefix}${mark("netrc")}`,
+  },
+  {
     // `eyJ<4+>.<4+>.<sig>` starting at a word boundary. The regex only takes each maximal
     // run of the JWT alphabet plus `.` once (the lookahead/backreference pair is atomic);
     // `maskJwts` then finds the tokens inside the run in linear time. A plain
@@ -130,7 +146,14 @@ const RULES: readonly Rule[] = [
   {
     name: "token",
     pattern:
-      /\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_)[A-Za-z0-9_-]{8,}/g,
+      /\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_|[sr]k_(?:live|test)_)[A-Za-z0-9_-]{8,}/g,
+    replace: () => mark("token"),
+  },
+  {
+    // Hugging Face access tokens. The length floor keeps identifiers such as
+    // `hf_hub_download` readable.
+    name: "token",
+    pattern: /\bhf_[A-Za-z0-9]{30,}/g,
     replace: () => mark("token"),
   },
   {
@@ -183,6 +206,12 @@ const RULES: readonly Rule[] = [
       `(${SECRET_KEY_TAIL})(\\s*[=:]\\s*)${notRedacted}("[^"]*"|'[^']*'|[^\\s,;&"']+)`,
       "gi",
     ),
+    replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
+  },
+  {
+    // Upper-case environment assignments of a key: `MY_SERVICE_KEY=value`.
+    name: "key-value",
+    pattern: /\b([A-Z][A-Z0-9_]{0,63}_KEY)(\s*=\s*)(?!\[redacted:)("[^"]*"|'[^']*'|[^\s,;&"']+)/g,
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
   },
   {

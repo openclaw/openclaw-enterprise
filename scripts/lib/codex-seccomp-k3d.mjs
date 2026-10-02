@@ -605,7 +605,7 @@ async function prepareCodexSeccompProfile({
           runtimeDefaultSha256: sha256Hex(stableJson(baseline)),
           profileSha256: installation.sha256,
           profilePath: installation.path,
-          addedRules: codexBwrapAdditionalSyscalls().length,
+          addedRules: profile.syscalls.length - baseline.syscalls.length,
         });
       }
       assert.ok(

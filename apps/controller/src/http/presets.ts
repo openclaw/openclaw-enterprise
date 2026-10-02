@@ -1,5 +1,5 @@
 import type { PresetTemplate } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 export const presetHandlers = {
   async createPreset({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
@@ -50,9 +50,16 @@ export const presetHandlers = {
   },
   async deletePreset({ controller, context, reply, params, namespaceId, mutationEvent }) {
     await controller.transact(async (unit) => {
-      await controller.deletePreset(context.actorId, namespaceId, params.presetId as string);
+      const removed = await controller.deletePreset(
+        context.actorId,
+        namespaceId,
+        params.presetId as string,
+      );
       await unit.audit.append(
-        mutationEvent({ kind: "preset", id: params.presetId as string, namespaceId }),
+        mutationEvent(
+          { kind: "preset", id: params.presetId as string, namespaceId },
+          removedAccessBindingDetails(removed),
+        ),
       );
     });
     reply.status(204).send();

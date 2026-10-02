@@ -9,9 +9,9 @@ function unavailableText(status) {
     case "stopped":
       return "Start this Agent before opening its native admin UI.";
     case "unsupported":
-      return "This Agent does not expose a supported native admin UI endpoint.";
+      return "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.";
     case "unavailable":
-      return "Native admin UI access is unavailable because OCE could not load an active AgentRevision. Check this Agent’s deployment, then refresh access.";
+      return "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.";
     default:
       return "Native admin UI access is unavailable.";
   }

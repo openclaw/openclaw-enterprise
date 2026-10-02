@@ -788,7 +788,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential = null;
+  // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
+  const apiKeyCodex = () =>
+    harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
+    if (apiKeyCodex()) {
+      return null;
+    }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
       return {};
     }
@@ -825,9 +831,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     isPending: () => pending,
     requestBody: (body) => ({ ...discoveryCredential(), ...body }),
     unavailableMessage: () =>
-      pluginDiscoveryCredential === "none"
-        ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-        : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
+      apiKeyCodex()
+        ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
+        : pluginDiscoveryCredential === "none"
+          ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
+          : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."

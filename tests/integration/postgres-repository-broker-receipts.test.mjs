@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createServer as createNetServer } from "node:net";
 import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -21,19 +20,6 @@ import { run, temporaryDirectory } from "../fixtures/repository-credentials/proc
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-
-async function unusedPort() {
-  const server = createNetServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const port = server.address().port;
-  await new Promise((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return port;
-}
 
 function useGateway(fixture, opened) {
   return new Promise((resolve, reject) => {
@@ -75,7 +61,7 @@ test(
     const fixture = await startRegistryCredentialServiceFixture(t, {
       namespaceId,
       autoOpen: false,
-      gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+      gateway: { listen: "127.0.0.1:0" },
     });
     const client = new UnixRepositoryCredentialControlClient({
       controlSocket: fixture.config.gateway.controlSocket,

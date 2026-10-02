@@ -110,7 +110,7 @@ and a [switching walkthrough](../assets/console-namespace-selector/namespace-swi
 
 Compare **New version queued**, **Deployment waiting for runtime**, and
 **Deployment retry after dependency failure**; switch versions and check
-**Last checked**.
+**Since**.
 
 **First deployment creates credentials** accepts **Deploy new version** without
 a separate credential action. Its initial state is not a Stop request; OCC

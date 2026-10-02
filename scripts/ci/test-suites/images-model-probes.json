@@ -14,7 +14,7 @@
       "expectedTests": [
         "runtime image embedded Gateway passes its model probe at a 500m CPU limit",
         "runtime image embedded Gateway reports a hung provider as a model probe timeout",
-        "runtime image embedded Gateway reports a CPU-starved model probe at its cap"
+        "runtime image embedded Gateway settles its model probe under CPU contention"
       ]
     },
     {

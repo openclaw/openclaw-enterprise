@@ -570,7 +570,11 @@ export function collectSourceImports(snapshot) {
             { status: "unknown", reason: loader.reason },
             loaderIdentity(node),
           );
-        } else if (analysis.builtin(node.expression, "node:module") === "createRequire") {
+        } else if (
+          loader?.kind === "builtin" &&
+          loader.module === "node:module" &&
+          loader.name === "createRequire"
+        ) {
           const target = analysis.value(node.arguments[0]);
           if (
             target.value &&

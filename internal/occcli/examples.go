@@ -42,3 +42,12 @@ const agentCreateExample = `  cat > agent.json <<'JSON'
   occ agent create --file agent.json
 
   Add harnessAuth to select model authentication. See docs/reference/agents.md.`
+
+const credentialSourceCreateExample = `  cat > credential-source.json <<'JSON'
+  {"name": "openai", "type": "openai",
+   "secrets": {"api_key": {"kind": "secret", "namespaceId": "<namespace-id>", "id": "<secret-id>"}}}
+  JSON
+  occ credential-source create --file credential-source.json
+
+  Each secrets field is the ref that occ secret create -o json returns. The gateway
+  keeps its own copy of the value; see docs/reference/credential-sources.md.`

@@ -89,15 +89,21 @@ Harness Pod, which keeps OCC's `openclaw.dev/revision` label, and the
 supervisor Pod, labeled `openshell.ai/boundary-role=supervisor`:
 
 ```bash
-NS=<agent-kubernetes-namespace>
 REVISION_ID=<revision-id>
 HARNESS_SELECTOR="openclaw.dev/workload-role=agent,openclaw.dev/revision=$REVISION_ID"
-SANDBOX_ID="$(kubectl -n "$NS" get pod -l "$HARNESS_SELECTOR" \
-  -o jsonpath='{.items[0].metadata.annotations.openshell\.ai/sandbox-id}')"
+NS="$(kubectl get pod -A -l "$HARNESS_SELECTOR" \
+  -o jsonpath='{.items[*].metadata.namespace}' | cut -d' ' -f1)"
+SANDBOX_ID="$(kubectl -n "${NS:?no Harness Pod for this revision}" get pod -l "$HARNESS_SELECTOR" \
+  -o jsonpath='{.items[*].metadata.annotations.openshell\.ai/sandbox-id}' | cut -d' ' -f1)"
 kubectl -n "$NS" logs --all-containers --tail=200 -l "$HARNESS_SELECTOR"
 kubectl -n "$NS" logs --all-containers --tail=200 \
-  -l "openshell.ai/sandbox-id=$SANDBOX_ID,openshell.ai/boundary-role=supervisor"
+  -l "openshell.ai/sandbox-id=${SANDBOX_ID:?no Sandbox ID on the Harness Pod},openshell.ai/boundary-role=supervisor"
 ```
+
+The first command finds the Agent's Kubernetes namespace from its Harness Pod.
+`no Harness Pod for this revision` means the revision never started a Sandbox or
+its Pods are gone; read the
+[deployment status](../../reference/agents.md#deployment-status) instead.
 
 `kubectl -n "$NS" get sandbox,pod -l "openshell.ai/sandbox-id=$SANDBOX_ID"`
 shows the Sandbox and its supervisor Pod. This output bypasses OCC's log

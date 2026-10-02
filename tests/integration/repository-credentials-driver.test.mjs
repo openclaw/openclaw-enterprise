@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
-import { createServer as createNetServer } from "node:net";
 import { request } from "node:https";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,17 +17,6 @@ import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
 } from "../fixtures/repository-credentials/registry.mjs";
-
-async function unusedPort() {
-  const server = createNetServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 
 function driverFor(registry, socket, sessionDurationSeconds = 3600, publicCa) {
   return new GitHubRepoDriver(
@@ -95,7 +83,7 @@ test(
           ? { ...entry, pushRefAllowlist: ["refs/heads/agent/*"] }
           : entry,
       ),
-      gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+      gateway: { listen: "127.0.0.1:0" },
     });
     const signal = new AbortController().signal;
     const local = driverFor(fixture.registry, "/nonexistent/repository-control.sock");
@@ -760,7 +748,7 @@ test(
     const fixture = await startRegistryCredentialServiceFixture(t, {
       autoOpen: false,
       clock: { ...createControlledClock(), wallNow: Date.now },
-      gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+      gateway: { listen: "127.0.0.1:0" },
     });
     const receipts = [];
     let hideReceiptObservation = false;

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-09-30
-last_updated_session: authoring-run/6c4c7a4c-4674-456a-b1c4-69cec0c52c70
+updated: 2026-10-02
+last_updated_session: authoring-run/20771b6e-d59b-4737-8a63-cb33c420218e
 ---
 
 # Compose development startup
@@ -202,17 +202,18 @@ without changing host DNS. Kubernetes-only startup imports matching OCE images
 and runs PostgreSQL, migration, bootstrap, API and worker in Kubernetes.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
-manifests. It waits for the k3s-owned Gateway API CRDs to be created and
-established before installing Envoy, and prints k3s add-on status before rollback
-if that wait fails. Before configuring gateway proxy trust,
+manifests and waits for the k3s-owned Gateway API CRDs before installing Envoy,
+printing k3s add-on status before rollback on failure.
+`internal/occdev/gateway_k3d.go:waitForCRDEstablished` polls each CRD every
+second until `Established` is `True`, stopping on a `kubectl` error or the
+startup timeout. Before configuring gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
-checks allowed and denied direct Pod traffic with credential-free Pods and a
-temporary policy. After bootstrap creates the initial Gateway Namespace, it
-repeats the checks against the Driver's actual policies. Probe Pods use short
-graceful shutdowns and are deleted with UID preconditions. Cleanup waits for
-the selector-matching Pods before removing their egress policy; any failed
-probe or cleanup prevents startup success. This is a point-in-time, single-node
-check, not continuous enforcement.
+checks allowed and denied Pod traffic with credential-free Pods and a temporary
+policy. After bootstrap creates the initial Gateway Namespace, it rechecks the
+Driver's policies. Probe Pods use short graceful shutdowns and
+UID-preconditioned deletes. Cleanup waits for the selector-matching Pods before
+removing their egress policy; any probe or cleanup failure fails startup. This
+is a point-in-time, single-node check.
 
 Before writing the Installation, `scripts/prepare-development-codex-seccomp.mjs`
 probes the imported runtime in a credential-free Pod on the owned node. If
@@ -311,8 +312,7 @@ and Secret Drivers with native IAM. Without OpenShell, it includes both bundled
 Presets and the Codex Plugin Driver after the shared Codex sandbox check.
 Its runtime section configures the transport
 Secret prefix and gateway storage class accepted by the current Compute Driver
-schema. Generated Gateway and Harness resource limits allow 2 GiB of memory per
-workload; the current runtime can exceed the former 1 GiB limit during startup.
+schema. Generated memory limits are 3 GiB per Gateway and 2 GiB per Harness.
 The container configuration and kubeconfig are individually readable by
 non-root containers, behind the private host directory, and mounted read-only
 into the API and Kubernetes worker. Neither service receives the engine socket.
@@ -373,6 +373,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-02 11:01: Polled CRD status instead of `kubectl wait`. (authoring-run/20771b6e-d59b-4737-8a63-cb33c420218e - 67302dd99e03d28053dbb72ba2569418f6aca1d0)
 
 - 2026-09-30 00:26: Tightened startup prose without changing its behavior. (authoring-run/6c4c7a4c-4674-456a-b1c4-69cec0c52c70 - 282ab1031ff2dd86af00c0c3ff304c9ad442fec1)
 

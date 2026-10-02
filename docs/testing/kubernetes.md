@@ -70,19 +70,22 @@ node fencing, or data movement between nodes. Use a disposable cluster.
 
 ### Fixture images and security controls
 
-The disposable `tests/fixtures/kubernetes` image runs as nonroot and uses the
-Compute Driver's generated Namespace labels, ResourceQuota, LimitRange,
-NetworkPolicies, Pod and container security settings, and bounded resources.
-Its local mutable tag and unpinned `docker.io/library/node:24-bookworm` base are limited to this
-disposable fixture; production images still require the documented pinning and
-review.
+The nonroot `tests/fixtures/kubernetes` image uses generated Namespace labels,
+ResourceQuota, LimitRange, NetworkPolicies, and container security settings.
+The suite verifies tenant isolation, resource bounds, seccomp, dropped
+capabilities, and a read-only root filesystem. Its mutable tag and unpinned
+`docker.io/library/node:24-bookworm-slim` base are fixture-only; production images
+require pinning and review.
 
-The suite checks tenant isolation, resource bounds, nonroot execution, seccomp,
-dropped capabilities, and a read-only root filesystem. Skipped cases prove no
-enforcement. API-plus-worker coverage uses synthetic Secrets for binding admission
-and gateway projection; genuine channel runtime needs the images and credentials below.
-The Driver lifecycle case clones a workload Pod; removing, emptying or
-changing its network profile must deny DNS between successful controls.
+API-plus-worker Secrets are synthetic; channel runtime needs the images and
+credentials below. Removing, emptying, or changing a cloned workload Pod's network
+profile must deny DNS between successful controls.
+
+The API-plus-worker case checks UDP/TCP 5353 DNS from embedded Agents, dedicated
+Harnesses, and Gateways. An unselected CoreDNS peer and port 5354 are denied
+between successful controls; an unrestricted Pod verifies listener availability.
+Readiness gates exclude fixtures from cluster DNS endpoints. This proves k3d
+enforcement, not OpenShift.
 
 Live Configuration ConfigMap CRUD and least-privilege RBAC cases require the
 selected disposable cluster and tenant credentials. Without those inputs, they

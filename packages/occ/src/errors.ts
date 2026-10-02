@@ -62,6 +62,29 @@ export class AgentPrincipalAuthorizationError extends AuthorizationDeniedError {
 }
 
 /**
+ * A permanently failed deletion belongs to the actor that started it. Another caller that
+ * also holds delete may take it over only after the initiating actor loses delete, so the
+ * refusal names that condition and, for audit only, the initiating actor.
+ */
+export class DeletionRetryOwnedError extends AuthorizationDeniedError {
+  readonly initiatingActorId: string;
+  declare readonly authorization: {
+    readonly action: AuthorizationRequest["action"];
+    readonly resource: ResourceRef;
+  };
+
+  constructor(initiatingActorId: string, resource: ResourceRef) {
+    super(
+      "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.",
+      undefined,
+      { action: "delete", resource },
+    );
+    this.name = "DeletionRetryOwnedError";
+    this.initiatingActorId = initiatingActorId;
+  }
+}
+
+/**
  * Authority and audit outages fail closed as authorization failures while
  * remaining distinguishable from explicit denials for HTTP and audit handling.
  */
@@ -139,6 +162,17 @@ export class ResourceConflictError extends ScopeViolationError {
   }
 }
 
+/**
+ * A conflict raised only after the caller was authorized on the resource, whose message
+ * names what blocks the operation. HTTP returns that message instead of the generic text.
+ */
+export class ResourceStateConflictError extends ResourceConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResourceStateConflictError";
+  }
+}
+
 export class AgentDeletingError extends ResourceConflictError {
   constructor(message = "The Agent is being deleted.") {
     super(message);
@@ -174,6 +208,63 @@ export class NativeWorkerSupportError extends Error {
   }
 }
 
+/** A platform dependency a Compute Driver reaches while it reconciles a revision. */
+export type TransientDependency = "agent_gateway" | "kubernetes_api";
+
+/** Why the dependency failed, from a closed set that carries no provider text. */
+export type TransientDependencyReason = "unreachable" | "timeout" | "unavailable";
+
+const TRANSIENT_DEPENDENCY_CODES: Readonly<Record<TransientDependency, string>> = Object.freeze({
+  agent_gateway: "AGENT_GATEWAY_UNAVAILABLE",
+  kubernetes_api: "KUBERNETES_API_UNAVAILABLE",
+});
+
+/**
+ * A Compute dependency failed in a way that clears without a change to the
+ * revision: the Kubernetes API timed out or answered 429/5xx, or the Agent
+ * Gateway's route refused or dropped a connection while it converged. The
+ * worker retries it within the deployment's convergence deadline instead of
+ * spending the attempt budget, and records `code`, which names the dependency.
+ * The message stays in the controller; status shows a fixed text.
+ */
+export class TransientDependencyError extends Error {
+  readonly dependency: TransientDependency;
+  readonly reason: TransientDependencyReason;
+  readonly code: string;
+
+  constructor(
+    dependency: TransientDependency,
+    reason: TransientDependencyReason,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "TransientDependencyError";
+    this.dependency = dependency;
+    this.reason = reason;
+    this.code = TRANSIENT_DEPENDENCY_CODES[dependency];
+  }
+}
+
+/** A step of dedicated activation that completes by itself once a workload catches up. */
+export type ActivationPendingCode = "WORKSPACE_NODE_PENDING" | "WORKSPACE_NODE_BINDING_PENDING";
+
+/**
+ * Activation found its workloads ready but is still waiting for one of them:
+ * the Gateway has not applied the workspace node it was handed, or the Harness
+ * node has not connected to the Gateway. The worker records `code` so status
+ * names the wait. The message stays in the controller.
+ */
+export class ActivationPendingError extends Error {
+  readonly code: ActivationPendingCode;
+
+  constructor(code: ActivationPendingCode, message: string) {
+    super(message);
+    this.name = "ActivationPendingError";
+    this.code = code;
+  }
+}
+
 /**
  * A Sandbox Driver cannot run this exact AgentRevision with the installed
  * driver. Retrying cannot change the outcome, so the worker fails the deployment
@@ -186,6 +277,52 @@ export class SandboxRevisionUnsupportedError extends Error {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
     this.code = code;
+  }
+}
+
+/**
+ * An AccessBinding Role carries Permissions that can never take effect through the
+ * binding: `create` is checked against the Namespace, not an existing resource, and a
+ * binding to an exact resource applies only Permissions of that resource's kind.
+ */
+export class IAMAccessBindingRoleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IAMAccessBindingRoleError";
+  }
+}
+
+/**
+ * A Namespace IAM policy write names an invalid or unavailable input: an unsupported
+ * Permission, or a subject, Role or target that is not usable in the exact Namespace.
+ * The caller already administers the Namespace's IAM policy, so HTTP reports the static
+ * message and the offending request field as an invalid request.
+ */
+export class IAMPolicyValidationError extends ScopeViolationError {
+  readonly path: string;
+
+  constructor(path: string, message: string) {
+    super(message);
+    this.name = "IAMPolicyValidationError";
+    this.path = path;
+  }
+}
+
+/** A Namespace Role cannot be deleted while AccessBindings still reference it. */
+export class IAMRoleInUseError extends ResourceConflictError {
+  constructor() {
+    super("The IAM Role is referenced by AccessBindings. Delete those AccessBindings first.");
+    this.name = "IAMRoleInUseError";
+  }
+}
+
+/** The Installation selects no Credential Gateway, so credential sources are unavailable. */
+export class CredentialGatewayNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see docs/reference/credential-sources.md.",
+    );
+    this.name = "CredentialGatewayNotConfiguredError";
   }
 }
 

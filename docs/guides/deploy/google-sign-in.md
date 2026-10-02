@@ -117,7 +117,7 @@ writers for the upgrade.
 [recovery-only password sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)
 leaves passwords to the recovery account. Activation is one-way: keep at least one provider configured,
 or startup refuses. To return to password-only sign-in, follow
-[sign-in maintenance](auth-maintenance.md#deactivate-github-sign-in), then set
+[sign-in maintenance](auth-maintenance.md#deactivate-external-sign-in), then set
 `auth.google.enabled: false` as well; without Helm also remove the
 `OCC_AUTH_GOOGLE_*` variables.
 

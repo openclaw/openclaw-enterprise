@@ -11,6 +11,12 @@ internal Kubernetes `ClusterIP` Service and a default-deny ingress
 selectors. The cluster must enforce NetworkPolicies. Do not expose the listener
 through a `NodePort`, `LoadBalancer`, `hostNetwork`, or public endpoint.
 
+The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
+configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
+OpenShift DNS backends after Service address translation. These grants cover
+API, worker, initialization, collector, Slack proxy, Envoy, and observability
+demo workloads.
+
 The trusted-operator native admin pilot is the only documented public-ingress
 exception: the console host and Agent wildcard hosts route to OCC through the
 procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md).
@@ -195,7 +201,9 @@ recovery user; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
 
 With `auth.oidc.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except `169.254.0.0/16`. Rendering fails on values the API refuses,
+allows any address except `169.254.0.0/16`. The port is the destination Pod's port; an
+IdP inside the cluster on another target port needs
+[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
 a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
 with OIDC, or an HTTP base URL.
 

@@ -123,11 +123,22 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  // Codex serves curated plugins only to ChatGPT logins: the API-key default cannot browse them.
+  assert.equal(await page.getByLabel("Authentication method").inputValue(), "api_key");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog
+    .getByText("Codex plugins need a ChatGPT login. With an OpenAI API key", { exact: false })
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  assert.deepEqual(pathRequests(requests, "POST", catalogPath), []);
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const linear = dialog.getByRole("button", { name: "Linear", exact: true });
   await linear.waitFor();
-  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
   assert.deepEqual(
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
     [{}],

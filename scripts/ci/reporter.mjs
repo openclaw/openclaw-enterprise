@@ -389,9 +389,14 @@ function failureDiagnostic(error) {
         return undefined;
       }
     }
-    result.probeStage = ["prepare", "spawn", "returned", "cleanup", "complete"].includes(
-      diagnostic.probeStage,
-    )
+    result.probeStage = [
+      "prepare",
+      "preflight",
+      "spawn",
+      "returned",
+      "cleanup",
+      "complete",
+    ].includes(diagnostic.probeStage)
       ? diagnostic.probeStage
       : "not-observed";
     return result;

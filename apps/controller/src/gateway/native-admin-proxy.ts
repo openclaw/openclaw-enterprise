@@ -35,6 +35,10 @@ const WS_LEASE_INTERVAL_MS = 25_000;
 const WS_LEASE_TIMEOUT_MS = 5_000;
 const NATIVE_ADMIN_RESERVED_PREFIX = "/__occ/native-admin/";
 const SERVICE_WORKER_CSP = "worker-src 'none'";
+// The native UI renders `/api/users/<id>/avatar` as a plain <img>. Without an
+// uploaded photo OpenClaw falls back to Gravatar and answers 502 when it cannot
+// reach it, which a dedicated Gateway never can (it has no internet egress).
+const USER_AVATAR_PATH = /^\/api\/users\/[^/]+\/avatar$/;
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -347,6 +351,7 @@ export async function proxyNativeAdminHttp(options: {
     return;
   }
 
+  const avatarRequest = USER_AVATAR_PATH.test(options.request.url.split("?", 1)[0] ?? "");
   options.reply.hijack();
   const upstreamRequest = https.request(
     upstream,
@@ -356,6 +361,13 @@ export async function proxyNativeAdminHttp(options: {
       if (headers === undefined) {
         endHttp(options.reply, 502);
         upstreamResponse.destroy();
+        return;
+      }
+      if (avatarRequest && upstreamResponse.statusCode === 502) {
+        // A missing photo, not an unavailable Gateway: the UI shows initials either way.
+        upstreamResponse.resume();
+        options.reply.raw.writeHead(404, { "cache-control": "no-store" });
+        options.reply.raw.end();
         return;
       }
       options.reply.raw.writeHead(upstreamResponse.statusCode ?? 502, headers);

@@ -54,8 +54,10 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
   };
 }
 
-function nativeComputeDriver(upstreamPort) {
+function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
   return {
+    // Kubernetes dedicated revisions stop their predecessors before they start.
+    ...(exclusiveReplacement ? { requiresStoppedPredecessors: () => true } : {}),
     id: "native-admin-compute",
     capability: "compute",
     implementation: "native-admin-test-upstream",
@@ -122,6 +124,12 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (request.url?.includes("/upstream-unavailable")) {
+      // OpenClaw's answer when a Gravatar fallback cannot be fetched.
+      response.writeHead(502, { "content-type": "application/json" });
+      response.end('{"ok":false,"error":{"type":"avatar_upstream_unavailable"}}');
+      return;
+    }
     if (request.url?.endsWith("/redirect-root")) {
       response.writeHead(302, {
         "content-security-policy": "default-src 'self'",
@@ -181,7 +189,9 @@ async function createNativeAdminFixture(t, options = {}) {
       sharedCookieDomain: options.cookieDomain ?? cookieDomain,
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
-    computeDriver: nativeComputeDriver(upstream.port),
+    computeDriver: nativeComputeDriver(upstream.port, {
+      exclusiveReplacement: options.exclusiveReplacement,
+    }),
   });
   await fixture.bootstrap("Native admin access test");
   const namespace = await fixture.createNamespace("Native admin", {
@@ -387,6 +397,41 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(restored.status, 200);
   assert.equal(restored.data.status, "available");
   assert.equal(restored.data.activeRevisionId, pending.id);
+});
+
+test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {
+  // Without exclusive replacement the active revision keeps serving during a redeploy.
+  const shared = await createNativeAdminFixture(t);
+  await shared.fixture.deployAgent(shared.namespace.id, shared.agent.id);
+  const stillServing = await nativeStatus(shared);
+  assert.equal(stillServing.status, 200);
+  assert.equal(stillServing.data.status, "available");
+  assert.equal(stillServing.data.activeRevisionId, shared.revision.id);
+
+  const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
+  const available = await nativeStatus(context);
+  assert.equal(available.data.status, "available");
+  // The worker stops the active revision before the newer one starts; if that one fails,
+  // the old revision stays recorded as active with nothing serving.
+  const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  const replacing = await nativeStatus(context);
+  assert.equal(replacing.status, 200);
+  assert.deepEqual(replacing.data, { status: "unavailable" });
+  const agent = await context.fixture.request(
+    "GET",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}`,
+  );
+  assert.equal(agent.data.activeRevisionId, context.revision.id);
+
+  await context.fixture.activateRevision(
+    context.namespace.id,
+    context.agent.id,
+    replacement.id,
+    context.revision.id,
+  );
+  const restored = await nativeStatus(context);
+  assert.equal(restored.data.status, "available");
+  assert.equal(restored.data.activeRevisionId, replacement.id);
 });
 
 test("native admin disabled status still requires exact Agent administer", async (t) => {
@@ -624,6 +669,24 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.equal(collision.body, "native admin upstream\n");
   assert.equal(context.upstream.requests.length, 2);
 
+  // A user photo the Gateway cannot fetch is a missing photo, not a Gateway failure.
+  const avatar = await injectJson(
+    context.fixture,
+    "GET",
+    "/api/users/upstream-unavailable/avatar?v=1",
+    { headers: nativeHeaders },
+  );
+  assert.equal(avatar.statusCode, 404, avatar.body);
+  assert.equal(avatar.body, "");
+  assert.equal(avatar.headers["cache-control"], "no-store");
+  assert.equal(context.upstream.requests.length, 3);
+  const otherFailure = await injectJson(context.fixture, "GET", "/upstream-unavailable", {
+    headers: nativeHeaders,
+  });
+  assert.equal(otherFailure.statusCode, 502, otherFailure.body);
+  assert.match(otherFailure.body, /avatar_upstream_unavailable/);
+  assert.equal(context.upstream.requests.length, 4);
+
   const rootRedirect = await injectJson(context.fixture, "GET", "/redirect-root", {
     headers: nativeHeaders,
   });
@@ -634,21 +697,21 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   );
   assert.match(String(rootRedirect.headers["content-security-policy"]), /default-src 'self'/);
   assert.match(String(rootRedirect.headers["content-security-policy"]), /worker-src 'none'/);
-  assert.equal(context.upstream.requests.length, 3);
+  assert.equal(context.upstream.requests.length, 5);
 
   const externalRedirect = await injectJson(context.fixture, "GET", "/redirect-external", {
     headers: nativeHeaders,
   });
   assert.equal(externalRedirect.statusCode, 502, externalRedirect.body);
   assert.equal(externalRedirect.headers.location, undefined);
-  assert.equal(context.upstream.requests.length, 4);
+  assert.equal(context.upstream.requests.length, 6);
 
   const reservedRedirect = await injectJson(context.fixture, "GET", "/redirect-reserved", {
     headers: nativeHeaders,
   });
   assert.equal(reservedRedirect.statusCode, 502, reservedRedirect.body);
   assert.equal(reservedRedirect.headers.location, undefined);
-  assert.equal(context.upstream.requests.length, 5);
+  assert.equal(context.upstream.requests.length, 7);
 
   context.fixture.policy.restrictions.push({
     id: `restriction-native-admin-proxy-${randomUUID()}`,
@@ -665,7 +728,7 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.equal(iamDenied.headers["set-cookie"], undefined);
   assert.equal(
     context.upstream.requests.length,
-    5,
+    7,
     "authorization-denied proxy requests must not reach native gateway",
   );
 });

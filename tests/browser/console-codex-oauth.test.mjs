@@ -88,7 +88,7 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("oauth");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), false);
-  await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   await page.getByText("CODE-1234", { exact: true }).waitFor();
   assert.equal(
     await page.getByRole("link", { name: "Open Codex sign-in" }).getAttribute("href"),
@@ -101,11 +101,11 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
   );
   await page.getByRole("button", { name: "Cancel login", exact: true }).click();
   assert.equal((await cancelled).status(), 204);
-  await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).waitFor();
 
   // A fresh login becomes the Agent credential; the browser receives only its Secret reference.
   approved = true;
-  await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   await page
     .getByText("ChatGPT login ready. Credentials are stored on the server.", { exact: true })
     .waitFor();
@@ -145,7 +145,7 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
   approved = false;
   await page.clock.install();
   await page.clock.pauseAt(new Date(Date.now() + 1_000));
-  await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   await page.getByText("CODE-1234", { exact: true }).waitFor();
   // The start mutation rebuilds the tab once; a second visit reuses its DOM and pending timer.
   for (let visit = 0; visit < 2; visit += 1) {
@@ -200,7 +200,7 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
   // Reconnection is a separate, explicit authentication save with a newly completed login.
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "oauth");
-  await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   await page
     .getByText("ChatGPT login ready. Credentials are stored on the server.", { exact: true })
     .waitFor();
@@ -217,7 +217,7 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
 
   // Discard withdraws a staged login before the server confirms it, so a save racing the
   // request keeps the saved credential instead of binding a source about to be cancelled.
-  await page.getByRole("button", { name: "Sign in with ChatGPT", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   await page
     .getByText("ChatGPT login ready. Credentials are stored on the server.", { exact: true })
     .waitFor();

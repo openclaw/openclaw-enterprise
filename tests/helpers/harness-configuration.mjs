@@ -69,3 +69,20 @@ export function createHarnessConfiguration(harnessId, providerModel) {
       : {}),
   };
 }
+
+// For an image that stubs OpenClaw: names a provider endpoint that is not the
+// real one, so the runtime's upfront credential check never sends a fixture key
+// to the provider (it runs only against the default endpoint).
+export function withStubbedProviderEndpoint(configuration) {
+  const openai = configuration.models?.providers?.openai ?? { api: "openai-responses", models: [] };
+  return {
+    ...configuration,
+    models: {
+      ...configuration.models,
+      providers: {
+        ...configuration.models?.providers,
+        openai: { ...openai, baseUrl: "https://model.stub.invalid/v1" },
+      },
+    },
+  };
+}

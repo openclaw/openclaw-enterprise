@@ -688,9 +688,10 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	var createFile string
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Register a credential source from a JSON document",
-		Args:  cobra.NoArgs,
+		Use:     "create",
+		Short:   "Register a credential source from a JSON document",
+		Example: credentialSourceCreateExample,
+		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			namespace, err := app.requiredNamespace()
 			if err != nil {
@@ -995,12 +996,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printItems(deployment, false, []column{
-				{title: "ID", key: "deploymentId"},
-				{title: "AGENT", key: "agentId"},
-				{title: "STATUS", key: "status"},
-				{title: "ERROR", key: "error"},
-			})
+			return app.printDeploymentStatus(deployment)
 		},
 	}
 	stop := &cobra.Command{
@@ -1160,33 +1156,91 @@ func (app *application) agentCredentialWithdrawalCommand() *cobra.Command {
 // agentRevision returns the requested revision, or the Agent's active revision.
 // Without an active revision (for example, after a failed first deploy) it uses
 // the latest revision and says so on notices, because that is the version whose
-// Pods and output explain the failure.
+// Pods and output explain the failure. When it had to read the chosen revision's
+// runtime description to decide, it returns that description too (else nil).
 func (app *application) agentRevision(
 	client *occclient.Client,
 	notices io.Writer,
 	namespace, agentID, revision string,
-) (string, error) {
+) (string, any, error) {
 	if revision != "" {
-		return revision, nil
+		return revision, nil, nil
 	}
 	agent, err := client.GetAgent(namespace, agentID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	resource, _ := agent.(map[string]any)
-	if active, _ := resource["activeRevisionId"].(string); active != "" {
-		return active, nil
+	active, _ := resource["activeRevisionId"].(string)
+	if active == "" {
+		revisions, err := client.ListAgentRevisions(namespace, agentID)
+		if err != nil {
+			return "", nil, err
+		}
+		latest, err := latestRevisionID(agentID, revisions)
+		if err != nil {
+			return "", nil, err
+		}
+		fmt.Fprintf(notices, "agent %s has no active revision; using latest revision %s\n", agentID, latest)
+		return latest, nil, nil
 	}
+	// A newer revision than the active one is being deployed or has failed; while
+	// its Pods exist they hold the current failure, and the active revision may
+	// have none (a dedicated replacement stops its predecessor).
+	probe := newerRevisionWithPods(client, namespace, agentID, active)
+	switch {
+	case probe.hasPods:
+		fmt.Fprintf(
+			notices,
+			"notice: reading revision %s, newer than the active revision %s and not yet active; pass --revision %s for the active revision\n",
+			probe.latest, active, active,
+		)
+		return probe.latest, probe.description, nil
+	case probe.err != nil:
+		// The runtime probe needs more permission than reading logs, so a log
+		// reader may be refused here yet allowed to read the newer revision.
+		fmt.Fprintf(
+			notices,
+			"notice: reading the active revision %s; a newer revision %s exists but its runtime could not be read (%v); pass --revision %s to read it\n",
+			active, probe.latest, probe.err, probe.latest,
+		)
+	default:
+		fmt.Fprintf(notices, "notice: reading the active revision %s\n", active)
+	}
+	return active, nil, nil
+}
+
+// newerRevision is the result of probing for a revision newer than the active one.
+type newerRevision struct {
+	// latest is the newer revision, or "" when there is none or the list failed.
+	latest string
+	// hasPods reports that latest's runtime description lists Pods.
+	hasPods bool
+	// description is latest's runtime description when it was read.
+	description any
+	// err is the failure to read latest's runtime description.
+	err error
+}
+
+// newerRevisionWithPods looks for a latest revision that is not the active one
+// and reads its runtime description to see whether it has Pods. A failure to
+// list revisions keeps the active revision silently.
+func newerRevisionWithPods(client *occclient.Client, namespace, agentID, active string) newerRevision {
 	revisions, err := client.ListAgentRevisions(namespace, agentID)
 	if err != nil {
-		return "", err
+		return newerRevision{}
 	}
 	latest, err := latestRevisionID(agentID, revisions)
-	if err != nil {
-		return "", err
+	if err != nil || latest == active {
+		return newerRevision{}
 	}
-	fmt.Fprintf(notices, "agent %s has no active revision; using latest revision %s\n", agentID, latest)
-	return latest, nil
+	description, err := client.GetAgentRuntime(namespace, agentID, latest)
+	if err != nil {
+		return newerRevision{latest: latest, err: err}
+	}
+	resource, _ := description.(map[string]any)
+	pods, _ := resource["pods"].([]any)
+	return newerRevision{latest: latest, hasPods: len(pods) > 0, description: description}
 }
 
 func (app *application) agentRuntimeCommand() *cobra.Command {
@@ -1204,13 +1258,15 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			revisionID, err := app.agentRevision(client, command.ErrOrStderr(), namespace, args[0], revision)
+			revisionID, description, err := app.agentRevision(client, command.ErrOrStderr(), namespace, args[0], revision)
 			if err != nil {
 				return err
 			}
-			description, err := client.GetAgentRuntime(namespace, args[0], revisionID)
-			if err != nil {
-				return err
+			if description == nil {
+				description, err = client.GetAgentRuntime(namespace, args[0], revisionID)
+				if err != nil {
+					return err
+				}
 			}
 			if app.output != "table" {
 				return app.printStructured(description)
@@ -1218,7 +1274,7 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			return app.printRuntime(description)
 		},
 	}
-	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: the active revision, else the latest revision)")
+	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision that has Pods, else the active revision, else the latest revision)")
 	return command
 }
 
@@ -1250,7 +1306,7 @@ func (app *application) agentLogsCommand() *cobra.Command {
 	}
 	flags := command.Flags()
 	flags.StringVar(&options.source, "source", "", "Log source: gateway, agent or sandbox")
-	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: the active revision, else the latest revision)")
+	flags.StringVar(&options.revision, "revision", "", "Revision ID (default: a newer not-yet-active revision that has Pods, else the active revision, else the latest revision)")
 	flags.StringVar(&options.pod, "pod", "", "Pod name (default: the source's first Pod)")
 	flags.BoolVar(&options.previous, "previous", false, "Read the previous container instance")
 	flags.IntVar(&options.tail, "tail", 200, "Lines from the end of the stream, 1 to 1000")
@@ -1319,7 +1375,7 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 	}
 	ctx := cmp.Or(app.ctx, context.Background())
 	notices := command.ErrOrStderr()
-	revisionID, err := app.agentRevision(client, notices, namespace, agentID, options.revision)
+	revisionID, _, err := app.agentRevision(client, notices, namespace, agentID, options.revision)
 	if err != nil {
 		return err
 	}

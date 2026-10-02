@@ -5,6 +5,24 @@ import { assertReadableConfiguration, message } from "./list.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
+export const API_KEY_PLUGIN_MESSAGE =
+  "Codex plugins need a ChatGPT login. This Agent uses an API key, so each selected plugin is disabled when it deploys (PLUGIN_AUTH_REQUIRED). Change its Harness authentication under Credentials to use plugins.";
+
+const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
+  PLUGIN_AUTH_REQUIRED:
+    "was disabled for this startup because it is not authenticated: Codex plugins need a ChatGPT login rather than an API key, and some also need their app connected to that account.",
+  PLUGIN_INSTALL_FAILED:
+    "was disabled for this startup because it could not be installed. Check the Agent's runtime logs.",
+});
+
+/** One sentence per deployment startup warning, keeping its code for lookup. */
+export function pluginWarningText(warning) {
+  const explanation = Object.hasOwn(PLUGIN_WARNING_EXPLANATIONS, warning.code)
+    ? PLUGIN_WARNING_EXPLANATIONS[warning.code]
+    : "reported a startup warning.";
+  return `${warning.pluginId} ${explanation} (${warning.code})`;
+}
+
 export function renderAgentPlugins(
   context,
   { agent, snapshot, draft, path, onState, onSaved, onReload },
@@ -72,6 +90,9 @@ export function renderAgentPlugins(
   const hasBoundCredential =
     agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret";
   const codex = configuredHarnessId(snapshot.values) === "codex";
+  // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
+  // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
+  const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
   const oauthLogin = createDeviceLogin({
     context,
     agentId: agent.id,
@@ -95,20 +116,23 @@ export function renderAgentPlugins(
     requestBody: (body) => (oauthLogin.source ? { ...body, oauthLogin: oauthLogin.source } : body),
     canDiscover: () =>
       codex &&
+      !apiKeyAuth &&
       (catalogCredential === "none" ||
         (catalogCredential === "required" && (hasBoundCredential || Boolean(oauthLogin.source)))),
-    canPrefetch: () => codex && (hasBoundCredential || Boolean(oauthLogin.source)),
+    canPrefetch: () => codex && !apiKeyAuth && (hasBoundCredential || Boolean(oauthLogin.source)),
     isPending: () => pending,
     unavailableMessage: () =>
       !codex
         ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
-        : !catalogCapabilityChecked
-          ? "Checking plugin catalog availability…"
-          : catalogCapabilityError
-            ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
-            : agent.harnessAuth?.method === "oauth"
-              ? "Use experimental ChatGPT OAuth below to browse plugins without changing the deployed Agent's login."
-              : "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+        : apiKeyAuth
+          ? "Plugin browsing is unavailable with API-key authentication."
+          : !catalogCapabilityChecked
+            ? "Checking plugin catalog availability…"
+            : catalogCapabilityError
+              ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
+              : agent.harnessAuth?.method === "oauth"
+                ? "Use experimental ChatGPT OAuth below to browse plugins without changing the deployed Agent's login."
+                : "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound Secret. Saved selections can still be edited.",
@@ -169,6 +193,7 @@ export function renderAgentPlugins(
       "Save selections on this Agent, then deploy a new version to apply them.",
     ),
     oauthLogin.section,
+    ...(apiKeyAuth ? [element("p", { className: "notice" }, API_KEY_PLUGIN_MESSAGE)] : []),
     discovery.fields.section,
     capabilitiesStatus,
     element("div", { className: "form-actions" }, save, discard, reload),

@@ -4,7 +4,7 @@ import type {
   CredentialWithdrawal,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientCredentialSource(
   source: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>,
@@ -136,8 +136,15 @@ export const credentialSourceHandlers = {
   async deleteCredentialSource({ controller, context, reply, params, namespaceId, mutationEvent }) {
     // Deletion commits in two steps around the gateway call; the audit commits with the removal.
     const credentialSourceId = params.credentialSourceId as string;
-    await controller.deleteCredentialSource(context.actorId, namespaceId, credentialSourceId, () =>
-      mutationEvent({ kind: "credential_source", id: credentialSourceId, namespaceId }),
+    await controller.deleteCredentialSource(
+      context.actorId,
+      namespaceId,
+      credentialSourceId,
+      (removed) =>
+        mutationEvent(
+          { kind: "credential_source", id: credentialSourceId, namespaceId },
+          removedAccessBindingDetails(removed),
+        ),
     );
     reply.status(204).send();
   },

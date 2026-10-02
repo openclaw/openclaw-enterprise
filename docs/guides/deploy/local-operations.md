@@ -93,7 +93,7 @@ until activation replaces it. Re-preparing an active revision, for
 example during repository-credential maintenance, rolls its Pods once onto
 profiled templates. Namespace-wide `allow-dns`,
 `allow-gateway-ingress` and `allow-node-gateway` are narrowed only in namespaces
-provisioned after the upgrade; an earlier namespace keeps its previous policies
+provisioned after the upgrade; an earlier namespace keeps its previous selectors
 until it is recreated. OpenShell Sandboxes need a redeployed revision.
 Restarting a Pod from an old template retains the missing label; assigning the
 profile to arbitrary Pods grants access and is not a repair.

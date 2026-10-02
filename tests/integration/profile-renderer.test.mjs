@@ -232,6 +232,13 @@ const tenantRuntimeResources = {
   requests: { cpu: "100m", memory: "128Mi" },
   limits: { cpu: "4", memory: "2Gi" },
 };
+// An OpenClaw Gateway settles near 1.2 GiB once it has served a few turns, so
+// its memory request reserves that much. A dedicated Codex Gateway with native
+// admin chat peaked at 1.9 GiB and was OOM-killed at 2Gi, so its limit is 3Gi.
+const gatewayResources = {
+  requests: { cpu: "100m", memory: "1280Mi" },
+  limits: { cpu: "4", memory: "3Gi" },
+};
 
 test("profiles give tenant runtimes four-core CPU limits over unchanged 100m requests", () => {
   const example = loadYaml(
@@ -246,7 +253,7 @@ test("profiles give tenant runtimes four-core CPU limits over unchanged 100m req
     ["production example", example],
   ]) {
     const { resources } = installation.drivers.compute.configuration;
-    assert.deepEqual(resources.gateway, tenantRuntimeResources, `${name} Gateway`);
+    assert.deepEqual(resources.gateway, gatewayResources, `${name} Gateway`);
     assert.deepEqual(resources.agent, tenantRuntimeResources, `${name} Harness`);
     assert.deepEqual(
       resources.namespace.containerDefaults,

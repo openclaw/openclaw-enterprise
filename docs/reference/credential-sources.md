@@ -176,14 +176,15 @@ deleted, and its referenced Secrets cannot be deleted.
 
 ## Errors
 
-| Status                       | Meaning                                                                                                                                                                                  |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400 INVALID_REQUEST`        | The body or a field name is malformed.                                                                                                                                                   |
-| `403 FORBIDDEN`              | A required `credential_source` or `secret` permission is missing.                                                                                                                        |
-| `404 NOT_FOUND`              | The source, Secret, or type is not in the exact Namespace or catalog, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it. |
-| `409 NAMESPACE_NOT_READY`    | The Namespace is not `ready`.                                                                                                                                                            |
-| `409 RESOURCE_CONFLICT`      | The source is still referenced, not `ready` for an update, or changed during the request; or the Agent has no active revision to withdraw from.                                          |
-| `503 DEPENDENCY_UNAVAILABLE` | No Credential Gateway is selected, the Secret Driver cannot read values, or the gateway call failed.                                                                                     |
+| Status                                  | Meaning                                                                                                                                                                                  |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400 INVALID_REQUEST`                   | The body or a field name is malformed.                                                                                                                                                   |
+| `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                        |
+| `404 NOT_FOUND`                         | The source, Secret, or type is not in the exact Namespace or catalog, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it. |
+| `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                            |
+| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; or the Agent has no active revision to withdraw from.                                          |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration on an Installation that selects no Credential Gateway.                                                                                                                      |
+| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, or the gateway call failed.                                                                                         |
 
 ## Related
 

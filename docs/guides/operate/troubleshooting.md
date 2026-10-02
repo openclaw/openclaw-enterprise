@@ -60,6 +60,23 @@ and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
 
+## Local Codex sandbox check fails
+
+Kubernetes-only startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
+dedicated Codex sandbox before bootstrap. On Ubuntu 24.04,
+`kernel.apparmor_restrict_unprivileged_userns=1` denies the user namespace
+Codex bubblewrap needs. Startup reports `kubectl failed` while verifying that
+sandbox and rolls the owned cluster back. The preparation step does not print
+the bubblewrap error.
+
+Set that host sysctl to `0`, wait until the failed startup exits, and start
+again. The setting applies to the whole host. The launcher does not change it,
+and the sandbox check still runs. Do not skip the check.
+
+A production node uses the separate
+[Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
+sysctl change onto a shared cluster.
+
 ## The Helm installation did not complete
 
 Run production commands from an operator shell with Helm and `kubectl`, read
@@ -126,6 +143,16 @@ When the startup wrapper holds a failed check, the event adds it, for example
 `; startup check model-probe failed with AUTHENTICATION_FAILED`. See
 [Harness authentication](../../reference/harness-execution.md#harness-authentication)
 for the probe codes.
+
+## A Gateway log asks for a restart to apply the model catalog
+
+OpenClaw downloads its hosted model catalog in the background and logs
+`remote model catalog downloaded; restart the Gateway to apply it`. No action
+is needed: the Gateway keeps serving with the catalog it started with, and the
+download applies, if at all, at its next start. To stop this background
+traffic, set `models.catalogRefresh.enabled` to `false` in the Agent's
+Configuration and deploy it; the Gateway then uses only the catalog bundled in
+the runtime image.
 
 ## Authentication fails after installation
 

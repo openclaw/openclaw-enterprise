@@ -1,5 +1,5 @@
 import type { ServiceAccount, ServiceAccountCredential } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientServiceAccount(account: Readonly<ServiceAccount>): Record<string, unknown> {
   return {
@@ -92,17 +92,20 @@ export const serviceAccountHandlers = {
   },
   async deleteServiceAccount({ controller, context, reply, params, namespaceId, mutationEvent }) {
     await controller.transact(async (unit) => {
-      await controller.deleteServiceAccount(
+      const removed = await controller.deleteServiceAccount(
         context.actorId,
         namespaceId,
         params.serviceAccountId as string,
       );
       await unit.audit.append(
-        mutationEvent({
-          kind: "service_account",
-          id: params.serviceAccountId as string,
-          namespaceId,
-        }),
+        mutationEvent(
+          {
+            kind: "service_account",
+            id: params.serviceAccountId as string,
+            namespaceId,
+          },
+          removedAccessBindingDetails(removed),
+        ),
       );
     });
     reply.status(204).send();

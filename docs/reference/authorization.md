@@ -184,11 +184,22 @@ ID. The narrower subject and target requirements below apply to creation.
 
 Every operation requires Installation `administer` and exact Namespace `read`,
 evaluated by the selected IAM Driver and applicable Restrictions. Creating a
-binding also requires `read` on its exact target. Ordinary resource access
+binding also requires `read` on its exact target.
+
+A binding applies only its Role's Permissions for the target's resource kind,
+and `create` is checked against the Namespace rather than an existing resource.
+Binding creation therefore returns `400 INVALID_REQUEST` (detail path
+`/roleId`) naming the Permissions when the Role has any `create` Permission or
+none for the target's kind. One Role may still name several kinds and be bound
+to a target of each. Ordinary resource access
 does not authorize delegation. Drivers without policy management return
 `503 DEPENDENCY_UNAVAILABLE`; OCC never substitutes native IAM.
 
-Create a reusable Role with a nonempty, duplicate-free permission set:
+Create a reusable Role with a nonempty, duplicate-free permission set. Each
+Permission must be an action that some operation checks on that kind (the
+per-kind table in the [permissions cheat sheet](cheatsheets/permissions.md));
+a pair such as `secret:read_logs` or `configuration:deploy` would grant
+nothing, so Role creation returns `400 INVALID_REQUEST` naming it:
 
 ```json
 {
@@ -219,7 +230,10 @@ equal the Namespace ID in the path. A binding applies only the Role permissions
 whose kind equals its target kind: an `agent_revision` permission bound to an
 Agent target grants nothing, so revision `read` is bound per AgentRevision. A ServiceAccount
 resource is not an IAM identity. Caller IDs, scope, wildcard targets, Groups, unknown permissions,
-and extra fields are rejected. Native IAM commits validated policy and its
+and extra fields are rejected. An invalid Permission, or a subject, Role or
+target that is not usable in the path Namespace (including an Agent being
+deleted), returns `400 INVALID_REQUEST` with the offending field as the detail
+path. Native IAM commits validated policy and its
 attributable audit event together; later requests on other replicas see it
 without a restart.
 
@@ -232,7 +246,10 @@ Roles and bindings cannot be updated. Create replacements and explicitly
 remove old bindings. A referenced Role cannot be deleted (`409`), and deleting
 one binding preserves equivalent and unrelated bindings. Deleting an Agent,
 Configuration, Preset, Secret, credential source, or ServiceAccount removes the
-bindings that target it in the same transaction. After an unknown
+bindings that target it in the same transaction, and its delete audit event lists
+them (`removedAccessBindings`; for an Agent, `accessBindingsRemovedOnCompletion`).
+Namespace teardown removes the Namespace's bindings and Roles with the tombstone
+and records them in the lifecycle event. After an unknown
 creation outcome, list and inspect policy before retrying; equivalent bindings
 may coexist. Names are labels: inspect permissions before reusing a Role.
 
@@ -304,7 +321,9 @@ ambiguous identity fails closed.
   unavailable; no fallback authorization provider is used.
 - A resource is absent from a list: Your identity may not have `read`
   permission for that specific resource.
-- `409` deleting a Role: remove its referencing bindings explicitly first.
+- `400` creating a Role or binding: the detail path names the invalid field.
+- `409` deleting a Role: the Role is referenced by AccessBindings; remove them
+  explicitly first.
 - Group or broad-grant mutation is rejected: Namespace policy APIs support
   identity subjects and exact resource targets only.
 

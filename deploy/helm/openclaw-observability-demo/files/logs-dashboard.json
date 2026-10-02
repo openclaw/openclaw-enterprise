@@ -55,7 +55,7 @@
         "name": "event",
         "label": "Event",
         "type": "custom",
-        "query": "http.completed,http.unexpected_error,worker.completed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,listening,startup-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,authentication.sign-in-limit-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,gateway.operational,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
+        "query": "http.completed,http.unexpected_error,worker.completed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,listening,startup-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,authentication.sign-in-limit-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,gateway.operational,gateway.startup_failed,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
         "includeAll": true,
         "allValue": ".*",
         "multi": false,
@@ -167,6 +167,11 @@
           {
             "text": "gateway.operational",
             "value": "gateway.operational",
+            "selected": false
+          },
+          {
+            "text": "gateway.startup_failed",
+            "value": "gateway.startup_failed",
             "selected": false
           },
           {

@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-09-30
+updated: 2026-10-01
 last_updated_session: authoring-run/b158c89c-3010-42ae-95b4-350b05de7441
 ---
 
@@ -70,8 +70,9 @@ commits, OCC calls `registerSource` or `removeSource`.
 
 The route schema accepts `name`, `type`, optional `config`, and optional
 `secrets` keyed by lowercase field names. Inside one transaction, OCC locks the
-Namespace, authorizes `credential_source:create` on it, and requires a `ready`
-Namespace. It asks the selected gateway for `listSourceTypes` and rejects an
+Namespace, authorizes `credential_source:create` on it, returns
+`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` when the Installation selects no
+Credential Gateway, and requires a `ready` Namespace. It asks the selected gateway for `listSourceTypes` and rejects an
 unknown type, an unknown field, or a missing required field with
 `ScopeViolationError` (`404`) before any Secret read or gateway write.
 
@@ -274,6 +275,7 @@ than re-attach the source.
 
 ## Changelog
 
+- 2026-10-01 20:30: Report a missing Credential Gateway as `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` at registration. (fix-d93-d100)
 - 2026-09-30 21:14: Updated the independent OpenShell wire-contract verification pointer to v0.1.3-pre.1. (authoring-run/b158c89c-3010-42ae-95b4-350b05de7441 - 37bbee705ea3808ad000413dd54bdcc718980179)
 
 - 2026-09-30 04:00: Recorded withdrawal attempt reasons, replay deduplication, and maintenance of a withdrawn revision; corrected the update ordering. (pr-553-alignment - 3a5e48035)

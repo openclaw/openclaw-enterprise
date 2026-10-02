@@ -166,6 +166,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
 ```json
 {
   "gateway": {
+    "publicOrigin": "https://agent-<opaque-hash>.agents.oce.example.com",
     "auth": {
       "mode": "trusted-proxy",
       "trustedProxy": {
@@ -188,7 +189,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
 }
 ```
 
-Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
+Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
 
 Do not set unsupported gateway authentication fields, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. For `stopped` or `unavailable`, follow the [troubleshooting checks](#troubleshooting) before changing configuration.
 
@@ -263,16 +264,16 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Troubleshooting
 
-| Symptom                                             | Check                                                                                                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent. |
-| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.   |
-| Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                   |
-| Panel or status API reports `stopped`               | A stopped Agent with no active revision returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.        |
-| Panel or status API reports `unavailable`           | OCC cannot derive `data.origin` without an active revision. Fix active revision selection before saving or redeploying compatible native configuration.       |
-| Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the active revision.                             |
-| Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.       |
-| Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                   |
+| Symptom                                             | Check                                                                                                                                                                                 |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                         |
+| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.                           |
+| Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                                           |
+| Panel or status API reports `stopped`               | A stopped Agent with no active revision returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                |
+| Panel or status API reports `unavailable`           | No version is serving: there is no active revision yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy. |
+| Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the active revision.                                                     |
+| Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                               |
+| Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                           |
 
 ## Related
 

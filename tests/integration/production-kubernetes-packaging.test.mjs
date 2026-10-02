@@ -13,6 +13,7 @@ import {
   renderProductionChart,
   parseProductionChart as resources,
   productionValues as values,
+  productionCollectorValues,
 } from "../helpers/production-chart.mjs";
 
 const execute = promisify(execFile);
@@ -98,6 +99,124 @@ try {
     skip: "Install Helm and yq, or set OCC_HELM_BIN, to verify the real rendered production chart.",
   };
 }
+
+test(
+  "Helm DNS grants preserve configured peers and admit OpenShift backend ports",
+  tooling,
+  async () => {
+    const dnsValues = {
+      "dns.namespace": "openshift-dns",
+      "dns.podLabels.k8s-app": "null",
+      "dns.podLabels.dns\\.operator\\.openshift\\.io/daemonset-dns": "default",
+    };
+    const dnsArguments = Object.entries(dnsValues).flatMap(([key, value]) => [
+      "--set",
+      `${key}=${value}`,
+    ]);
+    // Render each shipped chart with a nondefault DNS peer; these checks do not prove CNI enforcement.
+    const charts = [
+      {
+        objects: await resources(
+          (
+            await render({
+              ...dnsValues,
+              ...productionCollectorValues,
+              ...slackProxyValues,
+              ...gatewayRoutingValues,
+            })
+          ).stdout,
+        ),
+        policies: [
+          "openclaw-enterprise-dependency-egress",
+          "oce-bootstrap-isolation",
+          "openclaw-enterprise-collector-egress",
+          "openclaw-enterprise-slack-proxy",
+          `oce-${routeNamespaceLabel("openclaw-system", "oce-agent-gateways")}-envoy-dataplane`,
+        ],
+      },
+      {
+        objects: await resources(
+          (
+            await execute(
+              helm,
+              [
+                "template",
+                "oce",
+                "deploy/helm/openclaw-execution",
+                "--set",
+                "routing.hostname=agents.example.invalid",
+                "--set",
+                "routing.gatewayClassName=private-envoy-gateway",
+                "--set",
+                "routing.tlsSecretName=agents-tls",
+                "--set",
+                "routing.controlPlaneCidrs[0]=198.51.100.0/24",
+                ...dnsArguments,
+              ],
+              { cwd: repository, maxBuffer: 2_000_000 },
+            )
+          ).stdout,
+        ),
+        policies: ["oce-harness-proxy"],
+      },
+      {
+        objects: await resources(
+          (
+            await execute(
+              helm,
+              [
+                "template",
+                "demo",
+                "deploy/helm/openclaw-observability-demo",
+                "--set",
+                "occ.namespace=openclaw-system",
+                "--set",
+                "occ.release=oce",
+                "--set",
+                "cluster.cidrs[0]=10.43.0.1/32",
+                "--set",
+                "grafana.adminSecretName=grafana-admin",
+                ...dnsArguments,
+              ],
+              { cwd: repository, maxBuffer: 2_000_000 },
+            )
+          ).stdout,
+        ),
+        policies: ["demo-dns"],
+      },
+    ];
+    for (const { objects, policies } of charts) {
+      for (const name of policies) {
+        const policy = objects.find(
+          (object) => object.kind === "NetworkPolicy" && object.metadata.name === name,
+        );
+        assert.ok(policy, name);
+        assert.deepEqual(
+          policy.spec.egress[0],
+          {
+            to: [
+              {
+                namespaceSelector: {
+                  matchLabels: { "kubernetes.io/metadata.name": "openshift-dns" },
+                },
+                podSelector: {
+                  matchLabels: { "dns.operator.openshift.io/daemonset-dns": "default" },
+                },
+              },
+            ],
+            ports: [
+              { protocol: "UDP", port: 53 },
+              { protocol: "TCP", port: 53 },
+              { protocol: "UDP", port: 5353 },
+              { protocol: "TCP", port: 5353 },
+            ],
+          },
+          name,
+        );
+      }
+    }
+  },
+);
 
 test("sandbox ingress uses a separate listener outside OCE cookie scope", tooling, async () => {
   const sandboxValues = {
@@ -2855,6 +2974,8 @@ test(
         ports: [
           { protocol: "UDP", port: 53 },
           { protocol: "TCP", port: 53 },
+          { protocol: "UDP", port: 5353 },
+          { protocol: "TCP", port: 5353 },
         ],
       },
       {

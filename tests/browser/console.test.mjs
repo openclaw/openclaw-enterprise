@@ -720,6 +720,12 @@ test("console retained views clear after session expiry and exact Agent denial",
   await expectRetainedPreview(page, "Denied retained Agent");
   await releaseHeldRoute(page, detailPattern, deniedAgent);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  // Someone else's Agent link says what the reader can do, not that a collection is unreadable.
+  await page
+    .getByText(
+      "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you.",
+    )
+    .waitFor();
   await expectNoText(page, /Configuration draft|Selected revision/);
 });
 

@@ -194,6 +194,15 @@ export function renderAgentAccess(context, agent) {
     state.loaded = true;
   }
 
+  // OCC answers 400 naming /subjectId or /resourceId when the Principal cannot be bound in
+  // this Namespace or the Agent is being deleted; both mean the same thing to the sharer.
+  function unavailableShareInput(error) {
+    return (
+      error.status === 400 &&
+      (error.detailPaths ?? []).some((path) => path === "/subjectId" || path === "/resourceId")
+    );
+  }
+
   function failure(error, mutation, sharing = false) {
     if (error.status === 401) {
       context.onExpired();
@@ -203,7 +212,7 @@ export function renderAgentAccess(context, agent) {
     state.error =
       error.status === 403
         ? "Sharing policy requires Installation administration. Your other Agent controls remain available according to their own permissions."
-        : error.status === 404 && sharing
+        : sharing && (error.status === 404 || unavailableShareInput(error))
           ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
           : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";

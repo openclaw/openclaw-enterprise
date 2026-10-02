@@ -69,9 +69,9 @@ A new account starts with no access. As a human Installation administrator:
    ```bash
    echo '{"name":"Read Namespace and Agent","permissions":[{"action":"read","resourceKind":"namespace"},{"action":"read","resourceKind":"agent"}]}' > role.json
    ROLE_ID="$(occ iam role create --file role.json -o json | jq -r .id)"
-   for target in "namespace $OCC_NAMESPACE" "agent <agent-id>"; do
-     set -- $target
-     jq -n --arg p "$PRINCIPAL_ID" --arg r "$ROLE_ID" --arg k "$1" --arg i "$2" \
+   for target in "namespace:$OCC_NAMESPACE" "agent:<agent-id>"; do
+     jq -n --arg p "$PRINCIPAL_ID" --arg r "$ROLE_ID" \
+       --arg k "${target%%:*}" --arg i "${target#*:}" \
        '{subjectKind:"identity",subjectId:$p,roleId:$r,resourceKind:$k,resourceId:$i}' > binding.json
      occ iam access-binding create --file binding.json
    done
@@ -82,6 +82,8 @@ A new account starts with no access. As a human Installation administrator:
    [attach their identity](../../reference/authentication/external-sign-in.md).
 
 Add actions such as `update` or `deploy` to the Role for more access; see
-[Authorization](../../reference/authorization.md) for actions and scope. Pass the
+[Authorization](../../reference/authorization.md) for actions and scope. A
+binding refuses a Role with `create` Permissions or none for its target's kind,
+because those grants could never apply. Pass the
 Installation administrator `roleId` at creation only for someone who
 administers the whole Installation.

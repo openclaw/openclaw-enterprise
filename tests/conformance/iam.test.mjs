@@ -133,6 +133,11 @@ const bindings = [
 
 const state = { identities, groups, memberships, roles, bindings, restrictions: [] };
 
+// Unusable subjects, Roles and targets are input errors (a ScopeViolationError subclass);
+// an unavailable Namespace stays a plain ScopeViolationError.
+const rejectedPolicyInput = (error) =>
+  error.name === "IAMPolicyValidationError" || error.name === "ScopeViolationError";
+
 test("managed memory policy binds provisioned humans and local services to only the exact Namespace", async () => {
   const platform = new InMemoryPlatformState({
     iamIdentities: [...identities, { kind: "service_principal", id: "installation-service" }],
@@ -214,7 +219,7 @@ test("managed memory policy binds provisioned humans and local services to only 
       platform.transact((unit) =>
         native.createNamespaceAccessBinding({ policy: unit.iamPolicy }, invalid),
       ),
-      { name: "ScopeViolationError" },
+      rejectedPolicyInput,
     );
   }
   await platform.transact((unit) =>
@@ -290,7 +295,7 @@ test("managed memory policy resolves identities enrolled after construction with
     platform.transact((unit) =>
       native.createNamespaceAccessBinding({ policy: unit.iamPolicy }, input(subject)),
     );
-  await assert.rejects(bindLate("principal-late"), { name: "ScopeViolationError" });
+  await assert.rejects(bindLate("principal-late"), { name: "IAMPolicyValidationError" });
 
   enrolled.push(
     { kind: "principal", id: "principal-late", issuer: "https://id.example.com", subject: "late" },
@@ -338,7 +343,7 @@ test("managed memory policy resolves identities enrolled after construction with
       platform.transact((unit) =>
         native.createNamespaceAccessBinding({ policy: unit.iamPolicy }, invalid),
       ),
-      { name: "ScopeViolationError" },
+      rejectedPolicyInput,
     );
   }
 });

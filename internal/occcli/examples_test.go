@@ -32,6 +32,7 @@ func TestCreateCommandsShowAJSONExample(t *testing.T) {
 		{"configuration", "create"},
 		{"secret", "create"},
 		{"agent", "create"},
+		{"credential-source", "create"},
 	} {
 		command, _, err := root.Find(path)
 		if err != nil || command == root {

@@ -17,6 +17,8 @@ node scripts/ci/run-tests.mjs audit
 
 CI uses [run-ci-lane](../../.github/actions/run-ci-lane/action.yml) for setup, tests, cleanup and job isolation.
 
+The non-required [First Agent smoke](first-agent-smoke.md) installs Local Setup and deploys two Agents against a stand-in model provider on every run.
+
 Full CI has fifteen required lanes. `checks-browser` owns browser tests; `postgres-auth` owns the longer authentication tests and its own PostgreSQL server; `images-model-probes` builds only the runtime image and runs model-probe tests without a cluster.
 
 Hosted image builds use separate controller/runtime caches. Packaging alone exports; model probes restore. Transfers time out after one minute, export failures are ignored, and builds load locally. Cache credentials stay in preparation. Local builds remain unchanged.

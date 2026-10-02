@@ -11,7 +11,7 @@ provider login, token persistence, refresh rotation, or runtime handoff.
 1. Open **Pages/Create Agent → ChatGPT OAuth before sign-in (Experimental)**. Confirm the
    provider is OpenAI, the harness is Codex, and authentication is **ChatGPT OAuth (Experimental)**. Confirm the Experimental
    notice explains first-deploy, reconnect, revision, and recovery limitations.
-   The model picker remains usable; no token input appears.
+   Confirm **Sign in with OAuth** is available. The model picker remains usable; no token input appears.
 2. Open **ChatGPT device login pending (Experimental)**. Inspect the displayed code and the
    **Open Codex sign-in** link. Do not submit the simulated code to the provider.
    Choose **Cancel login** and confirm the sign-in button returns.

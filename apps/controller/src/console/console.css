@@ -206,6 +206,32 @@ p {
   width: 100%;
   margin-top: 16px;
 }
+.auth-provider-icon {
+  width: 18px;
+  height: 18px;
+  margin-right: 10px;
+  vertical-align: middle;
+  background: #fff;
+}
+.auth-google-colors {
+  width: 100%;
+  height: 100%;
+  background: conic-gradient(
+    #ff4641,
+    #fd5061 40deg,
+    #fd5061 60deg,
+    #3186ff 85deg,
+    #3186ff 117deg,
+    #00a5b7 142deg,
+    #0ebc5f 167deg,
+    #0ebc5f 200deg,
+    #6cc500 226deg,
+    #fc0 253deg,
+    #ffd314 268deg,
+    #fc0 292deg,
+    #ff4641 327deg
+  );
+}
 .auth .auth-recovery {
   display: block;
   margin: 20px auto 0;

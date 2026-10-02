@@ -456,7 +456,7 @@
                   },
                   {
                     "page": "guides/deploy/auth-maintenance",
-                    "label": "Sign-in Maintenance"
+                    "label": "External Sign-in Maintenance"
                   },
                   {
                     "page": "guides/deploy/google-sign-in",
@@ -807,6 +807,10 @@
                       {
                         "page": "testing/ci",
                         "label": "CI"
+                      },
+                      {
+                        "page": "testing/first-agent-smoke",
+                        "label": "First Agent Smoke"
                       },
                       {
                         "page": "testing/ci-manual-integration",

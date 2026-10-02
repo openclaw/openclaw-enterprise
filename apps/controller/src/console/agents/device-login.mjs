@@ -22,7 +22,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
     element("p", {}, "Open Codex sign-in and enter this code: ", code),
     signIn,
   );
-  const start = button("Sign in with ChatGPT", () => void begin());
+  const start = button("Sign in with OAuth", () => void begin());
   const cancel = button("Cancel login", () => void discard());
   const section = element(
     "div",

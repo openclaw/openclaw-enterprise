@@ -142,6 +142,43 @@ not update it. The command reads that Secret and stops before mutation when its
 `collector.yaml` or `kubernetes.yaml` differs from the checkout. Add
 `--collector-config-reviewed` only to keep a reviewed custom configuration.
 
+### Apply other Installation changes
+
+An upgrade keeps your Installation YAML. A release that changes recommended
+Installation values, such as the Gateway Pod memory request of `1280Mi` in the
+[installation profiles](installation-profiles.md) and production example, does
+not change an existing Installation. A candidate that changes any setting other
+than the Plugin Driver selection stops the helper with `candidate Installation
+changes a protected setting`. Diff `deploy/examples/production/installation.yaml`
+and `scripts/render-installation-profile.mjs` between the deployed and candidate
+source, decide which changes to adopt, and apply them as a separate change, not
+during an image upgrade. Use the chart source of the installed controller and
+keep the image references in `values.yaml` unchanged:
+
+```bash
+set -euo pipefail
+cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
+# Edit /secure/occ/installation.yaml and review the diff, then:
+export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName' /secure/occ/values.yaml)"
+kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+  --namespace openclaw-system create secret generic "$OCC_INSTALLATION_SECRET" \
+  --from-file=installation.yaml=/secure/occ/installation.yaml \
+  --dry-run=client -o yaml |
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' apply -f -
+OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)" \
+  yq -i '.controlPlane.installationChecksum = strenv(OCC_CHECKSUM)' /secure/occ/values.yaml
+helm upgrade oce deploy/helm/openclaw-enterprise \
+  --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
+  --namespace openclaw-system -f /secure/occ/values.yaml --wait --timeout 5m
+```
+
+The new checksum restarts the API and worker so they read the new Installation.
+Use your configured Secret key if it is not `installation.yaml`. Settings that
+shape Agent Pods, such as Gateway resources, apply only to Pods created
+afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
+file and repeat the commands. The edited files are the baseline for the next
+upgrade.
+
 ## Bind the Installation once
 
 Skip this step when the live Installation Secret already has the correct

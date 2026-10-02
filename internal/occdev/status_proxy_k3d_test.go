@@ -95,3 +95,45 @@ func TestDevelopmentInstallationAdmitsTheStatusProxySource(t *testing.T) {
 		t.Fatalf("unexpected status proxy CIDRs: %v", got)
 	}
 }
+
+func TestDevelopmentInstallationGivesGatewaysRoomForCodexChat(t *testing.T) {
+	// A dedicated Codex Gateway serving native admin chat peaked at 1.9 GiB and
+	// was OOM-killed at a 2Gi limit on its first coding turn (D200).
+	state := &developmentState{Cluster: "occ-dev-test", SandboxDriver: "none", DeploymentMode: "k3d", PlatformNamespace: "oce-system", directory: t.TempDir()}
+	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "10.42.0.1/32"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type workload struct {
+		Requests map[string]string `yaml:"requests"`
+		Limits   map[string]string `yaml:"limits"`
+	}
+	var installation struct {
+		Drivers struct {
+			Compute struct {
+				Configuration struct {
+					Resources struct {
+						Gateway workload `yaml:"gateway"`
+						Agent   workload `yaml:"agent"`
+					} `yaml:"resources"`
+				} `yaml:"configuration"`
+			} `yaml:"compute"`
+		} `yaml:"drivers"`
+	}
+	if err := yaml.Unmarshal(data, &installation); err != nil {
+		t.Fatal(err)
+	}
+	resources := installation.Drivers.Compute.Configuration.Resources
+	if got := resources.Gateway.Limits["memory"]; got != "3Gi" {
+		t.Fatalf("Gateway memory limit = %q, want 3Gi", got)
+	}
+	if got := resources.Gateway.Requests["memory"]; got != "1280Mi" {
+		t.Fatalf("Gateway memory request = %q, want 1280Mi", got)
+	}
+	if got := resources.Agent.Limits["memory"]; got != "2Gi" {
+		t.Fatalf("Harness memory limit = %q, want 2Gi", got)
+	}
+}

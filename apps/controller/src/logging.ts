@@ -42,6 +42,7 @@ const ALLOWED_FIELDS = new Set([
   "code",
   "computeDriverId",
   "deployPasses",
+  "dependency",
   "durationMs",
   "elapsedMs",
   "event",

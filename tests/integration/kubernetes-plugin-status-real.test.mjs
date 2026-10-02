@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { withStubbedProviderEndpoint } from "../helpers/harness-configuration.mjs";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -180,11 +181,11 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     configurationKind: "agent",
     configurationGeneration: number,
     configuration: admitLoggingConfiguration(
-      {
+      withStubbedProviderEndpoint({
         gateway: { controlUi: { enabled: false } },
         agents: { defaults: { model: "openai/gpt-5" } },
         logging: { level: "info" },
-      },
+      }),
       "info",
     ),
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },

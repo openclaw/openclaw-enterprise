@@ -4,7 +4,11 @@ import type {
   OccApiRoute,
   ResourceRef,
 } from "@openclaw-enterprise/contracts";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import type {
+  DeployAgentAuthorization,
+  OpenClawController,
+  RemovedAccessBinding,
+} from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 export interface RequestContext {
@@ -15,7 +19,7 @@ export interface RequestContext {
   readonly operation: OccApiRoute;
 }
 
-type ResourceHandler = (input: {
+export type ResourceHandler = (input: {
   readonly controller: OpenClawController;
   readonly context: RequestContext;
   readonly request: FastifyRequest;
@@ -28,7 +32,15 @@ type ResourceHandler = (input: {
   readonly mutationEvent: (
     resource: ResourceRef,
     details?: Readonly<Record<string, unknown>>,
+    authorization?: Readonly<DeployAgentAuthorization>,
   ) => AuditEvent;
 }) => Promise<void>;
 
 export type ResourceHandlers = Readonly<Partial<Record<OccApiOperationId, ResourceHandler>>>;
+
+/** Deletion audit details naming the AccessBindings removed with the resource, if any. */
+export function removedAccessBindingDetails(
+  removed: readonly RemovedAccessBinding[],
+): Readonly<Record<string, unknown>> | undefined {
+  return removed.length === 0 ? undefined : { removedAccessBindings: removed };
+}
