@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-01"
-last_updated_session: "authoring-run/6a494c30-770d-4d46-98d6-434af8c87997"
+updated: "2026-10-02"
+last_updated_session: "authoring-run/66ff371d-c0b6-4cbf-acae-2d90c387b5d9"
 ---
 
 # Agent Native Admin UI Flow
@@ -151,6 +151,8 @@ The Driver selects `/people/namespaces/<namespaceId>/agents/<agentId>` and suppl
 
 The patched Gateway verifies trusted-proxy authentication and the configured role digest. It finds the human profile, checks identity authority asynchronously, commits the selected role and requires matching authority before admission. Linked OCE people cannot share one profile. The same checks precede HTTP authorization; native role publication retires the request's earlier authority, returning `401` before its handler runs. A separate request uses the committed role; OCC never replays it. OpenClaw enforces its configured permissions. Backend service connections retain `oce-service`; independently authenticated local owners retain their existing access.
 
+WebSocket admission intersects client-requested operator scopes with the proxy ceiling using OpenClaw's native scope semantics. A broad UI request can therefore receive narrower session scopes without gaining general configuration or administrator access. Non-operator connections retain exact scope matching.
+
 The proxy renews OCE entry authority every 25 seconds with a five-second check deadline. A changed assignment or descriptor closes the old connection within 30 seconds; new HTTP requests and upgrades resolve current policy immediately. Native profile updates occur at reconnect, not as an OCE database side effect.
 
 ### 9. Runtime renders HTML on a separate origin
@@ -205,6 +207,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-02 08:41: Trace native scope intersection for session-only roles in the accompanying fix. (authoring-run/66ff371d-c0b6-4cbf-acae-2d90c387b5d9 - 5e863d050775d4e72827ce8f2145129cb1a7869c)
 
 - 2026-10-01 01:02: Trace disjoint human routing and verified native profile authority in the accompanying fixes. (authoring-run/6a494c30-770d-4d46-98d6-434af8c87997 - 4c43703f2140c5632566645af317f2fb69b9ab55)
 

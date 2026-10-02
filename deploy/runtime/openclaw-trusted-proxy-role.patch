@@ -173,7 +173,7 @@ index d987e9a5..b1687bc8 100644
        await rejectUnavailableProfileConnect(context, error);
        return { ok: false };
 diff --git a/src/gateway/server.auth.identity-scopes.test.ts b/src/gateway/server.auth.identity-scopes.test.ts
-index d994ebe6..dec41931 100644
+index d994ebe6..8b1b8eba 100644
 --- a/src/gateway/server.auth.identity-scopes.test.ts
 +++ b/src/gateway/server.auth.identity-scopes.test.ts
 @@ -1,3 +1,4 @@
@@ -200,7 +200,7 @@ index d994ebe6..dec41931 100644
    connectReq,
    CONTROL_UI_CLIENT,
    installGatewayTestHooks,
-@@ -755,3 +759,226 @@ describe("gateway identity scope grants", () => {
+@@ -755,3 +759,292 @@ describe("gateway identity scope grants", () => {
      );
    });
  });
@@ -212,6 +212,11 @@ index d994ebe6..dec41931 100644
 +      sessions: { others: "none" },
 +      agents: ["main"],
 +      scopes: ["operator.read", "operator.write"],
++    },
++    sessionWriter: {
++      sessions: { others: "none" },
++      agents: ["main"],
++      scopes: ["operator.sessions.read", "operator.sessions.write"],
 +    },
 +    reviewer: { sessions: { others: "view" }, agents: ["main"], scopes: ["operator.read"] },
 +    réviseur: { sessions: { others: "view" }, agents: ["main"], scopes: ["operator.read"] },
@@ -243,7 +248,13 @@ index d994ebe6..dec41931 100644
 +          rolePolicyHashHeader: "x-occ-role-policy",
 +          deviceAutoApprove: {
 +            enabled: true,
-+            scopes: ["operator.admin", "operator.read", "operator.write"],
++            scopes: [
++              "operator.admin",
++              "operator.read",
++              "operator.write",
++              "operator.sessions.read",
++              "operator.sessions.write",
++            ],
 +          },
 +        },
 +      },
@@ -254,7 +265,12 @@ index d994ebe6..dec41931 100644
 +    await setup();
 +    await withGatewayServer(async ({ port }) => {
 +      const sockets: Awaited<ReturnType<typeof openWs>>[] = [];
-+      const connect = async (identity: string, role: keyof typeof definitions, backend = false) => {
++      const connect = async (
++        identity: string,
++        role: keyof typeof definitions,
++        backend = false,
++        requestedScopes = UPGRADE_SCOPES,
++      ) => {
 +        const headers: Record<string, string> = {
 +          ...TRUSTED_PROXY_HEADERS,
 +          "x-forwarded-user": identity,
@@ -270,7 +286,7 @@ index d994ebe6..dec41931 100644
 +        const connected = await (backend ? connectReq : connectIdentity)(ws, {
 +          skipDefaultAuth: true,
 +          prePairDevice: false,
-+          scopes: backend ? [] : ["operator.admin", "operator.read", "operator.write"],
++          scopes: backend ? [] : requestedScopes,
 +          ...(backend ? { client: BACKEND_GATEWAY_CLIENT, device: null } : {}),
 +          deviceIdentityPath: deviceIdentityPath(`proxy-${sockets.length}`),
 +        });
@@ -309,6 +325,56 @@ index d994ebe6..dec41931 100644
 +          ).ok,
 +        ).toBe(false);
 +        expect((await rpcReq(service.ws, "config.get", {})).ok).toBe(true);
++        // The stock UI asks for broad scopes. A session-only assignment must retain
++        // its narrower permissions without gaining general read or administration.
++        const sessions = await connect("oce:prn_sessions", "sessionWriter");
++        expect(responseAuth(sessions.connected)?.scopes).toEqual([
++          "operator.sessions.read",
++          "operator.sessions.write",
++        ]);
++        expect((await rpcReq(sessions.ws, "sessions.list", {})).ok).toBe(true);
++        const created = await rpcReq<{ key: string }>(sessions.ws, "sessions.create", {
++          agentId: "main",
++          label: "session-only",
++        });
++        expect(created.ok, JSON.stringify(created.error)).toBe(true);
++        const sessionKey = created.payload!.key;
++        expect(
++          (
++            await rpcReq(sessions.ws, "sessions.patch", {
++              key: sessionKey,
++              label: "session-only-updated",
++            })
++          ).ok,
++        ).toBe(true);
++        const described = await rpcReq<{ session: { label: string } }>(
++          sessions.ws,
++          "sessions.describe",
++          { key: sessionKey },
++        );
++        expect(described.payload?.session.label).toBe("session-only-updated");
++        const hidden = await rpcReq(joe.ws, "sessions.describe", { key: sessionKey });
++        expect(hidden.ok).toBe(false);
++        expect(hidden.error).toMatchObject({
++          code: "INVALID_REQUEST",
++          message: `Session "${sessionKey}" was not found.`,
++        });
++        expect((await rpcReq(sessions.ws, "config.get", {})).ok).toBe(false);
++        expect((await rpcReq(sessions.ws, "exec.approvals.get", {})).ok).toBe(false);
++        // A read-only client request still caps the same write-capable role.
++        const sessionRead = await connect("oce:prn_sessions", "sessionWriter", false, [
++          "operator.read",
++        ]);
++        expect(responseAuth(sessionRead.connected)?.scopes).toEqual(["operator.sessions.read"]);
++        expect((await rpcReq(sessionRead.ws, "sessions.list", {})).ok).toBe(true);
++        expect(
++          (
++            await rpcReq(sessionRead.ws, "sessions.patch", {
++              key: sessionKey,
++              label: "forbidden",
++            })
++          ).ok,
++        ).toBe(false);
 +        expect(
 +          (await rpcReq(joe.ws, "sessions.patch", { key: "agent:other:denied", label: "denied" }))
 +            .ok,
@@ -437,7 +503,7 @@ index a2265ef5..b171aa99 100644
  import type { GatewayClient } from "./server-methods/shared-types.js";
 +import { prepareVerifiedProxyRoleProfile, resolveVerifiedProxyRole } from "./trusted-proxy-role.js";
  import { formatForLog } from "./ws-log.js";
- 
+
  const profileLog = createSubsystemLogger("gateway/user-profiles");
 @@ -131,6 +132,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
    assertCurrent();
@@ -780,3 +846,69 @@ index 00000000..0b815c63
 +    identity.release();
 +  }
 +}
+diff --git a/src/gateway/server/ws-connection/connect-admission.ts b/src/gateway/server/ws-connection/connect-admission.ts
+index 3d2c7c5b..7a4520ae 100644
+--- a/src/gateway/server/ws-connection/connect-admission.ts
++++ b/src/gateway/server/ws-connection/connect-admission.ts
+@@ -23,7 +23,7 @@ import {
+   GATEWAY_STARTUP_RETRY_AFTER_MS,
+ } from "../../../../packages/gateway-protocol/src/startup-unavailable.js";
+ import { getRuntimeConfig } from "../../../config/io.js";
+-import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
++import { intersectOperatorScopes, roleScopesAllow } from "../../../shared/operator-scope-compat.js";
+ import {
+   isBrowserCopilotClient,
+   isBrowserOperatorUiClient,
+@@ -112,6 +112,7 @@ export async function rejectUnavailableProfileConnect(
+ }
+
+ export function applyConnectionScopeCap(params: {
++  role: string;
+   scopes: string[];
+   upgradeReq: IncomingMessage;
+ }): string[] {
+@@ -128,7 +129,9 @@ export function applyConnectionScopeCap(params: {
+   );
+   return declaredScopes.size === 0
+     ? []
+-    : params.scopes.filter((scope) => declaredScopes.has(scope));
++    : params.role === "operator"
++      ? intersectOperatorScopes(params.scopes, [...declaredScopes])
++      : params.scopes.filter((scope) => declaredScopes.has(scope));
+ }
+
+ export function resolveEffectiveConnectionScopes(params: {
+@@ -144,6 +147,7 @@ export function resolveEffectiveConnectionScopes(params: {
+     identityScopes = resolveIdentityOperatorScopes(verifiedIdentity, params.identityScopes);
+   }
+   const scopes = applyConnectionScopeCap({
++    role: params.role,
+     scopes: [...new Set([...params.deviceScopes, ...identityScopes])],
+     upgradeReq: params.upgradeReq,
+   });
+diff --git a/src/gateway/server/ws-connection/connect-auth.ts b/src/gateway/server/ws-connection/connect-auth.ts
+index fa1ca69d..9a2e56e0 100644
+--- a/src/gateway/server/ws-connection/connect-auth.ts
++++ b/src/gateway/server/ws-connection/connect-auth.ts
+@@ -501,7 +501,7 @@ async function authenticateGatewayConnectCore(
+     authMethod,
+   });
+   if (trustedProxyAuthOk) {
+-    scopes = applyConnectionScopeCap({ scopes, upgradeReq });
++    scopes = applyConnectionScopeCap({ role, scopes, upgradeReq });
+     connectParams.scopes = scopes;
+   }
+   const controlUiPairingKind = shouldSkipControlUiPairing({
+diff --git a/src/gateway/server/ws-connection/connect-device-pairing.ts b/src/gateway/server/ws-connection/connect-device-pairing.ts
+index 7853af39..aa26a10e 100644
+--- a/src/gateway/server/ws-connection/connect-device-pairing.ts
++++ b/src/gateway/server/ws-connection/connect-device-pairing.ts
+@@ -190,7 +190,7 @@ export async function authorizeGatewayConnectDevice(
+         scopes,
+         hasRequestedScopes,
+         connectionScopeCap: (capped: string[]) =>
+-          applyConnectionScopeCap({ scopes: capped, upgradeReq: context.handler.upgradeReq }),
++          applyConnectionScopeCap({ role, scopes: capped, upgradeReq: context.handler.upgradeReq }),
+       };
+       const plan = await resolvePairingApprovalPlan(pairingPlanParams);
+       // Same-key reconnects reuse paired grants without pairing or false upgrade audits.
