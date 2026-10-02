@@ -1033,6 +1033,15 @@ async function assertCompletedHistory(db, previous = []) {
     "migration must not invent inheritance intent for existing Agent bindings",
   );
   assert.equal(
+    (
+      await db.app.query(
+        "SELECT count(*)::integer AS count FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL",
+      )
+    ).rows[0].count,
+    0,
+    "migration must not assign runtime roles to legacy access bindings",
+  );
+  assert.equal(
     catalogDigest(await migrationCatalog(db.migrator, "drizzle")),
     manifest.ledgerCatalogs.completed,
   );
@@ -1421,7 +1430,9 @@ async function canonicalData(db) {
             ]
           : table === "controller_work"
             ? ["work_kind"]
-            : [];
+            : table === "iam_access_bindings"
+              ? ["runtime_role"]
+              : [];
     result[table] = (
       await db.app.query(
         // New migration-owned compatibility columns may be defaulted onto
