@@ -63,11 +63,9 @@ graph TD
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail tabs request `${path}/native-admin` with the OpenClaw panel initially hidden. Disabled and denied states hide it; stopped, unavailable and unsupported states display feedback. A failed read other than a denial keeps the error and **Refresh access** visible. Only `available` with an Agent URL shows **Open OpenClaw**, which opens a new tab with `noopener noreferrer` without another availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
+Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Disabled and denied responses keep it hidden. Stopped, unavailable and unsupported responses show feedback; other read failures retain the error and **Refresh access**. Only `available` with an Agent URL shows **Open OpenClaw**, opening a new tab with `noopener noreferrer` and no launch request. After an audited `403`, tab `sessionStorage` caches the denied path for that session owner, hiding later views without another request. Logout, sign-in or a new tab asks afresh.
 
-When deployment polling or **Refresh deployment** sees a new `activeRevisionId` or `desiredRuntimeState`, `updateCurrentAgent` calls the panel's `refresh()` under the same guards. A refresh during a pending read triggers one more read after it finishes.
-
-The panel warns that native edits do not update durable OCE configuration.
+`updateCurrentAgent` calls `refresh()` when deployment polling or **Refresh deployment** observes changed `activeRevisionId` or `desiredRuntimeState`. A pending read queues one further read. The panel warns that native edits do not update durable OCE configuration.
 
 ### 2. OCC protects the availability route
 
@@ -93,11 +91,11 @@ After active revision selection succeeds, OCC derives the native target. If the 
 
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 
-`deriveNativeAdminHost` hashes Installation ID, Namespace ID, and Agent ID into an opaque label under the configured domain. `nativeAdminTarget` replaces the hostname of `publicOrigin` with that derived Agent host and returns `/` as the browser entrypoint for that Agent.
+`deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs into an opaque label under the configured domain. `nativeAdminTarget` replaces the `publicOrigin` hostname with that Agent host and returns `/` as its browser entrypoint.
 
-The host hash is not reversible. Native-host admission resolves the host back to an exact Agent by checking existing Installation, Namespace, and Agent state for the derived host. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed. This flow does not add a persistent host registry.
+Native-host admission resolves the irreversible hash against existing platform state. Unknown hosts, wrong suffixes, deleted Agents and non-unique matches fail closed. No persistent host registry is added.
 
-`nativeAdminGatewayHttpBase` accepts only a `wss:` endpoint without username, password, query, or hash, then converts it to `https:` while preserving authority and the Agent base path. This keeps workspace-file WSS behavior unchanged while defining the private HTTP base needed by the native UI bridge.
+`nativeAdminGatewayHttpBase` accepts a `wss:` endpoint without credentials, query or hash, then converts it to `https:` while preserving authority and Agent base path. Workspace-file WSS routing remains unchanged.
 
 ### 5. Shared cookie admits the Agent host
 
