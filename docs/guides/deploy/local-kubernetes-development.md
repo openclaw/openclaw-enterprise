@@ -407,13 +407,13 @@ credentialed real-cluster checks.
 
 ## Gateway placement boundary
 
-Dedicated Gateways use a managed Gateway runtime namespace, separate from the
-Harness namespace. The local development profile selects its single k3d server
-for Gateway scheduling. This exercises namespace separation on one disposable
-node; it does not prove production node isolation. Production must configure
+Dedicated Gateways and Harnesses share one tenant namespace but retain separate
+Pods, ServiceAccounts, credentials and storage. The local development profile
+selects its single k3d server for Gateway scheduling; this does not prove
+production node isolation. Production must configure
 `runtime.gatewayNodeSelector` and `runtime.nodeSelector` for disjoint trusted and
 data-plane pools. See [production Namespace preparation](production-agents.md#prepare-each-namespace)
-for both scoped RoleBindings.
+for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
 - The OpenShell profile installs one central Gateway per cluster. OCC runs in

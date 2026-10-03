@@ -190,14 +190,14 @@ Other Drivers participate through bounded
 ## Agent execution
 
 Embedded OpenClaw runs its gateway and Harness together in the data plane.
-Dedicated Kubernetes execution separates the Gateway's control-plane namespace,
-identity, and private state from the Harness's data-plane namespace, identity,
-and workspace. The Gateway uses scoped remote file operations rather than
+Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
+and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
 mounting the Harness workspace. Only the model-executing consumer receives its
 model credential; a dedicated Gateway does not.
 
 Operators must configure disjoint trusted Gateway and untrusted Harness node
-pools. Namespace separation alone does not provide node isolation. The default
+pools. Sharing a namespace trusts its workload managers with both roles; credential
+mounts and NetworkPolicies do not restrict a namespace administrator. The default
 placement uses one Kubernetes cluster; a second execution cluster is an
 [experimental profile](testing/two-cluster-local.md), with incomplete runtime
 acceptance. See [Harness execution](reference/harness-execution.md) and

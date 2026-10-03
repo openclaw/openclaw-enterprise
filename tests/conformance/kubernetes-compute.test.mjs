@@ -51,7 +51,7 @@ const apiKeyAuth = {
   secretDriverId: "kubernetes-secret",
 };
 
-function authContext(revision, namespace = kubernetesGatewayNamespaceName(tenant.id)) {
+function authContext(revision, namespace = kubernetesNamespaceName(tenant.id)) {
   return {
     harnessAuth: ["api_key", "codex_pat", "oauth"].includes(revision.harnessAuth.method)
       ? {
@@ -279,6 +279,26 @@ function routedOptions(overrides = {}) {
     network: {
       ...network,
       ...(overrides.network ?? {}),
+    },
+  });
+}
+
+function twoClusterOptions() {
+  return routedOptions({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    executionCluster: {
+      authentication: { mode: "kubeconfig", kubeconfigPath, context: "execution-cluster" },
+      harnessRouting: {
+        ...gatewayRouting,
+        gatewayName: "harnesses",
+        hostname: "harness.example.test",
+      },
+      network: {
+        dns: options().network.dns,
+        harnessEndpointCidrs: ["192.0.2.2/32"],
+        gatewayEndpointCidrs: ["192.0.2.1/32"],
+        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      },
     },
   });
 }
@@ -740,14 +760,14 @@ test("activation refuses a missing or foreign workspace node before changing the
     ...driver.networkPolicies({ namespaceId: tenant.id }, { name: namespace, plane: "execution" }),
     ...driver.networkPolicies(
       { namespaceId: tenant.id },
-      { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+      { name: kubernetesNamespaceName(tenant.id), plane: "control" },
     ),
   ];
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const gateway = driver.deployment(
     gatewayName,
     { namespaceId: tenant.id, agentId: revision.agentId },
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
     options().images.gateway,
     gatewayName,
     "gateway",
@@ -770,7 +790,7 @@ test("activation refuses a missing or foreign workspace node before changing the
       "ConfigMap",
       `gateway-${digest(revision.agentId)}-workspace-node`,
       { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+      { name: kubernetesNamespaceName(tenant.id), plane: "control" },
     ),
     data: {
       "workspace-node.json": JSON.stringify({
@@ -788,7 +808,7 @@ test("activation refuses a missing or foreign workspace node before changing the
       },
       async readNamespace({ name }) {
         return {
-          ...(name === kubernetesGatewayNamespaceName(tenant.id)
+          ...(name === kubernetesNamespaceName(tenant.id)
             ? driver.gatewayNamespaceManifest({ namespaceId: tenant.id })
             : driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id })),
           status: { phase: "Active" },
@@ -854,7 +874,7 @@ test("activation refuses a missing or foreign workspace node before changing the
     "ConfigMap",
     binding.metadata.name,
     { namespaceId: tenant.id, agentId: "another-agent" },
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
   ).metadata;
   await assert.rejects(
     driver.prepareRevision(revision, authContext(revision)),
@@ -1011,7 +1031,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
       "Secret",
       `transport-${digest(revision.agentId)}`,
       { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+      { name: kubernetesNamespaceName(tenant.id), plane: "control" },
     ),
     type: "Opaque",
     metadata: {
@@ -1020,7 +1040,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
         "Secret",
         `transport-${digest(revision.agentId)}`,
         { namespaceId: tenant.id, agentId: revision.agentId },
-        { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+        { name: kubernetesNamespaceName(tenant.id), plane: "control" },
       ).metadata,
       uid: "transport-uid",
       resourceVersion: "1",
@@ -1034,14 +1054,14 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
     kind: "Secret",
     metadata: {
       name: "occ-model-key",
-      namespace: kubernetesGatewayNamespaceName(tenant.id),
+      namespace: kubernetesNamespaceName(tenant.id),
       uid: "model-secret-uid",
     },
     data: { value: Buffer.from("fixture-model-key").toString("base64") },
   });
   for (const target of [
     { name: namespace, plane: "execution" },
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
   ]) {
     for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
       save(policy);
@@ -1170,7 +1190,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
       }, state.pairAfterSetupMs);
     }
     const binding = objects.get(
-      key("ConfigMap", `${gatewayName}-workspace-node`, kubernetesGatewayNamespaceName(tenant.id)),
+      key("ConfigMap", `${gatewayName}-workspace-node`, kubernetesNamespaceName(tenant.id)),
     );
     if (name === "gateway-pod" && binding !== undefined && state.gatewayAppliesBinding) {
       // The kubelet refreshes the volume and the wrapper hot-applies the node.
@@ -1212,7 +1232,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
     const object = read(
       "Deployment",
       name,
-      name === gatewayName ? kubernetesGatewayNamespaceName(tenant.id) : namespace,
+      name === gatewayName ? kubernetesNamespaceName(tenant.id) : namespace,
     );
     object.status = {
       observedGeneration: object.metadata.generation,
@@ -1310,7 +1330,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
     read(
       "ConfigMap",
       `gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`,
-      kubernetesGatewayNamespaceName(tenant.id),
+      kubernetesNamespaceName(tenant.id),
     ).data["openclaw.json"],
   );
   assert.equal(renderedConfiguration.gateway.bind, "lan");
@@ -1335,7 +1355,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   // goes through the agent Service, which already selects this revision's Harness;
   // endpoints list only ready pods, so the Gateway waits until the Harness reports.
   assert.ok(
-    objects.has(key("Deployment", gatewayName, kubernetesGatewayNamespaceName(tenant.id))),
+    objects.has(key("Deployment", gatewayName, kubernetesNamespaceName(tenant.id))),
     "the first Gateway starts alongside the Harness",
   );
   assert.deepEqual(read("Service", `agent-${digest(revision.agentId)}`).spec.selector, {
@@ -1385,7 +1405,7 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   ]);
   // The recorded node id reaches the candidate Gateway through its Agent-scoped
   // binding and a Pod nudge in the same pass; its pod template does not change.
-  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const gatewayBeforeBinding = read("Deployment", gatewayName, gatewayNamespace);
   state.connected = true;
   assert.equal((await prepare()).ready, true);
@@ -1621,7 +1641,7 @@ test("a first dedicated deploy pins its workload starts through activation", asy
     },
   );
   assert.deepEqual(
-    read("Deployment", gatewayName, kubernetesGatewayNamespaceName(tenant.id)).spec.template,
+    read("Deployment", gatewayName, kubernetesNamespaceName(tenant.id)).spec.template,
     gateway,
   );
   // A Gateway respawns its OpenClaw process in place when its Harness peer
@@ -2093,7 +2113,7 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
   const oldRevision = routedRevision(driver, { id: "revision-routed-1", revision: 1 });
   const replacement = routedRevision(driver, { id: "revision-routed-2", revision: 2 });
   const namespace = kubernetesNamespaceName(tenant.id);
-  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const gatewayName = `gateway-${digest(replacement.agentId)}`;
   const agentName = `agent-${digest(replacement.agentId)}-rev-${digest(replacement.id)}`;
   const gatewayOwnership = { namespaceId: tenant.id, agentId: replacement.agentId };
@@ -2156,7 +2176,7 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
   });
   for (const target of [
     { name: namespace, plane: "execution" },
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
   ]) {
     for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
       save(policy);
@@ -2560,7 +2580,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
           return { items: claims ?? [] };
         },
         async readNamespace({ name }) {
-          if (name === kubernetesGatewayNamespaceName(tenant.id)) {
+          if (name === kubernetesNamespaceName(tenant.id)) {
             throw httpError(404);
           }
           assert.equal(name, selection.existingNamespace);
@@ -2643,7 +2663,10 @@ test("explicit existing namespace adoption claims tenant identity only after sec
         metadata: {
           name: selection.existingNamespace,
           resourceVersion: "7",
-          labels: { "openclaw.dev/namespace": tenant.id },
+          labels: {
+            "openclaw.dev/namespace": tenant.id,
+            "openclaw.dev/gateway-namespace": tenant.id,
+          },
           annotations: { "openclaw.dev/namespace-id": tenant.id },
         },
       },
@@ -2696,6 +2719,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
     (namespace) => delete namespace.metadata.annotations["openclaw.dev/namespace-lifecycle"],
     (namespace) => (namespace.metadata.labels["pod-security.kubernetes.io/enforce"] = "baseline"),
     (namespace) => (namespace.metadata.labels["openclaw.dev/namespace"] = "other-tenant"),
+    (namespace) => (namespace.metadata.labels["openclaw.dev/gateway-namespace"] = "other-tenant"),
     (namespace) => (namespace.metadata.annotations["openclaw.dev/namespace-id"] = "ns_other"),
     (namespace) => (namespace.status.phase = "Terminating"),
     (namespace) => (namespace.metadata.deletionTimestamp = "2026-08-26T00:00:00.000Z"),
@@ -2737,6 +2761,7 @@ test("explicit existing namespace adoption claims tenant identity only after sec
   const sameTenant = await run({
     conflict(namespace) {
       namespace.metadata.labels["openclaw.dev/namespace"] = tenant.id;
+      namespace.metadata.labels["openclaw.dev/gateway-namespace"] = tenant.id;
       namespace.metadata.annotations["openclaw.dev/namespace-id"] = tenant.id;
     },
   });
@@ -2765,7 +2790,7 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
   for (const external of [false, true]) {
     for (const foreign of [false, true]) {
       const calls = [];
-      const driver = new KubernetesComputeDriver(options(), {
+      const driver = new KubernetesComputeDriver(twoClusterOptions(), {
         lifecycleDrivers: [
           {
             id: "configuration-selected",
@@ -2809,6 +2834,7 @@ test("Namespace deletion removes only its owned Gateway target after data-plane 
           },
         },
       });
+      driver.executionApiClients = driver.apiClients;
       const result = await driver.deleteNamespace({
         ...tenant,
         status: "deleting",
@@ -2875,7 +2901,7 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
     /Compute-owned sandbox route/,
   );
   const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
-  const namespace = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const service = driver.service("gateway-test", ownership, namespace, {});
   const route = driver.gatewayRoute(revision, ownership, namespace, service, "sandbox");
   assert.deepEqual(route.spec.hostnames, [origin.hostname]);
@@ -3807,6 +3833,7 @@ test("gateway routing startup validation and namespace membership fail closed", 
   assert.equal(patches[0].fieldManager, "openclaw-enterprise-compute");
   assert.deepEqual(patches[0].body.metadata.labels, {
     "openclaw.dev/namespace": tenant.id,
+    "openclaw.dev/gateway-namespace": tenant.id,
     "openclaw-enterprise.io/gateway": digest(
       `${gatewayRouting.gatewayNamespace}/${gatewayRouting.gatewayName}`,
     ),
@@ -5430,7 +5457,7 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     return resolveNamespace(...args);
   };
   const namespaceName = kubernetesNamespaceName(tenant.id);
-  const gatewayNamespaceName = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayNamespaceName = kubernetesNamespaceName(tenant.id);
   const agent = {
     id: "agent-runtime-diagnostics",
     namespaceId: tenant.id,
@@ -5661,9 +5688,7 @@ test("runtime diagnostics proxy ingress remains available without enabled plugin
       .map(({ resource }) => resource);
     assert.deepEqual(
       policies.map((policy) => policy.metadata.namespace),
-      mode === "embedded"
-        ? [tenantNamespace]
-        : [tenantNamespace, kubernetesGatewayNamespaceName(tenant.id)],
+      [tenantNamespace],
     );
     assert.ok(
       policies.every((policy) => policy.metadata.name.startsWith("allow-plugin-status-proxy-")),
@@ -5886,7 +5911,7 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
       true,
       oldRevision.servicePrincipalId,
       driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
-        name: kubernetesGatewayNamespaceName(tenant.id),
+        name: kubernetesNamespaceName(tenant.id),
         plane: "control",
       }),
     ),
@@ -5904,7 +5929,7 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
         true,
         oldRevision.servicePrincipalId,
         driver.harnessAuthForRevision(oldRevision, authContext(oldRevision), {
-          name: kubernetesGatewayNamespaceName(tenant.id),
+          name: kubernetesNamespaceName(tenant.id),
           plane: "control",
         }),
       ).metadata,
@@ -6413,7 +6438,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           configuration: { agents: { defaults: { model: `${provider}/${model}` } } },
         };
         const prepared = driver.harnessAuthForRevision(candidate, authContext(candidate), {
-          name: kubernetesGatewayNamespaceName(tenant.id),
+          name: kubernetesNamespaceName(tenant.id),
           plane: "control",
         });
         const files = new Map();
@@ -6964,7 +6989,7 @@ test("containment-only Sandbox cleanup retries after its Compute-owned workload 
         return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
       },
       async readNamespace({ name }) {
-        if (name === kubernetesGatewayNamespaceName(tenant.id)) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
           return {
             ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
             status: { phase: "Active" },
@@ -7376,7 +7401,7 @@ function providerReadinessFixture({ provisionHarness, lifecycleDrivers = [] } = 
     async listNamespacedPod(request) {
       if (request.labelSelector.includes("openclaw.dev/workload-role=gateway")) {
         // The workspace node binding nudge: the Gateway Pod is not modeled here.
-        assert.equal(request.namespace, kubernetesGatewayNamespaceName(tenant.id));
+        assert.equal(request.namespace, kubernetesNamespaceName(tenant.id));
         return { items: [] };
       }
       requests.push(request);
@@ -7699,7 +7724,7 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
       "Secret",
       `transport-${digest(revision.agentId)}`,
       { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+      { name: kubernetesNamespaceName(tenant.id), plane: "control" },
     ),
     type: "Opaque",
     metadata: {
@@ -7708,7 +7733,7 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
         "Secret",
         `transport-${digest(revision.agentId)}`,
         { namespaceId: tenant.id, agentId: revision.agentId },
-        { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+        { name: kubernetesNamespaceName(tenant.id), plane: "control" },
       ).metadata,
       uid: "transport-uid",
       resourceVersion: "1",
@@ -7722,14 +7747,14 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
     kind: "Secret",
     metadata: {
       name: "occ-model-key",
-      namespace: kubernetesGatewayNamespaceName(tenant.id),
+      namespace: kubernetesNamespaceName(tenant.id),
       uid: "model-secret-uid",
     },
     data: { value: Buffer.from("fixture-model-key").toString("base64") },
   });
   for (const target of [
     { name: namespace, plane: "execution" },
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
   ]) {
     for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
       save(policy);
@@ -7739,7 +7764,7 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
   const gateway = driver.deployment(
     gatewayName,
     gatewayOwnership,
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
     options().images.gateway,
     gatewayName,
     "gateway",
@@ -8959,7 +8984,7 @@ test("stopping a Kubernetes revision and retiring its predecessor retains Agent 
         return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
       },
       async readNamespace({ name }) {
-        if (name === kubernetesGatewayNamespaceName(tenant.id)) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
           return {
             ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
             status: { phase: "Active" },
@@ -9289,7 +9314,7 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
         return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
       },
       async readNamespace({ name }) {
-        if (name === kubernetesGatewayNamespaceName(tenant.id)) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
           return {
             ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
             status: { phase: "Active" },
@@ -9421,7 +9446,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
         return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
       },
       async readNamespace({ name }) {
-        if (name === kubernetesGatewayNamespaceName(tenant.id)) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
           return {
             ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
             status: { phase: "Active" },
@@ -9542,7 +9567,7 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
         return { apiVersion: "v1", kind: "NamespaceList", items: [namespaceResource] };
       },
       async readNamespace({ name }) {
-        if (name === kubernetesGatewayNamespaceName(tenant.id)) {
+        if (name === kubernetesNamespaceName(tenant.id)) {
           return {
             ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
             status: { phase: "Active" },
@@ -9851,7 +9876,7 @@ test("retirement preserves active storage and node routing and deletes exact own
   const agentId = "agent-revision-storage";
   const ownership = { namespaceId: tenant.id, agentId };
   const harnessNamespace = kubernetesNamespaceName(tenant.id);
-  const namespace = kubernetesGatewayNamespaceName(tenant.id);
+  const namespace = kubernetesNamespaceName(tenant.id);
   const gatewayName = "gateway-" + createHash("sha256").update(agentId).digest("hex").slice(0, 12);
   const gateway = driver.manifest("apps/v1", "Deployment", gatewayName, ownership, {
     name: namespace,
@@ -10293,6 +10318,10 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
       : { id: "codex", version: "1.0.0", mode: "dedicated" },
   });
   const namespace = kubernetesNamespaceName(tenant.id);
+  const control =
+    computeOptions.executionCluster === undefined
+      ? namespace
+      : kubernetesGatewayNamespaceName(tenant.id);
   const objects = new Map();
   const records = [];
   const key = (kind, name, target = namespace) =>
@@ -10332,7 +10361,7 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
       "Secret",
       `transport-${digest(revision.agentId)}`,
       { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: embedded ? namespace : kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+      { name: embedded ? namespace : control, plane: "control" },
     ),
     type: "Opaque",
     metadata: {
@@ -10342,7 +10371,7 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
         `transport-${digest(revision.agentId)}`,
         { namespaceId: tenant.id, agentId: revision.agentId },
         {
-          name: embedded ? namespace : kubernetesGatewayNamespaceName(tenant.id),
+          name: embedded ? namespace : control,
           plane: "control",
         },
       ).metadata,
@@ -10359,14 +10388,14 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
     kind: "Secret",
     metadata: {
       name: "occ-model-key",
-      namespace: kubernetesGatewayNamespaceName(tenant.id),
+      namespace: control,
       uid: "model-secret-uid",
     },
     data: { value: Buffer.from("fixture-model-key").toString("base64") },
   });
   for (const target of [
     { name: namespace, plane: "execution" },
-    { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" },
+    { name: control, plane: "control" },
   ]) {
     for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
       save(policy);
@@ -10549,7 +10578,7 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
     files: { "AGENTS.md": "private-create-documents", "USER.md": "" },
     completed: false,
   };
-  const context = { ...authContext(revision), workspaceSetup: setup };
+  const context = { ...authContext(revision, control), workspaceSetup: setup };
   return { driver, revision, namespace, objects, records, state, setup, context };
 }
 
@@ -10800,7 +10829,10 @@ for (const dualCluster of [false, true]) {
 
 function stageReadyOAuthSource(objects, revision, context) {
   revision.harnessAuth = { ...apiKeyAuth, method: "oauth" };
-  context.harnessAuth = authContext(revision).harnessAuth;
+  context.harnessAuth = authContext(
+    revision,
+    context.harnessAuth.backendRef.namespaceName,
+  ).harnessAuth;
   const sourceKey = `Secret:${context.harnessAuth.backendRef.namespaceName}:occ-model-key`;
   const source = objects.get(sourceKey);
   source.metadata.annotations = {
@@ -11097,13 +11129,13 @@ for (const embedded of [true, false]) {
 }
 
 for (const method of ["api_key", "codex_pat"]) {
-  test(`dedicated ${method} preparation places Gateway state and credentials in its owned control-plane target`, async () => {
+  test(`dedicated ${method} preparation shares the tenant namespace while separating Gateway state and credentials`, async () => {
     const fixture = workspaceSetupFixture(false);
     const { driver, revision, namespace, context, objects, records } = fixture;
     revision.harnessAuth = { ...revision.harnessAuth, method };
     context.harnessAuth = { ...context.harnessAuth, method };
     const modelEnvironment = method === "api_key" ? "OPENAI_API_KEY" : "CODEX_ACCESS_TOKEN";
-    const cp = kubernetesGatewayNamespaceName(tenant.id);
+    const cp = kubernetesNamespaceName(tenant.id);
     const channel = {
       ...driver.manifest(
         "v1",
@@ -11134,8 +11166,8 @@ for (const method of ["api_key", "codex_pat"]) {
       },
     ];
     await driver.prepareRevision(revision, context);
-    const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
-    assert.notEqual(gatewayNamespace, namespace);
+    const gatewayNamespace = kubernetesNamespaceName(tenant.id);
+    assert.equal(gatewayNamespace, namespace);
     const values = [...objects.values()];
     const gateway = values.find(
       ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
@@ -11272,7 +11304,7 @@ for (const embedded of [true, false]) {
 test("dedicated Harness Service selector satisfies the gateway policy during cutover", async () => {
   const fixture = workspaceSetupFixture(false);
   const { driver, revision, namespace, objects, state } = fixture;
-  const gatewayNamespace = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const serviceName = `agent-${digest(revision.agentId)}`;
   const serviceKey = `Service:${namespace}:${serviceName}`;
   const gatewayName = `gateway-${digest(revision.agentId)}`;
@@ -11412,7 +11444,7 @@ for (const embedded of [true, false]) {
       { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] },
     );
     const suffix = digest(revision.agentId);
-    const gatewayNamespace = embedded ? namespace : kubernetesGatewayNamespaceName(tenant.id);
+    const gatewayNamespace = embedded ? namespace : kubernetesNamespaceName(tenant.id);
     const policy = (target, name) => objects.get(`NetworkPolicy:${target}:${name}-${suffix}`);
     const harnessLabels = (selected) =>
       objects.get(
@@ -11476,7 +11508,7 @@ test("dedicated Harness deactivation still closes pre-upgrade Service selectors"
 
 test("dedicated Gateway references canonical CP channel Secrets and rejects a replaced source", async () => {
   const { driver, revision, namespace, objects, records } = workspaceSetupFixture(false);
-  const target = kubernetesGatewayNamespaceName(tenant.id);
+  const target = kubernetesNamespaceName(tenant.id);
   const source = {
     ...driver.manifest(
       "v1",
@@ -11529,25 +11561,106 @@ test("dedicated Gateway references canonical CP channel Secrets and rejects a re
       revision,
       { name: namespace, plane: "execution" },
       { name: target, plane: "execution" },
-      [{ ...projection, backendRef: { ...projection.backendRef, namespaceName: namespace } }],
+      [
+        {
+          ...projection,
+          backendRef: { ...projection.backendRef, namespaceName: "another-tenant" },
+        },
+      ],
     ),
     /outside the admitted scope/,
   );
 });
 
-test("a missing or foreign Gateway namespace never falls back to the Harness target", async () => {
+test("shared tenant preparation waits for missing infrastructure and rejects a foreign owner", async () => {
   for (const foreign of [false, true]) {
     const { driver, revision, context, objects, records } = workspaceSetupFixture(false);
-    const key = `Namespace::${kubernetesGatewayNamespaceName(tenant.id)}`;
+    const key = `Namespace::${kubernetesNamespaceName(tenant.id)}`;
     if (foreign) {
       objects.get(key).metadata.annotations["openclaw.dev/namespace-id"] = "another-tenant";
+      await assert.rejects(driver.prepareRevision(revision, context), /Refusing/);
     } else {
       objects.delete(key);
+      assert.equal((await driver.prepareRevision(revision, context)).ready, false);
     }
-    await assert.rejects(driver.prepareRevision(revision, context), /Gateway namespace/);
     assert.equal(records.length, 0);
   }
 });
+
+for (const predecessorRuntime of ["Deployment", "terminating Pod"]) {
+  test(`embedded cutover retains dedicated predecessor credentials while its ${predecessorRuntime} survives`, async () => {
+    const { driver, revision, namespace, objects, state } = workspaceSetupFixture(false);
+    state.ready = true;
+    await driver.prepareRevision(revision, authContext(revision));
+    const suffix = digest(revision.agentId);
+    const harnessName = `agent-${suffix}-rev-${digest(revision.id)}`;
+    const harnessKey = `Deployment:${namespace}:${harnessName}`;
+    const harness = objects.get(harnessKey);
+    assert.ok(harness, "the predecessor must have a real rendered dedicated Harness");
+    const successor = {
+      ...revision,
+      id: "embedded-mode-successor",
+      revision: revision.revision + 1,
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration: workspaceSetupFixture(true).revision.configuration,
+    };
+    let survivingPod;
+    if (predecessorRuntime === "terminating Pod") {
+      // Kubernetes may retain a terminating Pod after its Deployment is gone.
+      objects.delete(harnessKey);
+      survivingPod = {
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: {
+          ...harness.spec.template.metadata,
+          name: "terminating-predecessor",
+          namespace,
+          uid: "terminating-predecessor-uid",
+          deletionTimestamp: new Date().toISOString(),
+        },
+        spec: harness.spec.template.spec,
+      };
+      const clients = await driver.apiClients;
+      const listPods = clients.core.listNamespacedPod;
+      clients.core.listNamespacedPod = async (request) => {
+        const labels = Object.fromEntries(
+          request.labelSelector.split(",").map((entry) => entry.split("=")),
+        );
+        return survivingPod !== undefined &&
+          request.namespace === namespace &&
+          labels["openclaw.dev/revision"] === revision.id &&
+          labels["openclaw.dev/workload-role"] === "agent"
+          ? { items: [survivingPod] }
+          : listPods(request);
+      };
+    }
+    const projectionKey = (selected) =>
+      `Secret:${namespace}:harness-secrets-${suffix}-${digest(selected.id)}`;
+    const predecessorProjection = structuredClone(objects.get(projectionKey(revision)));
+    assert.ok(predecessorProjection);
+    await driver.prepareRevision(successor, authContext(successor));
+    await driver.activateRevision(successor, authContext(successor));
+    assert.deepEqual(
+      objects.get(projectionKey(revision)),
+      predecessorProjection,
+      "cutover must not delete credentials still referenced by the dedicated predecessor",
+    );
+    survivingPod = undefined;
+    await driver.retireRevision(revision);
+    assert.equal(
+      objects.has(projectionKey(revision)),
+      false,
+      "normal retirement removes the predecessor projection after runtime termination",
+    );
+    assert.ok(objects.has(projectionKey(successor)));
+    assert.equal(
+      objects.get(`Deployment:${namespace}:gateway-${suffix}`).metadata.annotations[
+        "openclaw.dev/agent-revision-id"
+      ],
+      successor.id,
+    );
+  });
+}
 
 for (const embedded of [true, false]) {
   for (const surviving of ["Deployment", "HTTPRoute"]) {
@@ -11561,7 +11674,7 @@ for (const embedded of [true, false]) {
           ? { id: "codex", version: "1.0.0", mode: "dedicated" }
           : { id: "openclaw", version: "1.0.0", mode: "embedded" },
       };
-      const control = kubernetesGatewayNamespaceName(revision.namespaceId);
+      const control = kubernetesNamespaceName(revision.namespaceId);
       const oldTarget = embedded ? namespace : control;
       const nextTarget = embedded ? control : namespace;
       const suffix = digest(revision.agentId);
@@ -11634,14 +11747,20 @@ for (const embedded of [true, false]) {
         assert.deepEqual(objects.get(key), value, key);
       }
       for (const kind of ["Deployment", "Service", "ServiceAccount"]) {
-        assert.equal(objects.has(`${kind}:${oldTarget}:${gatewayName}`), false);
+        assert.equal(
+          objects.has(`${kind}:${oldTarget}:${gatewayName}`),
+          surviving === "Deployment",
+        );
       }
       for (const name of [
         "allow-gateway-agent",
         "allow-gateway-channels",
         "allow-plugin-status-gateway",
       ]) {
-        assert.equal(objects.has(`NetworkPolicy:${oldTarget}:${name}-${suffix}`), false);
+        assert.equal(
+          objects.has(`NetworkPolicy:${oldTarget}:${name}-${suffix}`),
+          surviving === "Deployment",
+        );
       }
     });
   }
@@ -11745,7 +11864,7 @@ test("runtime image provenance survives missing metadata but never crosses Pod o
   assert.deepEqual(
     new Set(images.map((image) => image.workload)),
     new Set([
-      `${kubernetesGatewayNamespaceName(revision.namespaceId)}/gateway-pod`,
+      `${kubernetesNamespaceName(revision.namespaceId)}/gateway-pod`,
       `${kubernetesNamespaceName(revision.namespaceId)}/agent-pod`,
     ]),
   );
@@ -11873,7 +11992,7 @@ function profileNetworkWorkload(driver, revision, role) {
   };
   const namespace =
     role === "gateway" && !embedded
-      ? { name: kubernetesGatewayNamespaceName(revision.namespaceId), plane: "control" }
+      ? { name: kubernetesNamespaceName(revision.namespaceId), plane: "control" }
       : executionNamespace;
   const ownership =
     role === "gateway"
@@ -11955,12 +12074,11 @@ test("every ordinary allow policy requires the explicit network profile", () => 
   const dedicated = profileNetworkRevision(driver, "dedicated");
   const embedded = profileNetworkRevision(driver, "embedded");
   const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
-  const control = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+  const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const ownership = { namespaceId: tenant.id };
   // Each generated policy is paired with the revision whose workloads it scopes.
   const sources = [
     ...driver.networkPolicies(ownership, execution).map((policy) => [policy, dedicated]),
-    ...driver.networkPolicies(ownership, control).map((policy) => [policy, dedicated]),
     [driver.workspaceNodeNetworkPolicy(ownership, execution), dedicated],
     ...driver
       .agentNetworkPolicies(dedicated, execution)
@@ -11975,14 +12093,10 @@ test("every ordinary allow policy requires the explicit network profile", () => 
     `${execution.name}/default-deny`,
     `${execution.name}/allow-dns`,
     `${execution.name}/allow-gateway-ingress`,
-    `${control.name}/default-deny`,
-    `${control.name}/allow-dns`,
-    `${control.name}/allow-gateway-ingress`,
     `${execution.name}/allow-node-gateway`,
     `${control.name}/allow-gateway-agent-${d}`,
     `${execution.name}/allow-agent-runtime-${d}`,
     `${execution.name}/allow-plugin-status-proxy-${d}`,
-    `${control.name}/allow-plugin-status-proxy-${d}`,
     `${control.name}/allow-plugin-status-gateway-${d}`,
     `${execution.name}/allow-plugin-status-agent-${d}`,
     `${execution.name}/allow-agent-runtime-${e}`,
@@ -12070,7 +12184,7 @@ test("the sandbox preview ingress grant requires the profile once the serving Ga
   const labels = serving.spec.template.metadata.labels;
   const metadata = {
     name: "gateway-sandbox",
-    namespace: kubernetesGatewayNamespaceName(tenant.id),
+    namespace: kubernetesNamespaceName(tenant.id),
   };
   const routing = driver.options.gatewayRouting;
   const selector = driver.gatewaySandboxNetworkPolicy(revision, metadata, routing, serving).spec
@@ -12184,7 +12298,7 @@ test("SandboxDriver Harness Pods get Compute's transport ingress but none of its
   );
   const revision = { ...dedicated, sandboxDriverId: "sandbox-provider" };
   const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
-  const control = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+  const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const ordinaryAgent = profileNetworkWorkload(driver, revision, "agent");
   const { labels: harness } = driver.harnessRequirementsFromDeployment(ordinaryAgent, "api_key");
   assert.equal(harness[ORDINARY_PROFILE_LABEL], "provider-fenced-v1");
@@ -12283,7 +12397,7 @@ for (const embedded of [true, false]) {
     const { driver, revision, namespace, objects, records, state, context } =
       workspaceSetupFixture(embedded);
     const execution = { name: namespace, plane: "execution" };
-    const control = { name: kubernetesGatewayNamespaceName(tenant.id), plane: "control" };
+    const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
     const ownership = { namespaceId: tenant.id };
     const legacy = [
       ...driver.networkPolicies(ownership, execution),
@@ -12479,7 +12593,7 @@ for (const embedded of [true, false]) {
   test(`${embedded ? "embedded" : "dedicated"} upgrade prepares a successor while a pre-profile Gateway serves`, async () => {
     const { driver, revision, namespace, objects, records, state, context } =
       workspaceSetupFixture(embedded);
-    const gatewayNamespace = embedded ? namespace : kubernetesGatewayNamespaceName(tenant.id);
+    const gatewayNamespace = embedded ? namespace : kubernetesNamespaceName(tenant.id);
     const gatewayName = `gateway-${digest(revision.agentId)}`;
     const gatewayKey = `Deployment:${gatewayNamespace}:${gatewayName}`;
     const agentServiceKey = `Service:${namespace}:agent-${digest(revision.agentId)}`;
@@ -12564,7 +12678,9 @@ for (const embedded of [true, false]) {
 // detection run through the production Driver.
 function runtimeLogDriverFixture({ twoCluster = false } = {}) {
   const namespaceName = kubernetesNamespaceName(tenant.id);
-  const gatewayNamespaceName = kubernetesGatewayNamespaceName(tenant.id);
+  const gatewayNamespaceName = twoCluster
+    ? kubernetesGatewayNamespaceName(tenant.id)
+    : namespaceName;
   const driver = createKubernetesComputeDriver(
     twoCluster
       ? routedOptions({

@@ -26,7 +26,7 @@ separately. The console reports persisted deployment state, not live gateway hea
 You need a working model credential, the Agent's local gateway password, Bash,
 Python 3, and `kubectl` permission to get and list Pods and create
 `pods/portforward` requests in the Gateway's physical namespace. If you retrieve the generated
-password from Kubernetes, you also need read access to that exact Secret. Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`, `GATEWAY_RUNTIME_NAMESPACE`,
+password from Kubernetes, you also need read access to that exact Secret. Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`,
 `KUBECONFIG_FILE`, and `CONTEXT` from the [production Agent guide](../deploy/production-agents.md).
 Set `REVISION_ID` to the immutable revision you want to verify.
 
@@ -68,9 +68,10 @@ attempts. No match, multiple Ready matches, or a Kubernetes error stops the
 check without opening a connection to another revision.
 
 ```bash
+# For two-cluster dedicated execution, set GATEWAY_RUNTIME_NAMESPACE to its control target.
 GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
 if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
-  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:?}"
+  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:-$TENANT_NAMESPACE}"
 fi
 export GATEWAY_NAMESPACE
 forward_requested_gateway() {

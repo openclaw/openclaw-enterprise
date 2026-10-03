@@ -1,4 +1,3 @@
-import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -1517,7 +1516,7 @@ export async function createPluginDriverRealFixture(
     if (pool !== undefined) {
       await cleanup(() => pool.end());
     }
-    if (gatewayRuntimeNamespace !== undefined) {
+    if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== tenantNamespace) {
       await cleanup(() =>
         kubectl(
           "delete",
@@ -1762,7 +1761,7 @@ export async function createPluginDriverRealFixture(
   });
   assert.equal(createdNamespace.status, 201, JSON.stringify(createdNamespace.error));
   tenantNamespace = kubernetesNamespaceName(createdNamespace.data.id);
-  gatewayRuntimeNamespace = kubernetesGatewayNamespaceName(createdNamespace.data.id);
+  gatewayRuntimeNamespace = kubernetesNamespaceName(createdNamespace.data.id);
   gatewayPlacement = pluginDriverId === "codex-plugin" ? gatewayRuntimeNamespace : tenantNamespace;
   await waitFor(`the worker to create ${tenantNamespace}`, async () => {
     try {
@@ -1812,44 +1811,16 @@ export async function createPluginDriverRealFixture(
     `--clusterrole=${proofPrefix}-secrets-${suffix}`,
     `--serviceaccount=${platformNamespace}:${api.account}`,
   );
-  await waitFor(`Gateway runtime namespace ${gatewayRuntimeNamespace}`, async () => {
-    try {
-      return await resource("namespace", gatewayRuntimeNamespace);
-    } catch (error) {
-      if (isKubernetesNotFound(error)) {
-        return undefined;
-      }
-      throw error;
-    }
-  });
-  for (const role of [`${proofPrefix}-tenant-${suffix}`, `${proofPrefix}-secrets-${suffix}`]) {
-    await kubectl(
-      "create",
-      "rolebinding",
-      `${role}-api`,
-      "--namespace",
-      gatewayRuntimeNamespace,
-      `--clusterrole=${role}`,
-      `--serviceaccount=${platformNamespace}:${api.account}`,
-    );
-  }
-  for (const [role, target] of [
-    [`${proofPrefix}-tenant-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-tenant-pods-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-tenant-pods-proxy-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-secrets-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-secrets-${suffix}`, tenantNamespace],
-  ]) {
-    await kubectl(
-      "create",
-      "rolebinding",
-      `${role}-worker`,
-      "--namespace",
-      target,
-      `--clusterrole=${role}`,
-      `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
-    );
-  }
+  // The trusted worker delivers runtime projections in the same tenant target.
+  await kubectl(
+    "create",
+    "rolebinding",
+    `${proofPrefix}-worker-secrets`,
+    "--namespace",
+    tenantNamespace,
+    `--clusterrole=${proofPrefix}-secrets-${suffix}`,
+    `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
+  );
   await waitFor(`namespace ${createdNamespace.data.id} to become API-ready`, async () => {
     const observed = await request("GET", `/namespaces/${createdNamespace.data.id}`);
     assert.equal(observed.status, 200, JSON.stringify(observed.error));

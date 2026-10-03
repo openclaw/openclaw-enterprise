@@ -5,10 +5,10 @@ Use this reference to configure tenant placement and Kubernetes permissions for 
 ## Kubernetes placement and RBAC
 
 `KubernetesConfigurationDriver` creates exactly one ConfigMap per Configuration
-in the managed control-plane namespace for its exact logical Namespace. The
-Compute Driver creates this target separately from the Harness namespace,
-including when `existingNamespace` selects an operator-owned data-plane target.
-Wait for Namespace readiness and grant API ConfigMap access in the CP target
+in the verified tenant namespace for its exact logical Namespace. Single-cluster
+Compute shares this target with Gateway and Harness workloads, including an
+operator-owned `existingNamespace`. Only the two-cluster profile uses a separate
+control-cluster storage target. Wait for Namespace readiness and grant API ConfigMap access there
 before creating Configuration resources. The ConfigMap remains OCC-owned.
 See [namespace requirements](../drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
 Its data contains exactly one entry:
@@ -79,7 +79,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: occ-configuration
-  namespace: <tenant-control-plane-namespace>
+  namespace: <tenant-storage-namespace>
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]

@@ -1,17 +1,16 @@
 ---
 created: 2026-08-21
-updated: 2026-09-30
-last_updated_session: authoring-run/1373b7f3-e273-466a-b9da-bb197bdb469e
+updated: 2026-10-02
+last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-An authorized deployment resolves its harness from native selected-model/provider policy, freezes
-the Agent's explicit `embedded` or `dedicated` placement and harness authentication binding
-in its AgentRevision, and asks Compute to start that topology. The flow ends after guarded route
-publication, predecessor retirement, and exactly-once activation audit.
+Deployment freezes native Harness policy, placement and authentication in an
+AgentRevision. Compute prepares its workloads, publishes guarded routes and
+retires predecessors before exactly-once activation audit.
 
 ## Entry Points
 
@@ -32,7 +31,7 @@ graph TD
   C --> D["Claim and reauthorize revision work"]
   D --> E{"Approved topology"}
   E -->|embedded OpenClaw| F["Create gateway or stage replacement"]
-  E -->|dedicated Codex| G["Start Gateway and Codex in separate namespaces"]
+  E -->|dedicated Codex| G["Start separate Gateway and Codex Pods in the tenant namespace"]
   E -->|dedicated OpenClaw| Q{"Full-containment provisioning Sandbox?"}
   Q -->|no| H
   Q -->|yes| R["Start Gateway; SandboxDriver provisions native Harness"]
@@ -103,30 +102,28 @@ validation. See the [SSH flow](pr-24-ssh-compute.md).
 
 Kubernetes workload rendering calls `prepareHarnessAuth` once for the resolved
 source. It projects the OCC Secret key only into embedded OpenClaw or a dedicated
-Harness. Canonical sources live in CP; Compute delivers selected fields into an
-exact revision-owned DP Secret, including the account token/workspace for ChatGPT.
+Harness. Canonical sources live in the tenant storage target; Compute delivers selected fields into an
+exact revision-owned Harness Secret, including the account token/workspace for ChatGPT.
 Dedicated gateways receive neither model source. This namespace-local delivery
 also applies to fixture images without native runtime configuration; only the
 native dedicated transport token depends on that configuration.
 See the [harness authentication flow](native-service-account-credential-delivery.md)
 for admission, immutable source snapshots, and worker reauthorization.
 
-Kubernetes `ensureNamespace` prepares the data-plane namespace and a distinct
-managed Gateway runtime namespace. `requireGatewayNamespace` verifies the latter's
-exact logical owner. `prepareRevision` and `activateRevision` place dedicated
-Gateway Deployments, private PVCs, Services, native configuration and routes there;
-Harness resources stay in the data-plane namespace. `deliverGatewaySecrets`
-validates direct references to canonical CP sources for dedicated Gateways;
-`deliverHarnessAuth` creates the selected DP runtime projection. Dedicated app-server
-DNS includes the Harness namespace, and NetworkPolicy peers combine namespace
-and exact Agent/revision selectors. The active dedicated Harness Service selector
-carries the selected Harness network profile and the same Namespace, Agent, revision,
-and workload-role labels before
-adding a Compute-owned workload-name selector, so Service-IP traffic remains
-compatible with NetworkPolicy implementations that check Service selectors before
-destination translation. Active Gateway Services carry the Namespace, Agent, and
-gateway workload-role labels, satisfying gateway policy selectors without tying
-the stable Gateway route to a revision. `runtime.gatewayNodeSelector`
+Kubernetes `ensureNamespace` prepares one tenant namespace in a single cluster,
+including adopted namespaces; its storage-role label enables discovery.
+The two-cluster profile retains its control-cluster Gateway target.
+`prepareRevision` and `activateRevision` keep dedicated Gateway and Harness Pods,
+identities and PVCs separate in their selected targets. `deliverGatewaySecrets`
+validates canonical sources for dedicated Gateways; `deliverHarnessAuth` creates
+only the selected model/transport projection. Canonical transport and Gateway
+password sources now stay separate across modes. Legacy combined sources remain
+for older Pods; Compute copies their password to the separate source before
+new templates reference it. App-server DNS includes the Harness namespace; policies select exact
+Namespace, Agent and revision peers. Harness Services select exact Namespace, Agent, revision, workload role, network
+profile and Compute-owned workload name. Gateway Services omit revision for a
+stable route. These selectors match NetworkPolicy before destination translation.
+`runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
 Before preparing a dedicated replacement, the worker stops every earlier revision, including its
 Gateway, so a redeploy interrupts service until the replacement is ready. Because the predecessor
@@ -197,9 +194,7 @@ preparation starts the replacement Gateway itself before activation. If the Gate
 of a revision that never served (its Service still selects no Pod) is unready,
 for example after rejected model authentication, the next revision's preparation
 repairs it with its own template instead of waiting on the failed predecessor.
-The repair also deletes that predecessor's per-revision Secret and ConfigMap copies,
-such as its model API key, because no Gateway runs it any more; they no longer
-wait for stop or deletion.
+The repair deletes an embedded predecessor's revision Secret and ConfigMap copies.
 
 The worker commits the database `activeRevisionId` with an exact compare-and-set
 before Kubernetes default after-commit activation.
@@ -210,9 +205,11 @@ runs for initial and replacement gateways. A failed check, including a provider
 timeout or rate limit, holds the gateway unready until repair and restart or a
 new deployment. Readiness polling does not repeat model requests; worker retries
 do not restart an unchanged Pod. No automatic rollback restores the predecessor.
-Embedded activation deletes the replaced predecessor's per-revision Secret and
-ConfigMap copies as soon as it re-renders the Gateway, so a replacement that never
-becomes ready (and so never reaches predecessor retirement) does not keep them.
+Embedded activation also deletes embedded predecessor copies when it re-renders
+the Gateway, even if the replacement never becomes ready.
+For a dedicated predecessor, activation preserves copies while its Harness
+Deployment or terminating Pod survives. Normal retirement stops the Harness
+and removes the artifacts.
 
 If activation, readiness, predecessor retirement, or audit completion fails,
 the worker requeues the revision with `REVISION_FINALIZATION_INCOMPLETE`, or a
@@ -258,13 +255,13 @@ required cleanup after stopping a Compute-owned ordinary Harness, or delegates
 provider-owned Harness removal to that cleanup. An absent ordinary Deployment
 does not skip cleanup, so a cleanup failure remains retryable.
 Revision retirement retains both owned claims even after stop removed the
-gateway. When another revision's Gateway or route survives in the other physical
-namespace, retirement removes only the old Gateway's resources and preserves the
-shared data-plane Agent identity, Service and policies. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
+gateway. When another revision's Gateway or route survives, retirement checks its exact
+revision ownership before deleting resources. A successor in the shared namespace
+keeps its Gateway Deployment, identity, Service and policies. `apps/controller/src/worker.ts:ControllerWorker.processAgentDeletion`
 retires every revision before calling
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
 to delete exact-owned private and shared claims by UID. Final deletion checks
-both physical targets, independently of the Agent draft's current execution mode. Cleanup failures retry
+all selected targets, independently of the Agent draft's current execution mode. Cleanup failures retry
 before the worker removes the Agent's database identity. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
@@ -313,6 +310,12 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-02: Stabilize canonical credential layout across execution modes with legacy source compatibility. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
+
+- 2026-10-02: Retain dedicated predecessor projections during shared-namespace embedded cutover until Harness retirement. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
+
+- 2026-10-02: Share the single-cluster tenant namespace while preserving role-specific runtime delivery and revision cleanup. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
 
 - 2026-10-02 14:00: End node pairing and ack waits early for claimable Work. (r7-d221)
 

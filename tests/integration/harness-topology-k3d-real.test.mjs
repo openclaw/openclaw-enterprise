@@ -6,6 +6,7 @@ import {
   assertInvalidHarnessAuthStaysUnready,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertLegacyModelSecretBindingDenied,
+  assertDedicatedToEmbeddedCutover,
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
   assertDedicatedSkillSources,
@@ -105,6 +106,7 @@ test(
       "openclaw.dev/agent": topology.agent.id,
       "openclaw.dev/revision": topology.revision.id,
       "openclaw.dev/workload-role": "agent",
+      "openclaw.dev/network-profile": "broad-egress-v1",
     });
     const codexVersion = (
       await kubectl(
@@ -146,6 +148,7 @@ test(
     );
     await assertLegacyModelSecretBindingDenied(topology);
     process.stderr.write("k3d dedicated: retained state and Pod replacement passed.\n");
+    await assertDedicatedToEmbeddedCutover(context, topology);
   },
 );
 
@@ -153,7 +156,9 @@ test(
   "production Secret binding powers embedded OpenClaw and preserves conversations across Pod replacement",
   { ...requiresProductionCluster, timeout: 900_000 },
   async (context) => {
-    const topology = await arrangeProductionTopology(context, "embedded");
+    const topology = await arrangeProductionTopology(context, "embedded", undefined, {
+      legacyRuntimeCredentials: true,
+    });
     assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);

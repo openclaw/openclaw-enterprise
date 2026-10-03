@@ -133,7 +133,7 @@ plugin-status, sandbox-preview ingress and gateway/Harness allow policies requir
 `openclaw.dev/network-profile=broad-egress-v1`, together with their existing
 role, Agent, namespace and revision selectors. Gateway/Harness peer selectors require the
 same profile. Missing, empty or unknown profiles receive no ordinary grant;
-the tenant and separate Gateway namespace default-deny policies still select every Pod.
+default-deny policies still select every Pod in each runtime target.
 
 Compute assigns this profile when creating ordinary embedded and dedicated
 workload templates. Their existing routes and ports remain unchanged. Deployment
@@ -254,17 +254,23 @@ is not a working native attribution path.
 
 ## Namespaces and isolation
 
-Each OpenClaw Namespace has a data-plane Kubernetes namespace and a managed
-Gateway runtime namespace, `oce-gateways-<hash>`, where `hash` is the first 24
-hexadecimal characters of `sha256(namespaceId)`. The latter is discovered by
-`openclaw.dev/gateway-namespace=<namespaceId>`; it deliberately omits the
-data-plane discovery label `openclaw.dev/namespace`. Existing data-plane
-namespace adoption does not adopt or reuse OCC's own namespace for Gateways.
+Single-cluster Compute shares one created or adopted tenant namespace, labeled
+`openclaw.dev/namespace=<namespaceId>` and
+`openclaw.dev/gateway-namespace=<namespaceId>`. Secret and Configuration Drivers
+require one owned storage target; adopted targets require restricted Pod Security.
+Discovery excludes OCC's namespace.
+
+Only the experimental two-cluster profile creates `oce-gateways-<hash>` in the
+control cluster, with the first 24 hexadecimal characters of `sha256(namespaceId)`.
+That target has the storage-role label and omits the tenant discovery label.
 
 Compute prepares restricted Pod security, quotas, defaults, default-deny and DNS
-policies in both targets. Dedicated Gateway resources, private PVCs, configuration,
-Services and HTTPRoutes live only in the Gateway target; Harness resources and
-model credentials remain in the data target. Explicit namespace **and** Pod
+policies in each target. Dedicated Gateway and Harness Pods, ServiceAccounts,
+private PVCs and credential mounts remain separate. Gateway password and channel
+credentials never enter the Harness projection; model credentials never enter a
+dedicated Gateway. Namespace workload managers are trusted for both roles:
+namespace-wide Pod/Secret privileges, quotas and deletion affect both.
+Explicit namespace **and** Pod
 selectors allow only the same Agent's selected Harness revision on app-server
 and private plugin-status ports. DNS uses `agent-<hash>.<harness-namespace>.svc`.
 The stable dedicated Harness Service keeps the same network-profile, Namespace,
@@ -278,17 +284,15 @@ revision. These Service selectors support the
 Current app-server transport is capability-token `ws://`, not mTLS; this change
 does not implement cross-cluster transport or runtime attestation.
 
-Stop and revision retirement inspect both targets and retain durable claims.
-Agent deletion removes its owned claims; Namespace deletion deletes only the
-exact managed Gateway namespace and preserves an adopted data namespace.
-Neither operation may remove shared OCC infrastructure. A missing or foreign
-Gateway target fails preparation rather than falling back to data-plane placement.
+Stop and retirement retain durable
+claims. Agent deletion removes its owned claims and credentials by UID, independent
+of the draft execution mode. Namespace deletion removes the managed tenant
+namespace, or only owned resources in an adopted namespace, preserving its ownership metadata. The
+two-cluster profile also deletes its exact-owned Gateway namespace. Both preserve
+OCC infrastructure. Missing or foreign targets fail preparation.
 
-Identity labels under `openclaw.dev/` contain the full platform Namespace,
-Agent, revision, ServiceAccount, ServicePrincipal, or Configuration ID, not a
-hash. Ownership checks, discovery, Service selectors, and NetworkPolicies use
-those same raw IDs. Generated Kubernetes resource names still use bounded
-hashes to satisfy their naming constraints.
+Identity labels under `openclaw.dev/` contain full platform IDs for ownership,
+discovery and network selectors; generated resource names use bounded hashes.
 
 An Installation administrator can select an existing, exclusively dedicated
 Kubernetes namespace when creating the OpenClaw Namespace:

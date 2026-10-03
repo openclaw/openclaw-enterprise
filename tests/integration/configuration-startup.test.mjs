@@ -11,10 +11,7 @@ import {
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
-import {
-  kubernetesNamespaceName,
-  kubernetesGatewayNamespaceName,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -484,7 +481,7 @@ test("production embedded replacements preserve their active Service across fail
   const { computeDriver } = drivers;
   // This worker activation unit uses managed placement without claiming live Kubernetes discovery.
   t.mock.method(computeDriver, "resolveNamespace", async (namespaceId) => ({
-    name: kubernetesNamespaceName(namespaceId),
+    name: { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
     external: false,
   }));
   const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
@@ -538,7 +535,7 @@ test("production embedded replacements preserve their active Service across fail
     harnessAuth: {
       ...candidate.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(namespaceId),
+        namespaceName: kubernetesNamespaceName(namespaceId),
         name: "model-key",
         key: "value",
         uid: "model-key-uid",
@@ -657,7 +654,7 @@ test("production embedded replacements preserve their active Service across fail
     true,
     servicePrincipalId,
     computeDriver.harnessAuthForRevision(candidate, authContext, {
-      name: kubernetesGatewayNamespaceName(namespaceId),
+      name: kubernetesNamespaceName(namespaceId),
       plane: "control",
     }),
   );

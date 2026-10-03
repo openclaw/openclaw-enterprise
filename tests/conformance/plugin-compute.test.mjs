@@ -10,7 +10,6 @@ import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
-  kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -170,7 +169,7 @@ function harnessAuthContext(candidate) {
     harnessAuth: {
       ...candidate.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(tenant.id),
+        namespaceName: kubernetesNamespaceName(tenant.id),
         name: "plugin-model-key",
         key: "value",
         uid: "plugin-model-key-uid",
@@ -2225,7 +2224,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
 
   // This fresh Agent has no prior authentication-probe workloads to retire.
   const credentialObjects = new Map();
-  const cp = kubernetesGatewayNamespaceName(tenant.id);
+  const cp = kubernetesNamespaceName(tenant.id);
   credentialObjects.set(`${cp}:plugin-model-key`, {
     apiVersion: "v1",
     kind: "Secret",
@@ -2523,7 +2522,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     kind: "Pod",
     metadata: {
       name: "gateway-plugin-status",
-      namespace: kubernetesGatewayNamespaceName(tenant.id),
+      namespace: kubernetesNamespaceName(tenant.id),
       uid: "pod-plugin-status-1",
       labels: {
         "openclaw.dev/agent": candidate.agentId,
@@ -4398,7 +4397,7 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
     false,
     undefined,
     driver.harnessAuthForRevision(candidate, harnessAuthContext(candidate), {
-      name: kubernetesGatewayNamespaceName(tenant.id),
+      name: kubernetesNamespaceName(tenant.id),
       plane: "control",
     }),
     [],
@@ -4615,7 +4614,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
   let candidateRevisionName;
 
   const credentialObjects = new Map();
-  const cp = kubernetesGatewayNamespaceName(tenant.id);
+  const cp = kubernetesNamespaceName(tenant.id);
   credentialObjects.set(`${cp}:plugin-model-key`, {
     apiVersion: "v1",
     kind: "Secret",

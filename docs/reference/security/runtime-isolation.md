@@ -4,22 +4,27 @@ This reference defines credential delivery, workload ownership, and isolation
 limits for Kubernetes Agent runtimes. Apply these boundaries together with the
 [infrastructure security controls](../security.md).
 
+Single-cluster Gateway and Harness workloads share a tenant namespace with
+canonical storage. Namespace workload managers are trusted for both roles;
+separate Pod mounts and credentials constrain runtime delivery. The two-cluster
+profile retains its separate control storage target.
+
 ## Temporary runtime credential exceptions
 
 Dedicated Agents retain separate canonical app-server transport and Gateway
-password Secrets in their tenant control-plane namespace. Compute delivers the
+password Secrets in their tenant storage namespace. Compute delivers the
 app-server token, never the Gateway password, into a revision-owned Harness
 Secret in the data plane. Kubernetes gateway authentication uses trusted proxy,
 with an optional separately configured loopback password. Dedicated Codex and
 its Gateway use the existing capability-token app-server protocol over
-cross-namespace `ws://`; the server verifies the token's SHA-256 digest.
-Namespace separation does not encrypt that connection or implement mutual TLS.
+`ws://`; the server verifies the token's SHA-256 digest.
+This connection does not implement mutual TLS.
 Embedded OpenClaw retains its combined data-plane workload and transport bundle;
-it is outside the dedicated control-plane boundary.
+it retains its combined credential bundle.
 
 The initial credential API requires exact Agent read and operate access, a ready
 Namespace, and no historical revisions. It generates an app-server transport
-token and a local gateway password internally in separately owned CP Secrets.
+token and a local gateway password internally in separately owned canonical Secrets.
 Channel credentials use the separately authorized OCC Secret API.
 Those values pass transiently through the authorized API; they are excluded from
 Configuration, database records, audit fields, responses, and logs. Provisioning
@@ -38,7 +43,7 @@ There are two supported model-credential paths:
 
 - **Driver-issued access token:** After exact OCC and independent ChatGPT
   authorization, API-side Kubernetes Compute creates one account-owned Secret
-  in the tenant control-plane namespace. Its `token` and `workspace-id` keys are
+  in the tenant storage namespace. Its `token` and `workspace-id` keys are
   delivered into each selected revision's data-plane Secret and exposed as
   `CODEX_ACCESS_TOKEN` and `CODEX_CHATGPT_WORKSPACE_ID`. Kubernetes resolves
   these runtime Secret references. Codex logs
@@ -62,7 +67,7 @@ to reject initial credential provisioning when an Agent runtime already exists.
 Its operator-provisioned RoleBindings grant no cluster-wide Secret access or
 Secret `list` or `watch` permissions.
 
-The Helm worker role reads canonical CP Secrets and creates, updates and deletes
+The Helm worker role reads canonical Secrets and creates, updates and deletes
 revision-owned runtime Secrets in the data plane. Enabling
 [repository credentials](../repository-credentials.md) also permits Secret listing
 for session material cleanup. Grants are namespace-scoped; Compute checks exact

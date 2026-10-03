@@ -118,7 +118,7 @@ header before forwarding.
 
 The tenant-worker role grants Secret get/create/update/delete for admitted Gateway
 credential delivery and Compute-owned node enrollment. Operators bind this role
-only in approved data-plane and Gateway namespaces; the chart creates no
+only in approved tenant runtime namespaces; the chart creates no
 cluster-wide binding for it. The worker
 is part of the trusted control plane. Harnesses receive a node-only setup code
 and public CA bundle, never this administrative service key.

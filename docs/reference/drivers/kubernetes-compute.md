@@ -187,12 +187,12 @@ Kubernetes API certificates must be verified in either mode.
 
 ### Images and resources
 
-Configure separate gateway and Agent images, CPU and memory requests and limits,
-namespace-level resource quotas and container defaults. `runtime.nodeSelector`
+Configure Gateway and Agent images, resource requests/limits, namespace quotas
+and container defaults. `runtime.nodeSelector`
 selects Harness and embedded Pods; dedicated real Gateways require
 `runtime.gatewayNodeSelector`, including their private-state initializer. Use
-disjoint trusted and tenant node pools in production. Quotas and defaults apply
-separately to each physical namespace. Production requires
+disjoint trusted and tenant node pools in production. Quotas and defaults cover both roles in a shared tenant namespace;
+the two-cluster profile applies them separately to each physical target. Production requires
 `images.requireImmutableDigest: true` and SHA-256 image digests. Quote
 whole-core quantities, such as `cpu: "4"`.
 
@@ -203,18 +203,16 @@ for DNS, gateway clients, proxy trust, and egress requirements.
 
 Each Agent-owned gateway Deployment has exactly one desired replica and uses
 `Recreate`: Kubernetes stops the previous Pod before starting its replacement,
-so gateway rollout can cause transient downtime. A Deployment cannot guarantee
-an absolute process singleton during node partitions or manual replacement.
-OCC's single active revision and guarded routing do not provide independent
-node-level execution fencing.
+so gateway rollout can cause transient downtime. Neither Kubernetes Deployment nor OCC routing provides node-level process
+fencing during partitions or manual replacement.
 
 The Agent's Harness configuration determines its execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
   shared storage.
-- **Dedicated:** The gateway and Codex Harness run in separate namespaces and
-  Pods, with separate ServiceAccounts and storage. They communicate through
+- **Dedicated:** The gateway and Codex Harness run in separate Pods in the same
+  tenant namespace, with separate ServiceAccounts and storage. They communicate through
   authenticated app-server transport. The Gateway uses fully qualified Harness
   Service DNS and the paired node for workspace operations. Codex accepts an
   Agent-scoped model API key or a managed ChatGPT service-account credential,
@@ -293,8 +291,8 @@ authorizes the exact Agent and revision, then the Driver reads the owned
 runtime Pods through the Kubernetes apiserver Pod proxy. The private runtime
 endpoint returns bounded generic checks for the requested revision. The API needs
 Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
-Dedicated Gateways are read in their managed Gateway namespace, while Harnesses
-are read in the tenant namespace. The chart adds these read permissions to the
+Both roles are read in the tenant namespace for a single cluster. The two-cluster
+profile reads dedicated Gateways in its control-cluster Gateway namespace. The chart adds these read permissions to the
 unbound tenant API and Gateway observer roles; operators retain control of their
 namespace-local bindings.
 Missing Pods or unavailable private endpoints report unknown diagnostic checks
