@@ -251,7 +251,6 @@ export function renderAgentAccess(context, agent) {
     try {
       state.runtimeRoles = await context.request(
         `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agent.id)}/runtime-roles`,
-        { optionalReadErrors: [403, 409, 503] },
       );
       state.catalogError =
         state.runtimeRoles.length === 0

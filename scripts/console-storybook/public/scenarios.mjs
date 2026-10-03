@@ -3727,6 +3727,20 @@ export const scenarios = {
     ],
     gap: "Simulated status recovery; deployment-triggered refresh is covered by the Console browser integration.",
   },
+  nativeReadRecovery: {
+    group: "Components/Native admin",
+    name: "Recovery on Back",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 503, once: true }],
+    description: "Back rechecks a failed access read and replaces the error after recovery.",
+    steps: [
+      "Confirm the OpenClaw card shows Service unavailable and no launch link.",
+      "Open Namespaces, then use Back. The error clears and Open OpenClaw becomes available.",
+    ],
+    gap: "Simulated status recovery; the browser integration uses the real role catalog after its outage ends.",
+  },
   nativeStopped: {
     group: "Components/Native admin",
     name: "Stopped",

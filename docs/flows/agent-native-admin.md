@@ -63,7 +63,7 @@ graph TD
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Disabled and denied responses keep it hidden. Stopped, unavailable and unsupported responses show feedback; other read failures retain the error and **Refresh access**. Only `available` with an Agent URL shows **Open OpenClaw**, opening a new tab with `noopener noreferrer` and no launch request. After an audited `403`, tab `sessionStorage` caches the denied path for that session owner, hiding later views without another request. This optional read preserves the cached Agent page after a denial; Back still revalidates its other reads. Logout, sign-in or a new tab asks afresh.
+Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Disabled and denied responses keep it hidden. Stopped, unavailable and unsupported responses show feedback; other read failures retain the error and **Refresh access**. Only `available` with an Agent URL shows **Open OpenClaw**, opening a new tab with `noopener noreferrer` and no launch request. After an audited `403`, tab `sessionStorage` caches the denied path for that session owner, hiding later views without another request. The [shared page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Logout, sign-in or a new tab asks afresh.
 
 `updateCurrentAgent` calls `refresh()` when deployment polling or **Refresh deployment** observes changed `activeRevisionId` or `desiredRuntimeState`. A pending read queues one further read. The panel warns that native edits do not update durable OCE configuration.
 

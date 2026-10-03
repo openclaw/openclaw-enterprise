@@ -52,7 +52,10 @@ the person lacks Installation administration: the policy endpoints require it an
 the API audits each denial. The panel loads `/agents/:agentId/runtime-roles` and the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 sharing panel and leaves the other panels usable; a current `401` retains global
-session expiry. A role-catalog `403`, `409` or `503` clears role choices and retains removal. These handled optional reads preserve the cached Agent page; Back still revalidates its successful reads and page admission.
+session expiry. A failed role-catalog read clears role choices and retains removal.
+The [shared page cache](../platform-console.md#2-resolve-the-session-before-private-reads)
+compares failed and successful GET outcomes on Back; catalog recovery rebuilds
+the panel with current role choices.
 
 ### 2. Serialize Role and binding writes
 

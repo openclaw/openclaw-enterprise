@@ -3536,10 +3536,11 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
-  let failures = 1;
+  let unavailable = true;
+  let failures = 0;
   await page.route(`${fixture.origin}${nativeAdminPath}`, async (route) => {
-    if (failures > 0) {
-      failures -= 1;
+    if (unavailable) {
+      failures += 1;
       await route.fulfill({
         status: 503,
         contentType: "application/json",
@@ -3548,7 +3549,7 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
             code: "DEPENDENCY_UNAVAILABLE",
             message: "A required platform dependency is unavailable.",
           },
-          meta: { requestId: "req_test_native_admin_outage" },
+          meta: { requestId: `req_00000000-0000-4000-8000-${String(failures).padStart(12, "0")}` },
         }),
       });
       return;
@@ -3566,13 +3567,98 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   const reload = card.getByRole("button", { name: "Refresh access" });
   assert.equal(await reload.isEnabled(), true);
 
+  // An unchanged failed read is still a completed view. Back checks it again without
+  // replacing the card just because the server issued a different request ID.
+  const retained = await card.elementHandle();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  assert.equal(await retained.evaluate((node) => node.isConnected), true);
+  await card.getByRole("alert").getByText("Service unavailable", { exact: false }).waitFor();
+  assert.equal(failures, 2, "Back revalidates the failed read once");
+
   // A later answer still decides visibility: this person has no runtime assignment.
+  unavailable = false;
   const reads = () => requests.filter((request) => request.path === nativeAdminPath).length;
   const before = reads();
   await reload.click();
   await waitForCondition(() => reads() === before + 1, "native admin status reread");
   await card.waitFor({ state: "hidden" });
   await expectNativeAdminHidden(page);
+});
+
+test("Back refreshes sharing when a failed role catalog recovers", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Catalog recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Catalog recovery Agent",
+    nativeRolesGateway(nativeValues("catalog-recovery"), fixture.origin),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  // The fixture activates admitted revisions without a worker status record. Supply
+  // that unrelated read's contract so an outage there cannot mask catalog retention.
+  await page.route(`${fixture.origin}${agentPath}/deployments/${active.revision.id}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          deploymentId: active.revision.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "succeeded",
+          error: null,
+          warnings: [],
+          progress: null,
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000200" },
+      }),
+    }),
+  );
+  const catalogPath = `${agentPath}/runtime-roles`;
+  let unavailable = true;
+  await page.route(`${fixture.origin}${catalogPath}`, async (route) => {
+    if (!unavailable) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Role catalog unavailable." },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+      }),
+    });
+  });
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, `${detail.pathname}${detail.search}`);
+  const panel = page.locator(".agent-access");
+  const roles = panel.locator("#share-runtime-role");
+  await panel.getByText(/The deployed OpenClaw role catalog is unavailable/).waitFor();
+  await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
+  assert.equal(await roles.isDisabled(), true);
+  const retained = await panel.elementHandle();
+
+  // Only the external read failure is simulated. Recovery uses the real authorized
+  // catalog route and the named roles in this Agent's admitted configuration.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  unavailable = false;
+  await page.goBack();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await roles.locator('option[value="researcher"]').waitFor({ state: "attached" });
+  assert.equal(await roles.isEnabled(), true);
+  assert.equal(await retained.evaluate((node) => node.isConnected), false);
+  assert.equal(
+    await panel.getByText(/The deployed OpenClaw role catalog is unavailable/).count(),
+    0,
+  );
 });
 
 test("Agent sharing rejects emails locally and names an unknown Principal ID", async (t) => {

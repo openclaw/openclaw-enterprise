@@ -114,6 +114,7 @@ The **Configuration**, **Plugins**, **Channels**, **Credentials**, and **Workspa
 change the panel below. Credentials is available only on the new version draft.
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered
 token values. The workspace remains live regardless of the viewed version.
+Returning from another page rechecks completed reads, so recovered panels refresh.
 
 ### Unreadable saved settings
 

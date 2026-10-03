@@ -8,3 +8,4 @@ export const NativeUnsupported = { ...story("nativeUnsupported"), name: "Unsuppo
 export const NativeDenied = { ...story("nativeDenied"), name: "Denied and hidden" };
 
 export const NativeReadError = { ...story("nativeReadError"), name: "Status read failure" };
+export const NativeReadRecovery = { ...story("nativeReadRecovery"), name: "Recovery on Back" };
