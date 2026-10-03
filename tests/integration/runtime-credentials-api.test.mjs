@@ -206,7 +206,7 @@ async function createFixture(t, options = {}) {
     });
   }
 
-  async function bootstrapAgent() {
+  async function bootstrapAgent(values = createHarnessConfiguration("openclaw", "gpt-4.1")) {
     if (!bootstrapped) {
       const created = await request("POST", "/installation/bootstrap", {
         body: { name: "Runtime credential test" },
@@ -226,10 +226,10 @@ async function createFixture(t, options = {}) {
     const configuration = await request("POST", `/namespaces/${namespace.data.id}/configurations`, {
       body: {
         kind: "agent",
-        values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+        values,
       },
     });
-    assert.equal(configuration.status, 201);
+    assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
     const agent = await request("POST", `/namespaces/${namespace.data.id}/agents`, {
       body: {
         name: "Runtime credential Agent",
@@ -388,6 +388,38 @@ test("Kubernetes without managed runtime credentials admits a draft deployment",
   );
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
   assert.equal(admitted.data.revision, 1);
+});
+
+test("Kubernetes deploy names an unsupported Harness authentication model provider", async (t) => {
+  const computeDriver = createTestKubernetesComputeDriver("unsupported-provider-kubernetes");
+  computeDriver.ensureNamespace = async (namespace) => ({
+    namespaceId: namespace.id,
+    namespaceReady: true,
+  });
+  const fixture = await createFixture(t, { computeDriver });
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  const { openai } = values.models.providers;
+  values.agents.defaults = {
+    model: "zai/glm-5",
+    models: { "zai/glm-5": { agentRuntime: { id: "openclaw" } } },
+  };
+  values.models.providers = {
+    zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
+  };
+  const { namespace, agent } = await fixture.bootstrapAgent(values);
+
+  // The Kubernetes Driver projects api_key credentials only for providers it knows; the
+  // caller must learn that, not that the resource already exists.
+  const refused = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    refused.body.error.message,
+    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
+  );
 });
 
 test("first deployment requires Agent read and operate only when generating credentials", async (t) => {

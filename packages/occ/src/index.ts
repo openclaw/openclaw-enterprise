@@ -5409,7 +5409,7 @@ export class OpenClawController {
         if (error instanceof ConfigurationHarnessError) {
           throw error;
         }
-        throw new ResourceConflictError(
+        throw new ResourceStateConflictError(
           "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
         );
       }
