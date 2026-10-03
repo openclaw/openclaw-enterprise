@@ -66,6 +66,7 @@ recorded status is not proof of current implementation or release availability.
 | Generic OIDC sign-in for existing accounts                  | [Decision](rfcs/0042-oidc-sign-in.md)                       | —                                                                               |
 | GitHub sign-in for existing accounts                        | [Decision](rfcs/31-human-federated-sign-in/index.md)              | —                                                                               |
 | Harness authentication bindings                             | [Decision](rfcs/30-harness-auth-binding.md)                 | —                                                                               |
+| Human sign-in hardening (retroactive record)                | [Decision](rfcs/0045-sign-in-hardening.md)                  | —                                                                               |
 | Independent image and chart publication                     | —                                                           | [Plan / record](plans/41-independent-image-chart-publication.md)          |
 | Independent production image upgrades                       | [Decision](rfcs/36-coordinated-image-upgrade.md)            | —                                                                               |
 | Initial Agent workspace files                               | —                                                           | [Plan / record](plans/34-agent-workspace-files-setup.md)                  |
