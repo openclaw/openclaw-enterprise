@@ -184,13 +184,14 @@ for retry; it does not remove the Agent's database identity.
 
 ## Managed native configuration
 
-Ordinary runtime gateways read the managed ConfigMap at
+Runtime gateways read the managed ConfigMap at
 `/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
 when runtime gateway images and private `gatewayRouting` are configured and
-the saved native Configuration explicitly enables the pilot shape:
+the saved native Configuration enables:
 
-- Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
-  with `operator.admin` identity scopes.
+- `x-occ-identity` retains `occ-workspace-files` with `operator.admin`.
+  Human roles require managed headers and empty `allowUsers`:
+  [native authority](../../agent-native-admin.md#native-authority-and-drift).
 - Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
 - `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
 - Dangerous device-auth disabling and host-header origin fallback are disabled.

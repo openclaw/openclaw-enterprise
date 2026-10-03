@@ -1,0 +1,1030 @@
+diff --git a/src/config/zod-schema.gateway.ts b/src/config/zod-schema.gateway.ts
+index c895a08..a5e23c1 100644
+--- a/src/config/zod-schema.gateway.ts
++++ b/src/config/zod-schema.gateway.ts
+@@ -26,6 +26,14 @@ import {
+ import { SecretInputSchema } from "./zod-schema.secret-input.js";
+ import { sensitive } from "./zod-schema.sensitive.js";
+
++const ManagedProxyIdentitySchema = z
++  .string()
++  .min(1)
++  .refine(
++    (value) => value === value.trim().toLowerCase(),
++    "Managed proxy identities and prefixes must be normalized lowercase values",
++  );
++
+ const OperatorScopeSchema = z.enum([
+   ADMIN_SCOPE,
+   READ_SCOPE,
+@@ -275,6 +283,20 @@ export const GatewayConfigSchema = z
+              * Common values: "x-forwarded-user", "x-remote-user", "x-pomerium-claim-email"
+              */
+             userHeader: z.string().min(1, "userHeader is required for trusted-proxy mode"),
++            /** A verified proxy assigns the named profile role before operator admission. */
++            roleHeader: z
++              .string()
++              .regex(/^[a-z0-9-]{1,128}$/u)
++              .optional(),
++            /** SHA-256 of the canonical role definition expected by the proxy. */
++            rolePolicyHashHeader: z
++              .string()
++              .regex(/^[a-z0-9-]{1,128}$/u)
++              .optional(),
++            /** Native aliases in these namespaces are managed by the verified proxy. */
++            managedIdentityPrefixes: z.array(ManagedProxyIdentitySchema).optional(),
++            /** Exact native aliases managed by the verified proxy, including service identities. */
++            managedIdentities: z.array(ManagedProxyIdentitySchema).optional(),
+             /**
+              * Additional headers that MUST be present for the request to be trusted.
+              * Use this to verify the request actually came through the proxy.
+@@ -537,6 +559,28 @@ export const GatewayConfigSchema = z
+       .optional(),
+   })
+   .superRefine((gateway, ctx) => {
++    const proxy = gateway.auth?.trustedProxy;
++    if (
++      proxy?.roleHeader ||
++      proxy?.rolePolicyHashHeader ||
++      proxy?.managedIdentityPrefixes !== undefined ||
++      proxy?.managedIdentities !== undefined
++    ) {
++      if (
++        gateway.auth?.mode !== "trusted-proxy" ||
++        !proxy.roleHeader ||
++        !proxy.rolePolicyHashHeader ||
++        !gateway.roles ||
++        !(proxy.managedIdentityPrefixes?.length || proxy.managedIdentities?.length)
++      ) {
++        ctx.addIssue({
++          code: "custom",
++          path: ["auth", "trustedProxy", "roleHeader"],
++          message:
++            "Proxy role assignment requires trusted-proxy auth, both role headers, configured roles, and managed identities",
++        });
++      }
++    }
+     const ingress = gateway.portals?.ingress;
+     if (!ingress) {
+       return;
+diff --git a/src/gateway/server/ws-connection/connect-user-profile.ts b/src/gateway/server/ws-connection/connect-user-profile.ts
+index d987e9a..71cb201 100644
+--- a/src/gateway/server/ws-connection/connect-user-profile.ts
++++ b/src/gateway/server/ws-connection/connect-user-profile.ts
+@@ -16,6 +16,10 @@ import {
+ } from "../../local-user-ingress.js";
+ import { hasGatewayOperatorAccessPolicies } from "../../operator-access-policy.js";
+ import { WEBSOCKET_OPEN_READY_STATE } from "../../server-constants.js";
++import {
++  prepareVerifiedProxyRoleProfile,
++  resolveVerifiedProxyRole,
++} from "../../trusted-proxy-role.js";
+ import { formatForLog } from "../../ws-log.js";
+ import type { GatewayWsClient } from "../ws-types.js";
+ import {
+@@ -91,9 +95,10 @@ async function resolveAuthenticatedProfile(
+   profileId: string,
+   updatedAt: number,
+   assertCurrent?: () => void,
++  preparedAuthority?: NonNullable<Awaited<ReturnType<typeof prepareUserProfileRoleAuthority>>>,
+ ) {
+   assertCurrent?.();
+-  const authority = await prepareUserProfileRoleAuthority(profileId);
++  const authority = preparedAuthority ?? (await prepareUserProfileRoleAuthority(profileId));
+   assertCurrent?.();
+   if (!authority?.isCurrent()) {
+     throw new Error("Gateway profile changed during acquisition");
+@@ -116,6 +121,8 @@ async function resolveGatewayConnectUserProfile(params: {
+   authResult: GatewayAuthResult;
+   resolveAuthenticatedGitHubIdentity: ReturnType<typeof createAuthenticatedGitHubIdentitySync>;
+   assertCurrent?: () => void;
++  proxyRole?: NonNullable<ReturnType<typeof resolveVerifiedProxyRole>>;
++  onRoleCommitted?: (profileId: string) => void;
+ }) {
+   params.assertCurrent?.();
+   const options = { assertCurrent: params.assertCurrent };
+@@ -133,10 +140,21 @@ async function resolveGatewayConnectUserProfile(params: {
+         : await ensureCanonicalUserProfileForEmail(params.authenticatedUserId!, options);
+   params.assertCurrent?.();
+   const profileId = "profileId" in profile ? profile.profileId : profile.id;
++  const verified =
++    params.proxyRole !== undefined
++      ? await prepareVerifiedProxyRoleProfile({
++          profileId,
++          user: params.authenticatedUserId!,
++          ...params.proxyRole,
++          assertCurrent: params.assertCurrent,
++          onRoleCommitted: params.onRoleCommitted,
++        })
++      : undefined;
+   const resolved = await resolveAuthenticatedProfile(
+     profileId,
+-    profile.updatedAt,
++    verified?.updatedAt ?? profile.updatedAt,
+     params.assertCurrent,
++    verified?.authority,
+   );
+   params.assertCurrent?.();
+   return resolved;
+@@ -146,7 +164,10 @@ async function resolveGatewayConnectUserProfile(params: {
+ export async function resolveGatewayConnectProfileAdmission(params: {
+   context: Pick<GatewayConnectPhaseContext, "configSnapshot"> &
+     Parameters<typeof rejectUnavailableProfileConnect>[0] & {
+-      handler: Pick<GatewayConnectPhaseContext["handler"], "connId" | "logWsControl">;
++      handler: Pick<
++        GatewayConnectPhaseContext["handler"],
++        "connId" | "logWsControl" | "upgradeReq" | "buildRequestContext"
++      >;
+     };
+   state: Pick<DeviceAuthorizedGatewayConnect, "authResult" | "role" | "authMethod">;
+   ownerProfileExpected: boolean;
+@@ -155,22 +176,40 @@ export async function resolveGatewayConnectProfileAdmission(params: {
+   assertCurrent?: () => void;
+ }): Promise<{ ok: true; prepared?: PreparedConnectProfile } | { ok: false }> {
+   const { context, state, ownerProfileExpected, authenticatedUserId } = params;
++  const proxy = context.configSnapshot.gateway?.auth?.trustedProxy;
++  const proxyRoleRequired =
++    Boolean(proxy?.roleHeader) &&
++    state.role === "operator" &&
++    state.authMethod !== "token" &&
++    state.authMethod !== "password";
+   const profileRequired =
+     Boolean(context.configSnapshot.gateway?.roles) ||
+     hasGatewayOperatorAccessPolicies(context.configSnapshot);
+   if (
++    !proxyRoleRequired &&
+     !ownerProfileExpected &&
+     (!authenticatedUserId || (params.resolveAuthenticatedGitHubIdentity && !profileRequired))
+   ) {
+     return { ok: true };
+   }
+   try {
++    const proxyRole = proxyRoleRequired
++      ? resolveVerifiedProxyRole(
++          context.configSnapshot,
++          context.handler.upgradeReq.headers,
++          state.authResult.ok && state.authResult.method === "trusted-proxy",
++          authenticatedUserId,
++        )
++      : undefined;
+     const prepared = await resolveGatewayConnectUserProfile({
+       ownerProfileExpected,
+       authenticatedUserId,
+       authResult: state.authResult,
+       resolveAuthenticatedGitHubIdentity: params.resolveAuthenticatedGitHubIdentity,
+       assertCurrent: params.assertCurrent,
++      proxyRole,
++      onRoleCommitted: (profileId) =>
++        context.handler.buildRequestContext().disconnectClientsForUserProfile?.(profileId),
+     });
+     params.assertCurrent?.();
+     if (!prepared.authority.isCurrent()) {
+@@ -182,11 +221,12 @@ export async function resolveGatewayConnectProfileAdmission(params: {
+       `user profile resolution failed conn=${context.handler.connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
+     );
+     if (
+-      !ownerProfileExpected &&
+-      profileRequired &&
+-      state.role === "operator" &&
+-      state.authMethod !== "token" &&
+-      state.authMethod !== "password"
++      proxyRoleRequired ||
++      (!ownerProfileExpected &&
++        profileRequired &&
++        state.role === "operator" &&
++        state.authMethod !== "token" &&
++        state.authMethod !== "password")
+     ) {
+       await rejectUnavailableProfileConnect(context, error);
+       return { ok: false };
+diff --git a/src/gateway/server.auth.identity-scopes.test.ts b/src/gateway/server.auth.identity-scopes.test.ts
+index d994ebe..24e4fbb 100644
+--- a/src/gateway/server.auth.identity-scopes.test.ts
++++ b/src/gateway/server.auth.identity-scopes.test.ts
+@@ -1,3 +1,4 @@
++import { createHash } from "node:crypto";
+ import path from "node:path";
+ import {
+   createPluginRegistryFixture,
+@@ -23,8 +24,10 @@ import { seedOriginDeviceToken } from "../infra/device-auth-store.test-support.j
+ import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+ import { getPairedDevice, listDevicePairing } from "../infra/device-pairing.js";
+ import { connectUserModelAccount } from "../state/user-model-accounts.js";
++import { onUserProfilesChanged } from "../state/user-profile-events.js";
+ import {
+   ensureProfileForEmail,
++  getUserProfileRole,
+   linkEmail,
+   setDisplayName,
+   setUserProfileRole,
+@@ -32,6 +35,7 @@ import {
+ import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
+ import type { OperatorScope } from "./operator-scopes.js";
+ import {
++  BACKEND_GATEWAY_CLIENT,
+   connectReq,
+   CONTROL_UI_CLIENT,
+   installGatewayTestHooks,
+@@ -755,3 +759,299 @@ describe("gateway identity scope grants", () => {
+     );
+   });
+ });
++
++describe("verified proxy profile roles", () => {
++  const definitions = {
++    administrator: { sessions: { others: "write" }, agents: "*", scopes: ["operator.admin"] },
++    researcher: {
++      sessions: { others: "none" },
++      agents: ["main"],
++      scopes: ["operator.read", "operator.write"],
++    },
++    sessionWriter: {
++      sessions: { others: "none" },
++      agents: ["main"],
++      scopes: ["operator.sessions.read", "operator.sessions.write"],
++    },
++    reviewer: { sessions: { others: "view" }, agents: ["main"], scopes: ["operator.read"] },
++    réviseur: { sessions: { others: "view" }, agents: ["main"], scopes: ["operator.read"] },
++    denied: { sessions: { others: "none" }, agents: [], scopes: [] },
++  } satisfies GatewayOperatorRolesConfig["definitions"];
++  const roleHash = (role: keyof typeof definitions) => {
++    const canonical = (value: unknown): unknown =>
++      Array.isArray(value)
++        ? value.map(canonical)
++        : value !== null && typeof value === "object"
++          ? Object.fromEntries(
++              Object.entries(value)
++                .toSorted(([a], [b]) => a.localeCompare(b, "en"))
++                .map(([key, item]) => [key, canonical(item)]),
++            )
++          : value;
++    return createHash("sha256")
++      .update(JSON.stringify(canonical(definitions[role])))
++      .digest("hex");
++  };
++  const setup = () =>
++    configureGatewayAuth(
++      {
++        ...proxyAuth({ "gateway-workspace": ["operator.admin"] }),
++        password: "proxy-owner-password",
++        trustedProxy: {
++          ...proxyAuth().trustedProxy!,
++          roleHeader: "x-proxy-role",
++          rolePolicyHashHeader: "x-proxy-role-policy",
++          managedIdentityPrefixes: ["team:", "directory:"],
++          managedIdentities: ["gateway-workspace"],
++          deviceAutoApprove: {
++            enabled: true,
++            scopes: [
++              "operator.admin",
++              "operator.read",
++              "operator.write",
++              "operator.sessions.read",
++              "operator.sessions.write",
++            ],
++          },
++        },
++      },
++      { roles: { default: "denied", definitions } },
++    );
++
++  test("assigns first-login profiles, enforces native scopes and agents, and retires an old role", async () => {
++    await setup();
++    await withGatewayServer(async ({ port }) => {
++      const sockets: Awaited<ReturnType<typeof openWs>>[] = [];
++      const connect = async (
++        identity: string,
++        role: keyof typeof definitions,
++        backend = false,
++        requestedScopes = UPGRADE_SCOPES,
++      ) => {
++        const headers: Record<string, string> = {
++          ...TRUSTED_PROXY_HEADERS,
++          "x-forwarded-user": identity,
++          "x-openclaw-scopes": definitions[role].scopes.join(","),
++          "x-proxy-role": encodeURIComponent(role),
++          "x-proxy-role-policy": roleHash(role),
++        };
++        if (backend) {
++          delete headers.origin;
++        }
++        const ws = await openWs(port, headers);
++        sockets.push(ws);
++        const connected = await (backend ? connectReq : connectIdentity)(ws, {
++          skipDefaultAuth: true,
++          prePairDevice: false,
++          scopes: backend ? [] : requestedScopes,
++          ...(backend ? { client: BACKEND_GATEWAY_CLIENT, device: null } : {}),
++          deviceIdentityPath: deviceIdentityPath(`proxy-${sockets.length}`),
++        });
++        expect(connected.ok).toBe(true);
++        return { ws, connected };
++      };
++      try {
++        // Fresh human devices use the proxy's real scope cap and autoapproval,
++        // without pre-pairing. The default role grants nothing before assignment.
++        const joe = await connect("team:prn_joe", "researcher");
++        const jo = await connect("team:prn_jo", "réviseur");
++        // Match the workspace-files caller: backend client, no device or requested scopes.
++        const service = await connect("gateway-workspace", "administrator", true);
++        expect(responseAuth(joe.connected)?.scopes).toEqual(["operator.read", "operator.write"]);
++        expect(responseAuth(jo.connected)?.scopes).toEqual(["operator.read"]);
++        expect((await rpcReq(joe.ws, "status", {})).ok).toBe(true);
++        expect(
++          (
++            await rpcReq(joe.ws, "sessions.patch", {
++              key: "agent:main:permitted",
++              label: "allowed",
++            })
++          ).ok,
++        ).toBe(true);
++        const joeProfile = await rpcReq<UsersSelfResult>(joe.ws, "users.self", {});
++        const joProfile = await rpcReq<UsersSelfResult>(jo.ws, "users.self", {});
++        expect(joeProfile.ok).toBe(true);
++        expect(joProfile.ok).toBe(true);
++        expect(joeProfile.payload?.profile.id).not.toBe(joProfile.payload?.profile.id);
++        expect(
++          (
++            await rpcReq(joe.ws, "users.setRole", {
++              profileId: joeProfile.payload!.profile.id,
++              role: "administrator",
++            })
++          ).ok,
++        ).toBe(false);
++        expect((await rpcReq(service.ws, "config.get", {})).ok).toBe(true);
++        // The stock UI asks for broad scopes. A session-only assignment must retain
++        // its narrower permissions without gaining general read or administration.
++        const sessions = await connect("team:prn_sessions", "sessionWriter");
++        expect(responseAuth(sessions.connected)?.scopes).toEqual([
++          "operator.sessions.read",
++          "operator.sessions.write",
++        ]);
++        expect((await rpcReq(sessions.ws, "sessions.list", {})).ok).toBe(true);
++        const created = await rpcReq<{ key: string }>(sessions.ws, "sessions.create", {
++          agentId: "main",
++          label: "session-only",
++        });
++        expect(created.ok, JSON.stringify(created.error)).toBe(true);
++        const sessionKey = created.payload!.key;
++        expect(
++          (
++            await rpcReq(sessions.ws, "sessions.patch", {
++              key: sessionKey,
++              label: "session-only-updated",
++            })
++          ).ok,
++        ).toBe(true);
++        const described = await rpcReq<{ session: { label: string } }>(
++          sessions.ws,
++          "sessions.describe",
++          { key: sessionKey },
++        );
++        expect(described.payload?.session.label).toBe("session-only-updated");
++        const hidden = await rpcReq(joe.ws, "sessions.describe", { key: sessionKey });
++        expect(hidden.ok).toBe(false);
++        expect(hidden.error).toMatchObject({
++          code: "INVALID_REQUEST",
++          message: `Session "${sessionKey}" was not found.`,
++        });
++        expect((await rpcReq(sessions.ws, "config.get", {})).ok).toBe(false);
++        expect((await rpcReq(sessions.ws, "exec.approvals.get", {})).ok).toBe(false);
++        // A read-only client request still caps the same write-capable role.
++        const sessionRead = await connect("team:prn_sessions", "sessionWriter", false, [
++          "operator.read",
++        ]);
++        expect(responseAuth(sessionRead.connected)?.scopes).toEqual(["operator.sessions.read"]);
++        expect((await rpcReq(sessionRead.ws, "sessions.list", {})).ok).toBe(true);
++        expect(
++          (
++            await rpcReq(sessionRead.ws, "sessions.patch", {
++              key: sessionKey,
++              label: "forbidden",
++            })
++          ).ok,
++        ).toBe(false);
++        expect(
++          (await rpcReq(joe.ws, "sessions.patch", { key: "agent:other:denied", label: "denied" }))
++            .ok,
++        ).toBe(false);
++        expect(
++          (await rpcReq(jo.ws, "sessions.patch", { key: "agent:main:denied", label: "denied" })).ok,
++        ).toBe(false);
++        // Reconnecting with a changed assignment updates the persisted native profile and closes its old authority.
++        const closed = waitForWsClose(joe.ws, 5_000);
++        const changed = await connect("team:prn_joe", "reviewer");
++        expect(await closed).toBe(true);
++        expect(responseAuth(changed.connected)?.scopes).toEqual(["operator.read"]);
++        const changedProfile = await rpcReq<UsersSelfResult>(changed.ws, "users.self", {});
++        expect(changedProfile.payload?.profile.id).toBe(joeProfile.payload?.profile.id);
++
++        const owner = await openWs(port, { origin: BROWSER_ORIGIN });
++        sockets.push(owner);
++        const ownerConnected = await connectIdentity(owner, {
++          skipDefaultAuth: true,
++          password: "proxy-owner-password",
++          scopes: ["operator.admin"],
++          deviceIdentityPath: deviceIdentityPath("proxy-owner"),
++        });
++        expect(ownerConnected.ok).toBe(true);
++        expect(responseAuth(ownerConnected)?.scopes).toEqual(["operator.admin"]);
++        expect((await rpcReq<UsersSelfResult>(owner, "users.self", {})).payload?.profile.id).toBe(
++          GATEWAY_OWNER_PROFILE_ID,
++        );
++        expect((await rpcReq(owner, "config.get", {})).ok).toBe(true);
++      } finally {
++        for (const ws of sockets) {
++          ws.close();
++        }
++      }
++    });
++  });
++
++  test("rejects a competing role publication and ambiguous managed identities before admission", async () => {
++    await setup();
++    await withGatewayServer(async ({ port }) => {
++      const profile = ensureProfileForEmail("team:prn_raced");
++      setUserProfileRole(profile.id, "administrator");
++      let raced = false;
++      const stop = onUserProfilesChanged(() => {
++        if (!raced && getUserProfileRole(profile.id) === "researcher") {
++          raced = true;
++          // A native administrator's committed mutation wins before the connecting
++          // researcher acquires authority. Admission must not adopt that wider role.
++          setUserProfileRole(profile.id, "administrator");
++        }
++      });
++      const connect = async (identity: string) => {
++        const ws = await openWs(port, {
++          ...TRUSTED_PROXY_HEADERS,
++          "x-forwarded-user": identity,
++          "x-proxy-role": "researcher",
++          "x-proxy-role-policy": roleHash("researcher"),
++        });
++        try {
++          await expect(
++            connectIdentity(ws, {
++              skipDefaultAuth: true,
++              scopes: ["operator.read", "operator.write"],
++              deviceIdentityPath: deviceIdentityPath(`binding-${identity}`),
++            }),
++          ).rejects.toThrow("closed");
++        } finally {
++          ws.close();
++        }
++      };
++      try {
++        await connect("team:prn_raced");
++        expect(raced).toBe(true);
++      } finally {
++        stop();
++      }
++      // A valid proxy and role cannot assign authority to an undeclared identity.
++      const unmanaged = ensureProfileForEmail("unmanaged@example.test");
++      setUserProfileRole(unmanaged.id, "administrator");
++      await connect("unmanaged@example.test");
++      expect(getUserProfileRole(unmanaged.id)).toBe("administrator");
++      const ambiguous = ensureProfileForEmail("team:prn_ambiguous");
++      setUserProfileRole(ambiguous.id, "administrator");
++      linkEmail("directory:prn_other", ambiguous.id);
++      await connect("team:prn_ambiguous");
++      expect(getUserProfileRole(ambiguous.id)).toBe("administrator");
++      const service = ensureProfileForEmail("gateway-workspace");
++      setUserProfileRole(service.id, "administrator");
++      linkEmail("team:prn_service_alias", service.id);
++      await connect("team:prn_service_alias");
++      expect(getUserProfileRole(service.id)).toBe("administrator");
++    });
++  });
++
++  const rejectedAssignments: Array<{ label: string; headers: Record<string, string> }> = [
++    { label: "missing assignment", headers: {} },
++    {
++      label: "unknown role",
++      headers: { "x-proxy-role": "unknown", "x-proxy-role-policy": roleHash("reviewer") },
++    },
++    {
++      label: "changed native policy",
++      headers: { "x-proxy-role": "reviewer", "x-proxy-role-policy": "0".repeat(64) },
++    },
++  ];
++  test.each(rejectedAssignments)("rejects $label before admission", async ({ headers }) => {
++    await setup();
++    await withGatewayServer(async ({ port }) => {
++      const ws = await openWs(port, { ...TRUSTED_PROXY_HEADERS, ...headers });
++      try {
++        await expect(
++          connectIdentity(ws, {
++            skipDefaultAuth: true,
++            scopes: ["operator.read"],
++            deviceIdentityPath: deviceIdentityPath("proxy-rejected"),
++          }),
++        ).rejects.toThrow("closed");
++      } finally {
++        ws.close();
++      }
++    });
++  });
++});
+diff --git a/src/gateway/http-auth-user-profile.ts b/src/gateway/http-auth-user-profile.ts
+index a2265ef..8e43d21 100644
+--- a/src/gateway/http-auth-user-profile.ts
++++ b/src/gateway/http-auth-user-profile.ts
+@@ -29,6 +29,7 @@ import {
+ } from "./operator-role-policy.js";
+ import { resolveBrowserOriginPolicy } from "./origin-check.js";
+ import type { GatewayClient } from "./server-methods/shared-types.js";
++import { prepareVerifiedProxyRoleProfile, resolveVerifiedProxyRole } from "./trusted-proxy-role.js";
+ import { formatForLog } from "./ws-log.js";
+
+ const profileLog = createSubsystemLogger("gateway/user-profiles");
+@@ -131,6 +132,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+   assertCurrent();
+   const options = { assertCurrent };
+   const authenticatedUserId = normalizeOptionalString(params.authResult.user);
++  const proxyRole = usesSharedSecretGatewayMethod(params.authResult.method)
++    ? undefined
++    : resolveVerifiedProxyRole(
++        params.cfg,
++        params.req.headers,
++        params.authResult.ok && params.authResult.method === "trusted-proxy",
++        authenticatedUserId,
++      );
+   const rolesConfigured = Boolean(params.cfg.gateway?.roles);
+   const accessPoliciesConfigured = hasGatewayOperatorAccessPolicies(params.cfg);
+   if (!authenticatedUserId) {
+@@ -172,11 +181,21 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+           )
+         : await ensureCanonicalUserProfileForEmail(authenticatedUserId, options);
+     const profileId = "profileId" in profile ? profile.profileId : profile.id;
++    const verified =
++      proxyRole !== undefined
++        ? await prepareVerifiedProxyRoleProfile({
++            profileId,
++            user: authenticatedUserId,
++            ...proxyRole,
++            assertCurrent,
++          })
++        : undefined;
+     return await prepareHttpProfile(
+       profileId,
+-      profile.updatedAt,
++      verified?.updatedAt ?? profile.updatedAt,
+       assertCurrent,
+       usesSharedSecretGatewayMethod(params.authResult.method) ? undefined : params.cfg,
++      verified?.authority,
+     );
+   } catch (error) {
+     assertCurrent();
+@@ -194,9 +213,10 @@ async function prepareHttpProfile(
+   updatedAt: number,
+   assertCurrent: () => void,
+   cfg?: OpenClawConfig,
++  preparedAuthority?: NonNullable<Awaited<ReturnType<typeof prepareUserProfileRoleAuthority>>>,
+ ) {
+   assertCurrent();
+-  const authority = await prepareUserProfileRoleAuthority(profileId);
++  const authority = preparedAuthority ?? (await prepareUserProfileRoleAuthority(profileId));
+   assertCurrent();
+   if (!authority?.isCurrent()) {
+     throw new Error("HTTP profile authority changed during acquisition");
+diff --git a/src/gateway/server.plugin-http-role-scopes.test.ts b/src/gateway/server.plugin-http-role-scopes.test.ts
+index aacb5b8..99ecd4c 100644
+--- a/src/gateway/server.plugin-http-role-scopes.test.ts
++++ b/src/gateway/server.plugin-http-role-scopes.test.ts
+@@ -1,16 +1,23 @@
++import { createHash } from "node:crypto";
+ // Exercise named-role ceilings through real HTTP auth and plugin runtime dispatch.
+ import { once } from "node:events";
+ import type { IncomingMessage, ServerResponse } from "node:http";
+ import { PassThrough } from "node:stream";
+ import { describe, expect, it } from "vitest";
+ import { WebSocketServer } from "ws";
++import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+ import { createDeferred } from "../../test/helpers/promise.js";
+ import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+ import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import { createSubsystemLogger } from "../logging/subsystem.js";
+ import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+-import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
++import {
++  ensureProfileForEmail,
++  getUserProfileRole,
++  linkEmail,
++  setUserProfileRole,
++} from "../state/user-profiles.js";
+ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+ import { resolveGatewayAuth } from "./auth.js";
+ import { authorizeOperatorScopesForMethod, CLI_DEFAULT_OPERATOR_SCOPES } from "./method-scopes.js";
+@@ -353,3 +360,161 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
+     invalidateOperatorRolePolicy(profile.id);
+   });
+ });
++
++it("applies verified proxy roles to HTTP before first login and role reduction", async () => {
++  await withOpenClawTestState({ scenario: "minimal" }, async () => {
++    const auth = {
++      ...proxyAuth,
++      password: "proxy-http-owner-password",
++      trustedProxy: {
++        ...proxyAuth.trustedProxy,
++        allowLoopback: true,
++        roleHeader: "x-proxy-role",
++        rolePolicyHashHeader: "x-proxy-role-policy",
++        managedIdentities: ["person@example.test", "other@example.test"],
++      },
++    };
++    const definitions = {
++      administrator: { sessions: { others: "write" }, agents: "*", scopes: ["operator.admin"] },
++      reviewer: { sessions: { others: "view" }, agents: ["main"], scopes: ["operator.read"] },
++      denied: { sessions: { others: "none" }, agents: [], scopes: [] },
++    } satisfies Record<string, GatewayOperatorRoleDefinition>;
++    const cfg = {
++      gateway: {
++        auth,
++        trustedProxies: [proxyAddress, "127.0.0.1"],
++        roles: { default: "denied", definitions },
++      },
++    } satisfies OpenClawConfig;
++    let calls = 0;
++    const registry = createGatewayTestRegistry({
++      httpRoutes: [
++        {
++          pluginId: "proxy-role",
++          source: "proxy-role",
++          path: routePath,
++          auth: "gateway",
++          match: "exact",
++          gatewayRuntimeScopeSurface: "trusted-operator",
++          handler: async (_req: IncomingMessage, res: ServerResponse) => {
++            calls++;
++            res.end(JSON.stringify(observeRuntimeScope()));
++            return true;
++          },
++        },
++      ],
++    });
++    const log = createSubsystemLogger("test/proxy-http-role");
++    await withTempConfig({
++      cfg,
++      run: async () => {
++        const server = createTestGatewayServer({
++          resolvedAuth: auth,
++          overrides: {
++            handlePluginRequest: createGatewayPluginRequestHandler({ registry, log }),
++            shouldEnforcePluginGatewayAuth: (pathContext) =>
++              shouldEnforceGatewayAuthForPluginPath(registry, pathContext),
++          },
++        });
++        const canonical = (value: unknown): unknown =>
++          Array.isArray(value)
++            ? value.map(canonical)
++            : value !== null && typeof value === "object"
++              ? Object.fromEntries(
++                  Object.entries(value)
++                    .toSorted(([a], [b]) => a.localeCompare(b, "en"))
++                    .map(([key, item]) => [key, canonical(item)]),
++                )
++              : value;
++        let profileId: string | undefined;
++        for (const role of ["administrator", "reviewer"] as const) {
++          const request = {
++            path: routePath,
++            remoteAddress: proxyAddress,
++            headers: {
++              "x-forwarded-user": "person@example.test",
++              "x-forwarded-for": "198.51.100.20",
++              "x-proxy-role": role,
++              "x-proxy-role-policy": createHash("sha256")
++                .update(JSON.stringify(canonical(definitions[role])))
++                .digest("hex"),
++              "x-openclaw-scopes": "operator.admin,operator.read,operator.write",
++            },
++          };
++          const beforePublication = calls;
++          const publication = await sendRequest(server, request);
++          // Publishing the profile role retires the authority captured before acquisition.
++          // The handler must not run until a separate request captures the new authority.
++          expect(publication.res.statusCode).toBe(401);
++          expect(calls).toBe(beforePublication);
++          const response = await sendRequest(server, request);
++          expect(response.res.statusCode).toBe(200);
++          const current = JSON.parse(response.getBody());
++          expect(current.adminAllowed).toBe(role === "administrator");
++          expect(current.writeAllowed).toBe(role === "administrator");
++          if (profileId) {
++            expect(current.profileId).toBe(profileId);
++          } else {
++            profileId = current.profileId;
++          }
++          const before = calls;
++          expect(
++            (
++              await sendRequest(server, {
++                ...request,
++                headers: { ...request.headers, "x-proxy-role-policy": "0".repeat(64) },
++              })
++            ).res.statusCode,
++          ).toBe(401);
++          expect(calls).toBe(before);
++        }
++        const owner = await sendRequest(server, {
++          path: routePath,
++          remoteAddress: "127.0.0.1",
++          authorization: "Bearer proxy-http-owner-password",
++        });
++        expect(owner.res.statusCode).toBe(200);
++        expect(JSON.parse(owner.getBody())).toMatchObject({
++          profileId: GATEWAY_OWNER_PROFILE_ID,
++          adminAllowed: true,
++        });
++
++        const beforeUnmanaged = calls;
++        const unmanaged = await sendRequest(server, {
++          path: routePath,
++          remoteAddress: proxyAddress,
++          headers: {
++            "x-forwarded-user": "unmanaged@example.test",
++            "x-forwarded-for": "198.51.100.20",
++            "x-proxy-role": "reviewer",
++            "x-proxy-role-policy": createHash("sha256")
++              .update(JSON.stringify(canonical(definitions.reviewer)))
++              .digest("hex"),
++          },
++        });
++        expect(unmanaged.res.statusCode).toBe(401);
++        expect(calls).toBe(beforeUnmanaged);
++
++        // Native linking is an administrator-owned API, but it must never let
++        // one proxy principal overwrite another principal's single native role.
++        linkEmail("other@example.test", profileId!);
++        const beforeAmbiguous = calls;
++        const ambiguous = await sendRequest(server, {
++          path: routePath,
++          remoteAddress: proxyAddress,
++          headers: {
++            "x-forwarded-user": "person@example.test",
++            "x-forwarded-for": "198.51.100.20",
++            "x-proxy-role": "administrator",
++            "x-proxy-role-policy": createHash("sha256")
++              .update(JSON.stringify(canonical(definitions.administrator)))
++              .digest("hex"),
++          },
++        });
++        expect(ambiguous.res.statusCode).toBe(401);
++        expect(calls).toBe(beforeAmbiguous);
++        expect(getUserProfileRole(profileId!)).toBe("reviewer");
++      },
++    });
++  });
++});
+diff --git a/src/gateway/trusted-proxy-role.ts b/src/gateway/trusted-proxy-role.ts
+new file mode 100644
+index 0000000..9e23ac2
+--- /dev/null
++++ b/src/gateway/trusted-proxy-role.ts
+@@ -0,0 +1,120 @@
++import { createHash } from "node:crypto";
++import type { IncomingHttpHeaders } from "node:http";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import { prepareUserProfileRoleAuthority } from "../state/user-channel-identity-operations.js";
++import { normalizeProfileEmail } from "../state/user-profile-email.kernel.js";
++import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
++import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
++import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
++
++export function resolveVerifiedProxyRole(
++  cfg: OpenClawConfig,
++  headers: IncomingHttpHeaders,
++  authenticated: boolean,
++  user: string | undefined,
++) {
++  const proxy = cfg.gateway?.auth?.trustedProxy;
++  if (!proxy?.roleHeader) {
++    return undefined;
++  }
++  const encoded = headers[proxy.roleHeader];
++  const role = typeof encoded === "string" ? decodeURIComponent(encoded) : undefined;
++  const policyHash = proxy.rolePolicyHashHeader && headers[proxy.rolePolicyHashHeader];
++  const definitions = cfg.gateway?.roles?.definitions;
++  if (
++    !authenticated ||
++    !user ||
++    typeof role !== "string" ||
++    !definitions ||
++    !Object.hasOwn(definitions, role) ||
++    typeof policyHash !== "string"
++  ) {
++    throw new Error("Verified proxy role assignment is missing");
++  }
++  const canonical = (value: unknown): unknown =>
++    Array.isArray(value)
++      ? value.map(canonical)
++      : value !== null && typeof value === "object"
++        ? Object.fromEntries(
++            Object.entries(value)
++              .toSorted(([a], [b]) => a.localeCompare(b, "en"))
++              .map(([key, item]) => [key, canonical(item)]),
++          )
++        : value;
++  const digest = createHash("sha256")
++    .update(JSON.stringify(canonical(definitions[role])))
++    .digest("hex");
++  if (policyHash !== digest) {
++    throw new Error("Verified proxy role differs from runtime policy");
++  }
++  const managedIdentityPrefixes = proxy.managedIdentityPrefixes ?? [];
++  const managedIdentities = proxy.managedIdentities ?? [];
++  const identity = normalizeProfileEmail(user);
++  if (
++    !managedIdentityPrefixes.some((prefix) => identity.startsWith(prefix)) &&
++    !managedIdentities.includes(identity)
++  ) {
++    throw new Error("Verified proxy identity is outside the managed identity scope");
++  }
++  return { role, managedIdentityPrefixes, managedIdentities };
++}
++
++/** Bind proxy admission to one canonical principal and its exact verified assignment. */
++export async function prepareVerifiedProxyRoleProfile(params: {
++  profileId: string;
++  user: string;
++  role: string;
++  managedIdentityPrefixes: readonly string[];
++  managedIdentities: readonly string[];
++  assertCurrent?: () => void;
++  onRoleCommitted?: (profileId: string) => void;
++}) {
++  params.assertCurrent?.();
++  const identity = await prepareUserProfileIdentity(params.profileId);
++  try {
++    const email = normalizeProfileEmail(params.user);
++    const bindingIds = identity.emailBindingIds;
++    const readCurrent = () => {
++      params.assertCurrent?.();
++      // These facts belong to the retained async catalog owner; guards do not read SQLite.
++      const { profile } = identity.readCurrentFacts(bindingIds);
++      const managed = profile.emails.filter(
++        (candidate) =>
++          params.managedIdentityPrefixes.some((prefix) => candidate.startsWith(prefix)) ||
++          params.managedIdentities.includes(candidate),
++      );
++      if (managed.length !== 1 || managed[0] !== email) {
++        throw new Error("Verified proxy identity has an ambiguous native profile");
++      }
++      return profile;
++    };
++    const assertCurrent = () => {
++      readCurrent();
++    };
++    let updatedAt: number | undefined;
++    if (readCurrent().assignedRole !== params.role) {
++      const committed = await setCanonicalUserProfileRole(params.profileId, params.role, {
++        assertCurrent,
++        onCommitted: (profileId) => {
++          invalidateOperatorRolePolicy(profileId);
++          params.onRoleCommitted?.(profileId);
++        },
++      });
++      updatedAt = committed.updatedAt;
++    }
++    assertCurrent();
++    const authority = await prepareUserProfileRoleAuthority(params.profileId);
++    const current = readCurrent();
++    if (
++      !authority?.isCurrent() ||
++      authority.profileId !== current.profileId ||
++      authority.role !== params.role ||
++      current.assignedRole !== params.role
++    ) {
++      throw new Error("Verified proxy assignment changed during profile acquisition");
++    }
++    return { authority, updatedAt };
++  } finally {
++    identity.release();
++  }
++}
+diff --git a/src/gateway/server/ws-connection/connect-admission.ts b/src/gateway/server/ws-connection/connect-admission.ts
+index 3d2c7c5..7a4520a 100644
+--- a/src/gateway/server/ws-connection/connect-admission.ts
++++ b/src/gateway/server/ws-connection/connect-admission.ts
+@@ -23,7 +23,7 @@ import {
+   GATEWAY_STARTUP_RETRY_AFTER_MS,
+ } from "../../../../packages/gateway-protocol/src/startup-unavailable.js";
+ import { getRuntimeConfig } from "../../../config/io.js";
+-import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
++import { intersectOperatorScopes, roleScopesAllow } from "../../../shared/operator-scope-compat.js";
+ import {
+   isBrowserCopilotClient,
+   isBrowserOperatorUiClient,
+@@ -112,6 +112,7 @@ export async function rejectUnavailableProfileConnect(
+ }
+
+ export function applyConnectionScopeCap(params: {
++  role: string;
+   scopes: string[];
+   upgradeReq: IncomingMessage;
+ }): string[] {
+@@ -128,7 +129,9 @@ export function applyConnectionScopeCap(params: {
+   );
+   return declaredScopes.size === 0
+     ? []
+-    : params.scopes.filter((scope) => declaredScopes.has(scope));
++    : params.role === "operator"
++      ? intersectOperatorScopes(params.scopes, [...declaredScopes])
++      : params.scopes.filter((scope) => declaredScopes.has(scope));
+ }
+
+ export function resolveEffectiveConnectionScopes(params: {
+@@ -144,6 +147,7 @@ export function resolveEffectiveConnectionScopes(params: {
+     identityScopes = resolveIdentityOperatorScopes(verifiedIdentity, params.identityScopes);
+   }
+   const scopes = applyConnectionScopeCap({
++    role: params.role,
+     scopes: [...new Set([...params.deviceScopes, ...identityScopes])],
+     upgradeReq: params.upgradeReq,
+   });
+diff --git a/src/gateway/server/ws-connection/connect-auth.ts b/src/gateway/server/ws-connection/connect-auth.ts
+index fa1ca69..9a2e56e 100644
+--- a/src/gateway/server/ws-connection/connect-auth.ts
++++ b/src/gateway/server/ws-connection/connect-auth.ts
+@@ -501,7 +501,7 @@ async function authenticateGatewayConnectCore(
+     authMethod,
+   });
+   if (trustedProxyAuthOk) {
+-    scopes = applyConnectionScopeCap({ scopes, upgradeReq });
++    scopes = applyConnectionScopeCap({ role, scopes, upgradeReq });
+     connectParams.scopes = scopes;
+   }
+   const controlUiPairingKind = shouldSkipControlUiPairing({
+diff --git a/src/gateway/server/ws-connection/connect-device-pairing.ts b/src/gateway/server/ws-connection/connect-device-pairing.ts
+index 7853af3..aa26a10 100644
+--- a/src/gateway/server/ws-connection/connect-device-pairing.ts
++++ b/src/gateway/server/ws-connection/connect-device-pairing.ts
+@@ -190,7 +190,7 @@ export async function authorizeGatewayConnectDevice(
+         scopes,
+         hasRequestedScopes,
+         connectionScopeCap: (capped: string[]) =>
+-          applyConnectionScopeCap({ scopes: capped, upgradeReq: context.handler.upgradeReq }),
++          applyConnectionScopeCap({ role, scopes: capped, upgradeReq: context.handler.upgradeReq }),
+       };
+       const plan = await resolvePairingApprovalPlan(pairingPlanParams);
+       // Same-key reconnects reuse paired grants without pairing or false upgrade audits.
+diff --git a/src/config/zod-schema.gateway-auth.test.ts b/src/config/zod-schema.gateway-auth.test.ts
+index 820a684..2b01351 100644
+--- a/src/config/zod-schema.gateway-auth.test.ts
++++ b/src/config/zod-schema.gateway-auth.test.ts
+@@ -223,3 +223,53 @@ describe("gateway operator role config", () => {
+     }
+   });
+ });
++
++describe("verified proxy role identity scope config", () => {
++  const role = { sessions: { others: "none" }, agents: [], scopes: [] };
++  const proxy = {
++    userHeader: "x-forwarded-user",
++    roleHeader: "x-proxy-role",
++    rolePolicyHashHeader: "x-proxy-role-policy",
++    managedIdentityPrefixes: ["team:"],
++    managedIdentities: ["gateway-workspace"],
++  };
++  test.each([
++    { name: "prefix and exact identities", scope: {}, success: true },
++    { name: "prefix identities only", scope: { managedIdentities: undefined }, success: true },
++    { name: "exact identities only", scope: { managedIdentityPrefixes: undefined }, success: true },
++    {
++      name: "missing identity scope",
++      scope: { managedIdentityPrefixes: undefined, managedIdentities: undefined },
++      success: false,
++    },
++    {
++      name: "empty identity scope",
++      scope: { managedIdentityPrefixes: [], managedIdentities: [] },
++      success: false,
++    },
++    { name: "blank prefix", scope: { managedIdentityPrefixes: [""] }, success: false },
++    { name: "uppercase prefix", scope: { managedIdentityPrefixes: ["Team:"] }, success: false },
++    {
++      name: "untrimmed identity",
++      scope: { managedIdentities: [" person@example.test "] },
++      success: false,
++    },
++    { name: "missing role header", scope: { roleHeader: undefined }, success: false },
++    { name: "missing policy header", scope: { rolePolicyHashHeader: undefined }, success: false },
++    { name: "different auth mode", scope: {}, mode: "password", success: false },
++    { name: "missing role catalog", scope: {}, roles: false, success: false },
++  ])("validates $name", ({ scope, success, mode, roles }) => {
++    // Opting into role publication requires an explicit identity boundary;
++    // an empty scope must never become a wildcard or default-role fallback.
++    expect(
++      OpenClawSchema.safeParse({
++        gateway: {
++          auth: { mode: mode ?? "trusted-proxy", trustedProxy: { ...proxy, ...scope } },
++          ...(roles === false
++            ? {}
++            : { roles: { default: "denied", definitions: { denied: role } } }),
++        },
++      }).success,
++    ).toBe(success);
++  });
++});

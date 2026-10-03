@@ -353,6 +353,14 @@
       "tag": "0043_credential_withdrawals",
       "breakpoints": true,
       "sha256": "b6e6f106e0ca67b35e8ddbb2357d75d88fed70ed565054ae003e674d45a4bbf3"
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1787000000044,
+      "tag": "0044_agent_runtime_roles",
+      "breakpoints": true,
+      "sha256": "e180a2c73240092e08caab9cc095dd851b4958a9a42fb0901167aadcf9747026"
     }
   ],
   "initialSchemaStates": {
@@ -366,8 +374,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -380,7 +398,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539",
+    "completed": "782f49bc21d2da1216ef4a05328044160baca4c5ce281bf4ab0a44a11131819d",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -396,7 +414,8 @@
     "preRepositoryAccess": "89dee96b21e37a8e67afd09c3d8096672ed2825ce7bdccd62153da5965e984bd",
     "preRestrictionReadLogs": "e3eb8e9d95e40f6e2356b6b9318f50b20ce929bbef582d42b7be56d2407f8337",
     "preOAuth": "6344a29afa54e754a9d8b7362146e0c1edde77f2a1b7d9d2b323d82ad0f20e8d",
-    "preCredentialWithdrawals": "bdb958966896575964ac9c1d23c51759a7a11b23bc7d5980cdf0496fab1a8b8f"
+    "preCredentialWithdrawals": "bdb958966896575964ac9c1d23c51759a7a11b23bc7d5980cdf0496fab1a8b8f",
+    "preRuntimeRoles": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

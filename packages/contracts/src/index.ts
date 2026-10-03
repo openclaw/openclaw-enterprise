@@ -761,6 +761,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "operate",
   "administer",
   "read_logs",
+  "use",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -789,6 +790,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "operate",
     "administer",
     "read_logs",
+    "use",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -823,12 +825,29 @@ export interface GroupMembership extends Scope {
 
 export type AccessBindingSubjectKind = "identity" | "group";
 
+/** Runtime role names are opaque to IAM; the selected Compute Driver owns their meaning. */
+export interface RuntimeAccessDecision extends AuthorizationDecision {
+  readonly runtimeRole?: string;
+}
+
+export interface AgentRuntimeRole {
+  readonly id: string;
+  readonly permissions: Readonly<Record<string, unknown>>;
+}
+
+export interface AgentRuntimeAccess {
+  readonly endpoint: string;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
 export interface AccessBinding extends Scope {
   readonly id: string;
   readonly namespaceId?: string;
   readonly subjectKind: AccessBindingSubjectKind;
   readonly subjectId: string;
   readonly roleId: string;
+  /** Exact human/Agent runtime assignment, separate from the OCE Role. */
+  readonly runtimeRole?: string;
   readonly resourceKind?: ResourceKind;
   readonly resourceId?: string;
 }
@@ -999,6 +1018,8 @@ export interface IAMDriver extends Driver {
   readonly namespacePolicyTransaction?: "platform-unit-of-work";
   lookupIdentity(input: IdentityLookup): Promise<Identity | undefined>;
   authorize(request: AuthorizationRequest): Promise<AuthorizationDecision>;
+  /** Resolve entry permission and its exact human runtime assignment from one policy snapshot. */
+  authorizeRuntimeAccess?(request: AuthorizationRequest): Promise<RuntimeAccessDecision>;
   /**
    * True only when `principalId` holds every grant of `targetIdentityId` at the
    * same or a broader scope. Credential issuance for another identity requires it;
@@ -1036,6 +1057,12 @@ export interface IAMDriver extends Driver {
     context: IAMPolicyManagementContext,
     input: IAMManagedAccessBindingInput,
   ): Promise<Readonly<AccessBinding>>;
+  updateNamespaceRuntimeRole?(
+    context: IAMPolicyManagementContext,
+    namespaceId: string,
+    bindingId: string,
+    runtimeRole: string,
+  ): Promise<Readonly<AccessBinding> | undefined>;
   deleteNamespaceAccessBinding?(
     context: IAMPolicyManagementContext,
     namespaceId: string,
@@ -1057,6 +1084,11 @@ export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   createRole(role: Role): Promise<Readonly<Role>>;
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
+  updateRuntimeRole(
+    namespaceId: string,
+    bindingId: string,
+    runtimeRole: string,
+  ): Promise<Readonly<AccessBinding> | undefined>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
 }
 
@@ -1091,6 +1123,7 @@ export interface IAMManagedAccessBindingInput {
   readonly subjectKind: "identity";
   readonly subjectId: string;
   readonly roleId: string;
+  readonly runtimeRole?: string;
   readonly resourceKind: ManagedIAMResourceKind;
   readonly resourceId: string;
 }
@@ -1673,6 +1706,14 @@ export interface ComputeDriver extends Driver {
   ): Promise<AgentRuntimeLogChunk>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
+  /** Safe configured role catalog for the exact deployed revision. */
+  listAgentRuntimeRoles?(revision: AgentRevision): readonly AgentRuntimeRole[];
+  /** Human transport admission; must fail closed for unknown or unsupported assignments. */
+  getAgentRuntimeAccess?(
+    revision: AgentRevision,
+    principalId: string,
+    runtimeRole: string,
+  ): AgentRuntimeAccess | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   /**

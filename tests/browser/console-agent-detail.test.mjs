@@ -13,6 +13,8 @@ import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defau
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
+import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessBindingPostRequests,
@@ -558,10 +560,19 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
 });
 
 test("Agent sharing shows a rejected write's reason, but generic text after an accepted write", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["sharing-recipient"] });
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["sharing-recipient"],
+    computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/sharing"),
+  });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Sharing rejection");
-  const agent = await fixture.createAgent(namespace.id, "Sharing Agent", nativeValues("sharing"));
+  const namespace = await fixture.createNamespace("Sharing rejection", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Sharing Agent",
+    nativeRolesGateway(nativeValues("sharing"), fixture.origin),
+  );
+  // Sharing needs the role catalog from an active, admitted revision.
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, `${detail.pathname}${detail.search}`);
@@ -1209,12 +1220,18 @@ test("Agent detail saves plugin changes for the next revision without changing a
 
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
-  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
+  assert.deepEqual(
+    JSON.parse(await page.locator(".agent-version-detail pre").textContent()),
+    editedPlugins,
+  );
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
-  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
+  assert.deepEqual(
+    JSON.parse(await page.locator(".agent-version-detail pre").textContent()),
+    originalPlugins,
+  );
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
@@ -1893,6 +1910,12 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const nativeStatusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  const deniedNativeStatus = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${nativeStatusPath}` &&
+      response.request().method() === "GET",
+  );
 
   await login(
     page,
@@ -1902,6 +1925,8 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  assert.equal((await deniedNativeStatus).status(), 403);
+  assert.equal(requests.filter((request) => request.path === nativeStatusPath).length, 1);
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
@@ -1948,12 +1973,11 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(stopped.data.activeRevisionId, active.revision.id);
   assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
   assert.equal(stopped.data.configurationId, agent.configurationId);
-  // Changing only the requested runtime state must reload dependent panels,
-  // even while the selected revision remains unchanged pending worker shutdown.
-  const stopIndex = requests.findIndex((request) => request.path.endsWith("/stop"));
-  assert.ok(
-    requests.findIndex((request) => request.path.endsWith("/native-admin")) > stopIndex,
-    "native admin status must be reread after stop admission",
+  // Stop refreshes the Agent while previously denied OpenClaw access stays cached.
+  assert.equal(
+    requests.some((request) => request.path === nativeStatusPath),
+    false,
+    "stop admission must not repeat an audited OpenClaw access denial",
   );
   const revisions = await fixture.request(
     "GET",
@@ -2474,6 +2498,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   const gatewayEndpoint =
     "wss://private-gateway.example.invalid/namespaces/native-admin/agents/agent";
   const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
     originHost: consoleHost,
     publicOrigin: true,
     authCookieDomain: cookieDomain,
@@ -2489,7 +2514,31 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   const agent = await fixture.createAgent(
     namespace.id,
     "Native admin Agent",
-    nativeValues("unsupported-ui"),
+    nativeRolesGateway(nativeValues("unsupported-ui"), "https://not-admitted.example.test"),
+  );
+  const prior = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const entryRole = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+    body: { permissions: [{ action: "use", resourceKind: "agent" }] },
+  });
+  const root = fixture.policy.identities.find((identity) => identity.kind === "principal");
+  const retainedAssignment = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/iam/access-bindings`,
+    {
+      body: {
+        subjectKind: "identity",
+        subjectId: root.id,
+        roleId: entryRole.data.id,
+        resourceKind: "agent",
+        resourceId: agent.id,
+        runtimeRole: "administrator",
+      },
+    },
+  );
+  assert.equal(retainedAssignment.status, 201);
+  await fixture.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/stop`);
+  await fixture.controller.transact((state) =>
+    state.agents.compareAndClearActiveRevision(namespace.id, agent.id, prior.revision.id),
   );
   let { page } = await newPage(t, fixture, {
     args: [
@@ -2520,15 +2569,15 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     false,
   );
 
-  // New Agents are stopped; missing an active revision must not suggest a routing problem.
+  // A retained assignment survives completed stop without suggesting a routing problem.
   const initiallyStopped = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
   );
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
-  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  await page.getByText("Start this Agent before opening OpenClaw.").waitFor();
+  assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -2541,10 +2590,10 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.getByRole("button", { name: "Refresh access" }).click();
   await page
     .getByText(
-      "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+      "OpenClaw is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 
   let active = { revision: pending };
   await fixture.activateRevision(namespace.id, agent.id, pending.id);
@@ -2560,23 +2609,29 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page.getByRole("heading", { name: "OpenClaw" }).waitFor();
   await page
     .getByText(
-      "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "OpenClaw is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
     )
     .waitFor();
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 
   fixture.policy.restrictions.push({
-    id: "deny-native-administer",
+    id: "deny-native-use",
     namespaceId: namespace.id,
     resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
+    action: "use",
     effect: "deny",
   });
+  const deniedAccess = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
   await page.reload();
+  assert.equal((await deniedAccess).status(), 403);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
   await expectNativeAdminHidden(page);
   fixture.policy.restrictions.length = 0;
@@ -2587,7 +2642,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   page = await browserContext.newPage();
   requests = apiRequests(page, fixture.origin);
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
-  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page.getByRole("heading", { name: "OpenClaw", exact: true }).waitFor();
 
   const stopped = await fixture.request(
     "POST",
@@ -2601,9 +2656,9 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(cleared.activeRevisionId, undefined);
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
-  await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  await page.getByRole("heading", { name: "OpenClaw", exact: true }).waitFor();
+  await page.getByText("Start this Agent before opening OpenClaw.").waitFor();
+  assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 
   await fixture.updateConfiguration(
     namespace.id,
@@ -2613,7 +2668,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
+  await page.getByText("OpenClaw is available for this Agent’s active revision.").waitFor();
   const expectedAccess = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
@@ -2625,12 +2680,31 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(new URL(expectedAccess.data.url).origin, expectedAccess.data.origin);
   assert.match(new URL(expectedAccess.data.url).hostname, new RegExp(`\\.${nativeDomain}$`));
 
+  // Platform administration restrictions do not revoke a permitted native-use assignment.
+  fixture.policy.restrictions.push({
+    id: "deny-native-administer",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "administer",
+    effect: "deny",
+  });
+  await page.reload();
+  await page.getByRole("heading", { name: "OpenClaw", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Open OpenClaw" }).waitFor();
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`))
+      .data.status,
+    "available",
+  );
+  fixture.policy.restrictions.length = 0;
+
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Available versions").selectOption(historicalRevisionId);
-  await page.getByText("Native admin UI is available for this Agent’s active revision.").waitFor();
+  await page.getByText("OpenClaw is available for this Agent’s active revision.").waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
-    await page.getByRole("link", { name: "Open native admin UI" }).getAttribute("href"),
+    await page.getByRole("link", { name: "Open OpenClaw" }).getAttribute("href"),
     expectedAccess.data.url,
   );
   const sharedCookies = await page.context().cookies(expectedAccess.data.origin);
@@ -2678,7 +2752,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   );
 
   const popupPromise = page.waitForEvent("popup");
-  await page.getByRole("link", { name: "Open native admin UI" }).click();
+  await page.getByRole("link", { name: "Open OpenClaw" }).click();
   const popup = await popupPromise;
   await popup.waitForLoadState("domcontentloaded");
   assert.equal(popup.url(), expectedAccess.data.url);
@@ -2694,6 +2768,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   const consoleHost = `console.${cookieDomain}`;
   const nativeDomain = `agents.${cookieDomain}`;
   const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
     originHost: consoleHost,
     publicOrigin: true,
     authCookieDomain: cookieDomain,
@@ -2711,9 +2786,34 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   const agent = await fixture.createAgent(
     namespace.id,
     "Native admin follow Agent",
-    nativeValues("follow-ui"),
+    nativeRolesGateway(nativeValues("follow-ui"), "https://not-admitted.example.test"),
   );
-  // The first deployment requests running before any version is selected for service.
+  // Assign the person through the API after deploying the catalog, then leave no version
+  // selected for service. Deployment polling must recover access without a page reload.
+  const prior = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const entryRole = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+    body: { permissions: [{ action: "use", resourceKind: "agent" }] },
+  });
+  const root = fixture.policy.identities.find((identity) => identity.kind === "principal");
+  const assignment = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/iam/access-bindings`,
+    {
+      body: {
+        subjectKind: "identity",
+        subjectId: root.id,
+        roleId: entryRole.data.id,
+        resourceKind: "agent",
+        resourceId: agent.id,
+        runtimeRole: "administrator",
+      },
+    },
+  );
+  assert.equal(assignment.status, 201);
+  await fixture.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/stop`);
+  await fixture.controller.transact((state) =>
+    state.agents.compareAndClearActiveRevision(namespace.id, agent.id, prior.revision.id),
+  );
   const pending = await fixture.deployAgent(namespace.id, agent.id);
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
   const { page } = await newPage(t, fixture, {
@@ -2752,7 +2852,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await activity.getByText("Recorded status: running").waitFor();
   await card
     .getByText(
-      "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
+      "OpenClaw is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 1);
@@ -2764,7 +2864,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await activity.getByText("Recorded status: succeeded").waitFor();
   await card
     .getByText(
-      "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "OpenClaw is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
@@ -3283,6 +3383,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
 });
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
+  let catalogUnavailable = false;
   const cookieDomain = "oce.example.test";
   const consoleHost = `console.${cookieDomain}`;
   const fixture = await createConsoleAppFixture(t, {
@@ -3300,6 +3401,20 @@ test("Agent sharing grants existing people exact discovery and native access, th
     },
     nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
     computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/shared"),
+    async onSend(request, reply, payload) {
+      if (
+        catalogUnavailable &&
+        request.method === "GET" &&
+        request.url.endsWith("/runtime-roles")
+      ) {
+        // The real IAM policy stays available while the separate role catalog fails.
+        reply.code(500);
+        return JSON.stringify({
+          error: { code: "INTERNAL_ERROR", message: "Role catalog unavailable" },
+        });
+      }
+      return payload;
+    },
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Shared workspace", { ready: true });
@@ -3314,14 +3429,16 @@ test("Agent sharing grants existing people exact discovery and native access, th
     nativeValues("private"),
   );
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const native = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  const nativeOrigin = new URL(fixture.origin);
+  nativeOrigin.hostname = deriveNativeAdminHost(
+    fixture.controller.installation.id,
+    { namespaceId: namespace.id, id: agent.id },
+    `agents.${cookieDomain}`,
   );
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
-    nativeAdminValues("shared", native.data.origin),
+    nativeAdminValues("shared", nativeOrigin.origin),
   );
   const active = await fixture.seedActiveAgentRevision(
     namespace.id,
@@ -3333,6 +3450,27 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const session = await fixture.signIn(person.credentials);
   assert.deepEqual((await fixture.request("GET", "/namespaces", { session })).data, []);
   const policyPath = `/namespaces/${namespace.id}/iam`;
+  const useRole = await fixture.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "use", resourceKind: "agent" }] },
+  });
+  assert.equal(useRole.status, 201);
+  const existingAssignment = await fixture.request("POST", `${policyPath}/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: person.principal.id,
+      roleId: useRole.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+      runtimeRole: "researcher",
+    },
+  });
+  assert.equal(existingAssignment.status, 201);
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`, { session }))
+      .status,
+    403,
+    "a use-only assignment does not give Console discovery",
+  );
   // A familiar display name must never substitute for the required exact permission set.
   const misleadingRole = await fixture.request("POST", `${policyPath}/roles`, {
     body: {
@@ -3349,17 +3487,41 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await login(page, fixture, `${detail.pathname}${detail.search}`);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByLabel("OpenClaw role", { exact: true }).selectOption("researcher");
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-granted.png") });
   const bindings = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
-  assert.equal(bindings.length, 2);
+  assert.equal(bindings.length, 3);
+  const assignment = bindings.find((binding) => binding.runtimeRole !== undefined);
+  assert.deepEqual(
+    assignment,
+    existingAssignment.data,
+    "sharing preserves the use-only assignment",
+  );
+  const readBinding = bindings.find(
+    (binding) => binding.resourceKind === "agent" && binding.runtimeRole === undefined,
+  );
+  assert.ok(readBinding, "sharing adds the missing ordinary Agent-read grant");
+  assert.deepEqual(
+    (await fixture.request("GET", `${policyPath}/roles/${readBinding.roleId}`)).data.permissions,
+    [{ action: "read", resourceKind: "agent" }],
+  );
+  const assignmentRow = panel.locator(".agent-access-grant").filter({ hasText: assignment.id });
+  await assignmentRow.getByRole("combobox").selectOption("reviewer");
+  await panel.getByText("OpenClaw role changed.", { exact: false }).waitFor();
+  assert.equal(
+    (await fixture.request("GET", `${policyPath}/access-bindings/${assignment.id}`)).data
+      .runtimeRole,
+    "reviewer",
+  );
   assert.equal(
     bindings.some((binding) => binding.roleId === misleadingRole.data.id),
     false,
   );
   assert.deepEqual(bindings.map((binding) => [binding.resourceKind, binding.resourceId]).sort(), [
+    ["agent", agent.id],
     ["agent", agent.id],
     ["namespace", namespace.id],
   ]);
@@ -3411,7 +3573,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
       .count(),
     0,
   );
-  await recipient.getByRole("link", { name: "Open native admin UI" }).waitFor();
+  await recipient.getByRole("link", { name: "Open OpenClaw" }).waitFor();
   // A non-administrator never reads sharing policy: each denial would be audited.
   assert.equal(
     await recipient.getByRole("region", { name: "Share Agent", exact: true }).count(),
@@ -3454,11 +3616,58 @@ test("Agent sharing grants existing people exact discovery and native access, th
     .click();
   await recipient.getByText("Stop requested. OCC will not start", { exact: false }).waitFor();
 
-  // The stale administrator list holds the specific sharing binding, not the new operate grant.
-  await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
+  catalogUnavailable = true;
+  await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
+  await panel
+    .getByText(
+      "The deployed OpenClaw role catalog is unavailable. Existing assignments can still be removed.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(
+    await panel.getByRole("button", { name: "Share Agent", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(await assignmentRow.getByRole("combobox").isDisabled(), true);
+  assert.equal(
+    await assignmentRow.getByRole("button", { name: "Remove binding", exact: true }).isEnabled(),
+    true,
+  );
+  // Revoke native entry while the independent discovery and operate grants remain usable.
+  await assignmentRow.getByRole("button", { name: "Remove binding", exact: true }).click();
+  await panel.getByText("OpenClaw access revoked.", { exact: false }).waitFor();
+  let after = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
+  assert.deepEqual(
+    after.map((binding) => binding.id).sort(),
+    bindings
+      .filter((binding) => binding.id !== assignment.id)
+      .map((binding) => binding.id)
+      .concat(operateBinding.data.id)
+      .sort(),
+  );
+  assert.deepEqual(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents`, { session })).data.map(
+      (item) => item.id,
+    ),
+    [agent.id],
+  );
+  assert.equal(
+    (
+      await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`, {
+        session,
+      })
+    ).status,
+    403,
+  );
+  // Removing the separate read binding subsequently hides the Agent, without changing discovery.
+  await panel
+    .locator(".agent-access-grant")
+    .filter({ hasText: readBinding.id })
+    .getByRole("button", { name: "Remove binding", exact: true })
+    .click();
   await panel.getByText("Binding removed.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-removed.png") });
-  const after = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
+  after = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
   assert.deepEqual(
     after.map((binding) => binding.id).sort(),
     [
@@ -3488,6 +3697,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   let loseAgentBindingResponse = true;
   const fixture = await createConsoleAppFixture(t, {
     provisionedPeople: ["response-recipient"],
+    computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/recovery"),
     async onSend(request, reply, payload) {
       if (
         loseAgentBindingResponse &&
@@ -3504,8 +3714,13 @@ test("Agent sharing reconciles a truncated committed response without replaying 
     },
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Sharing recovery");
-  const agent = await fixture.createAgent(namespace.id, "Recovery Agent", nativeValues("recovery"));
+  const namespace = await fixture.createNamespace("Sharing recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Recovery Agent",
+    nativeRolesGateway(nativeValues("recovery"), "https://native.example.test"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const person = fixture.provisionedAccounts[0];
   const { page, artifacts } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -3620,10 +3835,11 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
-  let failures = 1;
+  let unavailable = true;
+  let failures = 0;
   await page.route(`${fixture.origin}${nativeAdminPath}`, async (route) => {
-    if (failures > 0) {
-      failures -= 1;
+    if (unavailable) {
+      failures += 1;
       await route.fulfill({
         status: 503,
         contentType: "application/json",
@@ -3632,7 +3848,7 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
             code: "DEPENDENCY_UNAVAILABLE",
             message: "A required platform dependency is unavailable.",
           },
-          meta: { requestId: "req_test_native_admin_outage" },
+          meta: { requestId: `req_00000000-0000-4000-8000-${String(failures).padStart(12, "0")}` },
         }),
       });
       return;
@@ -3650,7 +3866,19 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   const reload = card.getByRole("button", { name: "Refresh access" });
   assert.equal(await reload.isEnabled(), true);
 
-  // A later answer still decides visibility: this Installation has native admin disabled.
+  // An unchanged failed read is still a completed view. Back checks it again without
+  // replacing the card just because the server issued a different request ID.
+  const retained = await card.elementHandle();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  await page.goBack();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  assert.equal(await retained.evaluate((node) => node.isConnected), true);
+  await card.getByRole("alert").getByText("Service unavailable", { exact: false }).waitFor();
+  assert.equal(failures, 2, "Back revalidates the failed read once");
+
+  // A later answer still decides visibility: this person has no runtime assignment.
+  unavailable = false;
   const reads = () => requests.filter((request) => request.path === nativeAdminPath).length;
   const before = reads();
   await reload.click();
@@ -3659,11 +3887,91 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   await expectNativeAdminHidden(page);
 });
 
-test("Agent sharing rejects emails locally and names an unknown Principal ID", async (t) => {
+test("Back refreshes sharing when a failed role catalog recovers", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Sharing subject checks");
-  const agent = await fixture.createAgent(namespace.id, "Subject Agent", nativeValues("subject"));
+  const namespace = await fixture.createNamespace("Catalog recovery", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Catalog recovery Agent",
+    nativeRolesGateway(nativeValues("catalog-recovery"), fixture.origin),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  // The fixture activates admitted revisions without a worker status record. Supply
+  // that unrelated read's contract so an outage there cannot mask catalog retention.
+  await page.route(`${fixture.origin}${agentPath}/deployments/${active.revision.id}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          deploymentId: active.revision.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "succeeded",
+          error: null,
+          warnings: [],
+          progress: null,
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000200" },
+      }),
+    }),
+  );
+  const catalogPath = `${agentPath}/runtime-roles`;
+  let unavailable = true;
+  await page.route(`${fixture.origin}${catalogPath}`, async (route) => {
+    if (!unavailable) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Role catalog unavailable." },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+      }),
+    });
+  });
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, `${detail.pathname}${detail.search}`);
+  const panel = page.locator(".agent-access");
+  const roles = panel.locator("#share-runtime-role");
+  await panel.getByText(/The deployed OpenClaw role catalog is unavailable/).waitFor();
+  await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
+  assert.equal(await roles.isDisabled(), true);
+  const retained = await panel.elementHandle();
+
+  // Only the external read failure is simulated. Recovery uses the real authorized
+  // catalog route and the named roles in this Agent's admitted configuration.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  unavailable = false;
+  await page.goBack();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await roles.locator('option[value="researcher"]').waitFor({ state: "attached" });
+  assert.equal(await roles.isEnabled(), true);
+  assert.equal(await retained.evaluate((node) => node.isConnected), false);
+  assert.equal(
+    await panel.getByText(/The deployed OpenClaw role catalog is unavailable/).count(),
+    0,
+  );
+});
+
+test("Agent sharing rejects emails locally and names an unknown Principal ID", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/subjects"),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Sharing subject checks", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Subject Agent",
+    nativeRolesGateway(nativeValues("subject"), "https://native.example.test"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
@@ -3691,10 +3999,18 @@ test("Agent sharing rejects emails locally and names an unknown Principal ID", a
 });
 
 test("Agent sharing creates exact Roles instead of reusing strict superset Roles", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["superset-recipient"] });
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["superset-recipient"],
+    computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/superset"),
+  });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Superset sharing");
-  const agent = await fixture.createAgent(namespace.id, "Superset Agent", nativeValues("superset"));
+  const namespace = await fixture.createNamespace("Superset sharing", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Superset Agent",
+    nativeRolesGateway(nativeValues("superset"), "https://native.example.test"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const person = fixture.provisionedAccounts[0];
   const policyPath = `/namespaces/${namespace.id}/iam`;
   // Each superset contains every permission sharing needs, plus one it must not grant.
@@ -3702,7 +4018,7 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
   for (const permissions of [
     [
       { action: "read", resourceKind: "agent" },
-      { action: "administer", resourceKind: "agent" },
+      { action: "use", resourceKind: "agent" },
       { action: "delete", resourceKind: "agent" },
     ],
     [
@@ -3736,7 +4052,7 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
       .sort();
   };
   assert.deepEqual(grantPermissions("namespace"), ["read:namespace"]);
-  assert.deepEqual(grantPermissions("agent"), ["administer:agent", "read:agent"]);
+  assert.deepEqual(grantPermissions("agent"), ["read:agent", "use:agent"]);
   const session = await fixture.signIn(person.credentials);
   assert.equal(
     (

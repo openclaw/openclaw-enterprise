@@ -9,14 +9,14 @@ identity, routing, activation, and readiness; its backend owns underlying
 resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
 workload.
 
-See [Driver selection](selection.md) for supported combinations and package trust,
+See [Driver selection](selection.md) for combinations and trust,
 the [feature matrix](compute-matrix.md) to compare Drivers, and the
 [design status](../../design.md#implementation-status) for differences between
 current and planned placement.
 
 ## Interface
 
-The [shared contracts](../../../packages/contracts/src/index.ts) define the types.
+Types: [shared contracts](../../../packages/contracts/src/index.ts).
 Every `ComputeDriver` has an `id`, `implementation`, and
 `capability: "compute"`.
 
@@ -62,6 +62,8 @@ Namespace results can mark a failure `retryable` or `permanent`; success
 requires a true flag and no failure.
 Methods without a return value must reject if they cannot complete. The revision
 context is optional in TypeScript; the worker supplies it after authorization.
+
+[Runtime access](../agent-native-admin.md) defines `listAgentRuntimeRoles`/`getAgentRuntimeAccess`.
 
 ### Optional additions
 

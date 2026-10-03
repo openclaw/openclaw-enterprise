@@ -75,5 +75,7 @@ export const RevisionCredentialsMissing = {
 export const Sharing = { ...story("agentSharing") };
 export const SharingGranted = { ...story("agentSharingGranted") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
+export const SharingRoleChanged = story("agentSharingRoleChanged");
+export const SharingRolesUnavailable = story("agentSharingRolesUnavailable");
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };

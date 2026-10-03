@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -3046,6 +3047,11 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       requestHeaderModifier: {
         set: [
           { name: "x-occ-identity", value: "occ-workspace-files" },
+          { name: "x-occ-role", value: "oce-service" },
+          {
+            name: "x-occ-role-policy",
+            value: "251a4173dcbf68d2945df11ddf0871a93ae357269ae7bf2b00846fd4173d7677",
+          },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
         remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
@@ -3061,6 +3067,139 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     },
     route.spec.rules[0].filters[1],
   ]);
+
+  // Human ingress preserves only OCC's verified role descriptor; service ingress overwrites it.
+  const humanRevision = {
+    ...revision,
+    configuration: nativeRolesGateway(revision.configuration, "https://native.example.test"),
+  };
+  const human = driver.getAgentRuntimeAccess(
+    humanRevision,
+    "prn_00000000-0000-4000-8000-000000000003",
+    "researcher",
+  );
+  assert.ok(human);
+  // With no human route installed, neither its root nor any suffix can match
+  // the service route and acquire the privileged service identity.
+  const admittedHumanPath = new URL(human.endpoint).pathname;
+  for (const rule of route.spec.rules) {
+    for (const { path } of rule.matches) {
+      const servicePath = path.value.replace(/\/$/u, "");
+      assert.notEqual(admittedHumanPath, servicePath);
+      assert.equal(`${admittedHumanPath}/`.startsWith(`${servicePath}/`), false);
+    }
+  }
+  const humanPath = `/people/namespaces/${tenant.id}/agents/${revision.agentId}`;
+  assert.equal(human.endpoint, `wss://${gatewayRouting.hostname}${humanPath}`);
+  assert.equal(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
+  assert.equal(human.headers["x-occ-role"], "researcher");
+  const managedConfiguration = driver.kubernetesGatewayConfigurationDocument(
+    humanRevision.configuration,
+  );
+  assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentityPrefixes, [
+    "oce:",
+  ]);
+  assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentities, [
+    "occ-workspace-files",
+  ]);
+  // The Driver supplies omitted selectors but rejects a conflicting identity boundary.
+  const implicitScope = structuredClone(humanRevision.configuration);
+  delete implicitScope.gateway.auth.trustedProxy.managedIdentityPrefixes;
+  delete implicitScope.gateway.auth.trustedProxy.managedIdentities;
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      { ...humanRevision, configuration: implicitScope },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "researcher",
+    ),
+    human,
+  );
+  for (const scope of [
+    { managedIdentityPrefixes: [] },
+    { managedIdentityPrefixes: ["other:"] },
+    { managedIdentities: ["other-service"] },
+  ]) {
+    const configuration = structuredClone(humanRevision.configuration);
+    Object.assign(configuration.gateway.auth.trustedProxy, scope);
+    assert.throws(
+      () =>
+        driver.getAgentRuntimeAccess(
+          { ...humanRevision, configuration },
+          "prn_00000000-0000-4000-8000-000000000003",
+          "researcher",
+        ),
+      /must match the Driver's managed identities/u,
+    );
+  }
+  // Native device pairing intersects these scope names literally. An admin-only
+  // approval cap cannot admit a fresh browser with the researcher's read/write cap.
+  for (const approval of [
+    undefined,
+    { enabled: false, scopes: ["operator.read", "operator.write", "operator.admin"] },
+    { enabled: true },
+    { enabled: true, scopes: ["operator.admin"] },
+    { enabled: true, scopes: ["operator.read"] },
+  ]) {
+    const configuration = structuredClone(humanRevision.configuration);
+    configuration.gateway.auth.trustedProxy.deviceAutoApprove = approval;
+    assert.equal(
+      driver.getAgentRuntimeAccess(
+        { ...humanRevision, configuration },
+        "prn_00000000-0000-4000-8000-000000000003",
+        "researcher",
+      ),
+      undefined,
+    );
+  }
+  const administratorOnly = structuredClone(humanRevision.configuration);
+  administratorOnly.gateway.auth.trustedProxy.deviceAutoApprove.scopes = ["operator.admin"];
+  assert.equal(
+    driver.getAgentRuntimeAccess(
+      { ...humanRevision, configuration: administratorOnly },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "administrator",
+    ).headers["x-openclaw-scopes"],
+    "operator.admin",
+  );
+  assert.equal(
+    driver.getAgentRuntimeAccess(
+      humanRevision,
+      "prn_00000000-0000-4000-8000-000000000003",
+      "oce-service",
+    ),
+    undefined,
+  );
+  const humanRoute = driver.gatewayRoute(
+    humanRevision,
+    ownership,
+    { name: namespace, plane: "execution" },
+    service,
+    "people",
+  );
+  assert.equal(humanRoute.metadata.name, `${name}-people`);
+  assert.deepEqual(humanRoute.spec.rules[0].matches, [
+    { path: { type: "Exact", value: humanPath } },
+  ]);
+  assert.deepEqual(humanRoute.spec.rules[1].matches, [
+    { path: { type: "PathPrefix", value: `${humanPath}/` } },
+  ]);
+  assert.equal(
+    alternateEndpointDriver.getAgentRuntimeAccess(
+      { ...humanRevision, compute: alternateEndpointRevision.compute },
+      "prn_00000000-0000-4000-8000-000000000003",
+      "researcher",
+    ).endpoint,
+    `wss://${gatewayRouting.hostname}:18443${humanPath}`,
+  );
+  const humanFilter = humanRoute.spec.rules[0].filters[1].requestHeaderModifier;
+  assert.equal(
+    humanFilter.set.some(
+      (header) => header.name === "x-occ-identity" || header.name === "x-occ-role",
+    ),
+    false,
+  );
+  assert.equal(humanFilter.remove.includes("cookie"), true);
+  assert.equal(humanFilter.remove.includes("x-openclaw-scopes"), false);
 
   // Node enrollment and worker admission authenticate inside OpenClaw, while
   // worker bundles use their own one-time bearer token instead of the administrative API key.

@@ -247,8 +247,10 @@ export function createPresetFields(context, apply) {
     }
     status.textContent = "Loading Preset…";
     try {
+      // Selection supplies a snapshot; rendered drafts do not depend on the source Preset.
       const preset = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
+        { revalidate: false },
       );
       if (
         !context.isCurrent() ||

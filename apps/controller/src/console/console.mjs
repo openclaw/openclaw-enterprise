@@ -377,6 +377,24 @@ function clearPasswordInputs() {
   });
 }
 
+function readSuccess(value) {
+  return { kind: "success", value: JSON.stringify(value) };
+}
+
+function readFailure(error) {
+  if (
+    error.name === "AbortError" ||
+    !Number.isInteger(error.status) ||
+    error.status < 400 ||
+    error.status > 599 ||
+    error.status === 401
+  ) {
+    return null;
+  }
+  // Request IDs change on every attempt; status and code identify the failed read.
+  return { kind: "failure", status: error.status, code: error.code };
+}
+
 function retainMountedView() {
   const owner = sessionOwnerKey(session);
   const view = app.querySelector('.content [aria-live="polite"]');
@@ -920,24 +938,42 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     }
     const retainedState = shell?.retained?.state;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
-      const fresh = new Map([["/namespaces", namespaces]]);
+      const fresh = new Map([["/namespaces", readSuccess(namespaces)]]);
       if (retainedAgent) {
         fresh.set(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          retainedAgent,
+          readSuccess(retainedAgent),
         );
       } else if (retainedItems && current.feature !== "namespaces") {
         fresh.set(
           current.feature === "backends"
             ? "/backends"
             : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          retainedItems,
+          readSuccess(retainedItems),
         );
       }
       const validations = await Promise.allSettled(
         [...retainedState.reads.keys()].map(async (path) => {
-          if (!fresh.has(path)) {
-            fresh.set(path, await request(path));
+          if (fresh.has(path)) {
+            return;
+          }
+          const previous = retainedState.reads.get(path);
+          if (
+            previous.kind === "failure" &&
+            previous.status === 403 &&
+            deniedReadsFor(owner).has(path)
+          ) {
+            fresh.set(path, previous);
+            return;
+          }
+          try {
+            fresh.set(path, readSuccess(await request(path)));
+          } catch (error) {
+            const failure = readFailure(error);
+            if (failure === null) {
+              throw error;
+            }
+            fresh.set(path, failure);
           }
         }),
       );
@@ -948,7 +984,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
-          ([path, value]) => JSON.stringify(fresh.get(path)) === value,
+          ([path, value]) => JSON.stringify(fresh.get(path)) === JSON.stringify(value),
         );
       if (unchanged) {
         mountedViewState = retainedState;
@@ -995,11 +1031,19 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
-          viewState.reads.set(path, JSON.stringify(result));
+          viewState.reads.set(path, readSuccess(result));
         }
         return result;
       } catch (error) {
-        viewState.reusable = false;
+        const failure =
+          (options.method ?? "GET") === "GET" && options.revalidate !== false
+            ? readFailure(error)
+            : null;
+        if (failure === null) {
+          viewState.reusable = false;
+        } else {
+          viewState.reads.set(path, failure);
+        }
         throw error;
       } finally {
         viewState.pending -= 1;
@@ -1100,7 +1144,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       if (retainedAgent) {
         viewState.reads.set(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          JSON.stringify(retainedAgent),
+          readSuccess(retainedAgent),
         );
       }
       const agent = await renderAgentDetail(
@@ -1137,7 +1181,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         : current.feature === "backends"
           ? "/backends"
           : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-      JSON.stringify(items),
+      readSuccess(items),
     );
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items });

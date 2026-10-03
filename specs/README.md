@@ -74,6 +74,7 @@ recorded status is not proof of current implementation or release availability.
 | Native OpenClaw plugin tool policies                        | [Decision](rfcs/35-native-plugin-tool-policy.md)            | —                                                                               |
 | OCC Gateway Administration and Command Proxy                | —                                                           | [Plan / record](plans/15-occ-gateway-access/index.md)                           |
 | Platform audit                                              | [Decision](rfcs/37-platform-audit/index.md)                       | —                                                                               |
+| Per-person runtime-role assignments | [Decision](rfcs/36-agent-access.md) | [Plan](plans/0042-agent-runtime-role-assignments.md) |
 | Plugin policy enforcement                                   | [Decision](rfcs/37-plugin-policy-enforcement.md)            | —                                                                               |
 | Production interactive TUI                                  | —                                                           | [Plan / record](plans/16-production-tui-end-to-end.md)                    |
 | Provider and related Drivers                                | —                                                           | [Plan / record](plans/17-provider-driver-abstraction/index.md)                  |

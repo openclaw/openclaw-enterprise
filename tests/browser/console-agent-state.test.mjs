@@ -136,7 +136,21 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   );
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
+  // This person can administer the Agent but has no OpenClaw role assignment.
+  // Denial of that optional panel must not discard the rest of the cached page.
+  const accessDenied = page.waitForResponse(
+    (response) =>
+      response.url() ===
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+  );
+  const catalogUnavailable = page.waitForResponse(
+    (response) =>
+      response.url() ===
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/runtime-roles`,
+  );
   await login(page, fixture, url.pathname + url.search);
+  assert.equal((await accessDenied).status(), 403);
+  assert.equal((await catalogUnavailable).status(), 503);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
   await activity.getByText("Recorded status: running").waitFor();

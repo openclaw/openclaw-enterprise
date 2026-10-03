@@ -12,6 +12,7 @@ import {
   AgentRuntimeCredentialsBody,
   ConfigurationParams,
   CreateIAMAccessBindingBody,
+  UpdateIAMRuntimeRoleBody,
   CreateIAMRoleBody,
   CreateAgentBody,
   DiscoverAgentModelsBody,
@@ -602,6 +603,50 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: IAMAccessBindingParams,
       response: { 200: IAMAccessBindingResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "updateIAMRuntimeRole",
+    method: "PATCH",
+    path: "/namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role",
+    action: "openclaw.iam.access_bindings.runtime_role.update",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "namespace_iam",
+    summary: "Change the runtime role on an exact human Agent access grant",
+    tags: ["IAM"],
+    schema: {
+      querystring: EmptyQuery,
+      params: IAMAccessBindingParams,
+      body: UpdateIAMRuntimeRoleBody,
+      response: { 200: IAMAccessBindingResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "listAgentRuntimeRoles",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/runtime-roles",
+    action: "openclaw.agents.runtime_roles.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "namespace_iam",
+    summary: "List assignable runtime roles from the active Agent revision",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              id: Type.String(),
+              permissions: Type.Record(Type.String(), Type.Unknown()),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
     },
   },
   {

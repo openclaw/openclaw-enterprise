@@ -5,7 +5,7 @@ import {
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
-import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { renderRuntimeAccess } from "./runtime-access.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import { pluginWarningText, renderAgentPlugins } from "./plugins.mjs";
@@ -885,14 +885,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     tabs.append(control);
   }
   detailPane.append(detailHeading, versionEvidence, tabs, content);
-  const nativeAdmin = renderNativeAdminAccess(context, path);
+  const runtimeAccess = renderRuntimeAccess(context, path);
   view.replaceChildren(
     header,
     identity,
     currentSummary,
     statusLine,
     deploymentStatus,
-    nativeAdmin.section,
+    runtimeAccess.section,
     // Sharing policy reads need Installation administration and a denial is audited, so
     // skip the panel when the session probe already showed that access is missing.
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
@@ -1108,8 +1108,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     currentRuntimeState = freshAgent.desiredRuntimeState;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
-      // Native admin access depends on the serving version, so a finished deployment rereads it.
-      nativeAdmin.refresh();
+      // OpenClaw access depends on the serving version, so a finished deployment rereads it.
+      runtimeAccess.refresh();
     }
     renderOverview({ status: "fulfilled", value: revisions }, snapshot);
     renderDetailHeading();

@@ -362,7 +362,7 @@ const devdayAdminCheckpoint = [
 ];
 
 const shareExistingPerson = [
-  { selector: "#share-principal-id", value: "person-demo" },
+  { selector: "#share-principal-id", value: "prn_00000000-0000-4000-8000-000000000003" },
   { selector: ".agent-access-consent input", click: true },
   click("Share Agent"),
 ];
@@ -649,7 +649,7 @@ export const scenarios = {
     description:
       "Agent panels retain loaded controls on tab and page returns. This preview uses simulated API data.",
     steps: [
-      "Wait for Native admin UI, then open Credentials and return to Configuration. The native access result remains visible.",
+      "Wait for OpenClaw, then open Credentials and return to Configuration. The access result remains visible.",
       "Expand View admitted native configuration, visit Workspace files, then return. The disclosure stays expanded.",
       "Return to Agents and use browser Back. Native admin access and expanded panels remain loaded after admission succeeds.",
       "Click Refresh access to explicitly check the native endpoint again. Page Refresh reloads all panels.",
@@ -2359,10 +2359,10 @@ export const scenarios = {
     name: "Share an Agent",
     path: draft,
     description:
-      "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
+      "Choose any configured OpenClaw role for an existing person. The selected role controls native permissions.",
     steps: [
-      "Enter person-demo as the existing Principal ID.",
-      "Review the native-access disclosure, acknowledge it, and share.",
+      "Enter prn_00000000-0000-4000-8000-000000000003 as the existing Principal ID.",
+      "Choose an OpenClaw role, review its permissions, acknowledge shared access, and share.",
       "Remove the direct binding; Namespace discovery remains available.",
     ],
   },
@@ -2372,7 +2372,7 @@ export const scenarios = {
     path: draft,
     actions: shareExistingPerson,
     description:
-      "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+      "Namespace discovery and the selected Agent grant are present. Removing the runtime assignment revokes OpenClaw entry; other grants may still provide OCE management access.",
   },
   agentSharingRemoved: {
     group: "Pages/Agent detail",
@@ -2381,6 +2381,47 @@ export const scenarios = {
     actions: [...shareExistingPerson, click("Remove binding")],
     description:
       "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
+  },
+  agentSharingRoleChanged: {
+    group: "Pages/Agent detail",
+    name: "Change OpenClaw role",
+    path: draft,
+    actions: [
+      ...shareExistingPerson,
+      { selector: ".agent-access-grant select", value: "reviewer" },
+    ],
+    description:
+      "Change the selected role and inspect the success feedback. This simulated preview does not verify backend atomicity or native connection closure.",
+  },
+  agentSharingRolesUnavailable: {
+    group: "Pages/Agent detail",
+    name: "OpenClaw roles unavailable",
+    path: draft,
+    runtimeRolesUnavailable: true,
+    sharingRoles: [
+      {
+        id: "role-demo-entry",
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        permissions: [
+          { action: "read", resourceKind: "agent" },
+          { action: "use", resourceKind: "agent" },
+        ],
+      },
+    ],
+    sharingBindings: [
+      {
+        id: "binding-demo-entry",
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        subjectKind: "identity",
+        subjectId: "prn_00000000-0000-4000-8000-000000000003",
+        roleId: "role-demo-entry",
+        resourceKind: "agent",
+        resourceId: "agt_00000000-0000-4000-8000-000000000001",
+        runtimeRole: "reviewer",
+      },
+    ],
+    description:
+      "Sharing remains disabled while the deployed role catalog is unavailable; existing assignments can be removed.",
   },
   agentSharingDenied: {
     group: "Pages/Agent detail",
@@ -3682,6 +3723,34 @@ export const scenarios = {
     description:
       "Authorized launch link and warning. The fixture opens an explanatory page instead of a real gateway.",
   },
+  nativeReadError: {
+    group: "Components/Native admin",
+    name: "Status read failure",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 503, once: true }],
+    description: "A failed access read keeps its error and Refresh access visible.",
+    steps: [
+      "Confirm the OpenClaw card shows Service unavailable and no launch link.",
+      "Click Refresh access. The error clears and Open OpenClaw becomes available.",
+    ],
+    gap: "Simulated status recovery; deployment-triggered refresh is covered by the Console browser integration.",
+  },
+  nativeReadRecovery: {
+    group: "Components/Native admin",
+    name: "Recovery on Back",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 503, once: true }],
+    description: "Back rechecks a failed access read and replaces the error after recovery.",
+    steps: [
+      "Confirm the OpenClaw card shows Service unavailable and no launch link.",
+      "Open Namespaces, then use Back. The error clears and Open OpenClaw becomes available.",
+    ],
+    gap: "Simulated status recovery; the browser integration uses the real role catalog after its outage ends.",
+  },
   nativeStopped: {
     group: "Components/Native admin",
     name: "Stopped",
@@ -3703,8 +3772,13 @@ export const scenarios = {
     name: "Denied and hidden",
     path: revision,
     deployed: true,
-    nativeAdmin: "denied",
-    description: "Denied native-admin access hides the whole panel.",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 403 }],
+    description:
+      "A person without an OpenClaw assignment can retain their Agent page while access is denied.",
+    steps: [
+      "Confirm the OpenClaw card is hidden.",
+      "Open Namespaces, then use Back. The cached Agent page returns with OpenClaw still hidden.",
+    ],
   },
   workspaceNavigation: {
     group: "Components/Workspace",
@@ -4047,7 +4121,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list and open oceclaw.",
       "Confirm the Console shows a selected deployed revision, simulated deployment status, and available native admin access.",
-      "Click Open native admin UI. The target fixture opens with an existing #openclaw-feedback message.",
+      "Click Open OpenClaw. The target fixture opens with an existing #openclaw-feedback message.",
       "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
     ],
     gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",

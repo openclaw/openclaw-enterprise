@@ -1190,6 +1190,25 @@ summary:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.agent-access-grant {
+  flex-wrap: wrap;
+}
+
+.agent-access-grant > div:first-child {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.agent-access-grant > .form-field {
+  flex: 0 1 14rem;
+  min-width: 10rem;
+}
+
+.agent-access-grant > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .agent-access-grant p {
   margin-block: 0.25rem;
 }

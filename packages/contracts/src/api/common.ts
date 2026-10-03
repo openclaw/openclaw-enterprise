@@ -460,6 +460,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("operate"),
   Type.Literal("administer"),
   Type.Literal("read_logs"),
+  Type.Literal("use"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -503,9 +504,17 @@ export const CreateIAMAccessBindingBody = Type.Object(
     subjectKind: Type.Literal("identity"),
     subjectId: Type.String({ minLength: 1, maxLength: 200 }),
     roleId: IAMRoleId,
+    runtimeRole: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 128, pattern: "^\\S(?:.*\\S)?$" }),
+    ),
     resourceKind: NamespacePolicyResourceKindSchema,
     resourceId: Type.String({ minLength: 1, maxLength: 200 }),
   },
+  { additionalProperties: false },
+);
+
+export const UpdateIAMRuntimeRoleBody = Type.Object(
+  { runtimeRole: Type.String({ minLength: 1, maxLength: 128, pattern: "^\\S(?:.*\\S)?$" }) },
   { additionalProperties: false },
 );
 

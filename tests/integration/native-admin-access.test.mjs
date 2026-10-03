@@ -15,6 +15,12 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { nativeRolesGateway, nativeRoleDefinitions } from "../helpers/runtime-roles.mjs";
+import {
+  configuredRuntimeRoles,
+  humanRuntimeAccess,
+  runtimeRolePolicyHash,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-access.ts";
 
 const cookieDomain = "oce.example.test";
 const nativeDomain = `agents.${cookieDomain}`;
@@ -35,23 +41,7 @@ function nativeOriginForAgent(
 }
 
 function nativeAdminHarnessConfiguration(nativeOrigin) {
-  const configuration = createHarnessConfiguration("openclaw", "gpt-4.1");
-  return {
-    ...configuration,
-    gateway: {
-      ...configuration.gateway,
-      controlUi: { enabled: true, allowedOrigins: [nativeOrigin] },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: { "occ-workspace-files": ["operator.admin"] },
-      },
-    },
-  };
+  return nativeRolesGateway(createHarnessConfiguration("openclaw", "gpt-4.1"), nativeOrigin);
 }
 
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
@@ -77,6 +67,17 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
       };
     },
     async retireRevision() {},
+    listAgentRuntimeRoles(revision) {
+      return configuredRuntimeRoles(revision.configuration);
+    },
+    getAgentRuntimeAccess(revision, principalId, runtimeRole) {
+      return humanRuntimeAccess(
+        revision,
+        `wss://localhost:${upstreamPort}/people/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`,
+        principalId,
+        runtimeRole,
+      );
+    },
     getGatewayEndpoint(revision) {
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
@@ -177,6 +178,7 @@ async function startNativeHttpsUpstream(t) {
 async function createNativeAdminFixture(t, options = {}) {
   const upstream = await startNativeHttpsUpstream(t);
   const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     authCookieDomain: options.cookieDomain ?? cookieDomain,
@@ -222,6 +224,21 @@ async function createNativeAdminFixture(t, options = {}) {
   await fixture.activateRevision(namespace.id, agent.id, revision.id, undefined);
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
+  const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+    body: { permissions: [{ action: "use", resourceKind: "agent" }] },
+  });
+  assert.equal(role.status, 201);
+  const binding = await fixture.request("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: adminPrincipal(fixture).id,
+      roleId: role.data.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+      runtimeRole: "administrator",
+    },
+  });
+  assert.equal(binding.status, 201, JSON.stringify(binding.body));
   const session = await fixture.signIn();
   return {
     fixture,
@@ -229,6 +246,7 @@ async function createNativeAdminFixture(t, options = {}) {
     namespace,
     agent: current.data,
     revision,
+    runtimeBinding: binding.data,
     session,
   };
 }
@@ -284,6 +302,9 @@ async function createAgentPermissionSession(context, label, permissions, binding
       subjectId: principal.id,
       roleId,
       ...bindingScope,
+      ...(permissions.some((permission) => permission.action === "use")
+        ? { runtimeRole: "administrator" }
+        : {}),
     });
   });
   return context.fixture.signIn(limited.credentials);
@@ -296,13 +317,11 @@ async function createReadOperateSession(context, label = "native-admin-read-oper
   ]);
 }
 
-async function createExactAgentAdministerSession(context, label = "native-admin-exact-administer") {
-  return createAgentPermissionSession(
-    context,
-    label,
-    [{ action: "administer", resourceKind: "agent" }],
-    { resourceKind: "agent", resourceId: context.agent.id },
-  );
+async function createExactAgentUseSession(context, label = "native-admin-exact-administer") {
+  return createAgentPermissionSession(context, label, [{ action: "use", resourceKind: "agent" }], {
+    resourceKind: "agent",
+    resourceId: context.agent.id,
+  });
 }
 
 function trustLocalUpstreamCertificate(t, cert) {
@@ -311,7 +330,7 @@ function trustLocalUpstreamCertificate(t, cert) {
   t.after(() => setDefaultCACertificates(previous));
 }
 
-test("native admin status requires exact Agent administer and reports lifecycle availability", async (t) => {
+test("native admin status requires an exact person/Agent runtime assignment and reports lifecycle availability", async (t) => {
   const context = await createNativeAdminFixture(t);
 
   const available = await nativeStatus(context);
@@ -323,7 +342,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(new URL(available.data.url).pathname, "/");
   assert.equal(available.data.bootstrapUrl, undefined);
 
-  const exactAdministerOnlySession = await createExactAgentAdministerSession(
+  const exactAdministerOnlySession = await createExactAgentUseSession(
     context,
     "native-admin-status-exact-administer",
   );
@@ -340,8 +359,8 @@ test("native admin status requires exact Agent administer and reports lifecycle 
     "GET",
     `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
   );
-  assert.equal(missingStatus.status, 404);
-  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
+  assert.equal(missingStatus.status, 403);
+  assert.equal(missingStatus.body.error.code, "FORBIDDEN");
 
   const stopped = await context.fixture.request(
     "POST",
@@ -388,7 +407,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   // The denial tells key holders what to use instead; it names no Agent state.
   assert.equal(
     serviceDenied.json().error.message,
-    "Native admin UI requires a signed-in console session; service API keys cannot open it.",
+    "OpenClaw requires a signed-in console session; service API keys cannot open it.",
   );
 
   // Redeployment makes the Agent desired-running before a worker selects the new revision.
@@ -439,14 +458,14 @@ test("native admin status is unavailable while a newer revision replaces the act
   assert.equal(restored.data.activeRevisionId, replacement.id);
 });
 
-test("native admin disabled status still requires exact Agent administer", async (t) => {
+test("native admin disabled status still requires an exact person/Agent runtime assignment", async (t) => {
   const context = await createNativeAdminFixture(t, { nativeAdminEnabled: false });
 
   const disabled = await nativeStatus(context);
   assert.equal(disabled.status, 200);
   assert.equal(disabled.data.status, "disabled");
 
-  const administerOnlySession = await createExactAgentAdministerSession(
+  const administerOnlySession = await createExactAgentUseSession(
     context,
     "native-admin-disabled-exact-administer",
   );
@@ -463,8 +482,8 @@ test("native admin disabled status still requires exact Agent administer", async
     "GET",
     `/namespaces/${context.namespace.id}/agents/agt_${randomUUID()}/native-admin`,
   );
-  assert.equal(missingStatus.status, 404);
-  assert.equal(missingStatus.body.error.code, "NOT_FOUND");
+  assert.equal(missingStatus.status, 403);
+  assert.equal(missingStatus.body.error.code, "FORBIDDEN");
 });
 
 async function issueServiceKeyForNativeAgent(context) {
@@ -564,7 +583,7 @@ test("native admin shared session configuration validates cookie scope and rejec
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
-  const administerOnlySession = await createExactAgentAdministerSession(
+  const administerOnlySession = await createExactAgentUseSession(
     context,
     "native-admin-proxy-exact-administer",
   );
@@ -600,21 +619,26 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   const observed = context.upstream.requests[0];
   assert.equal(
     observed.url,
-    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/settings/profile?tab=devices`,
+    `/people/namespaces/${context.namespace.id}/agents/${context.agent.id}/settings/profile?tab=devices`,
   );
   assert.equal(observed.headers.origin, status.data.origin);
   assert.equal(observed.headers["x-safe-client-header"], "preserved");
   assert.equal(observed.headers["x-api-key"], nativeGatewayApiKey);
-  for (const header of [
-    "authorization",
-    "cookie",
-    "x-forwarded-for",
-    "x-occ-identity",
-    "x-occ-session-key",
-    "x-openclaw-scopes",
-  ]) {
+  for (const header of ["authorization", "cookie", "x-forwarded-for", "x-occ-session-key"]) {
     assert.equal(observed.headers[header], undefined, `${header} must not reach native upstream`);
   }
+
+  const grantee = context.fixture.policy.bindings.find((binding) =>
+    binding.id.startsWith("binding-native-admin-proxy-exact-administer"),
+  );
+  assert.ok(grantee);
+  assert.equal(observed.headers["x-occ-identity"], `oce:${grantee.subjectId}`);
+  assert.equal(observed.headers["x-occ-role"], "administrator");
+  assert.equal(
+    observed.headers["x-occ-role-policy"],
+    runtimeRolePolicyHash(nativeRoleDefinitions.administrator),
+  );
+  assert.equal(observed.headers["x-openclaw-scopes"], "operator.admin");
 
   const nativeHeaders = {
     host: nativeAuthority(status.data),
@@ -721,7 +745,7 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   context.fixture.policy.restrictions.push({
     id: `restriction-native-admin-proxy-${randomUUID()}`,
     namespaceId: context.namespace.id,
-    action: "administer",
+    action: "use",
     resourceKind: "agent",
     resourceId: context.agent.id,
     effect: "deny",
@@ -861,4 +885,109 @@ test("sign-out requires the console origin for session requests", async (t) => {
     },
   });
   assert.equal(allowed.statusCode, 200, allowed.body);
+});
+
+test("the normal sharing API assigns any configured role, changes it atomically, and separates deployment access", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  trustLocalUpstreamCertificate(t, context.upstream.cert);
+  const base = `/namespaces/${context.namespace.id}`;
+  const catalog = await context.fixture.request(
+    "GET",
+    `${base}/agents/${context.agent.id}/runtime-roles`,
+  );
+  assert.equal(catalog.status, 200);
+  assert.deepEqual(
+    catalog.data.map((role) => role.id).sort(),
+    Object.keys(nativeRoleDefinitions).sort(),
+  );
+  const person = await context.fixture.createAccountWithPolicy("runtime-researcher", () => {});
+  const entryRole = await context.fixture.request("POST", `${base}/iam/roles`, {
+    body: {
+      permissions: [
+        { action: "read", resourceKind: "agent" },
+        { action: "use", resourceKind: "agent" },
+      ],
+    },
+  });
+  const create = (overrides = {}) =>
+    context.fixture.request("POST", `${base}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: person.principal.id,
+        roleId: entryRole.data.id,
+        resourceKind: "agent",
+        resourceId: context.agent.id,
+        runtimeRole: "researcher",
+        ...overrides,
+      },
+    });
+  assert.equal((await create({ runtimeRole: "not-configured" })).status, 404);
+  const binding = await create();
+  assert.equal(binding.status, 201, JSON.stringify(binding.body));
+  assert.equal(binding.data.runtimeRole, "researcher");
+  assert.notEqual((await create({ runtimeRole: "reviewer" })).status, 201);
+  const personSession = await context.fixture.signIn(person.credentials);
+  const status = await nativeStatus(context, { session: personSession });
+  assert.equal(status.status, 200);
+  const proxied = await injectJson(context.fixture, "GET", "/", {
+    headers: {
+      host: nativeAuthority(status.data),
+      origin: status.data.origin,
+      cookie: personSession.cookie,
+      "x-occ-role": "administrator",
+      "x-occ-role-policy": "forged",
+      "x-openclaw-scopes": "operator.admin",
+    },
+  });
+  assert.equal(proxied.statusCode, 200, proxied.body);
+  assert.equal(context.upstream.requests.at(-1).headers["x-occ-role"], "researcher");
+  assert.equal(
+    context.upstream.requests.at(-1).headers["x-occ-identity"],
+    `oce:${person.principal.id}`,
+  );
+  assert.equal(
+    context.upstream.requests.at(-1).headers["x-occ-role-policy"],
+    runtimeRolePolicyHash(nativeRoleDefinitions.researcher),
+  );
+  assert.equal(
+    (
+      await context.fixture.request("POST", `${base}/agents/${context.agent.id}/stop`, {
+        session: personSession,
+      })
+    ).status,
+    403,
+  );
+  const assignmentPath = `${base}/iam/access-bindings/${binding.data.id}/runtime-role`;
+  const denied = await context.fixture.request("PATCH", assignmentPath, {
+    session: personSession,
+    body: { runtimeRole: "administrator" },
+  });
+  assert.equal(denied.status, 403);
+  const changed = await context.fixture.request("PATCH", assignmentPath, {
+    body: { runtimeRole: "reviewer" },
+  });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+  assert.equal(changed.data.id, binding.data.id);
+  assert.equal(changed.data.runtimeRole, "reviewer");
+  const listed = await context.fixture.request("GET", `${base}/iam/access-bindings`);
+  assert.equal(listed.data.find((item) => item.id === binding.data.id).runtimeRole, "reviewer");
+  const removed = await context.fixture.request(
+    "DELETE",
+    `${base}/iam/access-bindings/${binding.data.id}`,
+    { expectedStatus: 204 },
+  );
+  assert.equal(removed.status, 204);
+  assert.equal((await nativeStatus(context, { session: personSession })).status, 403);
+  // Even the installation administrator needs a separate native assignment.
+  assert.equal(
+    (
+      await context.fixture.request(
+        "DELETE",
+        `${base}/iam/access-bindings/${context.runtimeBinding.id}`,
+        { expectedStatus: 204 },
+      )
+    ).status,
+    204,
+  );
+  assert.equal((await nativeStatus(context)).status, 403);
 });

@@ -212,7 +212,6 @@ SHA-256 of `<gatewayNamespace>/<gatewayName>`. The hostname is
 `<serviceName>.<envoyNamespace>.svc`. It uses standard Linux Pod DNS search and
 does not assume a `cluster.local` suffix. Set the same explicit `hostname` in
 Compute and Helm for custom DNS or clients outside that cluster DNS context.
-The default needs no existing Agent or Kubernetes lookup.
 The operator installs Envoy Gateway and cert-manager and configures the
 [private gateway infrastructure](../../../guides/deploy/workspace-routing.md#agent-workspace-files).
 Do not put an Agent endpoint, service key, certificate, or file contents into
@@ -220,18 +219,23 @@ native Configuration or an AgentRevision.
 
 `getGatewayEndpoint` derives
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
-API access. During preparation and activation, Compute reconciles an owned
-`HTTPRoute` in the Gateway's physical namespace (control plane for dedicated,
-data plane for embedded), attached to the configured Gateway's
-`https` listener. Both rules match the configured private hostname and target
-the existing same-namespace gateway Service:
+API access. Preparation and activation reconcile an owned `HTTPRoute` in the
+Gateway's namespace (control plane for dedicated, data plane for embedded).
+Both rules use the private hostname, configured Gateway's `https` listener and
+same-namespace gateway Service:
 
 - The exact Agent path rewrites to `/`, preserving workspace-file WSS access.
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
-  the suffix for native UI assets, deep links, and WebSocket paths.
+  the suffix for service HTTP and WebSocket requests.
 
-OCC bounds proxy requests to the selected Agent base. Public native UI browser
-traffic enters through OCC; Envoy and gateway Services remain private. See
+Human access uses `wss://<hostname>/people/namespaces/<namespaceId>/agents/<agentId>`
+and a separate `-people` HTTPRoute preserving OCC's verified identity, role,
+policy digest and scopes. This path cannot match the service prefix if the
+human route is absent or unaccepted. Entry requires enabled native device
+auto-approval with an explicit cap containing every selected-role scope.
+
+OCC bounds browser proxy requests to the selected human base; Envoy and gateway
+Services remain private. See
 [Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 Runtime-enabled dedicated revisions also receive a `/node` route and a
@@ -239,14 +243,13 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and route remain stable across revision cutover. Retiring an old
-revision preserves a newer gateway's route; final gateway cleanup removes the
-owned route. Reconciliation runs through the existing revision lifecycle; this
-Driver does not add periodic route drift repair. Missing CRDs or denied worker
-permissions fail reconciliation rather than disabling routing silently.
+The Service and routes remain stable across revision cutover. Retirement
+preserves newer routes; final cleanup removes owned routes. The revision
+lifecycle reconciles them without periodic drift repair. Missing CRDs or denied
+worker permissions fail reconciliation.
 
 Envoy's Gateway-level SecurityPolicy authenticates the OCC service key before
-forwarding. The route overwrites the native identity and real-IP headers and
+forwarding. The service route overwrites the native identity and real-IP headers and
 removes caller forwarding and scope headers. Native `allowRealIpFallback`
 accepts Envoy's direct downstream connection address when OCC and Envoy share a
 Pod CIDR. That source address must be nonloopback; a loopback port-forward alone

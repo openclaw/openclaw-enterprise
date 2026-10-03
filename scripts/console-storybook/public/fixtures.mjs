@@ -86,8 +86,8 @@ export function installFixture(scenario, evidence) {
   const files = new Map();
   const secrets = new Map();
   const stagedWorkspaceFiles = new Map();
-  const roles = [];
-  const bindings = [];
+  const roles = structuredClone(scenario.sharingRoles ?? []);
+  const bindings = structuredClone(scenario.sharingBindings ?? []);
   const deleted = new Set();
   const session = {
     authenticated: true,
@@ -1195,6 +1195,36 @@ export function installFixture(scenario, evidence) {
           const { reads: _reads, ...status } = deployment;
           return response(status);
         }
+        if (suffix === "/runtime-roles") {
+          return scenario.runtimeRolesUnavailable
+            ? error(503)
+            : response([
+                {
+                  id: "researcher",
+                  permissions: {
+                    sessions: { others: "none" },
+                    agents: ["main"],
+                    scopes: ["operator.read", "operator.write"],
+                  },
+                },
+                {
+                  id: "reviewer",
+                  permissions: {
+                    sessions: { others: "view" },
+                    agents: ["main"],
+                    scopes: ["operator.read"],
+                  },
+                },
+                {
+                  id: "administrator",
+                  permissions: {
+                    sessions: { others: "write" },
+                    agents: "*",
+                    scopes: ["operator.admin"],
+                  },
+                },
+              ]);
+        }
         if (suffix.startsWith("/workspace/files/")) {
           const filename = decodeURIComponent(suffix.split("/").at(-1));
           const key = `${id}/${filename}`;
@@ -1230,6 +1260,15 @@ export function installFixture(scenario, evidence) {
           bindings.push(binding);
           return response(binding, 201);
         }
+      }
+      const runtimeRoleMatch = resource.match(/^iam\/access-bindings\/([^/]+)\/runtime-role$/);
+      if (runtimeRoleMatch && method === "PATCH") {
+        const binding = bindings.find((item) => item.id === runtimeRoleMatch[1]);
+        if (!binding) {
+          return error(404);
+        }
+        binding.runtimeRole = body.runtimeRole;
+        return response(binding);
       }
       const bindingMatch = resource.match(/^iam\/access-bindings\/([^/]+)$/);
       if (bindingMatch && method === "DELETE") {
