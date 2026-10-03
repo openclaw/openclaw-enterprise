@@ -78,6 +78,7 @@ recorded status is not proof of current implementation or release availability.
 | Repository credentials for ordinary Agents                  | [Decision](rfcs/31-repository-credentials/index.md)               | —                                                                               |
 | Repository selection and inherited access                   | —                                                           | [Plan / record](plans/37-repository-picker-and-access.md)                 |
 | SSH Compute Driver for raw hosts                            | —                                                           | [Plan / record](plans/21-ssh-compute-driver/index.md)                           |
+| Sandbox log source availability                             | [Proposal](rfcs/0055-sandbox-log-source-availability.md)    | —                                                                               |
 | Storage split: shared interface and integration             | —                                                           | [Plan / record](plans/30-storage-split-integration.md)                    |
 | Two-cluster dedicated Gateway execution plan                | —                                                           | [Plan / record](plans/37-two-cluster-gateway-execution-plan.md)           |
 | Workspace enrollment without a Harness restart              | —                                                           | [Plan / record](plans/40-workspace-enrollment-without-harness-restart.md) |
