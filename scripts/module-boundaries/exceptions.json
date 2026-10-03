@@ -3,7 +3,7 @@
   "exceptions": [
     {
       "rule": "unresolved-dynamic-import",
-      "from": "apps/controller/src/composition/installation-config.ts",
+      "from": "apps/controller/src/composition/driver-packages.ts",
       "to": "",
       "specifier": "unknown:sha256:e7ef793d2ca83cf43fe9dc1001737b21f64cc822094cdc628ca250c48b5c8c4e",
       "kind": "dynamic-import",
@@ -12,7 +12,7 @@
       "owner": "Driver package composition",
       "reason": "The installed Driver loader validates configured package identity, trusted root and entrypoint at runtime; its target is deliberately not a statically enumerable workspace import.",
       "removeWhen": "Remove this exception if the supported installed Driver loader is removed or replaced by static registration.",
-      "loaderIdentity": "loader:sha256:7c60dbbcbdbfeb35d75840dc27f4cde78cd3f2e2116401a1a5d4baa010646df6"
+      "loaderIdentity": "loader:sha256:c2196a3208008fcdfbbe0d97dd9e33bceabcd6a47cdaf949b1db49a4b6773f44"
     },
     {
       "rule": "cross-provider-implementation",
