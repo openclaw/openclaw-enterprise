@@ -60,7 +60,17 @@ THE REVISED DESIGN RESOLVES THE BOUNDARY VIOLATION AND THE USER APPROVES IT.
    integration requirements for new functionality. For instruction-only changes,
    check docs, links, skill resources, and any bundled executable; do not run
    product runtime suites solely for prose. Never run `npm run precommit`.
-6. Report changed behavior, the flow updated (or a short reason none is needed),
+6. When publication is authorized, follow the
+   [fork PR policy](../../../CONTRIBUTING.md#prepare-a-pull-request).
+   Default new PRs to the requesting user's fork, even with upstream write access.
+   Preserve existing user instructions and authorized maintainer workflows that
+   select upstream topic branches.
+   Verify identity, repository URLs, and the push destination; do not assume
+   `origin` is the fork or rename existing remotes. Preserve the head repository
+   and branch when updating an assigned existing PR. Use the verified upstream
+   base for branch comparisons and reviews. Keep fork PRs editable by maintainers
+   as described in the contribution policy.
+7. Report changed behavior, the flow updated (or a short reason none is needed),
    checks run, and remaining verification gaps. Do not equate a structural doc
    check with proof of runtime behavior.
 
