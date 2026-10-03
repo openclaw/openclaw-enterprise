@@ -7,7 +7,7 @@ Enable OpenClaw access through OCC with an explicit runtime assignment for each 
 Existing Agent `administer` grants and sharing bindings do not automatically assign an OpenClaw role. After updating OCC, those accounts cannot open OpenClaw until an Installation administrator assigns each person a configured role, including the administrator's own account.
 
 1. Use the patched runtime image and [configure the Agent](#configure-each-agent) with named `gateway.roles.definitions` and a `gateway.roles.default` naming one of them. Deploy the new version and wait for it to become active. The Kubernetes Driver configures the trusted-proxy role headers.
-2. Open **Share Agent**, enter the person's Principal ID, and select their OpenClaw role. Enable **Read configuration and versions** if they also need to inspect OCE snapshots.
+2. Open **Share Agent**, enter the person's Principal ID, and select their OpenClaw role.
 3. Sign in as that person and open **Open OpenClaw**. An `administer` grant alone no longer grants entry; each person needs exact Agent `use` permission and a runtime assignment.
 
 ## Local development
