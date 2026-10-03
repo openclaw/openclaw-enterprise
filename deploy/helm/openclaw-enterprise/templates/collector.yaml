@@ -9,6 +9,17 @@
 {{- $protected := dict "installation" .Values.installation.secretName "database" .Values.database.secretName "auth" .Values.auth.secretName "chatgpt" .Values.backend.chatgpt.secretName -}}
 {{- if and .Values.auth.github .Values.auth.github.enabled -}}{{- $_ := set $protected "GitHub sign-in" .Values.auth.github.secretName -}}{{- end -}}
 {{- if and .Values.auth.google .Values.auth.google.enabled -}}{{- $_ := set $protected "Google sign-in" .Values.auth.google.secretName -}}{{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled -}}{{- $_ := set $protected "OIDC sign-in" .Values.auth.oidc.secretName -}}{{- end -}}
+{{- if .Values.gatewayRouting.enabled -}}{{- $_ := set $protected "gateway API key" .Values.gatewayRouting.apiKeySecretName -}}{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}
+{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" "publicCaSecretName" -}}
+{{- $_ := set $protected (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- $_ := set $protected "execution API kubeconfig" .Values.executionCluster.apiKubeconfigSecretName -}}
+{{- $_ := set $protected "execution worker kubeconfig" .Values.executionCluster.workerKubeconfigSecretName -}}
+{{- end -}}
 {{- range $name, $secret := $protected -}}
 {{- if and $secret (or (eq $collector.configSecretName $secret) (and $collector.envSecretName (eq $collector.envSecretName $secret))) -}}
 {{- fail (printf "logging.collector Secrets must be dedicated and cannot reuse the %s Secret" $name) -}}
@@ -61,7 +72,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: openclaw-enterprise-collector
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ .Release.Namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -77,7 +88,7 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: collector
   template:
     metadata:
@@ -95,7 +106,7 @@ spec:
       volumes:
         - name: collector-config
           secret:
-            secretName: {{ $collector.configSecretName }}
+            secretName: {{ $collector.configSecretName | quote }}
             items:
               - key: collector.yaml
                 path: collector.yaml
@@ -132,7 +143,7 @@ spec:
           {{- if $collector.envSecretName }}
           envFrom:
             - secretRef:
-                name: {{ $collector.envSecretName }}
+                name: {{ $collector.envSecretName | quote }}
           {{- end }}
           {{- if $collector.metrics.enabled }}
           ports:
@@ -159,20 +170,23 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: collector
   policyTypes: [Egress]
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.dns.podLabels | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+        # Allow port 5353 for compatibility with OpenShift DNS backends.
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
     - to:
         {{- range .Values.cluster.cidrs }}
         - ipBlock:
@@ -206,7 +220,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: collector
   policyTypes: [Ingress]
   ingress:

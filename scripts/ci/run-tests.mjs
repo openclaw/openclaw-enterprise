@@ -11,7 +11,7 @@ import { loadTestSuites } from "./test-suites.mjs";
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
 const defaultManifestPath = "scripts/ci/test-suites.json";
-const testRoots = ["tests/conformance", "tests/integration", "tests/browser"];
+const testRoots = ["tests/conformance", "tests/integration", "tests/browser", "tests/docs"];
 
 function usage() {
   return [

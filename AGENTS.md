@@ -13,9 +13,6 @@ authorize every exact resource operation through the selected IAM Driver, and
 emit attributable audit evidence for bootstrap, successful mutations, and
 authorization denials.
 
-Preserve Git history, registered worktrees, ignored local `.env` files, and
-existing root or nested `node_modules/` directories.
-
 The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Read its [implementation status](docs/design.md#implementation-status) before
@@ -329,6 +326,8 @@ adapter may mirror a constraint when it substitutes for the database.
 Tests must verify real, supported application behavior. A test that merely
 confirms behavior invented by its own mock, monkeypatch, fixture, or hand-written
 adapter is invalid and must be rewritten or deleted.
+
+Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credential-bearing URLs at runtime; do not commit complete credential-bearing URL literals, which TruffleHog treats as secrets.
 
 - Use actual API routes, request methods, server-owned resource scope, response
   envelopes, authorization rules, and lifecycle transitions. Never invent

@@ -9,26 +9,26 @@
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
-  name: {{ $r.gatewayName }}
+  name: {{ $r.gatewayName | quote }}
 spec:
   provider:
     type: Kubernetes
     kubernetes:
       envoyService:
-        name: {{ $r.gatewayName }}
+        name: {{ $r.gatewayName | quote }}
         type: {{ $r.serviceType }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: {{ $r.gatewayName }}
+  name: {{ $r.gatewayName | quote }}
 spec:
   gatewayClassName: {{ $r.gatewayClassName | quote }}
   infrastructure:
     parametersRef:
       group: gateway.envoyproxy.io
       kind: EnvoyProxy
-      name: {{ $r.gatewayName }}
+      name: {{ $r.gatewayName | quote }}
   listeners:
     - name: https
       hostname: {{ $r.hostname | quote }}
@@ -53,15 +53,15 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-harness-proxy
-  namespace: {{ $r.envoyNamespace }}
+  namespace: {{ $r.envoyNamespace | quote }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/component: proxy
       app.kubernetes.io/managed-by: envoy-gateway
       app.kubernetes.io/name: envoy
-      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
-      gateway.envoyproxy.io/owning-gateway-name: {{ $r.gatewayName }}
+      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace | quote }}
+      gateway.envoyproxy.io/owning-gateway-name: {{ $r.gatewayName | quote }}
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
@@ -75,13 +75,16 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.dns.podLabels | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+        # Allow port 5353 for compatibility with OpenShift DNS backends.
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
     - to:
         - namespaceSelector:
             matchLabels:
@@ -95,7 +98,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $r.envoyNamespace }}
+              kubernetes.io/metadata.name: {{ $r.envoyNamespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml $r.envoyGatewayPodLabels | nindent 14 }}

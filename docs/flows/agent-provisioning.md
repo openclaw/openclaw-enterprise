@@ -1,6 +1,6 @@
 ---
 created: "2026-09-23"
-updated: "2026-10-01"
+updated: "2026-10-03"
 last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
 ---
 
@@ -105,7 +105,7 @@ describes the upstream delivery limits and verification-only path.
 
 Safe failed steps can retry under a fresh claim and authorization check. Completed resources are retained and reused. An unresolved external write keeps its exact target and ownership evidence; lease expiry or a not-found response alone does not justify dispatching it again. No provisioning rollback or Secret deletion runs.
 
-While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. Because a cancelled provisioning never runs again, Agent deletion resolves an effect it left unsettled: it waits one worker lease after the cancellation, removes runtime credentials, and records the effect receipt in the same transaction as the finalizer. The wait is deferred and does not use deletion attempts. Namespace Secrets and completed Configurations remain available through their existing resource APIs.
+While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. Because a cancelled provisioning never runs again, Agent deletion resolves an effect it left unsettled: it waits one worker lease after the cancellation, removes runtime credentials, and records the effect receipt in the same transaction as the finalizer. The wait is deferred and does not use deletion attempts. Namespace deletion waits for queued or running work and for any effect without a matching receipt; a settled effect on failed or cancelled work does not keep the Namespace occupied. Namespace Secrets and completed Configurations remain available through their existing resource APIs.
 
 ## Debugging and Verification
 
@@ -128,6 +128,8 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 05:30: Namespace deletion no longer waits on failed provisioning whose effect is already settled. (fix-d354/namespace-settled-provisioning)
 
 - 2026-10-01 17:20: Point provisioning admission at the extracted Agent HTTP handlers. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 

@@ -803,7 +803,7 @@ export const scenarios = {
     path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
     description: "Recover from a stale Namespace URL using the selector inside the message.",
     steps: [
-      "Choose Engineering under Choose a valid namespace; the URL changes and the warning disappears without leaving Namespaces.",
+      "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
       "Use browser Back to return to the unavailable selection and recover again.",
     ],
   },
@@ -2835,6 +2835,16 @@ export const scenarios = {
     description:
       "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
   },
+  runtimeLogsStartupWarnings: {
+    group: "Pages/Agent detail",
+    name: "Runtime status after a healthy first deploy",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    runtimePod: "startupWarnings",
+    description:
+      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
+  },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs filtered and downloaded",
@@ -3702,6 +3712,20 @@ export const scenarios = {
     nativeAdmin: "available",
     description:
       "Authorized launch link and warning. The fixture opens an explanatory page instead of a real gateway.",
+  },
+  nativeReadError: {
+    group: "Components/Native admin",
+    name: "Status read failure",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 503, once: true }],
+    description: "A failed access read keeps its error and Refresh access visible.",
+    steps: [
+      "Confirm the OpenClaw card shows Service unavailable and no launch link.",
+      "Click Refresh access. The error clears and Open OpenClaw becomes available.",
+    ],
+    gap: "Simulated status recovery; deployment-triggered refresh is covered by the Console browser integration.",
   },
   nativeStopped: {
     group: "Components/Native admin",

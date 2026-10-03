@@ -204,6 +204,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		clusterCreationFailed = true
 		return err
 	}
+	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
+		return err
+	}
 	if err := r.writeKubeconfigs(ctx, state); err != nil {
 		return err
 	}

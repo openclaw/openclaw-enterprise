@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import type { GitHubConfiguration } from "./types.ts";
+import { hasControlCharacter } from "../../credentials/client-contracts.ts";
 
 const fields = [
   "kind",
@@ -27,10 +28,7 @@ function parseConfigurationFields(value: unknown): ConfigurationFields {
       typeof field !== "string" ||
       field.length < 1 ||
       field.length > 4096 ||
-      [...field].some((character) => {
-        const code = character.charCodeAt(0);
-        return code <= 0x1f || code === 0x7f;
-      })
+      hasControlCharacter(field)
     ) {
       throw new Error("invalid-backend");
     }

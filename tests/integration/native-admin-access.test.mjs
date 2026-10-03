@@ -404,6 +404,11 @@ test("native admin status requires an exact person/Agent runtime assignment and 
   );
   assert.equal(serviceDenied.statusCode, 403);
   assert.equal(serviceDenied.json().error.code, "FORBIDDEN");
+  // The denial tells key holders what to use instead; it names no Agent state.
+  assert.equal(
+    serviceDenied.json().error.message,
+    "Native admin UI requires a signed-in console session; service API keys cannot open it.",
+  );
 
   // Redeployment makes the Agent desired-running before a worker selects the new revision.
   const pending = await context.fixture.deployAgent(context.namespace.id, context.agent.id);

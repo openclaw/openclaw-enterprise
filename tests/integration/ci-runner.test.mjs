@@ -1390,6 +1390,8 @@ test("audit requires current discovered test files and rejects duplicate ownersh
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/mapped.test.mjs"), "import 'node:test';\n");
   await writeFile(join(root, "tests/integration/unmapped.test.mjs"), "import 'node:test';\n");
+  await mkdir(join(root, "tests/docs"), { recursive: true });
+  await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
   await writeJson(join(root, "manifest.json"), {
     version: 1,
     lanes: {
@@ -1423,7 +1425,15 @@ test("audit requires current discovered test files and rejects duplicate ownersh
     "missing-lane",
     "selected-zero",
     "unmapped-file",
+    "unmapped-file",
   ]);
+  assert.deepEqual(
+    summary.issues
+      .filter((entry) => entry.code === "unmapped-file")
+      .map((entry) => entry.file)
+      .sort(),
+    ["tests/docs/unmapped.test.mjs", "tests/integration/unmapped.test.mjs"],
+  );
 });
 
 test("aggregate requires fixed lane outputs, successful needs, and matching source SHA", async (t) => {

@@ -2,7 +2,7 @@ import { button, element } from "../dom.mjs";
 import { message } from "./list.mjs";
 
 const warning =
-  "OpenClaw uses your assigned role to control conversations, tools and settings. Use OCE for durable configuration; native changes are not recorded in AgentRevisions and may be overwritten by deployment.";
+  "OpenClaw uses your assigned role to control conversations, tools and settings. Use OCE for durable configuration; native changes are not recorded in Agent versions and may be overwritten by deployment.";
 
 function unavailableText(status) {
   switch (status) {
@@ -38,7 +38,11 @@ export function renderRuntimeAccess(context, path) {
   );
 
   let current;
+  // A failed read other than a denial keeps the card, its error and Refresh visible.
+  let failed = false;
   let pending = false;
+  // A refresh that arrives during a read may predate the change it reports; read once more.
+  let rereadAfterPending = false;
 
   function updateControls() {
     reload.disabled = pending;
@@ -49,7 +53,8 @@ export function renderRuntimeAccess(context, path) {
       launch.href = current.url;
     }
     section.hidden =
-      current === undefined || current.status === "disabled" || current.status === "denied";
+      !failed &&
+      (current === undefined || current.status === "disabled" || current.status === "denied");
   }
 
   async function load() {
@@ -59,6 +64,7 @@ export function renderRuntimeAccess(context, path) {
     // OpenClaw needs an exact Agent use grant and runtime assignment; a 403 is audited, so this tab asks once per Agent.
     if (context.deniedReads?.has(statusPath)) {
       current = undefined;
+      failed = false;
       status.textContent = "";
       updateControls();
       return;
@@ -72,6 +78,7 @@ export function renderRuntimeAccess(context, path) {
       if (!context.isCurrent()) {
         return;
       }
+      failed = false;
       if (current.status === "available") {
         status.textContent = "OpenClaw is available for this Agent’s active revision.";
       } else if (current.status === "disabled" || current.status === "denied") {
@@ -90,6 +97,7 @@ export function renderRuntimeAccess(context, path) {
       if (cause.status === 403) {
         context.deniedReads?.remember(statusPath);
       }
+      failed = cause.status !== 403;
       current = undefined;
       status.textContent = "";
       error.textContent = message(cause);
@@ -97,10 +105,24 @@ export function renderRuntimeAccess(context, path) {
       if (context.isCurrent()) {
         pending = false;
         updateControls();
+        if (rereadAfterPending) {
+          rereadAfterPending = false;
+          void load();
+        }
       }
     }
   }
 
   void load();
-  return section;
+  return {
+    section,
+    // Rereads access once, for example after the active version or runtime state changes.
+    refresh() {
+      if (pending) {
+        rereadAfterPending = true;
+        return;
+      }
+      void load();
+    },
+  };
 }

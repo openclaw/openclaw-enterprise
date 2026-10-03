@@ -1002,8 +1002,11 @@ func (app *application) agentCommand() *cobra.Command {
 	stop := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop an Agent while retaining its revision history and persistent state",
-		Args:  idArgs(agentIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		Long: "Stop an Agent while retaining its revision history and persistent state.\n" +
+			"The stop is asynchronous: the Agent's runtime shuts down in the background.\n" +
+			"There is no start command; run \"occ agent deploy ID\" to start the Agent again with a new revision.",
+		Args: idArgs(agentIDArg),
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
@@ -1016,7 +1019,11 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printAgent(agent, false)
+			if err := app.printAgent(agent, false); err != nil {
+				return err
+			}
+			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ agent deploy %s\" to start the Agent again\n", args[0])
+			return nil
 		},
 	}
 	deleteAgent := &cobra.Command{

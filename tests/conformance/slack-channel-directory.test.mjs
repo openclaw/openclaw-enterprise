@@ -8,6 +8,7 @@ import net from "node:net";
 import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const token = "xoxb-fixture";
 
@@ -47,7 +48,13 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
     "http://slack-proxy:3128",
     "http://slack-proxy.openclaw-system.svc.cluster.local:3128",
-    "http://user:pass@openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "user",
+      password: "pass",
+      host: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+      port: 3128,
+    }),
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128/path",
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:65536",
   ]) {

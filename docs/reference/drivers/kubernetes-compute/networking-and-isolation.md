@@ -6,29 +6,28 @@ namespace ownership for the [Kubernetes Compute Driver](../kubernetes-compute.md
 ## Networking
 
 Configure the cluster DNS namespace and Pod labels and the gateway port.
-Set `network.gatewayTrustedProxyCidrs` to a
-nonempty list of valid CIDRs for the actual proxy socket sources. This is trusted
-Installation configuration; the Driver has no production CIDR default and rejects
-all-source ranges, including IPv4-mapped equivalents. Without
-private routing, also configure the namespace and Pod selectors in
+Set `network.gatewayTrustedProxyCidrs` to nonempty, valid CIDRs for the proxy
+socket sources. This trusted Installation setting has no production default and
+rejects all-source ranges, including IPv4-mapped equivalents. Without private
+routing, also configure the namespace and Pod selectors in
 `network.gatewayClients` for your authenticated proxy.
 
 Each tenant starts with default-deny ingress and egress. Explicit policies allow
-DNS, approved gateway clients, and required communication between an Agent's
-gateway and dedicated Harness. Cross-tenant traffic, traffic between different
-Agents, Kubernetes API access, and cloud metadata access remain denied where those
-addresses fall inside the model egress exclusions below.
+DNS (UDP/TCP ports `53` and `5353` through `allow-dns`), approved gateway clients,
+and required communication between an Agent's gateway and dedicated Harness.
+Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
+and cloud metadata access remain denied where those addresses fall inside the
+model egress exclusions below.
 
 For Compute-owned startup failure evidence, plugin reporting, and on-demand
-deployment diagnostics, set
-`network.pluginStatusProxySourceCidrs` to the precise source addresses used by the
-Kubernetes API server when proxying requests to workload Pods. The policy allows
-those sources only to the private status port, TCP/18791. Both worker and API
-ServiceAccounts need namespace-local `get` on `pods/proxy` for their respective
-reads. The ingress rule also applies when an Agent has no enabled plugins.
-Prefer individual `/32` or `/128` addresses. On an
-overlay network, the observed source may be the control-plane node's overlay
-address rather than its node IP. Verify it across nodes with enforced policies.
+deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
+Kubernetes API server's source addresses when proxying requests to workload Pods.
+The policy allows those sources only to the private status port, TCP/18791.
+Worker and API ServiceAccounts each need namespace-local `get` on `pods/proxy`.
+The ingress rule also applies when an Agent has no enabled plugins.
+Prefer individual `/32` or `/128` addresses. On overlay networks, the source may
+be the control-plane node's overlay address rather than its node IP. Verify it
+across nodes with enforced policies.
 An omitted list adds no API-proxy ingress rule and leaves status unavailable
 where the cluster blocks that traffic. It also restarts the Gateway once on each
 dedicated Codex first deploy. This setting does not expose the native
@@ -146,12 +145,11 @@ them only Gateway transport and plugin-status ingress (`allow-agent-runtime` is
 ingress-only for them): no DNS, workspace-node, model or authentication egress.
 Provider Harness readiness and activation reject a Pod with any other profile.
 
-Existing policy names remain stable, and the upgrade restarts no Pod. New
-namespaces receive the narrowed `allow-dns`, `allow-gateway-ingress` and
-`allow-node-gateway`. Earlier namespaces keep their previous versions, which
-ignore the profile, until recreated: Compute never narrows them in place.
-Running Pods keep their templates until Compute next prepares a revision of
-their Agent:
+Existing policy names remain stable; upgrading the controller restarts no Pod.
+Compute preserves existing namespace policy selectors until recreation. During
+Agent preparation, it adds missing DNS ports to the tenant and Gateway policies
+with UID/resource-version guards, preserving peers and other rules. Running Pods
+retain their templates until Compute prepares their Agent's revision:
 
 - Preparing a revision re-renders that Agent's grants and templates with the
   profile; other Agents are untouched. Re-preparing an active revision (as

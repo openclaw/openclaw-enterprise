@@ -973,7 +973,7 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
     .waitFor();
   assert.equal(await page.getByLabel("Password").isVisible(), false);
   await page.getByRole("button", { name: "Continue with GitHub" }).click();
-  await page.getByText("GitHub sign-in is unavailable. Please try again later.").waitFor();
+  await page.getByText("GitHub sign-in is unavailable. Try again later.").waitFor();
 
   await recovery.click();
   assert.equal(await recovery.isVisible(), false);
@@ -1163,7 +1163,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
     const missingId = "ns_00000000-0000-4000-8000-000000000099";
     const { page } = await newMobilePage(t, fixture);
     await login(page, fixture, `/console/namespaces?namespace=${missingId}`);
-    const selector = page.getByRole("combobox", { name: "Choose a valid namespace", exact: true });
+    const selector = page.getByRole("combobox", { name: "Choose a valid Namespace", exact: true });
     await page.locator("#namespace-selector:not(:disabled)").waitFor();
     assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 1);
 
@@ -1344,7 +1344,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
 
   // A stale bookmark must offer recovery on this page without opening the drawer.
-  const selector = page.getByRole("combobox", { name: "Choose a valid namespace", exact: true });
+  const selector = page.getByRole("combobox", { name: "Choose a valid Namespace", exact: true });
   assert.equal(await selector.isVisible(), true);
   assert.equal(await page.locator(".page-header select").count(), 0);
   await selector.selectOption({ label: "Alpha" });

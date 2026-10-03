@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occdev"
 	"github.com/spf13/cobra"
@@ -55,6 +57,11 @@ func developmentCommand() *cobra.Command {
 					process := exec.CommandContext(cmd.Context(), "bash", arguments...)
 					process.Dir, process.Stdin = repository, cmd.InOrStdin()
 					process.Stdout, process.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
+					// On interrupt, terminate rather than kill the script so its EXIT
+					// trap removes the temporary directory with the rendered Compose
+					// configuration; kill it only if it does not stop in time.
+					process.Cancel = func() error { return process.Process.Signal(syscall.SIGTERM) }
+					process.WaitDelay = 10 * time.Second
 					return process.Run()
 				default:
 					return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")

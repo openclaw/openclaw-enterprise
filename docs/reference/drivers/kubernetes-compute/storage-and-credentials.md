@@ -95,8 +95,6 @@ Pod-local temporary `emptyDir` and mounts that subdirectory at `/tmp`. This
 preserves private temp-workspace ancestry for Gateway and Harness processes;
 the fsGroup-writable volume root is never exposed as their runtime temp root.
 
-The same nonroot initializer creates a private temporary directory in each
-Pod's `emptyDir`, mounted at `/tmp` for native safe temporary-file operations.
 OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
 
@@ -145,6 +143,11 @@ through the Codex remote-media reader; there is no shared image mount. Each imag
 initializes its own bundled/plugin assets instead of mounting shared Skill trees.
 The Harness never receives the Gateway claim. Embedded Agents use the private
 claim without creating this Harness claim.
+
+Default node writes include workspace `skills/**`, `.clawhub/lock.json`,
+`.clawdhub/lock.json`, and `.openclaw/skill-installs/**`; explicit policies remain
+unchanged. Skill lifecycle operations require a compatible runtime. See the
+[workspace flow](../../../flows/workspace-files.md) for authorization boundaries.
 
 The worker stops all earlier revisions and waits for their Pods to terminate
 before preparing a dedicated replacement. This includes failed candidates and

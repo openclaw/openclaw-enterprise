@@ -386,7 +386,7 @@ function asRow(value: unknown): WorkRow {
   return value as WorkRow;
 }
 
-function asWork(value: unknown): ControllerWork {
+export function asWork(value: unknown): ControllerWork {
   const row = asRow(value);
   return Object.freeze({
     kind: row.work_kind ?? "lifecycle",

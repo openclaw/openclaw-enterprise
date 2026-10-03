@@ -357,7 +357,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             "section",
             { className: "state-panel namespace-recovery", role: "status" },
             element("h2", {}, "Namespace unavailable"),
-            namespaceSelector("Choose a valid namespace"),
+            namespaceSelector("Choose a valid Namespace"),
           ),
         );
       } else if (feature !== "namespaces") {

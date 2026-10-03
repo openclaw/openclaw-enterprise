@@ -261,6 +261,35 @@ test("Codex Plugin Driver admits only Agent-wide approvers; OpenClaw keeps plugi
   );
 });
 
+test("Plugin Drivers refuse two selection keys for the same native plugin", () => {
+  const aliased = (error) =>
+    error.name === "PluginPolicyValidationError" &&
+    /same plugin.*Keep one selection per plugin/.test(error.message);
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  for (const enabled of [true, false]) {
+    assert.throws(
+      () => occ.validatePolicies({ diffs: { enabled: true }, "occ-plugin:diffs": { enabled } }),
+      aliased,
+    );
+    assert.throws(
+      () =>
+        codex.validatePolicies({
+          [linearPluginId]: { enabled: true },
+          "linear@openai-curated-remote": { enabled },
+        }),
+      aliased,
+    );
+  }
+  occ.validatePolicies({ diffs: { enabled: true } });
+  codex.validatePolicies({
+    ...codexSelection(linearPluginId),
+    ...codexSelection(calendarPluginId),
+  });
+  // Admission-only: revisions admitted before the check still render.
+  validatePolicies("openclaw", { diffs: { enabled: true }, "occ-plugin:diffs": { enabled: true } });
+});
+
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {
   for (const selection of [
     occSelection({ toolDefaults: { approval: "all_actions" } }),

@@ -31,22 +31,44 @@ test("docs build renders every authored page and preserves repository ownership"
   });
   const pages = await markdownFiles(join(root, "docs"));
   const config = JSON.parse(await readFile(join(root, "docs/docs.json"), "utf8"));
+  // Entries are slugs or { page, label }; groups nest, and a tab's hidden pages build too.
+  const entrySlugs = (entry) =>
+    typeof entry === "string"
+      ? [entry]
+      : "group" in entry
+        ? entry.pages.flatMap(entrySlugs)
+        : [entry.page];
   const navigation = config.navigation.languages.flatMap(({ tabs }) =>
-    tabs.flatMap(({ groups }) => groups.flatMap(({ pages }) => pages)),
+    tabs.flatMap(({ groups, hidden = [] }) => [...groups, ...hidden].flatMap(entrySlugs)),
   );
   assert.equal(new Set(navigation).size, navigation.length, "Navigation duplicates a page");
   for (const page of pages) {
+    // `published: false` pages (flow history) stay in the repository, off the site.
+    if (/^---\n(?:(?!---\n)[^\n]*\n)*?published: false\n/.test(await readFile(page, "utf8"))) {
+      continue;
+    }
     const source = relative(join(root, "docs"), page);
     assert.ok(navigation.includes(source.slice(0, -3)), `${source} missing from navigation`);
     const route = source.replace(/(?:^|\/)README\.md$/, "").replace(/\.md$/, "");
     const html = await readFile(join(root, "dist/docs", route, "index.html"), "utf8");
     assert.match(html, /OpenClaw Enterprise/);
     assert.match(html, /<h1\b/);
-    assert.doesNotMatch(html, /ask-molty|docs\.openclaw\.ai|discord\.gg/);
+    // The site chrome carries no upstream assistant, docs or chat links; authored page
+    // content may still cite upstream OpenClaw docs.
+    const chrome = html.replace(/<main id="content"[\s\S]*<\/main>/, "");
+    assert.doesNotMatch(chrome, /ask-molty|docs\.openclaw\.ai|discord\.gg/);
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/quickstart\//);
-  assert.match(index, /github\.com\/openclaw\/openclaw-enterprise\/blob\/main\/specs\/README\.md/);
+  // A link out of docs/ points at the repository on GitHub.
+  const specifications = await readFile(
+    join(root, "dist/docs/contributing/specifications/index.html"),
+    "utf8",
+  );
+  assert.match(
+    specifications,
+    /href="https:\/\/github\.com\/openclaw\/openclaw-enterprise\/blob\/main\/specs\/README\.md"/,
+  );
   const api = await readFile(join(root, "dist/docs/reference/api/index.html"), "utf8");
   assert.match(api, /Development OCC API reference/);
   assert.match(api, /id="get-namespacesnamespaceidagentsagentidworkspacefilesname"/);

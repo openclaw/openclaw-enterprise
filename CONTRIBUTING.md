@@ -153,3 +153,55 @@ repeat an uncertain merge. Verify the merged commit and `main` after success.
 Repository access and a green check do not authorize a release, deployment, or
 settings change. Keep the existing [MIT license](LICENSE) and third-party
 attribution intact.
+
+## Recognize contributors
+
+Preserve original commit authors when preparing someone else's change. When
+transplanting or jointly authoring work, add a verified human `Co-authored-by`
+trailer where needed. Credit material review, documentation, and other non-code
+help in the PR description. Credit follows the work; running the merge does not
+make someone its author. Recognition does not grant repository permissions.
+
+Before a release, or when correcting an omission, refresh the README wall from
+the repository root with Node.js 24 or newer and an authenticated GitHub CLI:
+
+```sh
+pnpm contributors:update
+```
+
+You can also run `node scripts/update-contributors.mjs` directly; the generator
+uses only Node built-ins and does not require installing npm packages.
+
+The command needs only read access to repository metadata, contributors, pull
+requests, and public user profiles. Existing `gh` authentication is sufficient;
+no administrator access or GitHub App is needed. It prints the observed default
+branch SHA and writes only the README contributor block. Review the diff and
+submit it through the normal PR process. Refreshes are manual.
+
+The wall combines GitHub contributors and authors of PRs merged into the default
+branch, deduplicates by account ID, and sorts by current login. Documentation
+contributors and default avatars are included. GitHub bot accounts are omitted.
+The contributor API can lag, and co-authors or people helping outside merged PRs
+may need explicit inclusion. Merged PRs whose author is unavailable are skipped;
+previously published credit still requires an explicit correction before removal.
+
+Use [scripts/contributors.json](scripts/contributors.json) for corrections. Keys
+are numeric GitHub account IDs, which survive login changes. Each entry requires
+an HTTPS `url` pointing to public evidence and a nonempty `reason`, plus one of:
+
+- `include: true` to credit a missing contributor.
+- `displayName` to change an included person's avatar alt text. Combine it with
+  `include: true` when that person is absent from automatic discovery.
+- `exclude: true` for a service account or requested opt-out.
+
+Find the ID with `gh api users/LOGIN --jq .id`. Do not copy upstream's contributor
+list or store private email addresses. Never set both `include` and `exclude`.
+For an opt-out without a public request, link the correction PR and keep private
+correspondence out of the repository.
+
+Collection and validation finish before the README is written. If authentication,
+rate limits, or connectivity fail, fix access or wait and rerun. If an account is
+missing or deleted, inspect its previous credit and add an evidence-backed
+inclusion or exclusion; the generator refuses to silently remove it. Correct
+malformed JSON and duplicate or missing README markers before retrying. If the
+default branch or README changes during collection, rerun against the new state.

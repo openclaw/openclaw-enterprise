@@ -614,3 +614,104 @@ func TestAgentRuntimePrintsPodsAndSources(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"id":"agt_1","name":"stopped-agent","namespaceId":"ns_1","desiredRuntimeState":"stopped"},"meta":{"requestId":"req_1"}}`)
+	}))
+	t.Cleanup(server.Close)
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	command := New(&out, &errOut)
+	command.SetArgs([]string{"agent", "stop", "agt_1", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"POST /namespaces/ns_1/agents/agt_1/stop"}; !slices.Equal(requests, want) {
+		t.Fatalf("requests = %v, want %v", requests, want)
+	}
+	if !strings.Contains(out.String(), "stopped-agent") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+		t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+	}
+	// Structured output stays machine-readable: the notice goes to stderr only.
+	out.Reset()
+	errOut.Reset()
+	command = New(&out, &errOut)
+	command.SetArgs([]string{"agent", "stop", "agt_1", "-o", "json", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil || decoded["id"] != "agt_1" {
+		t.Fatalf("json stdout = %q, %v", out.String(), err)
+	}
+	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+		t.Fatalf("json stderr = %q, want %q", errOut.String(), want)
+	}
+	stop, _, err := New(io.Discard, io.Discard).Find([]string{"agent", "stop"})
+	if err != nil || !strings.Contains(stop.Long, `run "occ agent deploy ID" to start the Agent again`) {
+		t.Fatalf("occ agent stop help = %q, %v", stop.Long, err)
+	}
+}
+
+func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
+	var followed bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		followed = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	for _, testCase := range []struct {
+		name     string
+		location string
+		want     string
+	}{
+		{
+			name:     "other origin",
+			location: "https://user:pass@" + strings.TrimPrefix(target.URL, "http://") + "/installation?code=secret#frag",
+			want:     "redirected to https://" + strings.TrimPrefix(target.URL, "http://") + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + strings.TrimPrefix(target.URL, "http://") + " ",
+		},
+		{name: "same origin", location: "/elsewhere/installation", want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var sawKey string
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sawKey = r.Header.Get("x-api-key")
+				w.Header().Set("location", testCase.location)
+				w.WriteHeader(http.StatusPermanentRedirect)
+			}))
+			defer origin.Close()
+			keyFile := filepath.Join(t.TempDir(), "service-key.json")
+			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := New(io.Discard, io.Discard)
+			command.SetArgs([]string{"installation", "get", "--url", origin.URL, "--service-key-file", keyFile})
+			err := command.Execute()
+			if err == nil {
+				t.Fatal("expected the redirect to fail the command")
+			}
+			if !strings.Contains(err.Error(), "HTTP 308") || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %q, want it to contain HTTP 308 and %q", err, testCase.want)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "pass") {
+				t.Fatalf("error echoed redirect credentials: %q", err)
+			}
+			if testCase.name == "same origin" && !strings.Contains(err.Error(), origin.URL+"/elsewhere/installation") {
+				t.Fatalf("relative Location was not resolved against the request: %q", err)
+			}
+			if sawKey != "test-key" || followed {
+				t.Fatalf("origin key = %q, redirect followed = %v", sawKey, followed)
+			}
+		})
+	}
+}

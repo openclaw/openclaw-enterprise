@@ -1383,6 +1383,7 @@ for (const driver of ["docker"]) {
 for (const scenario of [
   "compose-up-failed",
   "cluster-create-failed",
+  "node-dns-refused",
   "api-mismatch",
   "api-unauthorized",
 ]) {
@@ -1411,6 +1412,16 @@ for (const scenario of [
     if (scenario === "cluster-create-failed") {
       assert.match(result.stderr, /partial cluster creation/);
     }
+    if (scenario === "node-dns-refused") {
+      // A node resolver that refuses queries stops startup before the first image pull.
+      assert.match(result.stderr, /cannot resolve registry-1\.docker\.io/);
+      assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
+      const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+      assert.equal(
+        commands.some(({ command, args }) => command === "k3d" && args[0] === "image"),
+        false,
+      );
+    }
     if (scenario.startsWith("api-")) {
       await assert.rejects(stat(keyOutput), { code: "ENOENT" });
       assert.match(
@@ -1420,6 +1431,22 @@ for (const scenario of [
     }
   });
 }
+
+test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses queries", async (t) => {
+  const fixture = await kubernetesFixture(t, "node-dns-refused");
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "none";
+  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
+  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
+  const result = runDevUp([], fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot resolve registry-1\.docker\.io/);
+  assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
+  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")).clusters, [
+    "occ-dev-unrelated",
+  ]);
+});
 
 test("Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry", async (t) => {
   const fixture = await kubernetesFixture(t, "cluster-delete-failed");

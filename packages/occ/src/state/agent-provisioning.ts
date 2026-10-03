@@ -5,7 +5,7 @@ import type {
   ProvisioningEffectReceipt,
   ProvisioningEffectTarget,
 } from "../provisioning-effects.ts";
-import type { WorkClaim } from "./controller-work.ts";
+import type { ControllerWork, WorkClaim } from "./controller-work.ts";
 
 export type ControllerWorkKind = "lifecycle" | "provisioning";
 
@@ -61,8 +61,15 @@ export interface AgentProvisioningReplay {
   readonly replayed: boolean;
 }
 
+export interface AgentProvisioningWithWork {
+  readonly record: Readonly<AgentProvisioningRecord>;
+  readonly work?: Readonly<ControllerWork>;
+}
+
 export interface AgentProvisioningReadRepository {
   findByWorkId(workId: string): Promise<Readonly<AgentProvisioningRecord> | undefined>;
+  /** The job and its queue row from one statement, so both reflect the same commits. */
+  findWithWork(workId: string): Promise<Readonly<AgentProvisioningWithWork> | undefined>;
   hasPendingNamespaceProvisioning(namespaceId: string): Promise<boolean>;
   findByAgent(
     namespaceId: string,
@@ -263,5 +270,3 @@ export function copyProvisioningRecord(
 ): Readonly<AgentProvisioningRecord> {
   return immutableCopy(record);
 }
-
-export const provisioningPhaseOrder = Object.freeze({ ...PHASE_ORDER });

@@ -312,6 +312,56 @@ test(
         description,
       );
     }
+    const oidc = {
+      "auth.oidc.enabled": "true",
+      "auth.recoveryUserId": "Xk3u9pQ2rT7vW1yZ",
+      "auth.oidc.issuer": "https://idp.example.invalid/realms/occ",
+      "auth.oidc.authorizationUrl": "https://idp.example.invalid/realms/occ/auth",
+      "auth.oidc.tokenUrl": "https://idp.example.invalid/realms/occ/token",
+      "auth.oidc.jwksUrl": "https://idp.example.invalid/realms/occ/certs",
+    };
+    const gatewayRouting = {
+      "gatewayRouting.enabled": "true",
+      "gatewayRouting.gatewayClassName": "private-envoy-gateway",
+      "gatewayRouting.apiKeySecretName": "occ-gateway-api-key",
+    };
+    const repositoryCredentials = {
+      "repositoryCredentials.enabled": "true",
+      "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
+      "repositoryCredentials.backendId": "github-primary",
+      "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
+      "repositoryCredentials.serviceConfigSecretName": "repository-config",
+      "repositoryCredentials.appKeySecretName": "repository-app-key",
+      "repositoryCredentials.tlsSecretName": "repository-tls",
+      "repositoryCredentials.publicCaSecretName": "repository-public-ca",
+      "repositoryCredentials.upstreamCidrs[0]": "198.51.100.0/24",
+    };
+    const executionCluster = {
+      "executionCluster.enabled": "true",
+      "executionCluster.apiKubeconfigSecretName": "execution-api",
+      "executionCluster.workerKubeconfigSecretName": "execution-worker",
+      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    };
+    for (const [feature, secrets] of [
+      [oidc, ["occ-oidc-login"]],
+      [gatewayRouting, ["occ-gateway-api-key"]],
+      [
+        repositoryCredentials,
+        ["repository-config", "repository-app-key", "repository-tls", "repository-public-ca"],
+      ],
+      [executionCluster, ["execution-api", "execution-worker"]],
+    ]) {
+      await render({ ...loggingValues, ...feature });
+      for (const secret of secrets) {
+        for (const field of ["configSecretName", "envSecretName"]) {
+          await assert.rejects(
+            render({ ...loggingValues, ...feature, [`logging.collector.${field}`]: secret }),
+            ({ stderr }) => /logging\.collector Secrets must be dedicated/.test(stderr),
+            `${field}=${secret}`,
+          );
+        }
+      }
+    }
   },
 );
 

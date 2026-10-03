@@ -48,8 +48,7 @@ file holds the same classified and redacted records as the page, one per line
 (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, plus `GAP` and `WITHHELD`
 rows), after a `#` header naming the Agent, revision, Pod and container.
 Only **Include debug** applies to the download. Each download is a separate audited read.
-The saved file stays on your device, and
-redaction is best-effort, so handle it as sensitive and delete it when done.
+Redaction is best-effort: handle the file as sensitive and delete it when done.
 
 The HTTP API has the same two reads:
 
@@ -124,17 +123,20 @@ returning it:
   errors and warnings, like `Gateway failed to start: ...`, are kept.
 - **codex**: Codex tracing records (level, target, message). Turns show as
   `turn started` and `turn completed` (info, with model, turn ID, tokens and
-  busy time); tool calls keep their name and duration. Other span records are
+  busy time); tool calls keep their name and duration. Only app-server, login,
+  CA-setup, plugin-manifest, model-connection, proxy-startup and retry messages
+  keep their text; others, such as `codex_core` (which logs chat text), read
+  `Codex message withheld`. Other
+  span records are
   `debug`; below `logging.level: debug` the Harness drops them, readiness-probe
   connections and repeated remote-control retries (one per 10 minutes is kept).
 - **text**: plain lines up to 4 KiB, including lines that start with a bracketed
   component tag such as `[node-host] advertised commands: ...`.
 
-Any other structured output, including Codex JSON-RPC protocol traffic, is
-**withheld**: the page shows a count, never the content. Oversized lines, and
+Other structured output, including Codex JSON-RPC protocol traffic, is
+**withheld**: the page shows a count, never content. Oversized lines, and
 malformed lines that start like a JSON object or array, are withheld the same way,
-and so is a pretty-printed (multi-line) JSON value: its opening line, every member
-line and its closing line become one withheld row.
+and a pretty-printed (multi-line) JSON value becomes one withheld row.
 
 Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
@@ -151,9 +153,9 @@ END or at the first line that is not base64, a PEM header or blank; replayed or
 undated lines cannot. PEM-shaped lines may stay masked for the rest of that view.
 A restart, Pod change, expired cursor or new view starts without that context,
 and a page that begins inside a block whose BEGIN it never saw cannot mask it.
-Redaction is best-effort pattern masking: an opaque token under 40 characters
-with no known prefix and no key name or `Bearer` next to it stays visible. Do
-not rely on redaction to make a runtime that prints secrets safe.
+Redaction is best-effort: an opaque token under 40 characters with no known
+prefix and no key name or `Bearer` next to it stays visible. Do not rely on
+redaction to make a runtime that prints secrets safe.
 Control characters are removed and messages are capped at 8 KiB.
 
 Kubernetes Event messages in the runtime status are redacted the same way, and
@@ -287,8 +289,7 @@ grants `pods/log get` and `events get,list` to the tenant API and Gateway observ
 roles and sets `OCC_AGENT_RUNTIME_LOGS_ENABLED`. Set it to `false` to remove the
 grants; both routes then answer `501`. Tenant RoleBindings you create by hand
 need the same rules; see [production Agents](../deploy/production-agents.md).
-Two-cluster installs set the same value on the `openclaw-execution` chart, which
-also grants `pods get,list` to its tenant API role.
+Two-cluster installs set the same value on the `openclaw-execution` chart.
 
 These grants are read-only and namespace-scoped through your RoleBindings.
 Kubernetes RBAC cannot tell Agents apart, so OCC reads only Pods that carry the

@@ -24,7 +24,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: openclaw-enterprise-{{ $component }}
-    namespace: {{ $.Release.Namespace }}
+    namespace: {{ $.Release.Namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -39,11 +39,16 @@ rules:
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [list]
-  {{- if .Values.agentRuntimeLogs.enabled }}
-  # Runtime status and log reads for Harness Pods; OCC re-checks revision ownership.
+  # Runtime diagnostics and image provenance list Harness Pods and read their
+  # private status port through the Pod proxy, as the control-plane observer allows.
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    verbs: [get]
+  {{- if .Values.agentRuntimeLogs.enabled }}
+  # Runtime log reads: OCC re-checks revision ownership of every named Pod.
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]

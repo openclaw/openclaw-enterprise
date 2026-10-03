@@ -20,6 +20,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 function jsonLines(text) {
   return text
@@ -58,7 +59,11 @@ test("Installation startup validates the optional external observability URL", a
   for (const [observability, message] of [
     ...[
       "javascript:alert(1)",
-      "https://user:pass@example.test",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "pass",
+        host: "example.test",
+      }),
       "relative",
       "https://x.example/#f",
     ].map((invalid) => [{ url: invalid }, /observability\.url/]),

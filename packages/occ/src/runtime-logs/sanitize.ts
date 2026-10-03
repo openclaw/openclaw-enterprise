@@ -350,14 +350,77 @@ function codexSpanLifecycle(
   };
 }
 
+// Codex messages shown as written. `codex_core` formats can interpolate chat text and
+// model-proposed values (`event_mapping` logs `Output text in user message: <text>`),
+// so only reviewed operational targets (app-server and its listener and remote-control
+// loops, login, CA setup, plugin manifests) and reviewed fixed-format messages keep
+// their text. Every other target, `codex_otel` included, shows a fixed message.
+// The Collector keeps message text only from `codex_app_server`.
+const CODEX_MESSAGE_TARGET =
+  /^(?:codex_app_server|codex_app_server_transport::transport::(?:websocket|remote_control)|codex_login|codex_http_client::custom_ca|codex_core_plugins)(?:::|$)/;
+// A configured model endpoint (provider base URL plus path) or a loopback listener.
+const CODEX_ENDPOINT_URL = String.raw`wss?://\S{1,2048}`;
+const CODEX_SOCKET_ADDRESS = String.raw`(?:\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:.]{2,45}\]):\d{1,5}`;
+// A WebSocket connect error as tungstenite's Display prints it: its error kind, then an
+// OS error, an HTTP status code and reason (never the body), or a proxy, URL or TLS
+// diagnostic. Anchored to the kinds so a changed error type falls back to withholding.
+const CODEX_CONNECT_ERROR = String.raw`(?:Connection closed normally|Trying to work with closed connection|Write buffer is full|Attack attempt detected|(?:IO|TLS|URL|HTTP|HTTP format|UTF-8 encoding) error: [^\n]{1,1000}|WebSocket protocol error: [^\n]{1,1000}|Space limit exceeded: [^\n]{1,1000})`;
+// Reviewed fixed-format diagnostics (codex-cli 0.158.0) from targets that also log
+// payloads, so the target as a whole is never kept: `responses_websocket` logs
+// `failed to parse websocket event: <err>, data: <event>`, and the network proxy logs
+// the hosts and paths of sandboxed requests. The variable parts allowed here are a
+// configured endpoint URL, a socket address, counts, durations and a WebSocket
+// connect error.
+const CODEX_FIXED_MESSAGES: Readonly<Record<string, readonly (string | RegExp)[]>> = Object.freeze({
+  "codex_api::endpoint::responses_websocket": Object.freeze([
+    new RegExp(`^connecting to websocket: ${CODEX_ENDPOINT_URL}$`),
+    new RegExp(`^successfully connected to websocket: ${CODEX_ENDPOINT_URL}$`),
+    new RegExp(
+      `^failed to connect to websocket: ${CODEX_CONNECT_ERROR}, url: ${CODEX_ENDPOINT_URL}$`,
+    ),
+  ]),
+  "codex_core::client": Object.freeze(["falling back to HTTP"]),
+  "codex_core::responses_retry": Object.freeze([
+    "stream connection failed; waiting to retry",
+    "remote compaction v2 stream failed; retrying request after delay",
+    /^stream disconnected - retrying sampling request \(\d{1,10}\/\d{1,10} in [\d.]{1,24}(?:ns|µs|ms|s)\)\.\.\.$/,
+  ]),
+  "codex_core::tools::parallel": Object.freeze(["tool call completed"]),
+  "codex_network_proxy::certs": Object.freeze(["generated process-local MITM CA"]),
+  "codex_network_proxy::http_proxy": Object.freeze([
+    new RegExp(`^HTTP proxy listening on ${CODEX_SOCKET_ADDRESS}$`),
+  ]),
+  "codex_network_proxy::proxy": Object.freeze([
+    "allowUnixSockets and dangerouslyAllowAllUnixSockets are macOS-only; requests will be rejected on this platform",
+    "network.enabled is false; skipping proxy listeners",
+  ]),
+  "codex_network_proxy::socks5": Object.freeze([
+    new RegExp(`^SOCKS5 proxy listening on ${CODEX_SOCKET_ADDRESS}$`),
+    "SOCKS5 UDP and non-HTTPS SOCKS5 TCP are blocked in limited mode; HTTPS SOCKS5 TCP requires MITM inspection",
+  ]),
+});
+const CODEX_WITHHELD_MESSAGE = "Codex message withheld";
+
+function codexMessage(target: string, message: string): string {
+  if (CODEX_MESSAGE_TARGET.test(target)) {
+    return message;
+  }
+  const formats = Object.hasOwn(CODEX_FIXED_MESSAGES, target) ? CODEX_FIXED_MESSAGES[target]! : [];
+  const fixed = formats.some((format) =>
+    typeof format === "string" ? format === message : format.test(message),
+  );
+  return fixed ? message : CODEX_WITHHELD_MESSAGE;
+}
+
 function codexRecord(value: Readonly<Record<string, unknown>>, message: string): Classified {
   const fields = pickFields(value, [...STRUCTURED_FIELDS, ...CODEX_FIELDS]);
+  const target = value.target as string;
   return {
     type: "line",
     kind: "codex",
     level: level(value.level),
-    message,
-    subsystem: value.target as string,
+    message: codexMessage(target, message),
+    subsystem: target,
     ...(fields === undefined ? {} : { fields }),
   };
 }

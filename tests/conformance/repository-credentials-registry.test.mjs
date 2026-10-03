@@ -9,6 +9,7 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
+import { hasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import {
   githubConfigurationData,
   serviceConfigurationData,
@@ -199,6 +200,15 @@ test("GitHub factory snapshots a registry-selected write grant through session a
   service.close(opened.session.sessionId);
 });
 
+test("hasControlCharacter flags C0 controls and DEL but no other characters", () => {
+  for (const code of [0x00, 0x09, 0x0a, 0x1f, 0x7f]) {
+    assert.equal(hasControlCharacter(`a${String.fromCharCode(code)}b`), true, code.toString(16));
+  }
+  // Space, tilde, C1 controls, a line separator, an astral character and a lone surrogate pass.
+  assert.equal(hasControlCharacter(" ~\u0080\u009f\u2028\u{1f600}\ud800"), false);
+  assert.equal(hasControlCharacter(""), false);
+});
+
 test("push-ref policy normalizes branch refs and changes grant identity", () => {
   const request = { namespaceId: "namespace-a", repositoryRef: "application" };
   const resolvePolicy = (policy) => {
@@ -240,6 +250,7 @@ test("push-ref policy normalizes branch refs and changes grant identity", () => 
     ["refs/heads/a.lock"],
     ["refs/heads/a@{b"],
     ["refs/heads/a\nb"],
+    ["refs/heads/a b"],
     ["refs/heads/a?"],
     ["refs/heads/a//b"],
   ]) {

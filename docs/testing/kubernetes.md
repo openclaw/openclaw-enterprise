@@ -70,19 +70,22 @@ node fencing, or data movement between nodes. Use a disposable cluster.
 
 ### Fixture images and security controls
 
-The disposable `tests/fixtures/kubernetes` image runs as nonroot and uses the
-Compute Driver's generated Namespace labels, ResourceQuota, LimitRange,
-NetworkPolicies, Pod and container security settings, and bounded resources.
-Its local mutable tag and unpinned `docker.io/library/node:24-bookworm` base are limited to this
-disposable fixture; production images still require the documented pinning and
-review.
+The nonroot `tests/fixtures/kubernetes` image uses generated Namespace labels,
+ResourceQuota, LimitRange, NetworkPolicies, and container security settings.
+The suite verifies tenant isolation, resource bounds, seccomp, dropped
+capabilities, and a read-only root filesystem. Its mutable tag and unpinned
+`docker.io/library/node:24-bookworm-slim` base are fixture-only; production images
+require pinning and review.
 
-The suite checks tenant isolation, resource bounds, nonroot execution, seccomp,
-dropped capabilities, and a read-only root filesystem. Skipped cases prove no
-enforcement. API-plus-worker coverage uses synthetic Secrets for binding admission
-and gateway projection; genuine channel runtime needs the images and credentials below.
-The Driver lifecycle case clones a workload Pod; removing, emptying or
-changing its network profile must deny DNS between successful controls.
+API-plus-worker Secrets are synthetic; channel runtime needs the images and
+credentials below. Removing, emptying, or changing a cloned workload Pod's network
+profile must deny DNS between successful controls.
+
+The API-plus-worker case checks UDP/TCP 5353 DNS from embedded Agents, dedicated
+Harnesses, and Gateways. An unselected CoreDNS peer and port 5354 are denied
+between successful controls; an unrestricted Pod verifies listener availability.
+Readiness gates exclude fixtures from cluster DNS endpoints. This proves k3d
+enforcement, not OpenShift.
 
 Live Configuration ConfigMap CRUD and least-privilege RBAC cases require the
 selected disposable cluster and tenant credentials. Without those inputs, they
@@ -248,31 +251,37 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-Three non-Slack runtime cases must pass: dedicated Codex, embedded OpenClaw,
-and the extended Secret lifecycle case. Both topologies use OCC Secret-backed
-Agent `harnessAuth` bindings. The Secret API case verifies native SecretRefs, exact grants and denial,
-shared Secrets, rotation, and redeployment. It prepares those Secrets and grants
-itself. Routing, Slack and OTLP cases live in separate files, so this invocation
-contains only its three required runtime cases.
+Non-Slack cases cover dedicated Codex, embedded OpenClaw, and Secret lifecycle.
+Both topologies use OCC Secret-backed Agent `harnessAuth` bindings. The Secret API
+case covers native SecretRefs, grants, denial, sharing, rotation, and redeployment.
 
-The ordinary suite uses the real production API and worker in the Node test
-process. The gateway-routing suite runs the API as a Kubernetes Deployment so
-it reaches Envoy through the normal ClusterIP Service endpoint; its worker and
-test coordinator remain in the Node test process. Neither suite installs the
-controller with Helm. Missing selected-suite
-prerequisites fail; an unselected suite skips. Default Codex version expectation
-is `0.158.0`; see [runtime settings](#kubernetes-real-runtime-test-environment)
-for version assertions and alternate image variables.
+The ordinary suite runs the production API and worker in Node. Gateway-routing
+deploys the API in Kubernetes for normal Envoy-to-Service routing; its worker
+and coordinator run in Node. Neither installs the controller with Helm.
+Selected suites fail on missing prerequisites; unselected suites skip.
+Codex defaults to `0.158.0`; see [runtime settings](#kubernetes-real-runtime-test-environment)
+for version assertions and alternate images.
+
+### Candidate Skill source lifecycle
+
+Use candidate images supporting paired-node Skill uploads and local `zip`:
+
+```sh
+OCC_TEST_SKILL_SOURCE_LIFECYCLE=1 node --env-file="$TEST_ENV_FILE" --test \
+  --test-name-pattern='candidate dedicated Skill source' \
+  tests/integration/harness-topology-k3d-real.test.mjs
+```
+
+Verifies source replacement, denied writes preserving bytes/lockfiles, and recovery
+through OCC redeploy. No conversation turn; unsupported runtime images fail.
 
 ### Transcript persistence
 
-Both Harness topologies require a gateway image that stores transcripts in
-SQLite. The persistence cases query the test conversation through
-`session_nodes` and `transcript_events`, then verify its history and media after
-gateway Pod replacement. An older image that writes JSONL transcripts cannot
-exercise this storage path, even if it uses SQLite for authentication or memory.
-Setting `OCC_TEST_KUBERNETES_OPENCLAW_VERSION` alone does not verify transcript
-storage behavior.
+Both Harness topologies require SQLite transcripts. Persistence cases query
+`session_nodes` and `transcript_events`, then verify conversation history and media
+after gateway Pod replacement. Images with JSONL transcripts cannot exercise
+this path, even with SQLite authentication or memory.
+`OCC_TEST_KUBERNETES_OPENCLAW_VERSION` alone does not verify transcript storage.
 
 For Secret changes, run the API and PostgreSQL suites as well as the real
 Kubernetes runtime cases. Route/schema checks and documentation checks alone do

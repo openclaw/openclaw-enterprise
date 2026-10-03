@@ -41,6 +41,8 @@
         "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
         "runtime image Gateway exits if OpenClaw crashes during a peer status outage",
+        "runtime image Gateway rejects a peer changed during replacement startup",
+        "runtime image Gateway respawns OpenClaw in place when its Harness peer changes",
         "runtime image validates the configuration dedicated native OpenClaw renders",
         "runtime image Codex Harness stays unready until its model probe passes",
         "runtime image Codex Harness fails fast when the provider rejects its credential",

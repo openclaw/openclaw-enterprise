@@ -59,10 +59,12 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
+  AGENT_NAME_CONFLICT,
   DependencyUnavailableError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   ResourceConflictError,
+  ResourceStateConflictError,
   ScopeViolationError,
 } from "../errors.ts";
 import {
@@ -2044,7 +2046,7 @@ function repositories(
           (existing) => existing.namespaceId === agent.namespaceId && existing.name === agent.name,
         )
       ) {
-        throw new ResourceConflictError("An Agent with this name already exists in the Namespace.");
+        throw new ResourceStateConflictError(AGENT_NAME_CONFLICT);
       }
       if (
         Array.from(snapshot.agents.values()).some(
@@ -2576,6 +2578,7 @@ function repositories(
     repositorySessions,
     provisioning: {
       findByWorkId: provisioningAbsent,
+      findWithWork: provisioningAbsent,
       hasPendingNamespaceProvisioning: provisioningPendingAbsent,
       findByAgent: provisioningAbsent,
       findByConfiguration: provisioningAbsent,

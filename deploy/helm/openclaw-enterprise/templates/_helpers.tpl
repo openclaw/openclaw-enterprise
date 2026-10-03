@@ -344,7 +344,7 @@
 
 {{- define "openclaw.labels" -}}
 app.kubernetes.io/name: openclaw-enterprise
-app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/instance: {{ .root.Release.Name | quote }}
 app.kubernetes.io/component: {{ .component }}
 app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end -}}
@@ -369,8 +369,8 @@ capabilities:
 - name: {{ .name }}
   valueFrom:
     secretKeyRef:
-      name: {{ .secretName }}
-      key: {{ .key }}
+      name: {{ .secretName | quote }}
+      key: {{ .key | quote }}
 {{- end -}}
 
 {{- define "openclaw.slackProxy.serviceName" -}}

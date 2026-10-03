@@ -108,6 +108,11 @@ function podCard(pod) {
   }
   add("Age", age(pod.createdAt));
   const warnings = pod.events.filter(({ type }) => type === "Warning").slice(0, 5);
+  // A Ready Pod whose containers are ready and never restarted has recovered from its
+  // warnings (typically startup readiness probes or a scheduling retry). Show them as
+  // history so a healthy first deploy does not read as a fault.
+  const settled =
+    pod.ready && pod.containers.every(({ ready, restartCount }) => ready && restartCount === 0);
   return element(
     "article",
     { className: "runtime-pod", "aria-label": `${SOURCE_LABELS[pod.role]} Pod ${pod.name}` },
@@ -118,10 +123,20 @@ function podCard(pod) {
     ),
     element("p", { className: "muted" }, pod.name),
     details,
+    warnings.length && settled
+      ? element(
+          "p",
+          { className: "muted runtime-events-note" },
+          "Earlier warnings. The Pod is Ready now and has not restarted.",
+        )
+      : null,
     warnings.length
       ? element(
           "ul",
-          { className: "runtime-events", "aria-label": "Recent warning Events" },
+          {
+            className: settled ? "runtime-events runtime-events-settled" : "runtime-events",
+            "aria-label": settled ? "Earlier warning Events" : "Recent warning Events",
+          },
           ...warnings.map((event) =>
             element(
               "li",
@@ -321,6 +336,21 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     tabindex: "0",
     "aria-label": "Runtime log output",
   });
+  // Detaching the view for Back's cache resets the pane to the top; resume restores the
+  // reader's last position so follow neither stalls as "scrolled up" nor jumps. A reader
+  // at the bottom returns to the bottom, even if a late scroll event or resize moved it.
+  let paneScrollTop = 0;
+  let paneAtBottom = true;
+  pane.addEventListener(
+    "scroll",
+    () => {
+      if (pane.isConnected) {
+        paneScrollTop = pane.scrollTop;
+        paneAtBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
+      }
+    },
+    { passive: true },
+  );
 
   let description = null;
   let cursor = null;
@@ -337,6 +367,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   let lastStream = null;
 
   const current = () => context.isCurrent();
+  // Runtime reads are live and audited: a view restored by Back resumes them instead of
+  // having the console replay every one of them to revalidate the cached view.
+  const read = (path, options = {}) => context.request(path, { ...options, revalidate: false });
 
   function selectedSource() {
     return description?.sources.find(({ id }) => id === sourceSelect.value);
@@ -478,7 +511,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!document.hidden) {
       try {
         const first = description === null;
-        description = await context.request(base);
+        description = await read(base);
         if (!current()) {
           return;
         }
@@ -567,7 +600,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     query.set("download", "true");
     downloadButton.disabled = true;
     try {
-      const text = await context.request(`${base}/logs?${query}`, { responseType: "text" });
+      const text = await read(`${base}/logs?${query}`, { responseType: "text" });
       if (!current()) {
         return;
       }
@@ -655,7 +688,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
     let retryAfter = FOLLOW_POLL_MS;
     try {
-      const page = await context.request(`${base}/logs?${query}`);
+      const page = await read(`${base}/logs?${query}`);
       if (!current() || restartPending) {
         return;
       }
@@ -688,10 +721,10 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         return;
       }
       if (error.code === "RUNTIME_LOGS_CURSOR_INVALID") {
-        // A new audited view replaces a rejected cursor.
+        // A new audited view replaces a rejected cursor. It starts in `finally`, after
+        // this read releases `reading`, so the new read keeps its own guard.
         cursor = null;
-        reading = false;
-        void readLogs({ restart: true });
+        restartPending = true;
         return;
       }
       if (restart) {
@@ -782,6 +815,16 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   if (logsDenied) {
     showLogError(runtimeErrorText({ status: 403 }, "logs"));
   }
+  // Timers that fired while Back's cache held this view stopped; pick both polls up again.
+  context.onResume?.(() => {
+    if (current()) {
+      pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
+      void loadStatus();
+      if (following) {
+        scheduleFollow(0);
+      }
+    }
+  });
   applyFilters();
   void loadStatus();
   return section;

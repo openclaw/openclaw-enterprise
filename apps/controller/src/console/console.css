@@ -2184,6 +2184,16 @@ summary:focus-visible {
   color: var(--warning);
   font-size: 13px;
 }
+.runtime-events-note {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.runtime-events-note + .runtime-events {
+  margin-top: 4px;
+}
+.runtime-events-settled {
+  color: var(--muted);
+}
 .log-toolbar {
   display: flex;
   flex-wrap: wrap;

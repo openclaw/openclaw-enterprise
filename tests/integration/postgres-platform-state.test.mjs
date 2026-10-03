@@ -578,6 +578,31 @@ test(
       });
     });
 
+    // The Namespace-unique name constraint surfaces as an actionable duplicate-name conflict.
+    const duplicateAgentId = `agt_${randomUUID()}`;
+    await assert.rejects(
+      state.transact((unit) =>
+        unit.agents.createAgent({
+          id: duplicateAgentId,
+          namespaceId,
+          name: "Provisioning success",
+          configurationId,
+          backendId: null,
+          harnessAuth: { method: "runtime" },
+          executionMode: "embedded",
+          servicePrincipalId: `service-agent-${duplicateAgentId}`,
+          desiredRuntimeState: "stopped",
+          status: "active",
+          createdAt,
+        }),
+      ),
+      {
+        name: "ResourceStateConflictError",
+        message:
+          "An Agent with this name already exists in this Namespace. Choose a different name.",
+      },
+    );
+
     const queue = new PostgresWorkQueue(pool);
     await queue.enqueue({
       kind: "provisioning",

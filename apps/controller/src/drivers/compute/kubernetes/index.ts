@@ -3482,15 +3482,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (observed.status?.phase !== "Active") {
       return result;
     }
-    for (const policy of this.networkPolicies(tenantOwnership, namespace)) {
-      const existing = await this.getOwned(
-        "NetworkPolicy",
-        policy.metadata.name,
-        namespace,
-        tenantOwnership,
+    const policyNamespaces = embedded ? [namespace] : [namespace, gatewayNamespace];
+    for (const policyNamespace of policyNamespaces) {
+      const policies = this.networkPolicies(tenantOwnership, policyNamespace).filter(
+        (policy) => policyNamespace === namespace || policy.metadata.name === "allow-dns",
       );
-      if (existing === undefined) {
-        return result;
+      for (const policy of policies) {
+        const existing = await this.getOwned(
+          "NetworkPolicy",
+          policy.metadata.name,
+          policyNamespace,
+          tenantOwnership,
+        );
+        if (existing === undefined) {
+          return result;
+        }
+        if (policy.metadata.name === "allow-dns") {
+          await this.reconcileDnsPorts(existing, policy, policyNamespace);
+        }
       }
     }
     const agentName = `agent-${sha256Hex(revision.agentId, 12)}`;
@@ -8160,7 +8169,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private networkPolicies(
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
-  ): ManagedKubernetesObject[] {
+  ): ManagedKubernetesObject<"NetworkPolicy">[] {
     const network = this.options.network;
     const routing = this.options.gatewayRouting;
     const gatewayIngressPeers =
@@ -8175,7 +8184,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               },
             },
           ];
-    const policy = (name: string, spec: KubernetesRecord): ManagedKubernetesObject => ({
+    const policy = (
+      name: string,
+      spec: KubernetesRecord,
+    ): ManagedKubernetesObject<"NetworkPolicy"> => ({
       ...this.manifest("networking.k8s.io/v1", "NetworkPolicy", name, ownership, namespace),
       spec,
     });
@@ -8196,6 +8208,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             ports: [
               { protocol: "UDP", port: 53 },
               { protocol: "TCP", port: 53 },
+              // Allow port 5353 for compatibility with OpenShift DNS.
+              { protocol: "UDP", port: 5353 },
+              { protocol: "TCP", port: 5353 },
             ],
           },
         ],
@@ -8211,6 +8226,62 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ],
       }),
     ];
+  }
+
+  private async reconcileDnsPorts(
+    existing: ManagedKubernetesObject<"NetworkPolicy">,
+    desired: ManagedKubernetesObject<"NetworkPolicy">,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const desiredRule = asRecord((desired.spec?.egress as readonly KubernetesRecord[])[0])!;
+    // The SDK returns model instances; compare the policy's serialized values.
+    const spec = asRecord(JSON.parse(JSON.stringify(existing.spec ?? {})))!;
+    const egress: unknown[] = Array.isArray(spec.egress) ? spec.egress : [];
+    const index = egress.findIndex((rule) => isDeepStrictEqual(asRecord(rule)?.to, desiredRule.to));
+    const rule = asRecord(egress[index]);
+    if (rule === undefined || !Array.isArray(rule.ports)) {
+      throw new OwnershipFailure(
+        "Refusing an allow-dns policy without the configured DNS peer and explicit ports.",
+      );
+    }
+    const ports: unknown[] = rule.ports;
+    const desiredPorts: unknown[] = desiredRule.ports as unknown[];
+    const additions = desiredPorts.filter(
+      (port) => !ports.some((current) => isDeepStrictEqual(current, port)),
+    );
+    if (additions.length === 0) {
+      return;
+    }
+    const updatedEgress = egress.map((current, position) =>
+      position === index ? { ...rule, ports: [...ports, ...additions] } : current,
+    );
+    const clients = await this.clients(namespace.plane);
+    // Only extend the installed DNS rule. Narrowing its selector would remove
+    // DNS access from other Agents whose running Pods predate network profiles.
+    await this.request(
+      () =>
+        clients.networking.patchNamespacedNetworkPolicy(
+          {
+            name: existing.metadata.name,
+            namespace: namespace.name,
+            body: {
+              apiVersion: existing.apiVersion,
+              kind: "NetworkPolicy",
+              metadata: {
+                ...existing.metadata,
+                uid: required(existing.metadata.uid, "DNS policy UID"),
+                resourceVersion: required(
+                  existing.metadata.resourceVersion,
+                  "DNS policy resource version",
+                ),
+              },
+              spec: { ...spec, egress: updatedEgress },
+            },
+          },
+          this.mergePatchOptions,
+        ),
+      { mutating: true },
+    );
   }
 
   private workspaceNodeNetworkPolicy(

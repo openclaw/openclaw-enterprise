@@ -1336,7 +1336,7 @@ test("minLevel filters log lines on the server and a cursor still resumes after 
         timestamp: "2026-10-01T07:49:44.100970Z",
         level,
         fields,
-        target: span === undefined ? "codex_core::client" : "codex_exec_server::local_file_system",
+        target: span === undefined ? "codex_app_server" : "codex_exec_server::local_file_system",
         ...(span === undefined ? {} : { span, spans: [] }),
       }),
     );

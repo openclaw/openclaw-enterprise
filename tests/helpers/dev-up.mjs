@@ -522,6 +522,10 @@ if (command === engine) {
     if (args.includes("{{.State.Status}}")) output("exited");
     else if (args.includes("{{.State.ExitCode}}")) output("0");
     else fail("unexpected inspect: " + args.join(" "));
+  } else if (args[0] === "exec" && args[1].endsWith("-server-0") && args[2] === "nslookup") {
+    // The launcher checks the new node's resolver before any image pull.
+    if (scenario === "node-dns-refused") fail(";; connection timed out; no servers could be reached\\nnslookup: write to '172.30.42.1': Connection refused");
+    output("Name:\\tregistry-1.docker.io\\nAddress: 192.0.2.10");
   } else if (args[0] === "exec" && args[1].endsWith("-server-0") && args.slice(2, 5).join(" ") === "ip route get") {
     // The k3d API server reaches local Pods over the node's cni0 bridge.
     output(args[5] + " dev cni0 src 10.42.0.1 uid 0\\n    cache");

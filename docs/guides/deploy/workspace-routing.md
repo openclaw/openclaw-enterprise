@@ -25,10 +25,8 @@ the matching attachment changes. Compute rejects dedicated runtime revisions
 without routing or an enrollment client before provisioning workloads.
 
 These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
-They do not establish support for a dedicated OpenClaw remote worker.
-
-Before creating a dedicated Agent, configure the service-key Secret and proxy
-trust below. Embedded Harnesses also support direct access.
+They do not establish support for a dedicated OpenClaw remote worker. Embedded
+Harnesses also support direct access.
 
 Build the matching Gateway and Harness images from the repository's pinned
 runtime sources; see the [runtime image procedure](../../../deploy/runtime/README.md).
@@ -202,8 +200,7 @@ The service key is an Installation-wide native administrative
 credential; do not reuse a Better Auth signing key or model-provider token.
 OCC still checks the human caller's exact Agent `read` or `operate` permission.
 Routing-enabled workers also require tenant-local Secret get/create/update/delete
-for node enrollment. The required OC modules are merged;
-matching runtime images and full Enterprise runtime verification are still required.
+for node enrollment.
 
 ### Enable routing for existing Namespaces and Agents
 
@@ -337,18 +334,17 @@ operation; it does not require a restart for key rotation.
 
 The generated root has a ten-year lifetime and reuses its private key on
 renewal. The leaf has a 90-day lifetime; cert-manager renews both certificates
-30 days before expiry. Automatic setup does not coordinate CA rollover:
-preserve the CA Secret, plan backups, and control trust changes. For a CA key
-replacement, distribute an overlapping old/new public trust bundle before
-switching Envoy's certificate, restart the API to load that bundle, and remove
-the old root only after no serving certificate depends on it.
+30 days before expiry. Leaf renewal needs no OCC restart: new WSS connections
+keep normal CA and hostname verification while the issuing CA remains trusted.
 
-cert-manager renews the server leaf certificate automatically. New WSS
-connections continue using normal CA and hostname verification without an OCC
-restart while the issuing CA remains trusted. Replacing a private root bundle
-requires restarting the API because Node reads `NODE_EXTRA_CA_CERTS` at process
-startup. This integration uses API-key authentication over WSS; the pinned
-native client does not expose mTLS client-certificate options.
+Automatic setup does not coordinate CA rollover: preserve the CA Secret, plan
+backups, and control trust changes. For a CA key replacement, distribute an
+overlapping old/new public trust bundle and restart the API to load it before
+switching Envoy's certificate. Remove the old root only after no serving
+certificate depends on it. Any private root bundle change requires an API
+restart because Node reads `NODE_EXTRA_CA_CERTS` only at process startup. This
+integration uses API-key authentication over WSS; the pinned native client does
+not expose mTLS client-certificate options.
 
 ### Troubleshooting
 
@@ -358,12 +354,7 @@ native client does not expose mTLS client-certificate options.
 | HTTPRoute reports `Accepted=False` with `NotAllowedByListeners`   | Compare the Gateway listener's namespace selector with the labels on the HTTPRoute's physical namespace. Follow [existing Namespace reconciliation](#enable-routing-for-existing-namespaces-and-agents). |
 | HTTPRoute is accepted but the backend is unreachable              | Check the Envoy and tenant NetworkPolicies together, including their selectors and translated ports.                                                                                                     |
 | `404 NOT_FOUND` and `The requested workspace file was not found.` | The native file is missing. Do not create or overwrite it just to clear the Console notice.                                                                                                              |
-| `503 UNKNOWN_OUTCOME` after a write                               | Read the file before deciding whether to repeat the write. OCC does not automatically replay it.                                                                                                         |
-
-After `UNKNOWN_OUTCOME`, read the same file and compare its content with the
-intended write. If it matches, do not retry. If you cannot read the file yet,
-wait or ask someone with `read` permission on the Agent to check before deciding
-whether to retry.
+| `503 UNKNOWN_OUTCOME` after a write                               | Read the file and compare it with the intended write; if it matches, do not retry. If you cannot read it yet, wait or ask someone with Agent `read` permission. OCC does not replay the write.           |
 
 The [Agents reference](../../reference/agents.md#workspace-files) lists file
 limits and permissions. The [Kubernetes testing guide](../../testing/kubernetes.md#kubernetes-model-turns-and-secrets)

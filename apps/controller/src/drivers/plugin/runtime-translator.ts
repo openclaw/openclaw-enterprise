@@ -370,6 +370,21 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     )[approval as PluginApprovalMode];
   }
 
+  // Selection keys accept both the native ID and the driver-prefixed catalog ID
+  // ("diffs" and "occ-plugin:diffs"). Two keys for one native plugin would
+  // install it twice with conflicting policy, so admission refuses them.
+  function hasAliasedSelections(kind: "codex" | "openclaw", selections: unknown): boolean {
+    const nativeIds = selectionEntries(selections).map(([pluginId]) => {
+      if (kind === "codex") {
+        return codexNativeIdFromPluginId(pluginId);
+      }
+      return pluginId.startsWith(OCC_DRIVER_ID + ":")
+        ? pluginId.slice((OCC_DRIVER_ID + ":").length)
+        : pluginId;
+    });
+    return new Set(nativeIds).size !== nativeIds.length;
+  }
+
   function pluginApprovalOverlay(
     kind: "codex" | "openclaw",
     selections: unknown,
@@ -1003,6 +1018,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     codexOpenClawConfiguration,
     codexInstallPlan,
     codexNeedsToolInventory,
+    hasAliasedSelections,
     validatePolicies,
     codexReadParamsForSelections,
     codexRuntimeArtifact,
@@ -1084,4 +1100,11 @@ export function validatePolicies(
   defaultApprovers?: PluginApprovers,
 ): void {
   pluginRuntimeTranslator.validatePolicies(kind, selections, defaultApprovers);
+}
+
+export function hasAliasedSelections(
+  kind: "codex" | "openclaw",
+  selections: PluginDesiredState,
+): boolean {
+  return pluginRuntimeTranslator.hasAliasedSelections(kind, selections);
 }

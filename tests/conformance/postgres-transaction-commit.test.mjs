@@ -8,6 +8,7 @@ import {
 } from "../../packages/occ/src/state/postgres-state.ts";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/errors.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 // A transport protocol fixture for the actual outer owner, not a SQL database
 // emulator. No repository reads/writes, authentication, custody or PG evidence.
@@ -555,8 +556,16 @@ test("cleanup failure cannot replace an earlier callback failure", async () => {
 });
 
 test("commit fault URL routes the actual pg client through the proxy", async () => {
-  const original =
-    "postgresql://fixture:fixture@127.0.0.1:1/example?host=127.0.0.1&port=55432&user=override&password=override&application_name=commit-fixture&sslmode=disable";
+  const original = syntheticCredentialUrl({
+    protocol: "postgresql",
+    username: "fixture",
+    password: "fixture",
+    host: "127.0.0.1",
+    port: 1,
+    pathname: "/example",
+    search:
+      "?host=127.0.0.1&port=55432&user=override&password=override&application_name=commit-fixture&sslmode=disable",
+  });
   const before = new pg.Client({ connectionString: original });
   const proxy = await commitAckProxy(original);
   try {
@@ -579,12 +588,28 @@ test("commit fault URL routes the actual pg client through the proxy", async () 
 test("commit fault rejects an effective remote override and preserves TLS intent", async () => {
   await assert.rejects(
     commitAckProxy(
-      "postgresql://fixture:fixture@127.0.0.1/example?host=remote.invalid&sslmode=disable",
+      syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "fixture",
+        password: "fixture",
+        host: "127.0.0.1",
+        pathname: "/example",
+        search: "?host=remote.invalid&sslmode=disable",
+      }),
     ),
     /loopback/,
   );
   await assert.rejects(
-    commitAckProxy("postgresql://fixture:fixture@127.0.0.1/example?ssl=true"),
+    commitAckProxy(
+      syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "fixture",
+        password: "fixture",
+        host: "127.0.0.1",
+        pathname: "/example",
+        search: "?ssl=true",
+      }),
+    ),
     /non-TLS/,
   );
 });

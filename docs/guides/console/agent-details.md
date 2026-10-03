@@ -89,7 +89,9 @@ read access to that version.
 and redacted container output. It can follow new lines, filter the loaded
 lines by level or text, and download the last 1000 lines. Status needs the same
 grants as diagnostics; log text needs Agent `administer` instead of `operate`.
-See [Agent logs](../topics/agent-logs.md).
+When a Pod is Ready and its containers have not restarted, its warning Events
+appear in muted text as earlier warnings, such as readiness probes that failed
+while it started. See [Agent logs](../topics/agent-logs.md).
 
 There is no rollback or redeploy-old-revision button. See
 [Agent Revisions](../topics/agent-revisions.md) for the lifecycle.

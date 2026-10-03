@@ -28,7 +28,7 @@ spec:
       volumes:
         - name: bootstrap-password-output
           persistentVolumeClaim:
-            claimName: {{ .Values.bootstrap.password.claimName }}
+            claimName: {{ .Values.bootstrap.password.claimName | quote }}
         {{- if .Values.database.caSecretName }}
         - name: database-ca
           secret:
@@ -80,7 +80,7 @@ spec:
               value: {{ .Values.installation.name | quote }}
           volumeMounts:
             - name: bootstrap-password-output
-              mountPath: {{ .Values.bootstrap.password.mountPath }}
+              mountPath: {{ .Values.bootstrap.password.mountPath | quote }}
             {{- if .Values.database.caSecretName }}
             - name: database-ca
               mountPath: {{ .Values.database.caMountPath | quote }}

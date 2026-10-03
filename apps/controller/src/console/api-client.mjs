@@ -63,6 +63,16 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
       }
+      // The API's own sentence, for views that show it instead of a generic status text.
+      const serverMessage = payload?.error?.message;
+      if (
+        typeof serverMessage === "string" &&
+        serverMessage.length > 0 &&
+        serverMessage.length <= 256 &&
+        !/\p{Cc}/u.test(serverMessage)
+      ) {
+        error.serverMessage = serverMessage;
+      }
       const detailPaths = Array.isArray(payload?.error?.details)
         ? payload.error.details
             .map((detail) => detail?.path)

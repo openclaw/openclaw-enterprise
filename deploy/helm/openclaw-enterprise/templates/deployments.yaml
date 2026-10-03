@@ -26,7 +26,7 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
       app.kubernetes.io/component: {{ $component }}
   template:
     metadata:
@@ -125,9 +125,9 @@ spec:
         {{- end }}
         - name: installation-startup
           secret:
-            secretName: {{ $.Values.installation.secretName }}
+            secretName: {{ $.Values.installation.secretName | quote }}
             items:
-              - key: {{ $.Values.installation.key }}
+              - key: {{ $.Values.installation.key | quote }}
                 path: installation.yaml
         {{- if $.Values.database.caSecretName }}
         - name: database-ca
@@ -164,9 +164,9 @@ spec:
         {{- end }}
         - name: chatgpt-admin
           secret:
-            secretName: {{ $chatgpt.secretName }}
+            secretName: {{ $chatgpt.secretName | quote }}
             items:
-              - key: {{ $chatgpt.key }}
+              - key: {{ $chatgpt.key | quote }}
                 path: admin-key
         {{- end }}
         {{- else }}

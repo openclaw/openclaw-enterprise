@@ -1,4 +1,3 @@
-import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import {
@@ -49,22 +48,9 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       : [[WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding(options.workspaceNodeId)]]),
   ]);
   let temporaryDirectory = 0;
-  // A Gateway RPC through the OpenClaw CLI; options.gatewayCall(method) answers
-  // with a JSON value, or undefined for a failed call.
-  const gatewayCall = (method) => {
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.kill = () => {};
-    queueMicrotask(() => {
-      const value = options.gatewayCall?.(method);
-      if (value !== undefined) {
-        child.stdout.emit("data", Buffer.from(JSON.stringify(value)));
-      }
-      child.emit("close", value === undefined ? 1 : 0, null);
-    });
-    return child;
-  };
+  const gatewayUnavailable = new Error("Gateway unavailable");
   const sandbox = {
+    AbortController,
     Buffer,
     files,
     process: {
@@ -89,13 +75,23 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
     clearInterval() {},
     clearTimeout() {},
     require(specifier) {
+      if (specifier === "openclaw/plugin-sdk/gateway-runtime") {
+        return {
+          isGatewayTransportError: (error) => error === gatewayUnavailable,
+          async callGatewayFromCli(method, rpcOptions, params, extra) {
+            calls.push({ method, params });
+            const value = await options.gatewayCall?.(method, extra.signal);
+            if (value === undefined) {
+              throw gatewayUnavailable;
+            }
+            return value;
+          },
+        };
+      }
       if (specifier === "node:child_process") {
         return {
           spawn(command, args) {
             calls.push({ command, args });
-            if (args?.[1] === "gateway" && args[2] === "call") {
-              return gatewayCall(args[3]);
-            }
             return {
               on() {},
               kill(signal) {

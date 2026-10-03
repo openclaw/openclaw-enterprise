@@ -24,6 +24,13 @@ const configPath = "/home/node/.openclaw/openclaw.json";
 const linear = "codex-plugin:linear@openai-curated-remote";
 const workspaceNodeId = process.env.OCC_TEST_WORKSPACE_NODE_ID;
 const outageExit = process.env.OCC_TEST_GATEWAY_SCENARIO === "peer-outage-exit";
+const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replacement";
+let initialGateway;
+let replacementPeerReads = 0;
+let trackSamePeerOutage = false;
+let trackSamePeerRecovery = false;
+let samePeerOutageResponses = 0;
+let samePeerRecoveryResponses = 0;
 
 let peer = {
   revisionId,
@@ -36,14 +43,57 @@ let peer = {
 };
 // The Gateway reads its peer at the APP_SERVER_URL host on its own status port.
 // That host is [::1] here, beside the Gateway's own IPv4 status listener.
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   assert.equal(request.url, "/openclaw/plugin-runtime/status");
   if (peer === undefined) {
-    response.writeHead(503).end();
+    const countOutage = trackSamePeerOutage;
+    response.writeHead(503).end(() => {
+      if (countOutage) {
+        samePeerOutageResponses++;
+      }
+    });
     return;
   }
+  if (staleReplacement && peer.startupId === "harness-startup-2") {
+    replacementPeerReads++;
+    if (replacementPeerReads === 3) {
+      // The verification read follows the replacement's native readiness.
+      const processes = await gatewayProcess();
+      assert.equal(processes.length, 1);
+      assert.notEqual(
+        processes[0].startTicks + processes[0].pid,
+        initialGateway.startTicks + initialGateway.pid,
+      );
+      assert.equal(processes[0].token, appServerToken("harness-startup-2"));
+      const native = await fetch(`http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT}/readyz`, {
+        signal: AbortSignal.timeout(3_000),
+        redirect: "error",
+      });
+      assert.equal(native.status, 200);
+      const status = await (
+        await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
+          signal: AbortSignal.timeout(3_000),
+          redirect: "error",
+        })
+      ).json();
+      assert.equal(status.phase, "starting");
+      assert.equal(await ready(), false);
+      peer = { ...peer, startupId: "harness-startup-3", podUid: "harness-pod-3" };
+      await new Promise((resolve, reject) => {
+        process.stdout.write(
+          `${JSON.stringify({ phase: "stale-peer-verified", pid: processes[0].pid })}\n`,
+          (error) => (error ? reject(error) : resolve()),
+        );
+      });
+    }
+  }
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify(peer));
+  const countRecovery = trackSamePeerRecovery;
+  response.end(JSON.stringify(peer), () => {
+    if (countRecovery) {
+      samePeerRecoveryResponses++;
+    }
+  });
 });
 await new Promise((resolve) => server.listen(statusPort, "::1", resolve));
 
@@ -121,6 +171,7 @@ function linearEnabled(config) {
 try {
   await waitFor("the first Gateway to become ready", 240_000, ready);
   const [before] = await gatewayProcess();
+  initialGateway = before;
   assert.equal(before.token, appServerToken("harness-startup-1"));
   assert.equal(linearEnabled(JSON.parse(await readFile(configPath, "utf8"))), false);
   if (outageExit) {
@@ -143,12 +194,81 @@ try {
     await setTimeout(15_000);
     throw new Error("Gateway wrapper remained running after its child exited.");
   }
+  if (staleReplacement) {
+    peer = {
+      ...peer,
+      startupId: "harness-startup-2",
+      podUid: "harness-pod-2",
+      successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+      failures: [],
+    };
+    await setTimeout(60_000);
+    throw new Error("Gateway wrapper did not reject the stale replacement peer.");
+  }
+
+  // A transient status outage does not require a new Gateway if the same
+  // Harness returns. Observe production readiness before restoring the peer.
+  const samePeer = peer;
+  trackSamePeerOutage = true;
+  peer = undefined;
+  await waitFor("the Gateway to become unready during a peer outage", 30_000, async () => {
+    const status = await (
+      await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
+        signal: AbortSignal.timeout(3_000),
+      })
+    ).json();
+    return status.phase === "starting" && !(await ready());
+  });
+  let samePeerUnreadySamples = 0;
+  await waitFor("the Gateway to stay unready while peer status fails", 30_000, async () => {
+    const status = await (
+      await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
+        signal: AbortSignal.timeout(3_000),
+      })
+    ).json();
+    assert.equal(status.phase, "starting");
+    assert.equal(await ready(), false);
+    samePeerUnreadySamples++;
+    return samePeerOutageResponses >= 2 && samePeerUnreadySamples >= 2;
+  });
+  const duringOutage = await gatewayProcess();
+  assert.equal(duringOutage.length, 1);
+  assert.equal(duringOutage[0].pid, before.pid);
+  assert.equal(duringOutage[0].startTicks, before.startTicks);
+  trackSamePeerOutage = false;
+  trackSamePeerRecovery = true;
+  peer = samePeer;
+  await waitFor("the same peer to restore Gateway readiness", 60_000, async () => {
+    const status = await (
+      await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
+        signal: AbortSignal.timeout(3_000),
+      })
+    ).json();
+    if (status.phase !== "ready") {
+      return false;
+    }
+    assert.ok(samePeerRecoveryResponses > 0, "readiness returned before a restored peer response");
+    return await ready();
+  });
+  trackSamePeerRecovery = false;
+  const afterOutage = await gatewayProcess();
+  assert.equal(afterOutage.length, 1);
+  assert.equal(afterOutage[0].pid, before.pid);
+  assert.equal(afterOutage[0].startTicks, before.startTicks);
+  assert.equal(afterOutage[0].token, before.token);
+
   await waitFor("the first workspace node ack", 60_000, workspaceNodeAck);
   const assetsBefore = (await stat("/home/node/openclaw-runtime-assets/bundled-skills")).mtimeMs;
 
   // The Harness restarts: a new startup and pod, and the plugin is now authorized.
   const changedAt = Date.now();
-  peer = { ...peer, startupId: "harness-startup-2", podUid: "harness-pod-2", failures: [] };
+  peer = {
+    ...peer,
+    startupId: "harness-startup-2",
+    podUid: "harness-pod-2",
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+    failures: [],
+  };
   const samples = [];
   let unreadyAt;
   let readyAgainAt;
@@ -185,6 +305,9 @@ try {
     JSON.stringify({
       before: { pid: before.pid, startTicks: before.startTicks },
       after: { pid: after.pid, startTicks: after.startTicks },
+      samePeerOutageResponses,
+      samePeerUnreadySamples,
+      samePeerRecoveryResponses,
       unreadyAfterMs: unreadyAt,
       readyAgainAfterMs: readyAgainAt,
       workspaceNodeAckAfterMs: ackAt,

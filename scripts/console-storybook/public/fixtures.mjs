@@ -986,6 +986,7 @@ export function installFixture(scenario, evidence) {
           if (!revisions.has(revisionId)) {
             return error(404);
           }
+          const startup = scenario.runtimePod === "startupWarnings";
           const pod = {
             role: "gateway",
             cluster: "control",
@@ -1000,24 +1001,38 @@ export function installFixture(scenario, evidence) {
                 state: "running",
                 reason: null,
                 ready: true,
-                restartCount: 1,
+                restartCount: startup ? 0 : 1,
                 startedAt: "2026-09-27T11:40:00.000Z",
-                lastTermination: {
-                  reason: "OOMKilled",
-                  exitCode: 137,
-                  finishedAt: "2026-09-27T11:39:58.000Z",
-                },
+                lastTermination: startup
+                  ? null
+                  : {
+                      reason: "OOMKilled",
+                      exitCode: 137,
+                      finishedAt: "2026-09-27T11:39:58.000Z",
+                    },
               },
             ],
-            events: [
-              {
-                type: "Warning",
-                reason: "BackOff",
-                message: "Back-off restarting failed container gateway",
-                count: 2,
-                lastObservedAt: "2026-09-27T11:39:59.000Z",
-              },
-            ],
+            // A healthy first deploy: readiness probes failed while the Gateway started.
+            events: startup
+              ? [
+                  {
+                    type: "Warning",
+                    container: "gateway",
+                    reason: "Unhealthy",
+                    message: "Readiness probe failed: Gateway /readyz unavailable: ECONNREFUSED",
+                    count: 8,
+                    lastObservedAt: "2026-09-27T11:40:20.000Z",
+                  },
+                ]
+              : [
+                  {
+                    type: "Warning",
+                    reason: "BackOff",
+                    message: "Back-off restarting failed container gateway",
+                    count: 2,
+                    lastObservedAt: "2026-09-27T11:39:59.000Z",
+                  },
+                ],
           };
           return response({
             revisionId,

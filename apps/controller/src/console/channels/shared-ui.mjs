@@ -5,10 +5,6 @@ const clone = (value) => (value === undefined ? undefined : structuredClone(valu
 export const isRecord = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 export const uniqueList = (items) => [...new Set(items.map((item) => item.trim()).filter(Boolean))];
-const refText = (ref) =>
-  isRecord(ref)
-    ? `${ref.source ?? "unknown"} / ${ref.provider ?? "unknown"} / ${ref.id ?? "unknown"}`
-    : "env / default";
 export const refsEqual = (left, right) =>
   isRecord(left) &&
   left.source === right.source &&
@@ -22,15 +18,6 @@ export function field(label, control, hint) {
     element("label", { for: control.id }, label),
     control,
     hint ? element("p", { className: "hint", id: `${control.id}-hint` }, hint) : null,
-  );
-}
-
-export function refField(label, ref) {
-  return element(
-    "div",
-    { className: "channel-field" },
-    element("span", { className: "channel-label" }, label),
-    element("code", {}, refText(ref)),
   );
 }
 
@@ -211,7 +198,7 @@ function renderCard(section, state, provider) {
       element(
         "p",
         { className: "hint" },
-        state.copy.readOnlyCardMessage ?? "Read-only AgentRevision values cannot be edited.",
+        state.copy.readOnlyCardMessage ?? "Values in a deployed version cannot be edited.",
       ),
     );
   } else if (disabledByMode) {
@@ -490,9 +477,9 @@ export function renderChannelSection(
             { className: "muted" },
             readOnly
               ? (copy.readOnlyDescription ??
-                  "These are the viewed AgentRevision’s immutable channel settings.")
+                  "These are the viewed version’s immutable channel settings.")
               : (copy.editableDescription ??
-                  "Save and Disable update only the shared Configuration draft. They do not stop or disable a running Agent or change admitted revisions."),
+                  "Save and Disable update only the shared Configuration draft. They do not stop or disable a running Agent or change deployed versions."),
           ),
         ),
       ),

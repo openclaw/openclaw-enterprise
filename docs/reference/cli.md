@@ -78,7 +78,7 @@ input is not supported. The server validates document fields against the
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                    |
 | `occ agent credential-withdrawal request ID SOURCE_ID` | Revokes a credential source from the Agent's active revision; see [withdrawal](credential-sources.md#withdraw-a-source-from-an-agent).                           |
 | `occ agent credential-withdrawal get ID SOURCE_ID`     | Shows whether that withdrawal is `pending` or `revoked`, who requested it, and the reason code of the latest attempt.                                            |
-| `occ agent stop ID`                                    | Requests a stop while retaining revisions and persistent state.                                                                                                  |
+| `occ agent stop ID`                                    | Requests a stop while retaining revisions and persistent state; `occ agent deploy ID` starts it again.                                                           |
 | `occ agent runtime ID`                                 | Reads Pod status, restarts, last termination, log sources and Events for a revision. See [runtime logs](#runtime-status-and-logs).                               |
 | `occ agent logs ID --source SOURCE`                    | Prints one redacted page of container output, or follows it. See [runtime logs](#runtime-status-and-logs).                                                       |
 

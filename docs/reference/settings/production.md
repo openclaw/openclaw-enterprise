@@ -11,6 +11,12 @@ internal Kubernetes `ClusterIP` Service and a default-deny ingress
 selectors. The cluster must enforce NetworkPolicies. Do not expose the listener
 through a `NodePort`, `LoadBalancer`, `hostNetwork`, or public endpoint.
 
+The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
+configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
+OpenShift DNS backends after Service address translation. These grants cover
+API, worker, initialization, collector, Slack proxy, Envoy, and observability
+demo workloads.
+
 The trusted-operator native admin pilot is the only documented public-ingress
 exception: the console host and Agent wildcard hosts route to OCC through the
 procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md).
@@ -251,7 +257,9 @@ and delivery checks, use
 When enabled, the chart requires a digest-pinned image, an exact exporter
 destination (IPv4 `/32` or paired namespace/Pod selectors), a TCP port, and
 nonempty dedicated configuration and environment Secret names. Neither Secret
-may reuse the Installation, database, auth, or ChatGPT Backend Secret. The named
+may reuse the Installation, database, auth, or ChatGPT Backend Secret, or, when
+the feature is enabled, a GitHub, Google, or OIDC sign-in Secret, the gateway API
+key, a repository-credentials Secret, or an execution-cluster kubeconfig. The named
 Secrets must be in the control-plane namespace:
 
 - `configSecretName` supplies `collector.yaml`, `kubernetes.yaml`, and

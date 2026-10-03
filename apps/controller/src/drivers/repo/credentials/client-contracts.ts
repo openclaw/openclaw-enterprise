@@ -8,6 +8,17 @@ export interface RepositoryCredentialClientConfiguration {
   readonly pushRefAllowlist?: readonly string[];
 }
 
+/** True when `value` contains a C0 control character (U+0000-U+001F) or DEL (U+007F). */
+export function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Canonical nonsecret native-push policy. Git refs remain case-sensitive. */
 export function normalizePushRefAllowlist(value: unknown): readonly string[] {
   if (!Array.isArray(value)) {
@@ -21,9 +32,8 @@ export function normalizePushRefAllowlist(value: unknown): readonly string[] {
     if (
       !ref.startsWith("refs/heads/") ||
       ref.length === "refs/heads/".length ||
-      [...ref].some(
-        (character) => character.charCodeAt(0) <= 0x20 || character.charCodeAt(0) === 0x7f,
-      ) ||
+      hasControlCharacter(ref) ||
+      ref.includes(" ") ||
       /[~^:?*[\\]/.test(ref) ||
       ref.includes("..") ||
       ref.includes("@{") ||

@@ -7,7 +7,10 @@ import type {
   RepositoryCredentialSessionFiles,
 } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../repo/credentials/client-contracts.ts";
-import { normalizePushRefAllowlist } from "../../repo/credentials/client-contracts.ts";
+import {
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+} from "../../repo/credentials/client-contracts.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -118,10 +121,7 @@ function clientField(value: unknown): string {
   if (
     typeof value !== "string" ||
     Buffer.byteLength(value, "utf8") > 4096 ||
-    [...value].some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 0x1f || code === 0x7f;
-    })
+    hasControlCharacter(value)
   ) {
     return invalid();
   }

@@ -923,6 +923,16 @@ test(
       toolName: successToolName,
       resultPattern: successResultPattern,
     });
+    assert.equal(
+      calendarEvidence.runtime,
+      restarted.gatewayAfter.podName,
+      "the post-restart tool transcript must be inspected from the surviving Gateway Pod.",
+    );
+    assert.deepEqual(
+      await fixture.gatewayPodIdentity(primary),
+      restarted.gatewayAfter,
+      "the Gateway Pod identity must still match after the transcript is inspected.",
+    );
     context.diagnostic(`native Codex calendar proof tool=${calendarEvidence.toolName}`);
 
     assertBestEffortDeploymentStatus(

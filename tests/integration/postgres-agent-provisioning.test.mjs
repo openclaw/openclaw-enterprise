@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 
@@ -17,7 +14,10 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import {
+  ensureDevelopmentBootstrap,
+  privateBootstrapDirectory,
+} from "../helpers/bootstrap-installation.mjs";
 import { waitFor } from "../helpers/postgres-backend-state.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -184,13 +184,6 @@ function createProvisioningConfigurationDriver(options) {
   return driver;
 }
 
-async function privateBootstrapDirectory(context) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-agent-provisioning-bootstrap-"));
-  await chmod(directory, 0o700);
-  context.after(() => rm(directory, { recursive: true, force: true }));
-  return directory;
-}
-
 async function ensureProvisioningBootstrap(context, state) {
   if ((await state.loadInstallation()) !== undefined) {
     return;
@@ -198,7 +191,7 @@ async function ensureProvisioningBootstrap(context, state) {
   bootstrapPromise ??= (async () => {
     await ensureDevelopmentBootstrap(context, {
       databaseUrl,
-      directory: await privateBootstrapDirectory(context),
+      directory: await privateBootstrapDirectory(context, "openclaw-agent-provisioning-bootstrap-"),
       email: adminEmail,
       password: adminPassword,
       authSecret,
@@ -934,6 +927,103 @@ test(
 );
 
 test(
+  "provisioning status never pairs a job with a queue row from a later commit",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId, url } = admitted.data.provisioning;
+    const claim = await claimProvisioningWork(fixture.pool, workId);
+    const failure = {
+      code: "PROVISIONING_REJECTED",
+      message: "Agent provisioning could not complete.",
+    };
+
+    // Stage the worker's permanent failure the way the worker writes it (job and queue row in
+    // one transaction) and hold its commit open.
+    let releaseCommit;
+    const commitGate = new Promise((resolve) => {
+      releaseCommit = resolve;
+    });
+    let staged;
+    const failureStaged = new Promise((resolve) => {
+      staged = resolve;
+    });
+    const committed = fixture.state.transact(async (unit) => {
+      const current = await unit.provisioning.findByWorkId(workId);
+      await unit.provisioning.recordFailure(
+        claim,
+        {
+          completedPhase: current.completedPhase,
+          progress: { ...current.progress, error: failure },
+        },
+        { disposition: "permanent", ...failure },
+      );
+      staged();
+      await commitGate;
+    });
+    await failureStaged;
+
+    // Commit the failure right after the status read's first statement on this job returns.
+    // The hook only delays that result; the controller's own queries produce the response.
+    // Reading the job and queue row in separate statements would now see a failed queue row
+    // next to the pre-failure job and report a generic failure.
+    let interleaved = false;
+    const query = pg.Client.prototype.query;
+    const hook = context.mock.method(
+      pg.Client.prototype,
+      "query",
+      function (config, values, callback) {
+        const result = query.call(this, config, values, callback);
+        if (
+          !interleaved &&
+          typeof config === "string" &&
+          config.includes("occ.agent_provisioning_work") &&
+          Array.isArray(values) &&
+          values[0] === workId &&
+          typeof result?.then === "function"
+        ) {
+          interleaved = true;
+          return result.then(async (rows) => {
+            releaseCommit();
+            await committed;
+            return rows;
+          });
+        }
+        return result;
+      },
+    );
+
+    let during;
+    try {
+      during = await fixture.request("GET", url);
+    } finally {
+      // Never leave the staged transaction open, even when the read fails.
+      hook.mock.restore();
+      releaseCommit();
+      await committed;
+    }
+    assert.equal(interleaved, true, "the failure must commit inside the status read");
+    assert.equal(during.status, 200, JSON.stringify(during.body));
+    assert.deepEqual(
+      { status: during.data.status, error: during.data.error },
+      { status: "running", error: undefined },
+      "a status read that started before the failure commit reports the state before it",
+    );
+
+    const after = await fixture.request("GET", url);
+    assert.equal(after.status, 200, JSON.stringify(after.body));
+    assert.equal(after.data.status, "failed");
+    assert.deepEqual(after.data.error, failure);
+  },
+);
+
+test(
   "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
@@ -1094,6 +1184,150 @@ test(
         .map(({ agentId }) => agentId),
       [succeeded.agentId],
     );
+  },
+);
+
+test(
+  "provisioning a duplicate Agent name fails permanently and says the name is taken",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const name = `Duplicate ${randomUUID().slice(0, 8)}`;
+    const first = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets, { name }),
+    });
+    assert.equal(first.status, 202, JSON.stringify(first.body));
+    await fixture.startWorker();
+    const created = await waitFor("first Agent provisioning to succeed", async () => {
+      const observed = await fixture.request("GET", first.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    fixture.cancelProvisioningAtTeardown(namespace.id, created.agentId);
+
+    // Admission does not check names; the worker's Agent insert hits the unique name
+    // constraint. The job must report that cause instead of the generic failure text.
+    const duplicate = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/provision`,
+      { body: provisioningBody(namespace.id, secrets, { name }) },
+    );
+    assert.equal(duplicate.status, 202, JSON.stringify(duplicate.body));
+    await waitFor("duplicate-name Agent provisioning to fail", async () => {
+      const observed = await fixture.request("GET", duplicate.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "failed" ? observed.data : undefined;
+    });
+    // The status read takes the job and the queue row in separate statements, so the
+    // poll that first sees the failure can miss the recorded error. Read the settled job.
+    const failed = await fixture.request("GET", duplicate.data.provisioning.url);
+    assert.equal(failed.status, 200, JSON.stringify(failed.body));
+    assert.equal(failed.data.status, "failed");
+    assert.deepEqual(failed.data.error, {
+      code: "PROVISIONING_REJECTED",
+      message: "An Agent with this name already exists in this Namespace. Choose a different name.",
+    });
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
+      [namespace.id, duplicate.data.provisioning.workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED" },
+    ]);
+    const agents = await fixture.pool.query("SELECT id FROM occ.agents WHERE namespace_id = $1", [
+      namespace.id,
+    ]);
+    assert.deepEqual(
+      agents.rows.map(({ id }) => id),
+      [created.agentId],
+    );
+  },
+);
+
+test(
+  "a Namespace is deletable after provisioning fails with its Configuration effect settled",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    const fixture = await createFixture(context);
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const name = `Duplicate ${randomUUID().slice(0, 8)}`;
+    const first = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets, { name }),
+    });
+    assert.equal(first.status, 202, JSON.stringify(first.body));
+    await fixture.startWorker();
+    try {
+      const created = await waitFor("first Agent provisioning to succeed", async () => {
+        const observed = await fixture.request("GET", first.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.status === "succeeded" ? observed.data : undefined;
+      });
+      const duplicate = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body: provisioningBody(namespace.id, secrets, { name }) },
+      );
+      assert.equal(duplicate.status, 202, JSON.stringify(duplicate.body));
+      await waitFor("duplicate-name Agent provisioning to fail", async () => {
+        const work = await fixture.pool.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+          [duplicate.data.provisioning.workId],
+        );
+        return work.rows[0]?.state === "failed_permanent" ? true : undefined;
+      });
+
+      // The worker wrote the Configuration through its Driver and recorded the receipt,
+      // then the Agent insert hit the name conflict and rolled back the metadata. The
+      // job is terminal and its effect is settled, so nothing remains in flight.
+      const failed = await fixture.pool.query(
+        `SELECT status, completed_phase, progress->'pendingEffect' AS pending,
+                progress->'effectReceipt' AS receipt
+         FROM occ.agent_provisioning_work WHERE work_id = $1`,
+        [duplicate.data.provisioning.workId],
+      );
+      assert.equal(failed.rowCount, 1);
+      const [row] = failed.rows;
+      assert.equal(row.status, "failed");
+      assert.equal(row.completed_phase, "admitted");
+      assert.equal(row.pending?.kind, "configuration");
+      assert.equal(row.receipt?.kind, row.pending.kind);
+      assert.equal(row.receipt?.owner, row.pending.owner);
+      assert.equal(row.receipt?.targetId, row.pending.targetId);
+
+      // Empty the Namespace of everything else, as an administrator would.
+      const agentPath = `/namespaces/${namespace.id}/agents/${created.agentId}`;
+      const deleting = await fixture.request("DELETE", agentPath);
+      assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
+      await waitFor(
+        "the first Agent deletion to finish",
+        async () => {
+          const observed = await fixture.request("GET", agentPath);
+          return observed.status === 404 ? true : undefined;
+        },
+        30_000,
+      );
+      const configuration = await fixture.request(
+        "DELETE",
+        `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+      );
+      assert.ok([200, 204, 404].includes(configuration.status), JSON.stringify(configuration.body));
+      for (const secret of Object.values(secrets)) {
+        const removed = await fixture.request(
+          "DELETE",
+          `/namespaces/${namespace.id}/secrets/${secret.id}`,
+        );
+        assert.ok([200, 204].includes(removed.status), JSON.stringify(removed.body));
+      }
+
+      const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}`);
+      assert.equal(deleted.status, 202, JSON.stringify(deleted.body));
+      assert.equal(deleted.data.status, "deleting");
+    } finally {
+      await fixture.stopWorker();
+    }
   },
 );
 
@@ -1368,6 +1602,10 @@ test(
       [409, 409, 409, 409],
       "failed pre-handoff provisioning must reserve direct credential, deploy, Agent, and Configuration mutations",
     );
+    // The transport write has no receipt, so the failed job still counts as in flight.
+    const occupied = await fixture.request("DELETE", `/namespaces/${namespace.id}`);
+    assert.equal(occupied.status, 409, JSON.stringify(occupied.body));
+    assert.match(occupied.body.error.message, /pending Agent provisioning\.$/);
 
     failTransportSettlement = false;
     reportTransportConfigured = true;

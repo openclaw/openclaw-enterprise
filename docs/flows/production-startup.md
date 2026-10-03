@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-09-29"
-last_updated_session: "PR-187"
+updated: "2026-10-01"
+last_updated_session: "authoring-run/e288dbbe-6d08-4251-adaa-860443c31b44"
 ---
 
 # Production Startup Flow
@@ -115,6 +115,12 @@ retrieve generated credentials, or change controller configuration.
 ### 3. Run Helm initialization
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`
+
+`deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
+installs initialization isolation before the Job starts. Its scoped DNS grant
+and the later dependency, collector, Slack proxy, and Envoy policies allow
+UDP/TCP ports `53` and `5353` to the configured DNS peer; see the
+[Helm DNS contract](../reference/settings/production.md#required-production-controller-environment).
 
 `helm upgrade --install --wait --timeout 5m` renders the chart with native
 values. If `database.caSecretName` is set, the Pod mounts that CA Secret
@@ -304,6 +310,7 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 
 ## Changelog
 
+- 2026-10-01 16:32: Trace scoped OpenShift DNS backend grants for Helm-managed production workloads. (authoring-run/e288dbbe-6d08-4251-adaa-860443c31b44 - 4070b6ad5ec6aff03c9c5e49e504a90393ffe091)
 - 2026-09-29: Merge current main into release-scoped shared egress documentation. (PR-187)
 
 - 2026-09-24 08:54: Describe release-scoped shared egress and dedicated collector/bootstrap policies. (PR-187 - 5ebd7305b0876db33276a249934bc82073b63424)

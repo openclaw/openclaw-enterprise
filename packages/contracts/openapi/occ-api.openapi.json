@@ -18638,7 +18638,7 @@
         ]
       },
       "post": {
-        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body AgentRevision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.",
+        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body AgentRevision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body CredentialSource when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Preset when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.",
         "operationId": "createIAMAccessBinding",
         "parameters": [
           {
@@ -18861,7 +18861,19 @@
           {
             "action": "read",
             "condition": "iam_binding_target",
+            "resourceKind": "credential_source",
+            "scope": "request_body"
+          },
+          {
+            "action": "read",
+            "condition": "iam_binding_target",
             "resourceKind": "namespace",
+            "scope": "request_body"
+          },
+          {
+            "action": "read",
+            "condition": "iam_binding_target",
+            "resourceKind": "preset",
             "scope": "request_body"
           },
           {

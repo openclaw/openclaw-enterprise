@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
@@ -359,6 +360,7 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     body: { harnessId: "codex" },
   });
   assert.equal(unsupportedLogin.status, 501);
+  assert.equal(unsupportedLogin.body.error.message, "Device login requires a dedicated Agent.");
   const unsupportedDiscovery = await fixture.request("POST", `${embeddedPath}/plugins`, {
     body: { oauthLogin: login.source, q: "knowledge" },
   });
@@ -368,6 +370,10 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     body: { harnessId: "openclaw" },
   });
   assert.equal(otherHarness.status, 501);
+  assert.equal(
+    otherHarness.body.error.message,
+    "Device login is available only for the Codex Harness.",
+  );
   assert.equal(fixture.requests.length, before);
 
   const savedLogin = await fixture.start(agentPath);
@@ -470,4 +476,58 @@ test("an expired device login erases its provider material when next touched", a
   assert.equal((await fixture.poll(sealed)).status, 409);
   assert.equal(fixture.secretDriver.valueFor(await fixture.stored(sealed)), before);
   assertNoCredentials(fixture);
+});
+
+test("a device login start that cannot reach the sign-in service says so and logs the cause", async (t) => {
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "info",
+    destination: {
+      write(chunk) {
+        lines.push(
+          ...String(chunk)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        );
+        return true;
+      },
+    },
+  });
+  const fixture = await createConsoleAppFixture(t, { logger });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Device login egress", { ready: true });
+  const originalFetch = globalThis.fetch;
+  const refused = Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:443"), {
+    code: "ECONNREFUSED",
+  });
+  // The chart's default network policy: the API Pod cannot connect to the sign-in service.
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (new URL(url).hostname === "127.0.0.1") {
+      return originalFetch(url, options);
+    }
+    throw new TypeError("fetch failed", { cause: refused });
+  });
+  const response = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/device-authorizations`,
+    { body: { harnessId: "codex" } },
+  );
+  assert.equal(response.status, 503, JSON.stringify(response.body));
+  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(
+    response.body.error.message,
+    "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again.",
+  );
+  const warning = lines.find((line) => line.event === "device_authorization.start_failed");
+  assert.ok(warning, "the API logs why device login could not start");
+  assert.equal(warning.severity, "WARN");
+  assert.equal(warning.reason, "unreachable");
+  assert.equal(warning.failure, "ECONNREFUSED");
+  assert.equal(warning.host, "auth.openai.com");
+  assert.equal(JSON.stringify(lines).includes("10.0.0.1"), false);
+  // Nothing was stored for a login that never started.
+  const secrets = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(secrets.data, []);
 });

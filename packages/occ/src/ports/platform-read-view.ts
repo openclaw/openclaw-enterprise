@@ -64,6 +64,7 @@ export function createPlatformReadView(
     ]),
     provisioning: bindRepository(repositories.provisioning, lifetime, [
       "findByWorkId",
+      "findWithWork",
       "hasPendingNamespaceProvisioning",
       "findByAgent",
       "findByConfiguration",

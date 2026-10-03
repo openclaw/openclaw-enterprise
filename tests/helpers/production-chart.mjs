@@ -41,6 +41,9 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   for (const [key, value] of Object.entries({ ...productionValues, ...overrides })) {
     args.push("--set", `${key}=${value}`);
   }
+  for (const [key, value] of Object.entries(options.strings ?? {})) {
+    args.push("--set-string", `${key}=${value}`);
+  }
   return execute(helm, args, { cwd: repository, maxBuffer: 2_000_000 });
 }
 

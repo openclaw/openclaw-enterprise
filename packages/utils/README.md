@@ -14,6 +14,7 @@ grouped by purpose under `src/`; `src/index.ts` exports the public surface.
 | `hashing.ts`    | `sha256Hex`                                 | SHA-256 hex with an optional slice length. Resource owners choose prefix lengths and naming rules.                                                   |
 | `errors.ts`     | `numericErrorStatus`                        | Reads numeric `code`, `statusCode`, `response.statusCode`, then `response.status`. Callers decide whether the result is retryable or permanent.      |
 | `http.ts`       | `cookieHeaderFromSetCookie`                 | Converts separate Set-Cookie fields to a Cookie header, stripping attributes without splitting Expires commas. It does not authenticate requests.    |
+| `text.ts`       | `hasControlCharacter`                       | Detects C0 controls and DEL only. C1 controls, U+2028/U+2029 and other Unicode pass; callers add stricter rules.                                     |
 
 Add a utility when multiple modules need the same behavior. Keep authorization,
 resource ownership, schema validation, credential handling, Driver lifecycle

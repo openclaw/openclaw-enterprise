@@ -8,6 +8,7 @@ import {
   assertLegacyModelSecretBindingDenied,
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
+  assertDedicatedSkillSources,
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
@@ -30,6 +31,18 @@ import {
   resources,
   secretRotationProbe,
 } from "../helpers/harness-topology-k3d-real.mjs";
+
+test(
+  "candidate dedicated Skill source uploads honor default and denied node-write policy",
+  {
+    skip: process.env.OCC_TEST_SKILL_SOURCE_LIFECYCLE !== "1",
+    timeout: 1_200_000,
+  },
+  async (context) => {
+    const topology = await arrangeProductionTopology(context, "dedicated");
+    await assertDedicatedSkillSources(topology);
+  },
+);
 
 test(
   "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",

@@ -1,0 +1,86 @@
+{
+  "input": 5,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-10-03T04:08:01.973402000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "generated process-local MITM CA",
+      "subsystem": "codex_network_proxy::certs"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T04:08:02.011311000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "allowUnixSockets and dangerouslyAllowAllUnixSockets are macOS-only; requests will be rejected on this platform",
+      "subsystem": "codex_network_proxy::proxy"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T04:08:02.014088000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "HTTP proxy listening on 127.0.0.1:35963",
+      "subsystem": "codex_network_proxy::http_proxy"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T04:08:02.023927000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "connecting to websocket: ws://model-proxy.model-proxy.svc.cluster.local:8080/v1/responses",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T04:08:02.379727000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "successfully connected to websocket: ws://model-proxy.model-proxy.svc.cluster.local:8080/v1/responses",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    }
+  ]
+}

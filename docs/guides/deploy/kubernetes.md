@@ -59,6 +59,12 @@ addresses and ports as observed from controller Pods. These become the shared
 installation's network settings; do not substitute whole cluster or VPC ranges.
 See [networking and isolation](../../reference/drivers/kubernetes-compute/networking-and-isolation.md).
 
+On OpenShift, select the actual DNS backend namespace and Pod labels; the
+[Helm DNS grants](../../reference/settings/production.md#required-production-controller-environment)
+permit both Service and backend ports. Verify UDP and TCP DNS resolution from
+the initialization, API, worker, and enabled supporting workloads, plus denied
+traffic to a Pod outside the configured DNS selectors.
+
 ## Configure the protected copies and install
 
 Continue with [production installation](production-installation.md), retaining

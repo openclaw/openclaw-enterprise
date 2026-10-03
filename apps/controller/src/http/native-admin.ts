@@ -210,7 +210,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   function requireNativeAdminHumanSession(request: FastifyRequest, context: RequestContext) {
     const admitted = getAdmission(request);
     if (admitted?.method !== "session") {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+      // Depends only on how the caller authenticated, so it discloses nothing about the Agent.
+      throw failure(
+        403,
+        "FORBIDDEN",
+        "Native admin UI requires a signed-in console session; service API keys cannot open it.",
+      );
     }
     const session = admitted.session;
     if (session.userId !== context.subject || Date.parse(session.expiresAt) <= Date.now()) {

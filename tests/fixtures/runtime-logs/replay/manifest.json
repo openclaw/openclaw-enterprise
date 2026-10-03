@@ -1,5 +1,5 @@
 {
-  "count": 6,
+  "count": 8,
   "fixtures": [
     {
       "file": "gateway-wrapper-probe-failed.kubelet.txt",
@@ -36,6 +36,24 @@
       "provenance": "captured",
       "origin": "kubectl logs --timestamps of the agent container, runtime image at OpenClaw 2026.9.6 (9d9c856), local k3d, 2026-09-30; the first 16 lines, from the Harness node setup result (pretty-printed JSON) to the failed model probe",
       "scrubbed": "Gateway host suffix, Namespace id and Agent id in the node host URL replaced with fixed placeholders"
+    },
+    {
+      "file": "codex-model-connection.kubelet.txt",
+      "golden": "codex-model-connection.golden.json",
+      "replay": "kubelet-container",
+      "source": "agent",
+      "provenance": "captured",
+      "origin": "kubectl logs of the agent container of a dedicated Codex Agent during its first turn, codex-cli 0.158.0 in the runtime image, dogfood install, 2026-10-03; the codex_api and codex_network_proxy records only, kubelet timestamp prefixes added from each record's timestamp",
+      "scrubbed": "model proxy Namespace in the endpoint URL replaced with model-proxy, the MITM CA file hash in cert_path replaced with zeros"
+    },
+    {
+      "file": "codex-model-connection-failures.kubelet.txt",
+      "golden": "codex-model-connection-failures.golden.json",
+      "replay": "kubelet-container",
+      "source": "agent",
+      "provenance": "upstream-derived",
+      "origin": "codex-cli 0.158.0 (rust-v0.158.0) log formats: codex-api/src/endpoint/responses_websocket.rs connect_websocket and its event parser, core/src/client.rs force_http_fallback, core/src/responses_retry.rs, network-proxy/src/{socks5,proxy,http_proxy,mitm}.rs; connect errors in tungstenite 0.27 Display form; the last six lines are payload-carrying or altered formats that must stay withheld",
+      "scrubbed": "nothing to scrub (synthetic values)"
     },
     {
       "file": "sandbox-ocsf-decisions.json",

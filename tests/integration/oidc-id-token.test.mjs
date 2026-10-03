@@ -8,6 +8,7 @@ import {
   oidcNonce,
   oidcProviderId,
 } from "../../apps/controller/src/auth/oidc.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 // An Auth0-shaped issuer: the trailing slash is part of `iss`.
 const issuer = "https://tenant.idp.example.test/";
@@ -135,7 +136,12 @@ test("OIDC configuration is all or none and pins every URL to the issuer's host"
     "https://tenant.idp.example.test:8443/",
     // `iss` is compared with the configured string, so even the default port is refused.
     "https://tenant.idp.example.test:443/",
-    "https://user:pass@tenant.idp.example.test/",
+    syntheticCredentialUrl({
+      username: "user",
+      password: "pass",
+      host: "tenant.idp.example.test",
+      pathname: "/",
+    }),
     "https://tenant.idp.example.test/?tenant=1",
     "https://tenant.idp.example.test/#x",
     "https://203.0.113.10/",

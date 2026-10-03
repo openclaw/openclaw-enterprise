@@ -4,6 +4,7 @@ import {
   asRecord,
   cookieHeaderFromSetCookie,
   deepFreeze,
+  hasControlCharacter,
   immutableCopy,
   isNonEmptyString,
   isPositiveSafeInteger,
@@ -103,4 +104,13 @@ test("deepFreeze freezes nested event data in place and handles cycles", () => {
   assert.throws(() => {
     event.actor.id = "principal-b";
   }, TypeError);
+});
+
+test("hasControlCharacter flags C0 controls and DEL but no other characters", () => {
+  for (const code of [0x00, 0x09, 0x0a, 0x1f, 0x7f]) {
+    assert.equal(hasControlCharacter(`a${String.fromCharCode(code)}b`), true, code.toString(16));
+  }
+  // Space, tilde, C1 controls, a line separator, an astral character and a lone surrogate pass.
+  assert.equal(hasControlCharacter(" ~\u0080\u009f\u2028\u{1f600}\ud800"), false);
+  assert.equal(hasControlCharacter(""), false);
 });

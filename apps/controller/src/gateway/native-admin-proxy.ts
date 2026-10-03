@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type { Socket } from "node:net";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { hasControlCharacter } from "@openclaw-enterprise/utils";
 
 export interface NativeAdminProxyContext {
   readonly gatewayBase: string;
@@ -69,16 +70,6 @@ const STRIPPED_REQUEST_HEADERS = new Set([
 ]);
 
 const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie"]);
-
-function hasControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) {
-      return true;
-    }
-  }
-  return false;
-}
 
 function percentDecode(value: string): string | undefined {
   try {

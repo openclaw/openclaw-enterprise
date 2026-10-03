@@ -226,6 +226,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		clusterCreationFailed = true
 		return err
 	}
+	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
+		return err
+	}
 	if err := r.writeKubeconfigs(ctx, state); err != nil {
 		return err
 	}

@@ -55,10 +55,12 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import {
+  AGENT_NAME_CONFLICT,
   DependencyUnavailableError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
   ResourceConflictError,
+  ResourceStateConflictError,
   ScopeViolationError,
 } from "../errors.ts";
 import type {
@@ -103,6 +105,7 @@ import {
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
 import {
+  asWork,
   WorkClaimLostError,
   PostgresWorkQueue,
   type PostgresQueryClient,
@@ -690,6 +693,11 @@ function databaseError(error: unknown): Error {
 
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
   if (code === "23505") {
+    // The only caller-chosen unique Agent field is its name; the caller was already
+    // authorized to create Agents in this Namespace.
+    if ("constraint" in error && error.constraint === "agents_namespace_id_name_unique") {
+      return new ResourceStateConflictError(AGENT_NAME_CONFLICT);
+    }
     return new ResourceConflictError(
       "A platform resource with this identity or name already exists.",
     );
@@ -3515,7 +3523,35 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
         },
+        findWithWork: async (workId) => {
+          // One statement, one snapshot: separate reads under READ COMMITTED can pair a
+          // job with a queue row from a later commit (a failed queue row, a running job).
+          const found = rows(
+            (
+              await client.query(
+                `SELECT provisioning.*, to_jsonb(work) AS controller_work
+                 FROM occ.agent_provisioning_work AS provisioning
+                 LEFT JOIN occ.controller_work AS work
+                   ON work.idempotency_key = provisioning.work_id
+                 WHERE provisioning.work_id = $1`,
+                [workId],
+              )
+            ).rows,
+          );
+          if (found[0] === undefined) {
+            return undefined;
+          }
+          const work = found[0].controller_work;
+          return Object.freeze({
+            record: provisioningRecordFromRow(found[0]),
+            ...(work === null || work === undefined ? {} : { work: asWork(work) }),
+          });
+        },
         hasPendingNamespaceProvisioning: async (namespaceId) => {
+          // An external write is unresolved until a receipt matches its pending effect
+          // exactly, the rule occ.finalize_agent_deletion applies. A settled effect on
+          // terminal work is history, not work in flight. Missing or malformed
+          // evidence still blocks deletion.
           const found = await client.query(
             `SELECT 1
              FROM occ.agent_provisioning_work AS provisioning
@@ -3523,8 +3559,21 @@ export class PostgresPlatformState implements PlatformStateStore {
                ON work.idempotency_key = provisioning.work_id
              WHERE provisioning.namespace_id = $1
                AND (
-                 provisioning.progress ? 'pendingEffect'
-                 OR provisioning.progress ? 'effectReceipt'
+                 (
+                   (
+                     provisioning.progress ? 'pendingEffect'
+                     OR provisioning.progress ? 'effectReceipt'
+                   )
+                   AND NOT COALESCE(
+                     provisioning.progress->'effectReceipt'->>'kind' =
+                       provisioning.progress->'pendingEffect'->>'kind'
+                     AND provisioning.progress->'effectReceipt'->>'owner' =
+                       provisioning.progress->'pendingEffect'->>'owner'
+                     AND provisioning.progress->'effectReceipt'->>'targetId' =
+                       provisioning.progress->'pendingEffect'->>'targetId',
+                     false
+                   )
+                 )
                  OR provisioning.status IN ('queued', 'running')
                  OR work.state IN ('queued', 'claimed')
                )

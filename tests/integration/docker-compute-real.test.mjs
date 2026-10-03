@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   assertDockerRuntimeOtelSettings,
   createOtelLogObservation,
@@ -1113,9 +1114,22 @@ test(
       OCC_PORT: INTERNAL_API_PORT,
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_POSTGRES_PORT: String(postgresPort),
-      OCC_DATABASE_URL: "postgresql://occ_app:occ-app-local@postgres:5432/openclaw_enterprise",
-      OCC_MIGRATION_DATABASE_URL:
-        "postgresql://occ_migrator:occ-migrator-local@postgres:5432/openclaw_enterprise",
+      OCC_DATABASE_URL: syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "occ_app",
+        password: "occ-app-local",
+        host: "postgres",
+        port: 5432,
+        pathname: "/openclaw_enterprise",
+      }),
+      OCC_MIGRATION_DATABASE_URL: syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "occ_migrator",
+        password: "occ-migrator-local",
+        host: "postgres",
+        port: 5432,
+        pathname: "/openclaw_enterprise",
+      }),
       OCC_AUTH_BASE_URL: baseUrl,
       OPENCLAW_DEV_EMAIL: adminEmail,
       OPENCLAW_DEV_PASSWORD: adminPassword,

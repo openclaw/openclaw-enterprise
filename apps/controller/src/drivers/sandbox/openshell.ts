@@ -1326,10 +1326,3 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     });
   }
 }
-
-export function createOpenShellSandboxDriver(
-  options: OpenShellSandboxDriverOptions,
-  selection: OpenShellSandboxDriverSelection,
-): OpenShellSandboxDriver {
-  return new OpenShellSandboxDriver(options, selection);
-}

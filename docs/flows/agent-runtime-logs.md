@@ -98,7 +98,10 @@ with one older than an hour, or a cursor whose Pod is gone, starts a view: the c
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
-`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. OCC
+`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. A cursor
+poll derives `sinceSeconds` from the cursor: from its newest delivered line, or,
+when the view has delivered nothing yet, from the previous read (a full tail then
+emits `window_exceeded`). OCC
 drops lines already delivered at the cursor time, emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
@@ -138,7 +141,8 @@ exposes nothing else. OpenShell stamps supervisor lines when recorded but
 batches them, and filters `since_time` by that stamp, so a resume sends a time
 `SANDBOX_LOG_OVERLAP_MS` (5 s) behind the newest delivered line; the cursor
 keeps one hash per line delivered since then (up to 48), and each re-read line
-consumes one. If no remembered line came back and nothing older did, OCC emits
+consumes one. A view's first page floors its resume time at the requested window
+start. If no remembered line came back and nothing older did, OCC emits
 `buffer_lost` or, when the window was full, `window_exceeded`; more than 48
 lines in one millisecond also emit `window_exceeded`. gRPC `NOT_FOUND` (absent
 Sandbox, or concealed from a non-member) maps to
@@ -200,6 +204,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 03:00: A cursor from a page that delivered no line resumes from that page, not the whole tail. (bughunt-1/fix-runtime-logs-quiet-follow)
 
 - 2026-10-01 14:00: Add the server-side `minLevel` floor and the console's **Include debug** control. (fix-d79 - 3d6ce1fdb)
 

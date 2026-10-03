@@ -48,7 +48,7 @@ export function message(error, mutation = false) {
     ? "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again."
     : error.name === "TypeError" || error.name === "TimeoutError"
       ? "Request interrupted. Retry to check current access and saved state."
-      : "Service unavailable. The read could not be completed. Please retry.";
+      : "Service unavailable. The read could not be completed. Try again.";
 }
 
 export function assertReadableConfiguration(resource) {

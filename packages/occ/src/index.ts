@@ -113,11 +113,13 @@ import {
   driverHasValidLifecycleHooks,
 } from "./driver-contract.ts";
 import {
+  AGENT_NAME_CONFLICT,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
   PluginDiscoveryError,
@@ -139,6 +141,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   ScopeViolationError,
+  SecretValueError,
 } from "./errors.ts";
 import {
   readRuntimeLogPage,
@@ -216,6 +219,7 @@ export {
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,
   PluginDiscoveryError,
@@ -239,6 +243,7 @@ export {
   RuntimeLogsSandboxNotFoundError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
+  SecretValueError,
   TransientDependencyError,
   type ActivationPendingCode,
   type RuntimeLogsErrorCode,
@@ -2025,8 +2030,12 @@ export class OpenClawController {
     workId: string,
   ): Promise<Readonly<ProvisionAgentResult>> {
     return this.mutate(async (state) => {
-      const record = await this.exactProvisioningWork(state, principalId, namespaceId, workId);
-      const work = await state.operations.findWork(record.workId);
+      const { record, work } = await this.exactProvisioningWork(
+        state,
+        principalId,
+        namespaceId,
+        workId,
+      );
       if (work === undefined) {
         throw new DependencyUnavailableError("The provisioning work is unavailable.");
       }
@@ -2041,7 +2050,12 @@ export class OpenClawController {
   ): Promise<Readonly<ProvisionAgentResult>> {
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
-      const record = await this.exactProvisioningWork(state, principalId, namespace.id, workId);
+      const { record, work: observed } = await this.exactProvisioningWork(
+        state,
+        principalId,
+        namespace.id,
+        workId,
+      );
       if (record.actorId !== principalId) {
         throw new AuthorizationDeniedError("Only the initiating actor can retry provisioning.");
       }
@@ -2070,8 +2084,7 @@ export class OpenClawController {
       }
       await this.authorizeProvisioningRecord(state, principalId, record);
       if (record.status === "queued" || record.status === "running") {
-        const work = await state.operations.findWork(record.workId);
-        return Object.freeze({ provisioning: provisioningProgress(record, work) });
+        return Object.freeze({ provisioning: provisioningProgress(record, observed) });
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
       const work = await state.operations.findWork(record.workId);
@@ -2221,6 +2234,13 @@ export class OpenClawController {
           : "permanent";
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
+      // Only the shared duplicate-name text passes through; other error messages stay internal.
+      const message =
+        code === "PROVISIONING_REJECTED" &&
+        error instanceof ResourceStateConflictError &&
+        error.message === AGENT_NAME_CONFLICT
+          ? AGENT_NAME_CONFLICT
+          : "Agent provisioning could not complete.";
       await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (current === undefined) {
@@ -2232,14 +2252,10 @@ export class OpenClawController {
             completedPhase: current.completedPhase,
             progress: {
               ...current.progress,
-              error: { code, message: "Agent provisioning could not complete." },
+              error: { code, message },
             },
           },
-          {
-            disposition,
-            code,
-            message: "Agent provisioning could not complete.",
-          },
+          { disposition, code, message },
         );
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
@@ -4188,7 +4204,10 @@ export class OpenClawController {
           throw new AgentDeletingError();
         }
         if (agent.executionMode !== "dedicated") {
-          throw new NotImplementedError("Device login requires a dedicated Agent.");
+          throw new NotImplementedError(
+            "agent_device_authorization",
+            "Device login requires a dedicated Agent.",
+          );
         }
       }
     });
@@ -4204,7 +4223,10 @@ export class OpenClawController {
     await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
     if (harnessId !== "codex") {
       // Permanent: retrying cannot help, so this is not reported as a provider outage.
-      throw new NotImplementedError("Device login is available only for the Codex Harness.");
+      throw new NotImplementedError(
+        "agent_device_authorization",
+        "Device login is available only for the Codex Harness.",
+      );
     }
     const compute = this.selectedDriver("compute");
     const secrets = this.secretDriver();
@@ -4215,14 +4237,17 @@ export class OpenClawController {
       !secrets.compareAndSwap
     ) {
       throw new NotImplementedError(
+        "agent_device_authorization",
         "Device authorization is unavailable for the selected Drivers.",
       );
     }
     let started: HarnessDeviceAuthorization;
     try {
       started = await compute.startHarnessDeviceAuthorization(harnessId);
-    } catch {
-      throw new DependencyUnavailableError("Could not start device login. Try again.");
+    } catch (error) {
+      throw error instanceof DeviceAuthorizationStartError
+        ? error
+        : new DeviceAuthorizationStartError("unavailable");
     }
     // Repeat authority checks after provider I/O, before persisting a credential session.
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
@@ -4265,7 +4290,10 @@ export class OpenClawController {
     }
     const driver = this.secretDriver(secret.driverId);
     if (!driver.withValue || !driver.compareAndSwap) {
-      throw new NotImplementedError("Device authorization is unavailable for the Secret Driver.");
+      throw new NotImplementedError(
+        "agent_device_authorization",
+        "Device authorization is unavailable for the Secret Driver.",
+      );
     }
     const value = await this.secretOperation(() =>
       driver.withValue!(secret, async (value) => value),
@@ -4424,7 +4452,10 @@ export class OpenClawController {
     await this.read((state) => this.exactNamespace(state, namespaceId));
     const driver = this.selectedDriver("compute");
     if (!driver.discoverHarnessModels) {
-      throw new NotImplementedError("Model discovery is unavailable. Enter a model ID manually.");
+      throw new NotImplementedError(
+        "agent_models.discovery",
+        "Model discovery is unavailable. Enter a model ID manually.",
+      );
     }
     // Discovery performs no platform writes and must not hold a transaction over provider I/O.
     try {
@@ -5797,7 +5828,7 @@ export class OpenClawController {
       // Installation defaults were seeded by Namespace creation, so deletion removes
       // them only while they still match the defaults; edited copies block above.
       for (const preset of seededPresets) {
-        await this.deletePresetInState(state, principalId, namespace.id, preset.id);
+        const removed = await this.deletePresetInState(state, principalId, namespace.id, preset.id);
         await state.audit.append({
           id: `aud_${crypto.randomUUID()}`,
           installationId: this.installation.id,
@@ -5809,7 +5840,11 @@ export class OpenClawController {
           action: "openclaw.presets.delete",
           resource: { kind: "preset", id: preset.id, namespaceId: namespace.id },
           outcome: "success",
-          details: { source: "namespace-deletion" },
+          // Like a direct Preset delete, name the AccessBindings removed with it.
+          details: {
+            source: "namespace-deletion",
+            ...(removed.length === 0 ? {} : { removedAccessBindings: removed }),
+          },
         });
       }
       const deleting = await state.namespaces.transitionNamespaceStatus(
@@ -6552,22 +6587,23 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     workId: string,
-  ): Promise<Readonly<AgentProvisioningRecord>> {
+  ) {
     if (!isNonEmptyString(workId)) {
       throw new ScopeViolationError("The exact provisioning work identity is missing.");
     }
     await this.exactNamespace(state, namespaceId);
-    const record = await state.provisioning.findByWorkId(workId);
-    if (record === undefined || record.namespaceId !== namespaceId) {
+    // The job and its queue row come from one statement: status derives from both.
+    const found = await state.provisioning.findWithWork(workId);
+    if (found === undefined || found.record.namespaceId !== namespaceId) {
       throw new ScopeViolationError(
         "The provisioning work does not belong to the exact Namespace.",
       );
     }
-    if (record.actorId !== principalId) {
+    if (found.record.actorId !== principalId) {
       throw new AuthorizationDeniedError("Only the initiating actor can read provisioning status.");
     }
-    await this.authorizeProvisioningRecord(state, principalId, record);
-    return record;
+    await this.authorizeProvisioningRecord(state, principalId, found.record);
+    return found;
   }
 
   private async guardAgentProvisioning(
@@ -7343,16 +7379,18 @@ export class OpenClawController {
   }
 
   private validateSecretValue(value: unknown): asserts value is string {
+    const message =
+      "The Secret value must be nonempty UTF-8, without NUL, and at most 65536 bytes.";
     if (
       typeof value !== "string" ||
       value.length === 0 ||
       value.includes("\u0000") ||
-      /[\uD800-\uDFFF]/u.test(value) ||
-      Buffer.byteLength(value, "utf8") > 65_536
+      /[\uD800-\uDFFF]/u.test(value)
     ) {
-      throw new ScopeViolationError(
-        "The Secret value must be nonempty UTF-8, without NUL, and at most 65536 bytes.",
-      );
+      throw new SecretValueError("INVALID_VALUE", message);
+    }
+    if (Buffer.byteLength(value, "utf8") > 65_536) {
+      throw new SecretValueError("TOO_LONG", message);
     }
   }
 

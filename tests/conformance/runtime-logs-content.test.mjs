@@ -45,6 +45,8 @@ function canaries() {
     GITHUB_PAT: `github_pat_${randomString(40)}`,
     RPC: `rpc-canary-${randomUUID()}`,
     CODEX_PROMPT: `codex-prompt-${randomUUID()}`,
+    // Chat text that codex_core interpolates into a warning message.
+    CODEX_CHAT: `codex-chat-${randomUUID()}`,
     WRAPPER_EXTRA: `wrapper-extra-${randomUUID()}`,
     MALFORMED: `malformed-canary-${randomUUID()}`,
     ARGV_PASSWORD: `argv${randomString(12)}`,
@@ -184,9 +186,19 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
     ms: 12,
     sinceStartMs: 40,
   });
-  const codex = lines.find((record) => record.kind === "codex");
-  assert.equal(codex.message, "retrying model request");
-  assert.equal(codex.subsystem, "codex_core::client");
+  const codex = lines.filter((record) => record.kind === "codex");
+  assert.deepEqual(
+    codex.map(({ level, message, subsystem }) => ({ level, message, subsystem })),
+    [
+      {
+        level: "warn",
+        message: "stream connection failed; waiting to retry",
+        subsystem: "codex_core::responses_retry",
+      },
+      // codex_core text outside the reviewed messages keeps its level and target only.
+      { level: "warn", message: "Codex message withheld", subsystem: "codex_core::event_mapping" },
+    ],
+  );
   const openclaw = lines.find((record) => record.message === "turn started");
   assert.deepEqual(openclaw.fields, { agent_id: "main" });
   assert.ok(lines.some((record) => record.message.includes("[redacted:userinfo]@github.com")));
@@ -966,7 +978,12 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
         subsystem: "codex_exec_server::local_file_system",
       },
       { kind: "codex", level: "debug", message: "span new span", subsystem: "codex_core::client" },
-      { kind: "codex", level: "info", message: "close", subsystem: "codex_core::client" },
+      {
+        kind: "codex",
+        level: "info",
+        message: "Codex message withheld",
+        subsystem: "codex_core::client",
+      },
     ],
   );
   assert.equal(JSON.stringify(records).includes(canary), false, "no span payload or call ID leaks");
@@ -991,10 +1008,12 @@ function pollReader() {
   let cursor;
   let reads = 0;
   let admissions = 0;
+  const requests = [];
   const now = Date.parse("2026-09-30T12:10:00Z");
   return {
     codec,
     binding,
+    requests,
     get cursor() {
       return cursor;
     },
@@ -1020,8 +1039,9 @@ function pollReader() {
         admitView: async () => {
           admissions += 1;
         },
-        readLogs: async () => {
+        readLogs: async (request) => {
           reads += 1;
+          requests.push(request);
           return {
             stream: {
               source: "gateway",
@@ -1076,6 +1096,53 @@ test("runtime log cursor carries PEM context over three polls and empty polls", 
     messages(await reader.poll([timedLog(syntheticPemTail, 5)])).includes(syntheticPemTail),
   );
   assert.equal(reader.admissions, 1);
+});
+
+test("a cursor from a page with no lines reads only output newer than that page", async () => {
+  const reader = pollReader();
+  // `occ agent logs --since 1m --follow` on a quiet container: the first page is empty.
+  await reader.poll([], { query: { sinceSeconds: 60 } });
+  // Follow polls send only the cursor; the read must not fall back to the whole tail.
+  await reader.poll([], { elapsed: 4_000 });
+  await reader.poll([], { elapsed: 9_000 });
+  assert.deepEqual(
+    reader.requests.map(({ sinceSeconds }) => sinceSeconds),
+    [60, 6, 7],
+  );
+  // The first line the view sees is delivered once, and a full tail is labelled.
+  const burst = Array.from({ length: 3 }, (_, i) => timedLog(`retrying in ${i}s`, 600 + i));
+  const full = await reader.poll(burst, { elapsed: 10_000, query: { tailLines: 3 } });
+  assert.deepEqual(
+    full.records.map((record) => record.reason ?? record.message),
+    ["window_exceeded", "retrying in 0s", "retrying in 1s", "retrying in 2s"],
+  );
+  const again = await reader.poll(burst, { elapsed: 11_000 });
+  assert.deepEqual(messages(again), []);
+  assert.equal(reader.admissions, 1);
+});
+
+test("a resumed page cut by the byte limit still reports lines lost before it", async () => {
+  const reader = pollReader();
+  await reader.poll([timedLog("retrying in 0s", 0), timedLog("retrying in 1s", 1)]);
+  // A burst of long lines: the tail dropped second 1, then the byte limit cut the page
+  // to fewer than `tailLines` lines, ending in a partial line.
+  const cut = await reader.poll(
+    [timedLog("retrying in 600s", 600), timedLog("retrying in 601s", 601), timedLog("retr", 602)],
+    { elapsed: 600_000, truncated: true },
+  );
+  assert.deepEqual(
+    cut.records.map((record) => record.reason ?? record.message),
+    ["window_exceeded", "retrying in 600s", "retrying in 601s", "truncated"],
+  );
+  // A cut page that still re-reads the last delivered line lost nothing before it.
+  const overlap = await reader.poll(
+    [timedLog("retrying in 601s", 601), timedLog("retrying in 700s", 700), timedLog("retr", 701)],
+    { elapsed: 700_000, truncated: true },
+  );
+  assert.deepEqual(
+    overlap.records.map((record) => record.reason ?? record.message),
+    ["retrying in 700s", "truncated"],
+  );
 });
 
 test("runtime log cursor does not let an evicted same-time old END erase a later BEGIN", async () => {

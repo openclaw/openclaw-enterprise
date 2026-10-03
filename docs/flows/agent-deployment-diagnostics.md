@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
 updated: 2026-10-01
-last_updated_session: authoring-run/089c3e66-9284-44a0-9e60-285ac7f50ab9
+last_updated_session: authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c
 ---
 
 # Agent deployment diagnostics flow
@@ -64,9 +64,13 @@ or replaced Pods produce `unknown` checks. Invalid endpoint data fails the
 request. Collection has a ten-second deadline and a 64 KiB response limit.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
-runs the native Slack channel status probe on demand in the Gateway container.
-It maps configuration, authentication, and connectivity to safe codes without
-sending a message. The Agent container currently returns no channel checks.
+calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
+Gateway container. It maps live configuration, authentication, and connectivity
+to safe codes without sending a message. The call cancels after six seconds or
+when the HTTP caller disconnects. Transport failures return `UNAVAILABLE`; RPC failures return `PROBE_FAILED`.
+Both produce unknown checks; local
+configuration is not substituted for the live response. The Agent container
+currently returns no channel checks.
 
 ### 3. Return validated evidence
 
@@ -101,6 +105,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 15:14: Use bounded SDK queries for live channel diagnostics. (authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c - 521549df)
 
 - 2026-10-01 15:22: Point validation to its private deployment diagnostics module. (authoring-run/089c3e66-9284-44a0-9e60-285ac7f50ab9 - 28debe57)
 

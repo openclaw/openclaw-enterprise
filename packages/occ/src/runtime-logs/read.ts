@@ -220,6 +220,12 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     leading.push(runtimeLogGap("stream_replaced", stream));
   }
   const resume = sameStream && prior.lastTime !== null ? prior : undefined;
+  // A view that has delivered no line yet (a quiet container, or an empty
+  // `sinceSeconds` window) continues from its previous page, not from the whole tail:
+  // cursor polls need not repeat `sinceSeconds`, and a cursor reads newer lines only.
+  // The bound starts at the previous read, not the end of its page: the cursor's
+  // `issuedAt` is taken before the Driver read.
+  const quiet = sameStream && prior.lastTime === null ? prior : undefined;
   // A view is audited once, before its first Driver read. Cursor polls inside a
   // view are not re-audited; an expired cursor starts a new view, and so does a
   // cursor whose Pod is gone (the audit row names the Pod that is read).
@@ -236,16 +242,15 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
       tailLines: query.tailLines,
     });
   }
+  const secondsSince = (time: number) =>
+    Math.min(86_400, Math.max(1, Math.ceil((now() - time) / 1000) + RESUME_OVERLAP_SECONDS));
   const sinceSeconds =
     resume !== undefined
-      ? Math.min(
-          86_400,
-          Math.max(
-            1,
-            Math.ceil((now() - Date.parse(resume.lastTime!)) / 1000) + RESUME_OVERLAP_SECONDS,
-          ),
-        )
-      : query.sinceSeconds;
+      ? secondsSince(Date.parse(resume.lastTime!))
+      : quiet !== undefined
+        ? secondsSince(quiet.issuedAt)
+        : query.sinceSeconds;
+  const readStartedAt = now();
   const chunk = validChunk(
     await input.readLogs({
       source: sourceId,
@@ -286,12 +291,24 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   // The byte limit cuts the final line; a partial line may end inside a token.
   const completeLines = chunk.truncated ? chunk.lines.slice(0, -1) : chunk.lines;
   let lines = completeLines;
+  const earliest = lines.find((line) => line.time !== null)?.time ?? null;
+  // A full tail since a quiet view's previous read may have dropped its oldest lines.
+  if (
+    quiet !== undefined &&
+    !replacedDuringRead &&
+    chunk.lines.length >= query.tailLines &&
+    earliest !== null
+  ) {
+    leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
+  }
   if (resume !== undefined && !replacedDuringRead) {
     const lastTime = resume.lastTime!;
     const seen = new Set(resume.lastHashes);
-    const earliest = lines.find((line) => line.time !== null)?.time ?? null;
+    // The overlap re-reads the last delivered line unless the tail dropped it. The
+    // Driver applies the tail before its byte cut, so a cut page may hold fewer than
+    // `tailLines` lines and still have lost the lines before it.
     if (
-      chunk.lines.length >= query.tailLines &&
+      (chunk.lines.length >= query.tailLines || chunk.truncated) &&
       earliest !== null &&
       compareRuntimeLogTime(earliest, lastTime) > 0
     ) {
@@ -403,7 +420,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     lastTime,
     lastHashes: lastHashes.slice(-16),
     ...(sanitized.pemOpen === undefined ? {} : { pemOpen: sanitized.pemOpen, pemAfterTime }),
-    issuedAt: now(),
+    issuedAt: readStartedAt,
   };
   return Object.freeze({
     revisionId: description.revisionId,

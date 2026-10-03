@@ -212,6 +212,7 @@ api:
   # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
   channelDirectoryProxyUrl: ""
   # Optional model-list discovery: API Pod HTTPS egress to provider IPv4 /32 hosts.
+  # Codex device login (ChatGPT OAuth) also needs auth.openai.com here.
   # Operators maintain these addresses; Console model selection does not require it.
   modelDiscoveryCidrs: []
   # Trust client-address headers from a proxy in front of the API. Off by default:

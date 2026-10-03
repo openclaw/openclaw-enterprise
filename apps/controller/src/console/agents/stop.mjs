@@ -23,7 +23,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     element(
       "p",
       { className: "muted" },
-      "Stop interrupts the current runtime gateway. Configuration, AgentRevisions, Credentials, and workspace data are retained.",
+      "Stop interrupts the current runtime gateway. Configuration, versions, Credentials, and workspace data are retained.",
     ),
     feedback,
     actions,

@@ -438,6 +438,10 @@ test("Agent model discovery reports unsupported Compute Drivers without contacti
   });
   assert.equal(result.status, 501);
   assert.equal(result.body.error.code, "NOT_IMPLEMENTED");
+  assert.equal(
+    result.body.error.message,
+    "Model discovery is unavailable. Enter a model ID manually.",
+  );
   assert.equal(transport.mock.callCount(), 0);
 });
 

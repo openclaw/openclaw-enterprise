@@ -10,20 +10,23 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: initialization
   policyTypes: [Ingress, Egress]
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.dns.podLabels | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+        # Allow port 5353 for compatibility with OpenShift DNS backends.
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
     - to:
         {{- range .Values.database.cidrs }}
         - ipBlock:

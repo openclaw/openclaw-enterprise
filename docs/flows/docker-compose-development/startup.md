@@ -197,16 +197,18 @@ configuration volume.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-Both profiles use legacy iptables and honor the explicit IPv4 node DNS resolver
-without changing host DNS. Kubernetes-only startup imports matching OCE images
-and runs PostgreSQL, migration, bootstrap, API and worker in Kubernetes.
+Both profiles use legacy iptables and honor an explicit IPv4 node resolver
+without changing host DNS;
+`internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
+refused node DNS. Kubernetes-only startup imports matching OCE images and runs
+PostgreSQL, migration, bootstrap, API and worker in Kubernetes.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
 manifests and waits for the k3s-owned Gateway API CRDs before installing Envoy,
 printing k3s add-on status before rollback on failure.
 `internal/occdev/gateway_k3d.go:waitForCRDEstablished` polls each CRD every
-second until `Established` is `True`, stopping on a `kubectl` error or the
-startup timeout. Before configuring gateway proxy trust,
+second until `Established`, stopping on a `kubectl` error or startup
+timeout. Before configuring gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
 checks allowed and denied Pod traffic with credential-free Pods and a temporary
 policy. After bootstrap creates the initial Gateway Namespace, it rechecks the

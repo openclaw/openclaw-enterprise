@@ -4640,7 +4640,7 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 
 **Operation ID:** `createIAMAccessBinding`
 
-**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body AgentRevision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.
+**Permissions:** Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body AgentRevision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body CredentialSource when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Preset when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -4649,7 +4649,9 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 | `read` | `agent` | `request_body` |
 | `read` | `agent_revision` | `request_body` |
 | `read` | `configuration` | `request_body` |
+| `read` | `credential_source` | `request_body` |
 | `read` | `namespace` | `request_body` |
+| `read` | `preset` | `request_body` |
 | `read` | `secret` | `request_body` |
 | `read` | `service_account` | `request_body` |
 

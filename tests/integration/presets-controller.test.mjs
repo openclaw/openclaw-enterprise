@@ -16,7 +16,13 @@ async function createFixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "occ-presets-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const audit = new InMemoryAuditSink();
-  const state = new InMemoryPlatformState({ auditSink: audit });
+  let policy;
+  const state = new InMemoryPlatformState({
+    auditSink: audit,
+    // Live lookup, so people enrolled by the fixture can be bound as in Postgres.
+    resolveIAMIdentity: (identityId) =>
+      policy?.identities.find((identity) => identity.id === identityId),
+  });
   // The real filesystem Driver enforces native credential rules, including bootstrap defaults.
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const fixture = await createConsoleAppFixture(t, {
@@ -25,6 +31,7 @@ async function createFixture(t, options = {}) {
     configurationDriver,
     ...options,
   });
+  policy = fixture.policy;
   await fixture.bootstrap();
   const session = await fixture.signIn();
   return { ...fixture, audit, session, state };
@@ -986,6 +993,22 @@ test("Namespace deletion removes unmodified default Presets and names what still
   const pristine = await fixture.createNamespace("Pristine defaults", { ready: true });
   const seeded = (await fixture.request("GET", collection(pristine.id))).data;
   assert.equal(seeded.length, runtime.defaultPresets.length);
+  // A grant on a seeded default is removed with it and named in its delete event.
+  const { principal: reader } = await fixture.createAccountWithPolicy("preset-grantee", () => {});
+  const role = await fixture.request("POST", `/namespaces/${pristine.id}/iam/roles`, {
+    body: { name: "Preset reader", permissions: [{ action: "read", resourceKind: "preset" }] },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const binding = await fixture.request("POST", `/namespaces/${pristine.id}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: reader.id,
+      roleId: role.data.id,
+      resourceKind: "preset",
+      resourceId: seeded[0].id,
+    },
+  });
+  assert.equal(binding.status, 201, JSON.stringify(binding.body));
   const deleted = await fixture.request("DELETE", `/namespaces/${pristine.id}`);
   assert.equal(deleted.status, 202, JSON.stringify(deleted.body));
   assert.equal(deleted.data.status, "deleting");
@@ -1002,6 +1025,23 @@ test("Namespace deletion removes unmodified default Presets and names what still
   assert.deepEqual(
     cascaded.map((event) => event.resource.id).sort(),
     seeded.map((preset) => preset.id).sort(),
+  );
+  assert.deepEqual(
+    cascaded.find((event) => event.resource.id === seeded[0].id).details.removedAccessBindings,
+    [
+      {
+        id: binding.data.id,
+        subjectKind: "identity",
+        subjectId: reader.id,
+        roleId: role.data.id,
+        resourceKind: "preset",
+        resourceId: seeded[0].id,
+      },
+    ],
+  );
+  assert.equal(
+    cascaded.filter((event) => event.details.removedAccessBindings !== undefined).length,
+    1,
   );
 
   // An operator-edited default is real content: keep it and say what blocks deletion.

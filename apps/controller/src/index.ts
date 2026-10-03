@@ -49,6 +49,7 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  DeviceAuthorizationStartError,
   ResourceConflictError,
   RuntimeLogsError,
   UserAlreadyExistsError,
@@ -206,16 +207,22 @@ const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-const RESOURCE_ID = {
-  namespaceId: /^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  presetId: /^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  configurationId: /^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  serviceAccountId: /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  secretId: /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  credentialSourceId: /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  agentId: /^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  revisionId: /^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+const RESOURCE_ID_PREFIX = {
+  namespaceId: "ns_",
+  presetId: "pre_",
+  configurationId: "cfg_",
+  serviceAccountId: "sa_",
+  secretId: "sec_",
+  credentialSourceId: "cs_",
+  agentId: "agt_",
+  revisionId: "rev_",
 } as const;
+const RESOURCE_ID = Object.fromEntries(
+  Object.entries(RESOURCE_ID_PREFIX).map(([parameter, prefix]) => [
+    parameter,
+    new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`),
+  ]),
+) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
 
 function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
   return ajvFormats.default(ajv);
@@ -540,7 +547,19 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       },
       {
         action: "read",
+        resourceKind: "credential_source",
+        scope: "request_body",
+        condition: "iam_binding_target",
+      },
+      {
+        action: "read",
         resourceKind: "namespace",
+        scope: "request_body",
+        condition: "iam_binding_target",
+      },
+      {
+        action: "read",
+        resourceKind: "preset",
         scope: "request_body",
         condition: "iam_binding_target",
       },
@@ -1417,7 +1436,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params[parameter] !== undefined &&
         (typeof params[parameter] !== "string" || !pattern.test(params[parameter] as string))
       ) {
-        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+        // Names the path parameter and its syntax only; nothing about any stored resource.
+        const prefix = RESOURCE_ID_PREFIX[parameter as keyof typeof RESOURCE_ID_PREFIX];
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          `The request does not match the operation contract: params /${parameter} has an invalid format; expected ${prefix} followed by a lowercase version 4 UUID.`,
+          [{ path: `/${parameter}`, code: "INVALID_FORMAT" }],
+        );
       }
     }
 
@@ -3571,6 +3597,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
       }
     }
+    if (error instanceof DeviceAuthorizationStartError) {
+      app.log.warn({
+        event: "device_authorization.start_failed",
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+        host: "auth.openai.com",
+        reason: error.reason,
+        failure: error.failure,
+      });
+    }
     if (mapped.code === "INTERNAL_ERROR") {
       app.log.error({
         event: "http.unexpected_error",
@@ -3622,5 +3658,3 @@ export function createControllerApp(options: ControllerAppOptions): ControllerAp
     },
   };
 }
-
-export const createOccApi = createControllerApp;

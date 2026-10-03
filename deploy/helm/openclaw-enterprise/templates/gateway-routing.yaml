@@ -13,8 +13,8 @@
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: {{ $bootstrapIssuerName }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $bootstrapIssuerName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
@@ -23,14 +23,14 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ $rootSecretName }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $rootSecretName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
   isCA: true
   commonName: {{ $rootSecretName | quote }}
-  secretName: {{ $rootSecretName }}
+  secretName: {{ $rootSecretName | quote }}
   duration: 87600h
   renewBefore: 720h
   privateKey:
@@ -38,27 +38,27 @@ spec:
     size: 256
     rotationPolicy: Never
   issuerRef:
-    name: {{ $bootstrapIssuerName }}
+    name: {{ $bootstrapIssuerName | quote }}
     kind: Issuer
     group: cert-manager.io
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: {{ $caIssuerName }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $caIssuerName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
   ca:
-    secretName: {{ $rootSecretName }}
+    secretName: {{ $rootSecretName | quote }}
 {{- end }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
-  name: {{ $gatewayName }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $gatewayName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
@@ -72,14 +72,14 @@ spec:
             {{- toYaml . | nindent 12 }}
       {{- end }}
       envoyService:
-        name: {{ $serviceName }}
+        name: {{ $serviceName | quote }}
         type: {{ $routing.serviceType }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: {{ $gatewayName }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $gatewayName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
@@ -88,7 +88,7 @@ spec:
     parametersRef:
       group: gateway.envoyproxy.io
       kind: EnvoyProxy
-      name: {{ $gatewayName }}
+      name: {{ $gatewayName | quote }}
   listeners:
     - name: https
       hostname: {{ $hostname | quote }}
@@ -99,7 +99,7 @@ spec:
         certificateRefs:
           - group: ""
             kind: Secret
-            name: {{ $tlsSecretName }}
+            name: {{ $tlsSecretName | quote }}
       allowedRoutes:
         namespaces:
           from: Selector
@@ -119,7 +119,7 @@ spec:
         certificateRefs:
           - group: ""
             kind: Secret
-            name: {{ $routing.sandbox.tlsSecretName }}
+            name: {{ $routing.sandbox.tlsSecretName | quote }}
       allowedRoutes:
         namespaces:
           from: Selector
@@ -134,12 +134,12 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ $tlsSecretName }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ $tlsSecretName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
-  secretName: {{ $tlsSecretName }}
+  secretName: {{ $tlsSecretName | quote }}
   duration: 2160h
   renewBefore: 720h
   dnsNames:
@@ -159,14 +159,14 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
   name: {{ $gatewayName }}-api-key
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "gateway-routing") | nindent 4 }}
 spec:
   targetRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
-      name: {{ $gatewayName }}
+      name: {{ $gatewayName | quote }}
   apiKeyAuth:
     credentialRefs:
       - group: ""
@@ -181,12 +181,12 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: openclaw-enterprise-controller-envoy-egress
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Release.Namespace | quote }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
@@ -196,14 +196,14 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $routing.envoyNamespace }}
+              kubernetes.io/metadata.name: {{ $routing.envoyNamespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/component: proxy
               app.kubernetes.io/managed-by: envoy-gateway
               app.kubernetes.io/name: envoy
-              gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
-              gateway.envoyproxy.io/owning-gateway-name: {{ $gatewayName }}
+              gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace | quote }}
+              gateway.envoyproxy.io/owning-gateway-name: {{ $gatewayName | quote }}
       ports:
         - protocol: TCP
           port: {{ $routing.envoyHttpsTargetPort }}
@@ -211,16 +211,16 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "openclaw.gatewayRouting.envoyNetworkPolicyName" . }}
-  namespace: {{ $routing.envoyNamespace }}
+  name: {{ include "openclaw.gatewayRouting.envoyNetworkPolicyName" . | quote }}
+  namespace: {{ $routing.envoyNamespace | quote }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/component: proxy
       app.kubernetes.io/managed-by: envoy-gateway
       app.kubernetes.io/name: envoy
-      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
-      gateway.envoyproxy.io/owning-gateway-name: {{ $gatewayName }}
+      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace | quote }}
+      gateway.envoyproxy.io/owning-gateway-name: {{ $gatewayName | quote }}
   policyTypes: [Ingress, Egress]
   ingress:
     {{- if $routing.sandbox.enabled }}
@@ -233,18 +233,18 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
                 values: [api, worker]
         - namespaceSelector:
             matchLabels:
-              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel }}
+              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
           podSelector:
             matchLabels:
               openclaw.dev/workload-role: agent
@@ -255,7 +255,7 @@ spec:
 
         - namespaceSelector:
             matchLabels:
-              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel }}
+              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
           podSelector:
             matchLabels:
               openshell.ai/boundary-role: supervisor
@@ -266,13 +266,16 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.dns.podLabels | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+        # Allow port 5353 for compatibility with OpenShift DNS backends.
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
     - to:
         - namespaceSelector:
             matchLabels:
@@ -290,7 +293,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $routing.envoyNamespace }}
+              kubernetes.io/metadata.name: {{ $routing.envoyNamespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml $routing.envoyGatewayPodLabels | nindent 14 }}

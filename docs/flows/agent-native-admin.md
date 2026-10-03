@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-02"
-last_updated_session: "authoring-run/32e6f4fe-d1a7-4d1a-96f4-282e75750412"
+updated: "2026-10-03"
+last_updated_session: "authoring-run/59d7541c-66d2-414c-8139-174fca84fe33"
 ---
 
 # Agent Native Admin UI Flow
@@ -63,7 +63,9 @@ graph TD
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail tabs request `${path}/native-admin` with the OpenClaw panel initially hidden. Disabled and denied states hide it; stopped, unavailable and unsupported states display feedback. Only `available` with an Agent URL shows **Open OpenClaw**, which opens a new tab with `noopener noreferrer` without another availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
+Agent detail tabs request `${path}/native-admin` with the OpenClaw panel initially hidden. Disabled and denied states hide it; stopped, unavailable and unsupported states display feedback. A failed read other than a denial keeps the error and **Refresh access** visible. Only `available` with an Agent URL shows **Open OpenClaw**, which opens a new tab with `noopener noreferrer` without another availability or launch request. A `403` is an audited denial, so the console remembers the denied status path in tab `sessionStorage` for the same session owner and hides the panel on later views of that Agent without asking again. Logout, another sign-in, or a new tab asks afresh.
+
+When deployment polling or **Refresh deployment** sees a new `activeRevisionId` or `desiredRuntimeState`, `updateCurrentAgent` calls the panel's `refresh()` under the same guards. A refresh during a pending read triggers one more read after it finishes.
 
 The panel warns that native edits do not update durable OCE configuration.
 
@@ -212,7 +214,11 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-03 08:54: Preserve deployment-triggered access refresh, visible read failures, and the service-key rejection message with per-person roles. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - 70462d0184333b5df5b88b12c9a431ff04f21feb)
+
 - 2026-10-02 14:32: Trace per-person roles, configured managed identities, disjoint routing, verified admission, scope intersection and revocation. (authoring-run/32e6f4fe-d1a7-4d1a-96f4-282e75750412 - 3b2369155e55b0e9bed49de9e46d68a958dc5278)
+- 2026-10-03 12:00: Reread availability once when deployment polling observes a new active revision or runtime state.
+
 - 2026-10-01 17:20: Move native-admin admission, availability, sockets and shutdown ownership into the HTTP module. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 
 - 2026-10-01 21:00: Reported `unavailable` while a newer exclusive revision replaces the active workload, including after that replacement fails.

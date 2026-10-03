@@ -744,8 +744,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   const poll = intervals.find(({ ms }) => ms === 1000);
   assert.ok(poll, "the wrapper polls the binding every second");
   const tick = () => poll.callback();
-  const gatewayCalls = () =>
-    calls.filter(({ args }) => args?.[1] === "gateway" && args[2] === "call");
+  const gatewayCalls = () => calls.filter(({ method }) => method === "plugins.list");
 
   await tick();
   assert.equal(files.get(configPath), JSON.stringify(atStart), "no binding, no write");
@@ -795,7 +794,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   await tick();
   assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
   assert.deepEqual(
-    gatewayCalls().map(({ args }) => args[3]),
+    gatewayCalls().map(({ method }) => method),
     ["plugins.list", "plugins.list", "plugins.list"],
   );
   // OpenClaw watches the file it was started with; the child is not replaced.
@@ -1294,6 +1293,10 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
       (name) => "/home/node/workspace/" + name,
     ),
     "/home/node/workspace/skills",
+    "/home/node/workspace/skills/**",
+    "/home/node/workspace/.clawhub/lock.json",
+    "/home/node/workspace/.clawdhub/lock.json",
+    "/home/node/workspace/.openclaw/skill-installs/**",
     "/home/node/workspace/media/inbound/openclaw-staged-*/**",
   ]);
   assert.deepEqual(transfer.nodes["enrolled-node"].allowReadPaths, [
@@ -1321,7 +1324,15 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   assert.equal(effective.gateway.nodes.commands.allow.includes("workspace.skills"), true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].args[1], "gateway");
-  const explicit = { nodes: { "*": { ask: "off", allowReadPaths: ["/chosen/AGENTS.md"] } } };
+  const explicit = {
+    nodes: {
+      "*": {
+        ask: "off",
+        allowReadPaths: ["/chosen/AGENTS.md"],
+        allowWritePaths: ["/chosen/SOUL.md"],
+      },
+    },
+  };
   const configured = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: {
       ...baseConfig,
@@ -1346,4 +1357,45 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
       /requires the file-transfer plugin/,
     );
   }
+});
+
+test("a timed-out workspace binding probe releases the poll and can recover", async () => {
+  const intervals = [];
+  let timeout;
+  let signal;
+  let unavailable = true;
+  let openClaw = pluginList("disabled", 1);
+  const { files, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: codexGatewayConfig(),
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+    workspaceNodeBindingPath: true,
+    intervals,
+    gatewayCall: (_method, probeSignal) => {
+      signal = probeSignal;
+      return unavailable ? new Promise(() => {}) : openClaw;
+    },
+    setTimeout: (callback, ms) => {
+      if (ms === 8000) {
+        timeout = callback;
+      }
+      return { unref() {} };
+    },
+    console: { error() {} },
+  });
+  files.set(WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding("enrolled-node"));
+  const poll = intervals.find(({ ms }) => ms === 1000);
+  const pending = poll.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  // A probe that never settles must still release the single-flight poll.
+  timeout();
+  await pending;
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: undefined, failure: undefined });
+
+  unavailable = false;
+  await poll.callback();
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: undefined, failure: undefined });
+  openClaw = pluginList("active", 2);
+  await poll.callback();
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
 });

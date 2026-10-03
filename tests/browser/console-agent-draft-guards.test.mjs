@@ -135,7 +135,7 @@ test("Agent deployment reports preflight errors and requires reload for changed 
   );
   await deploy.click();
   await page
-    .getByText("Service unavailable. The read could not be completed. Please retry.")
+    .getByText("Service unavailable. The read could not be completed. Try again.")
     .waitFor();
   assert.equal(await deploy.isEnabled(), true);
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
