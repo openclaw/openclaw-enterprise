@@ -29,12 +29,19 @@ conventions change.
 ## Keep agents in their lane
 
 "Our PRs" and "my PRs" mean PRs authored by the requesting user's GitHub
-account unless the user explicitly selects a broader scope. Verify identity
-and filter by author before making changes; ask if unclear.
+account unless the user explicitly selects a broader scope. A user may name
+other accounts they own; their PRs count too. Verify identity and filter by
+author before making changes; ask if unclear.
 
 Keep other authors' PRs, branches, and worktrees read-only unless explicitly
 assigned. Repository permissions and dependencies do not expand scope.
 Subagents inherit these limits.
+
+When assigned to another author's PR, only merge `main` into its branch and fix
+conflicts or failing checks, without changing its design. Explain each push in
+one short comment. Wait until the author's last push is at least 2 hours old for
+core team members, or 48 hours for anyone else. Never close it; if another
+change supersedes it, say so in a comment.
 
 "Refresh against main" does not authorize force pushes. Preserve published
 history by default. Rewrite history only with explicit authorization for the
@@ -45,10 +52,13 @@ stop on unexpected changes.
 
 Follow the [contribution and review policy](CONTRIBUTING.md#prepare-a-pull-request)
 through merge. Core team authors may use their authorized merge bypass for their
-own PRs after the applicable review, CI, and specific holds are satisfied. Ask
-for human feedback on architectural RFCs early; implementation and RFC revision
-can proceed in parallel. Follow the [RFC process](docs/contributing/rfcs.md).
-New contributors wait for maintainer feedback.
+own PRs after the applicable review, CI, and specific holds are satisfied.
+Agents merge only the requesting user's own PRs. Merging another author's PR
+needs an explicit instruction naming that PR, and the merge bypass never applies
+to it. Ask for human feedback on architectural RFCs early; implementation and
+RFC revision can proceed in parallel. Follow the
+[RFC process](docs/contributing/rfcs.md). New contributors wait for maintainer
+feedback.
 
 ## Development style
 
