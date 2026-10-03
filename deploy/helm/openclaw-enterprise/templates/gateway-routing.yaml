@@ -263,19 +263,7 @@ spec:
         - protocol: TCP
           port: {{ $routing.envoyHttpsTargetPort }}
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
-          podSelector:
-            matchLabels:
-              {{- toYaml .Values.dns.podLabels | nindent 14 }}
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
-        # Allow port 5353 for compatibility with OpenShift DNS backends.
-        - { protocol: UDP, port: 5353 }
-        - { protocol: TCP, port: 5353 }
+    {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
         - namespaceSelector:
             matchLabels:
