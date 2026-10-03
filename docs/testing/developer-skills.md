@@ -1,6 +1,6 @@
 # Developer skills
 
-Use the repository-local skills for the relevant development task:
+Use the skills below for the relevant development task:
 
 | Task                                | Skill                                                                                                                                                                                                                                                                                                     |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -15,7 +15,8 @@ Use the repository-local skills for the relevant development task:
 | Clean the current diff              | [deslop](../../.agents/skills/deslop/SKILL.md) permits only behavior-neutral cleanup before independent review.                                                                                                                                                                                           |
 | Run requested independent review    | [autoreview](autoreview.md) owns the reviewer CLI, isolation, and result interpretation.                                                                                                                                                                                                                  |
 
-These skills are checked into `.agents/skills`; no global installation is needed.
+These skills are checked into `.agents/skills`, except autoreview, whose entrypoint
+uses one [shared installation](autoreview.md).
 Testing setup and real-runtime requirements remain owned by the
 [testing guides](README.md). Each skill describes its scope and prerequisites.
 
@@ -81,5 +82,5 @@ an upstream directory sync. Check skill frontmatter, local links, named commands
 and the [documentation checks](local.md); review example tasks against the test
 integrity and runtime boundaries before publishing.
 
-Autoreview has a separate canonical source and must remain an unmodified complete
-copy; follow its [provenance and sync procedure](autoreview.md#upstream-provenance).
+Autoreview uses the canonical shared installation; follow its
+[provenance and update procedure](autoreview.md#upstream-provenance).
