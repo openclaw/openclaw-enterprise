@@ -143,6 +143,7 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
   NATIVE_WORKER_READINESS_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
+  SETUP_WRAPPER_COMMAND,
 } from "./runtime-entrypoints.ts";
 
 import {
@@ -9527,7 +9528,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: "prepare-private-state",
       image,
       imagePullPolicy: "IfNotPresent",
-      command: ["node", "-e"],
+      // Plain images (no runtime) keep their Node entry, as their main container does.
+      command: this.options.runtime === undefined ? ["node", "-e"] : [...SETUP_WRAPPER_COMMAND],
       args: [script],
       volumeMounts,
       securityContext: {
@@ -11298,7 +11300,7 @@ require("node:fs").rmSync("/harness-workspace-state/codex-home", { recursive: tr
         imagePullPolicy: "IfNotPresent",
         // Native setup loads the Gateway CLI and needs its configured resource budget.
         resources: this.options.resources.gateway,
-        command: ["node", "-e"],
+        command: [...SETUP_WRAPPER_COMMAND],
         args: [WORKSPACE_SETUP_RUNTIME],
         env: [
           { name: "HOME", value: "/home/node" },

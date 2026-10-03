@@ -21,6 +21,18 @@ export const RUNTIME_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 
+// Setup initContainers (workspace, private state, repository material) also run
+// Node, which as PID 1 ignored SIGTERM, so a Pod deleted mid-setup waited for
+// SIGKILL. Under tini Node takes the default SIGTERM action; a stopped setup
+// keeps its failing exit status.
+export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
+  "/usr/bin/tini",
+  "-s",
+  "--",
+  "node",
+  "-e",
+]);
+
 export const PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
