@@ -2,19 +2,129 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
 
-export function selectFirstAgentModel(configuredModel, existing) {
-  const model = configuredModel || existing?.model || defaultAgentModel;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(model)) {
+export const firstAgentProviders = Object.freeze({
+  openai: Object.freeze({
+    label: "OpenAI",
+    api: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    keyEnvironment: "OPENAI_API_KEY",
+  }),
+  anthropic: Object.freeze({
+    label: "Anthropic",
+    api: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com",
+    keyEnvironment: "ANTHROPIC_API_KEY",
+  }),
+});
+
+function validBaseUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    value.length <= 2_048 &&
+    value.trim() === value &&
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.search &&
+    !url.hash
+  );
+}
+
+export const firstAgentRecordVersion = 2;
+
+export function selectFirstAgentModel(configured, existing) {
+  if (
+    existing &&
+    (existing.version !== firstAgentRecordVersion ||
+      !Object.hasOwn(firstAgentProviders, existing.provider) ||
+      typeof existing.baseUrl !== "string")
+  ) {
     throw new Error(
-      "OPENCLAW_FIRST_AGENT_MODEL must be a plain OpenAI model ID, without the provider prefix.",
+      "This Agent's local record was written by an older first-agent helper or is invalid. Choose a new Agent name; the existing Agent was not changed.",
     );
   }
-  if (existing && configuredModel && model !== existing.model) {
+  const recordedProvider = existing?.provider;
+  const recordedBaseUrl = existing?.baseUrl;
+  const provider = configured.provider || recordedProvider || "openai";
+  if (!Object.hasOwn(firstAgentProviders, provider)) {
+    throw new Error('OPENCLAW_FIRST_AGENT_PROVIDER must be "openai" or "anthropic".');
+  }
+  const baseUrl = configured.baseUrl || recordedBaseUrl || firstAgentProviders[provider].baseUrl;
+  if (!validBaseUrl(baseUrl)) {
+    throw new Error(
+      "OPENCLAW_FIRST_AGENT_BASE_URL must be an https URL without credentials, query, or fragment.",
+    );
+  }
+  if (existing && (provider !== recordedProvider || baseUrl !== recordedBaseUrl)) {
+    throw new Error(
+      "This Agent's recorded model provider or base URL differs. Reuse its recorded selection or choose a new Agent name.",
+    );
+  }
+  const model =
+    configured.model || existing?.model || (provider === "openai" ? defaultAgentModel : undefined);
+  if (!model) {
+    throw new Error(
+      `Set OPENCLAW_FIRST_AGENT_MODEL to the served model ID for the ${provider} provider.`,
+    );
+  }
+  if (
+    model.length > 100 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/.test(model) ||
+    model.startsWith(`${provider}/`)
+  ) {
+    throw new Error(
+      `OPENCLAW_FIRST_AGENT_MODEL must be the served model ID without the ${provider}/ prefix: letters, digits, ".", "_", or "-", with "/" only between segments.`,
+    );
+  }
+  if (existing && configured.model && model !== existing.model) {
     throw new Error(
       "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",
     );
   }
-  return model;
+  return { provider, baseUrl, model };
+}
+
+export function firstAgentConfiguration({ provider, baseUrl, model }) {
+  const { api, keyEnvironment } = firstAgentProviders[provider];
+  const selected = `${provider}/${model}`;
+  return {
+    kind: "agent",
+    values: {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false },
+        auth: {
+          password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+        },
+        http: { endpoints: { chatCompletions: { enabled: true } } },
+      },
+      agents: {
+        defaults: {
+          model: selected,
+          skipBootstrap: true,
+          models: { [selected]: { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+      tools: { deny: ["*"] },
+      secrets: { providers: { model: { source: "env", allowlist: [keyEnvironment] } } },
+      models: {
+        providers: {
+          [provider]: {
+            baseUrl,
+            api,
+            apiKey: { source: "env", provider: "model", id: keyEnvironment },
+            models: [{ id: model, name: model }],
+          },
+        },
+      },
+    },
+  };
 }
 
 const readinessTimeout = 8 * 60_000;
@@ -35,7 +145,7 @@ const probeMessages = {
   missing_password:
     "The gateway Pod has no loopback gateway password. Check its Kubernetes Secret and restart the gateway if necessary.",
   missing_provider_key:
-    "The gateway container has no OpenAI provider key. Check the Agent's provider Secret and redeploy before retrying.",
+    "The gateway container has no {provider} provider key. Check the Agent's provider Secret and redeploy before retrying.",
   credential_prompt:
     "The model prompt contained a credential and was not sent. Remove credentials from the prompt.",
   unavailable:
@@ -159,12 +269,12 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId) {
 }
 
 // This function is serialized to stdin and executed inside the gateway container.
-async function probeInGateway({ nonce, prompt }) {
+async function probeInGateway({ nonce, prompt, keyEnvironment }) {
   const emit = (value) => process.stdout.write(JSON.stringify(value));
   const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
   try {
-    const providerKey = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    const providerKey = process.env[keyEnvironment];
+    delete process.env[keyEnvironment];
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD;
     if (!password) {
       emit(failure("missing_password"));
@@ -286,8 +396,12 @@ async function probeInGateway({ nonce, prompt }) {
 
 export async function verifyFirstAgentModel(
   kubectl,
-  { namespaceId, agentId, revisionId, prompt, apiKey },
+  { namespaceId, agentId, revisionId, prompt, apiKey, provider },
 ) {
+  if (!Object.hasOwn(firstAgentProviders, provider)) {
+    throw new Error("The model check requires a supported model provider.");
+  }
+  const { label, keyEnvironment } = firstAgentProviders[provider];
   if (
     !isKubernetesLabel(namespaceId) ||
     !isKubernetesLabel(agentId) ||
@@ -309,7 +423,7 @@ export async function verifyFirstAgentModel(
 
   const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt })});`;
+  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, keyEnvironment })});`;
   let result;
   try {
     const output = await kubectl(
@@ -338,7 +452,7 @@ export async function verifyFirstAgentModel(
       Number.isInteger(result.status) && result.status >= 100 && result.status <= 599
         ? result.status
         : "unknown";
-    throw new Error(message.replace("{status}", String(status)));
+    throw new Error(message.replace("{status}", String(status)).replace("{provider}", label));
   }
   if (
     result?.nonce !== nonce ||

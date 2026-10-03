@@ -10,7 +10,13 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
-import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-model.mjs";
+import {
+  firstAgentConfiguration,
+  firstAgentProviders,
+  firstAgentRecordVersion,
+  selectFirstAgentModel,
+  verifyFirstAgentModel,
+} from "./first-agent-model.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -29,6 +35,12 @@ OPENCLAW_FIRST_AGENT_MODEL defaults to ${defaultAgentModel} for a new Agent. Set
 use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. A normal repeat
 uses the previously stored key. Set OCC_DEVELOPMENT_STATE_DIRECTORY if Local Setup
 used a custom state directory.
+
+OPENCLAW_FIRST_AGENT_PROVIDER selects openai (default) or anthropic for a new
+Agent; anthropic requires OPENCLAW_FIRST_AGENT_MODEL and reads ANTHROPIC_API_KEY
+or ANTHROPIC_API_KEY_FILE. OPENCLAW_FIRST_AGENT_BASE_URL replaces the provider's
+https endpoint, for example with an OpenAI-compatible or Anthropic-format model
+gateway. Model IDs may contain "/" between segments.
 `;
 }
 
@@ -178,8 +190,10 @@ async function loadLocalInstallation() {
   }
 
   const environment = { ...process.env, DOCKER_HOST: state.dockerHost };
-  delete environment.OPENAI_API_KEY;
-  delete environment.OPENAI_API_KEY_FILE;
+  for (const { keyEnvironment } of Object.values(firstAgentProviders)) {
+    delete environment[keyEnvironment];
+    delete environment[`${keyEnvironment}_FILE`];
+  }
   if (state.containerEngine === "podman") {
     environment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
   }
@@ -377,22 +391,23 @@ function createApi({ origin, key }) {
   };
 }
 
-async function modelKey() {
-  if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY_FILE) {
-    throw new Error("Set only one of OPENAI_API_KEY and OPENAI_API_KEY_FILE.");
+async function modelKey({ label, keyEnvironment }) {
+  const fileEnvironment = `${keyEnvironment}_FILE`;
+  if (process.env[keyEnvironment] && process.env[fileEnvironment]) {
+    throw new Error(`Set only one of ${keyEnvironment} and ${fileEnvironment}.`);
   }
-  let value = process.env.OPENAI_API_KEY;
-  if (process.env.OPENAI_API_KEY_FILE) {
-    const path = process.env.OPENAI_API_KEY_FILE;
+  let value = process.env[keyEnvironment];
+  if (process.env[fileEnvironment]) {
+    const path = process.env[fileEnvironment];
     if (!isAbsolute(path)) {
-      throw new Error("OPENAI_API_KEY_FILE must name an absolute private file.");
+      throw new Error(`${fileEnvironment} must name an absolute private file.`);
     }
     await privateOwned(path);
     value = (await readFile(path, "utf8")).replace(/\r?\n$/, "");
   }
   if (!value) {
     if (!process.stdin.isTTY || !process.stderr.isTTY) {
-      throw new Error("Set OPENAI_API_KEY or OPENAI_API_KEY_FILE when no terminal is available.");
+      throw new Error(`Set ${keyEnvironment} or ${fileEnvironment} when no terminal is available.`);
     }
     const sink = new Writable({
       write(_chunk, _encoding, done) {
@@ -400,7 +415,7 @@ async function modelKey() {
       },
     });
     const reader = createInterface({ input: process.stdin, output: sink, terminal: true });
-    process.stderr.write("OpenAI API key (hidden): ");
+    process.stderr.write(`${label} API key (hidden): `);
     try {
       value = await new Promise((resolveInput, reject) => {
         let answered = false;
@@ -409,7 +424,7 @@ async function modelKey() {
         });
         reader.once("close", () => {
           if (!answered) {
-            reject(new Error("OpenAI API key input was cancelled."));
+            reject(new Error(`${label} API key input was cancelled.`));
           }
         });
         reader.question("", (answer) => {
@@ -430,46 +445,9 @@ async function modelKey() {
     value.includes("\n") ||
     value.includes("\0")
   ) {
-    throw new Error("The OpenAI API key must be a nonempty single line.");
+    throw new Error(`The ${label} API key must be a nonempty single line.`);
   }
   return value;
-}
-
-function nativeConfiguration(model) {
-  const selected = `openai/${model}`;
-  return {
-    kind: "agent",
-    values: {
-      gateway: {
-        mode: "local",
-        bind: "lan",
-        controlUi: { enabled: false },
-        auth: {
-          password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
-        },
-        http: { endpoints: { chatCompletions: { enabled: true } } },
-      },
-      agents: {
-        defaults: {
-          model: selected,
-          skipBootstrap: true,
-          models: { [selected]: { agentRuntime: { id: "openclaw" } } },
-        },
-      },
-      tools: { deny: ["*"] },
-      secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            api: "openai-responses",
-            apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
-            models: [{ id: model, name: model }],
-          },
-        },
-      },
-    },
-  };
 }
 
 function assertManagedAgent(agent, record) {
@@ -654,22 +632,26 @@ async function main(options) {
   });
 
   await withRecord(local.directory, options.name, async (existing, save) => {
-    const configuredModel = process.env.OPENCLAW_FIRST_AGENT_MODEL;
-    const model = selectFirstAgentModel(configuredModel, existing);
-    if (
-      existing &&
-      (existing.version !== 1 ||
-        existing.name !== options.name ||
-        existing.namespaceId !== namespace.id)
-    ) {
+    const selection = selectFirstAgentModel(
+      {
+        provider: process.env.OPENCLAW_FIRST_AGENT_PROVIDER,
+        baseUrl: process.env.OPENCLAW_FIRST_AGENT_BASE_URL,
+        model: process.env.OPENCLAW_FIRST_AGENT_MODEL,
+      },
+      existing,
+    );
+    const { provider, model } = selection;
+    if (existing && (existing.name !== options.name || existing.namespaceId !== namespace.id)) {
       throw new Error(
         "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",
       );
     }
     const record = existing ?? {
-      version: 1,
+      version: firstAgentRecordVersion,
       name: options.name,
       namespaceId: namespace.id,
+      provider,
+      baseUrl: selection.baseUrl,
       model,
       secretName: `first-agent-${randomUUID()}`,
     };
@@ -693,7 +675,7 @@ async function main(options) {
       );
     }
 
-    const expectedConfiguration = nativeConfiguration(model);
+    const expectedConfiguration = firstAgentConfiguration(selection);
     if (record.configurationId) {
       const storedConfiguration = await api(
         "GET",
@@ -721,7 +703,7 @@ async function main(options) {
     if (!record.secretId) {
       record.secretId = await findFirstAgentSecret(local.database, namespace.id, record.secretName);
       if (!record.secretId) {
-        suppliedKey = await modelKey();
+        suppliedKey = await modelKey(firstAgentProviders[provider]);
         progress("Saving the model credential in the local platform Secret...");
         const secret = await api("POST", `${base}/secrets`, {
           name: record.secretName,
@@ -736,7 +718,7 @@ async function main(options) {
       throw new Error("The recorded Secret does not belong to this local first-agent run.");
     }
     if (options.replaceKey && suppliedKey === undefined) {
-      suppliedKey = await modelKey();
+      suppliedKey = await modelKey(firstAgentProviders[provider]);
       progress("Replacing the saved model credential...");
       await api("PATCH", `${base}/secrets/${record.secretId}`, { value: suppliedKey });
       record.previousRevisionId = record.revisionId ?? agent?.activeRevisionId;
@@ -813,18 +795,19 @@ async function main(options) {
       }
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });
-    progress(`Waiting for a real response from openai/${model}...`);
+    progress(`Waiting for a real response from ${provider}/${model}...`);
     const proof = await verifyFirstAgentModel(local.kubectl, {
       namespaceId: namespace.id,
       agentId: agent.id,
       revisionId: record.revisionId,
       prompt: options.prompt,
       apiKey: suppliedKey,
+      provider,
     });
     const consoleUrl = new URL(`/console/agents/${agent.id}`, local.origin);
     consoleUrl.searchParams.set("namespace", namespace.id);
     process.stdout.write(
-      `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nModel: openai/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
+      `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nModel: ${provider}/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
     );
     if (proof.response !== undefined) {
       process.stdout.write(`\nAgent response:\n${proof.response}\n`);

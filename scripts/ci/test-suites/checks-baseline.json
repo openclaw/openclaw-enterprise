@@ -232,6 +232,16 @@
       ]
     },
     {
+      "path": "tests/integration/first-agent-selection.test.mjs",
+      "expectedTests": [
+        "the first-Agent command advertises its default and preserves explicit or recorded model selections",
+        "the first-Agent command selects a provider and endpoint and keeps them for a recorded Agent",
+        "the first-Agent command refuses a record without its provider selection",
+        "the first-Agent Configuration delivers the selected provider's credential and endpoint",
+        "the first-Agent model check reads the selected provider's credential in the gateway"
+      ]
+    },
+    {
       "path": "tests/integration/compute-singleton-worker.test.mjs",
       "expectedTests": [
         "before-commit Compute Drivers must expose an activation operation",

@@ -7,7 +7,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { selectFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -259,25 +258,6 @@ async function requestLocalApi(origin, serviceKey, method, path, values) {
   assert.ok(envelope?.data, "The local controller response is missing its data field");
   return envelope.data;
 }
-
-test("the first-Agent command advertises its default and preserves explicit or recorded model selections", async () => {
-  const { stdout } = await execFileAsync(process.execPath, [firstAgentScript, "--help"], {
-    cwd: repoRoot,
-  });
-  assert.match(stdout, /OPENCLAW_FIRST_AGENT_MODEL defaults to gpt-6-astra for a new Agent/);
-  assert.equal(selectFirstAgentModel(undefined, undefined), "gpt-6-astra");
-  assert.equal(selectFirstAgentModel("gpt-4.1", undefined), "gpt-4.1");
-  assert.equal(selectFirstAgentModel(undefined, { model: "gpt-5.1" }), "gpt-5.1");
-  assert.equal(selectFirstAgentModel("gpt-4.1", { model: "gpt-4.1" }), "gpt-4.1");
-  assert.throws(
-    () => selectFirstAgentModel("gpt-6-astra", { model: "gpt-4.1" }),
-    /recorded Namespace or model differs/,
-  );
-  assert.throws(
-    () => selectFirstAgentModel("openai/gpt-6-astra", undefined),
-    /plain OpenAI model ID/,
-  );
-});
 
 test(
   "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",

@@ -14,7 +14,14 @@ after the command exits.
   `OCC_DEVELOPMENT_STATE_DIRECTORY` during setup, use the same value here.
 - Have an OpenAI API key that can use [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra), the default model. To use a
   different model available to your project, set `OPENCLAW_FIRST_AGENT_MODEL`
-  to its plain ID, without `openai/`.
+  to its ID, without `openai/`. IDs served by a model gateway may contain `/`.
+- To use another endpoint, set `OPENCLAW_FIRST_AGENT_BASE_URL` to the https URL
+  of an OpenAI-compatible endpoint. For an Anthropic model or an
+  Anthropic-format endpoint, also set `OPENCLAW_FIRST_AGENT_PROVIDER=anthropic`
+  and `OPENCLAW_FIRST_AGENT_MODEL`, and supply the key through
+  `ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY_FILE` instead of the OpenAI
+  variables below. A repeat run must use the same provider and endpoint; an
+  Agent created by an older checkout of this command needs a new name.
 - Keep the key out of commands, Configuration JSON, and chat. For automation,
   set `OPENAI_API_KEY_FILE` to a private file containing the key, or supply
   `OPENAI_API_KEY` through your environment's secret manager; setting both

@@ -144,10 +144,11 @@ The state must select Kubernetes Compute and
 error because that development profile does not support this model-turn path.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
-`openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
-plain model ID; a repeat without an override keeps the recorded model, and a
-conflicting override is rejected. Bootstrap already has Secret `operate`; the
-Agent does not.
+`openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_PROVIDER`,
+`OPENCLAW_FIRST_AGENT_BASE_URL`, or `OPENCLAW_FIRST_AGENT_MODEL` selects another
+provider, https endpoint, or model ID; a repeat without an override keeps the
+recorded selection, and a conflicting override is rejected. Bootstrap already
+has Secret `operate`; the Agent does not.
 
 OCC has no public IAM management endpoint. The tool opens the recorded local
 PostgreSQL service. One transaction verifies the Namespace, Agent, and Secret, then
