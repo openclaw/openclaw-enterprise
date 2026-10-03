@@ -81,6 +81,11 @@ export function deploymentProgressForWork(
       message =
         "The Kubernetes API was unavailable. The controller will retry until the deployment deadline.";
       break;
+    case "SANDBOX_ADMISSION_LIMIT_REACHED":
+      code = attempt.code;
+      message =
+        "The Sandbox gateway refuses new requests from the controller until its request admissions free up. The controller will retry until the deployment deadline.";
+      break;
     case "ACTIVE_REVISION_CHANGED":
       code = attempt.code;
       message = "The selected version changed. The controller will reconcile again.";
@@ -539,6 +544,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
+    case "SANDBOX_ADMISSION_LIMIT_REACHED":
+      return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
     default:
       return "Deployment reconciliation failed.";
   }

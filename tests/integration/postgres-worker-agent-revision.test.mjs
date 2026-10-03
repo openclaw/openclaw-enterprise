@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { prepareFile } from "../../scripts/ci/prepare.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
+import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   ActivationPendingError,
   PostgresMetricsSnapshot,
@@ -7592,57 +7593,78 @@ test(
   },
 );
 
-test(
-  "a dependency still failing at the convergence deadline fails deployment with its own code",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context);
-    const owner = await fixture.agent("kubernetes-api-down");
-    const candidate = await fixture.revision(owner, 1);
-    let observations = 0;
-
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision() {
-          observations += 1;
-          throw new TransientDependencyError(
-            "kubernetes_api",
-            "timeout",
-            "A Kubernetes API request timed out.",
-          );
-        },
-      },
-      undefined,
-      2_500,
-    );
-
-    const failed = await fixture.work(candidate, "failed_permanent", 30_000);
-    assert.ok(
-      observations > 5,
-      `expected more passes than the attempt budget, saw ${observations}`,
-    );
-    assert.equal(failed.attempt_count, 1);
-    const result = await fixture.observerPool.query(
-      "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
-      [candidate.idempotencyKey],
-    );
-    assert.deepEqual(result.rows, [
-      { reason_code: "KUBERNETES_API_UNAVAILABLE", result_data: null },
-    ]);
-    const status = await fixture.controller.getDeploymentStatus(
-      fixture.actor.id,
-      fixture.namespace.id,
-      owner.id,
-      candidate.id,
-    );
-    assert.equal(status.status, "failed");
-    assert.deepEqual(status.error, {
-      code: "KUBERNETES_API_UNAVAILABLE",
-      message: "The Kubernetes API was still unavailable at the deployment deadline.",
-    });
+// The admission-limit case uses the real OpenShellAdmissionLimitError class, thrown from a
+// stubbed Compute prepareRevision; the gateway wire test proves the client raises it. The
+// limit frees up as completed admissions age out, so it must wait like any other dependency
+// instead of spending the attempt budget.
+for (const { label, failure, code, message } of [
+  {
+    label: "Kubernetes API",
+    failure: () =>
+      new TransientDependencyError(
+        "kubernetes_api",
+        "timeout",
+        "A Kubernetes API request timed out.",
+      ),
+    code: "KUBERNETES_API_UNAVAILABLE",
+    message: "The Kubernetes API was still unavailable at the deployment deadline.",
   },
-);
+  {
+    label: "OpenShell admission limit",
+    failure: () =>
+      new OpenShellAdmissionLimitError("CreateSandbox", {
+        code: 8,
+        details:
+          "caller has reached the durable mutation admission limit; unresolved requests require reconciliation",
+      }),
+    code: "SANDBOX_ADMISSION_LIMIT_REACHED",
+    message:
+      "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.",
+  },
+]) {
+  test(
+    `a dependency still failing at the convergence deadline fails deployment with its own code (${label})`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context);
+      const owner = await fixture.agent("dependency-down");
+      const candidate = await fixture.revision(owner, 1);
+      let observations = 0;
+
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async prepareRevision() {
+            observations += 1;
+            throw failure();
+          },
+        },
+        undefined,
+        2_500,
+      );
+
+      const failed = await fixture.work(candidate, "failed_permanent", 30_000);
+      assert.ok(
+        observations > 5,
+        `expected more passes than the attempt budget, saw ${observations}`,
+      );
+      assert.equal(failed.attempt_count, 1);
+      const result = await fixture.observerPool.query(
+        "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
+        [candidate.idempotencyKey],
+      );
+      assert.deepEqual(result.rows, [{ reason_code: code, result_data: null }]);
+      const status = await fixture.controller.getDeploymentStatus(
+        fixture.actor.id,
+        fixture.namespace.id,
+        owner.id,
+        candidate.id,
+      );
+      assert.equal(status.status, "failed");
+      assert.deepEqual(status.error, { code, message });
+    },
+  );
+}
 
 test(
   "plugin startup warnings complete deployment and remain visible in status",

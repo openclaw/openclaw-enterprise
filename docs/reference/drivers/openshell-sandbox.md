@@ -347,7 +347,7 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
 
 ## Troubleshooting
 
-Common fail-closed errors include:
+Common errors include:
 
 - `drivers.sandbox requires the bundled Kubernetes Compute Driver.`
 - `The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.`
@@ -363,6 +363,16 @@ Common fail-closed errors include:
 - `OpenShell v0.1.3-pre.1 cannot receive secretKeyRef environment APP_SERVER_TOKEN ...`
   Deployment status reports `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED` after one
   attempt; redeploying the same revision cannot succeed on stock `v0.1.3-pre.1`.
+- `OpenShell refused <method>: the controller's gateway identity holds OpenShell's limit of 1000 durable request admissions ...`
+  Deployment progress reports `SANDBOX_ADMISSION_LIMIT_REACHED` while the worker
+  waits without spending attempts; if the limit persists at the convergence
+  deadline, the deployment fails with that code. OpenShell keeps an admission
+  record for each `request_id`. Completed records free up 24 hours after
+  completion, but records of requests that did not complete successfully stay
+  unresolved forever, and OpenShell has no reset API. If the limit persists,
+  investigate the controller identity's unresolved admissions in the OpenShell
+  gateway database, then redeploy. Other `RESOURCE_EXHAUSTED` refusals, such as
+  rate limits, are retried as ordinary dependency failures.
 
 ## Related documentation
 
