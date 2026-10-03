@@ -9144,7 +9144,8 @@
                         ]
                       },
                       { "type": "null" }
-                    ]
+                    ],
+                    "description": "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,

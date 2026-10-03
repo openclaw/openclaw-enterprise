@@ -1169,6 +1169,15 @@ test("a resumed page cut by the byte limit still reports lines lost before it", 
     overlap.records.map((record) => record.reason ?? record.message),
     ["retrying in 700s", "truncated"],
   );
+  // One line longer than the byte limit fills the page; its leading time still dates the loss.
+  const single = await reader.poll([timedLog("retr", 900)], {
+    elapsed: 900_000,
+    truncated: true,
+  });
+  assert.deepEqual(
+    single.records.map((record) => record.reason ?? record.message),
+    ["window_exceeded", "truncated"],
+  );
 });
 
 test("runtime log cursor does not let an evicted same-time old END erase a later BEGIN", async () => {

@@ -2195,7 +2195,7 @@ Create a new Agent and queue first-time provisioning
 | `configuration.secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
-| `harnessAuth` | `object or object or object or object or object or object or null` | No | — |
+| `harnessAuth` | `object or object or object or object or object or object or null` | No | Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it. |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
