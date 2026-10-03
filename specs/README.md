@@ -61,6 +61,7 @@ recorded status is not proof of current implementation or release availability.
 | Deployment Simplification                                   | —                                                           | [Plan / record](plans/18-deployment-simplification/index.md)                    |
 | Development end-to-end guide                                | —                                                           | [Plan / record](plans/15-development-end-to-end-guide.md)                 |
 | First Enterprise container release                          | —                                                           | [Plan / record](plans/32-first-container-release.md)                      |
+| First-deploy activation for dedicated Agents                | [Decision](rfcs/0047-first-deploy-activation.md)            | —                                                                               |
 | Gateway–Harness storage split                               | [Decision](rfcs/28-gateway-harness-storage-split.md)        | —                                                                               |
 | GitHub Actions integration and test coverage for Enterprise | —                                                           | [Plan / record](plans/19-github-actions-test-coverage/index.md)                 |
 | Generic OIDC sign-in for existing accounts                  | [Decision](rfcs/0042-oidc-sign-in.md)                       | —                                                                               |
