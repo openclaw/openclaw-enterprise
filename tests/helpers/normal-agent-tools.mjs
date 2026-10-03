@@ -38,6 +38,60 @@ export function completedToolResult(trace, call) {
   return undefined;
 }
 
+// Nested code-mode calls are runtime records, not commands inferred from model code.
+// Keep the actual parent linkage and place their call before their result.
+export function expandTranscriptMessage(message, seq, parentCalls) {
+  if (message.role === "assistant" && Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (block?.type === "toolCall" && typeof block.id === "string") {
+        parentCalls.add(block.id);
+      }
+    }
+  }
+  const details = message.details;
+  if (message.role !== "custom" || message.customType !== "openclaw.nested-tool.v1") {
+    return [{ seq: seq * 2, message }];
+  }
+  if (
+    !details ||
+    !parentCalls.has(details.parentToolCallId) ||
+    typeof details.toolCallId !== "string" ||
+    typeof details.toolName !== "string" ||
+    !details.input ||
+    typeof details.input !== "object" ||
+    !details.result ||
+    typeof details.result !== "object"
+  ) {
+    return [];
+  }
+  return [
+    {
+      seq: seq * 2,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: details.toolCallId,
+            name: details.toolName,
+            arguments: details.input,
+          },
+        ],
+      },
+    },
+    {
+      seq: seq * 2 + 1,
+      message: {
+        ...details.result,
+        role: "toolResult",
+        toolCallId: details.toolCallId,
+        toolName: details.toolName,
+        isError: details.isError === true || details.result.isError === true,
+      },
+    },
+  ];
+}
+
 const repositoryCommandEvidence = String.raw`
   // This is the deliberately small grammar requested by this installed task,
   // not a general shell parser: one command, literal arguments and explicit cwd.
@@ -90,6 +144,7 @@ export const sessionEvidenceScript = String.raw`
   // exporting their raw arguments, output, or credential-bearing environment.
   const summary = process.argv[5] ? JSON.parse(process.argv[5]) : undefined;
   ${repositoryCommandEvidence}
+  ${expandTranscriptMessage.toString()}
   function operationsFor(block) {
     if (!["exec", "bash"].includes(block.name)) return [];
     const args = standaloneArguments(block.arguments?.command);
@@ -129,10 +184,14 @@ export const sessionEvidenceScript = String.raw`
       process.exit(0);
     }
     const entry = JSON.parse(session.entry_json);
+    // Current runtimes store large entry fields separately; older runtimes inline them.
+    const hasSnapshots = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_entry_snapshots'").get();
+    const snapshot = hasSnapshots ? db.prepare("SELECT value_json FROM session_entry_snapshots WHERE session_key = ? AND field = 'systemPromptReport'").get(sessionKey) : undefined;
+    const promptReport = snapshot ? JSON.parse(snapshot.value_json) : entry?.systemPromptReport;
     const promptTools =
-      entry?.systemPromptReport?.source === "run" &&
-      Array.isArray(entry.systemPromptReport.tools?.entries)
-        ? entry.systemPromptReport.tools.entries
+      promptReport?.source === "run" &&
+      Array.isArray(promptReport.tools?.entries)
+        ? promptReport.tools.entries
             .map((tool) => tool?.name)
             .filter((name) => typeof name === "string")
         : undefined;
@@ -175,6 +234,7 @@ export const sessionEvidenceScript = String.raw`
       const index = withoutSuffix.lastIndexOf(marker);
       return index === -1 ? undefined : withoutSuffix.slice(0, index);
     }
+    const parentCalls = new Set();
     for (const row of rows) {
       const eventText = row.event_json ?? zstdDecompressSync(row.event_zstd).toString("utf8");
       if (Buffer.byteLength(eventText) !== (row.event_utf8_bytes ?? Buffer.byteLength(eventText))) {
@@ -183,7 +243,7 @@ export const sessionEvidenceScript = String.raw`
       const event = JSON.parse(eventText);
       eventTypeCounts[event.type ?? "unknown"] = (eventTypeCounts[event.type ?? "unknown"] ?? 0) + 1;
       if (event.type !== "message") continue;
-      const message = event.message;
+      for (const { message, seq } of expandTranscriptMessage(event.message, row.seq, parentCalls)) {
       const hasMarker = contains(message, marker);
       const mirrorIdentity = message?.__openclaw?.mirrorIdentity;
       roleCounts[message.role ?? "unknown"] = (roleCounts[message.role ?? "unknown"] ?? 0) + 1;
@@ -196,7 +256,7 @@ export const sessionEvidenceScript = String.raw`
         turn(assistantPrefix).terminalAssistantSeen = true;
       }
       messages.push({
-        seq: row.seq,
+        seq,
         role: message.role,
         hasMarker,
         stopReason: message.stopReason,
@@ -211,7 +271,7 @@ export const sessionEvidenceScript = String.raw`
           if (block?.type === "toolCall" && selectedTools.includes(block.name)) {
             const toolPrefix = prefixForToolMirrorIdentity(mirrorIdentity, ":call");
             if (toolPrefix !== undefined) turn(toolPrefix).toolCallMirrorSeen = true;
-            calls.push({ seq: row.seq, id: block.id, name: block.name, mirrorIdentity,
+            calls.push({ seq, id: block.id, name: block.name, mirrorIdentity,
               ...(summary ? { processSessionId: block.name === "process" && typeof block.arguments?.sessionId === "string" ? block.arguments.sessionId : undefined, processAction: block.name === "process" ? block.arguments?.action : undefined, operations: operationsFor(block) } : {}),
             });
           }
@@ -229,7 +289,7 @@ export const sessionEvidenceScript = String.raw`
         if (resultPrefix !== undefined) turn(resultPrefix).toolResultMirrorSeen = true;
         const resultText = textOf(message.content) + (typeof message.details?.aggregated === "string" ? "\n" + message.details.aggregated : "");
         results.push({
-          seq: row.seq,
+          seq,
           toolCallId: message.toolCallId,
           toolName: message.toolName,
           isError: message.isError === true,
@@ -247,13 +307,14 @@ export const sessionEvidenceScript = String.raw`
       if (message.role === "toolResult" && typeof message.toolName === "string") {
         resultToolNames.add(message.toolName);
       }
+      }
     }
     process.stdout.write(JSON.stringify({
       databasePath,
       sessionKey,
       sessionId: session.current_session_id,
       exists: true,
-      promptReportSource: entry?.systemPromptReport?.source,
+      promptReportSource: promptReport?.source,
       promptToolNames: promptTools,
       messageCount: messages.length,
       userMarkerSeen: messages.some((message) => message.role === "user" && message.hasMarker),

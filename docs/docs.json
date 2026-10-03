@@ -920,6 +920,7 @@
               "testing/gateway-routing",
               "testing/production-tui",
               "testing/slack",
+              "testing/qa-matrix",
               "testing/service-accounts",
               "testing/plugins",
               "testing/openshell",

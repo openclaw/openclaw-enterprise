@@ -1,6 +1,8 @@
 # Slack tests
 
-Verify live Slack ingress and a gateway-authored reply through dedicated Codex.
+Use the [shipped QA matrix](qa-matrix.md) for single-message live Slack ingress and a
+gateway-authored threaded reply through dedicated Codex. The focused suite below
+retains credential-placement, proxy-isolation, and Socket Mode checks.
 Prepare the [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets)
 and [private credential file](README.md#requirements-and-credentials) first.
 
@@ -24,8 +26,8 @@ OCC_TEST_SLACK_LIVE=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-slack-real.test.mjs
 ```
 
-This posts real Slack messages and leaves them in the channel. It verifies the
-reply and exact runtime/session evidence. The sender bot must differ from the
+This focused test verifies credential placement and the authenticated connection.
+The QA matrix posts real messages and verifies exact runtime/session evidence. The sender bot must differ from the
 Agent bot; its credential remains with the test runner. Run this file and the
 ordinary runtime file for both coverage groups. See [Slack test settings](#slack-test-environment).
 
@@ -33,7 +35,7 @@ ordinary runtime file for both coverage groups. See [Slack test settings](#slack
 
 Slack is the only channel with live integration coverage; this suite does not
 verify Teams. The test temporarily adds `allowBots: "mentions"`,
-`users: ["<sender-bot-user-id>"]`, and `replyToMode: "off"` only to the exact test
+`users: ["<sender-bot-user-id>"]`, and a reply policy only on the exact test
 channel. `requireMention` stays enabled. Do not enable bot access account-wide.
 
 ## Slack test environment
@@ -41,9 +43,8 @@ channel. `requireMention` stays enabled. Do not enable bot access account-wide.
 `OCC_TEST_SLACK_LIVE=1` enables
 [`harness-topology-k3d-slack-real.test.mjs`](../../tests/integration/harness-topology-k3d-slack-real.test.mjs).
 Run the ordinary runtime file separately for its coverage. The Slack case uses the same production k3d,
-PostgreSQL, image, and model-turn prerequisites, then posts a real message and
-waits for a gateway-authored reply. It does not delete the Slack messages it
-creates.
+PostgreSQL, image, and model prerequisites. Delivery and duplicate observation
+belong to the QA matrix, which leaves its messages in the authorized channel.
 
 | Variable                          | Requirement                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------ |

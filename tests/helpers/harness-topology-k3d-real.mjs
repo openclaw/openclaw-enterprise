@@ -119,6 +119,16 @@ const {
 });
 
 async function slackApi(method, token, body = {}) {
+  assert.ok(
+    [
+      "auth.test",
+      "conversations.info",
+      "conversations.history",
+      "conversations.replies",
+      "chat.postMessage",
+    ].includes(method),
+    "unsupported Slack proof operation",
+  );
   const writesMessage = method === "chat.postMessage";
   const url = new URL(`https://slack.com/api/${method}`);
   if (!writesMessage) {
@@ -130,6 +140,9 @@ async function slackApi(method, token, body = {}) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       response = await fetch(url, {
+        // The credential file is an explicitly selected Slack token. Send it
+        // only to Slack's API, never to a redirected credential recipient.
+        redirect: "error",
         method: writesMessage ? "POST" : "GET",
         headers: {
           authorization: `Bearer ${token}`,

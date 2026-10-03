@@ -225,7 +225,9 @@ export async function assertGatewayModelTurn({ gatewayUrl, gatewayPassword, nonc
     }
   }
   assert.equal(response.status, 200, `real provider-backed model turn failed: ${body}`);
-  assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
+  const message = JSON.parse(body).choices?.[0]?.message;
+  assert.equal(message?.role, "assistant");
+  assert.match(message?.content ?? "", new RegExp(nonce));
 }
 
 export function createRealKubernetesFixture({

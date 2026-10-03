@@ -784,7 +784,7 @@ export function createRepositoryObserver({ run, repository, binary = "gh" }) {
     assert.ok(isAbsolute(binary), "the managed gh binary must be absolute");
   }
   const prefix = `repos/${repository}`;
-  return async (method, suffix = "", body, expected = 200) => {
+  const observe = async (method, suffix = "", body, expected = 200) => {
     assert.ok(!suffix.includes("..") && !suffix.startsWith("/"));
     const args = [
       "api",
@@ -810,6 +810,29 @@ export function createRepositoryObserver({ run, repository, binary = "gh" }) {
     const payload = response.slice(separator.index + separator[0].length);
     return { status, data: payload.trim() ? JSON.parse(payload) : undefined };
   };
+  observe.deleteBranch = async (branch, sha) => {
+    assert.match(sha, /^[a-f0-9]{40}$/);
+    await run("git", ["check-ref-format", `refs/heads/${branch}`]);
+    // The final compare-and-delete belongs to Git transport. The lease also
+    // prevents deleting a concurrent update after our independent API readback.
+    const credentialHelper = "!" + "'" + binary.replaceAll("'", "'\\''") + "' auth git-credential";
+    await run(
+      "git",
+      [
+        "-c",
+        "credential.helper=",
+        "-c",
+        `credential.helper=${credentialHelper}`,
+        "push",
+        "--porcelain",
+        `--force-with-lease=refs/heads/${branch}:${sha}`,
+        `https://github.com/${repository}.git`,
+        `:refs/heads/${branch}`,
+      ],
+      { timeout: 60000, env: { GIT_TERMINAL_PROMPT: "0" } },
+    );
+  };
+  return observe;
 }
 
 export const submitRepositoryTaskScript = String.raw`
@@ -948,7 +971,7 @@ export const submitRepositoryTaskScript = String.raw`
 
 // Read-only private control observation. The production worker remains the only
 // session opener/closer, and bearer material never leaves the workload.
-export async function readInstalledCredentialSession(fixture, workerPod, sessionId) {
+export async function readInstalledCredentialSession(executeWorker, sessionId) {
   const code = String.raw`
     const http = require("node:http");
     const id = process.argv[1];
@@ -966,24 +989,5 @@ export async function readInstalledCredentialSession(fixture, workerPod, session
     request.on("error", () => { process.stderr.write("session observation failed\n"); process.exitCode = 1; });
     request.end();
   `;
-  return JSON.parse(
-    await fixture.run(
-      "kubectl",
-      [
-        ...fixture.kubernetes.kubectlArguments([]),
-        "-n",
-        fixture.system,
-        "exec",
-        workerPod.metadata.name,
-        "-c",
-        "worker",
-        "--",
-        "node",
-        "-e",
-        code,
-        sessionId,
-      ],
-      { timeout: 10000 },
-    ),
-  );
+  return JSON.parse(await executeWorker(code, [sessionId], 10000));
 }

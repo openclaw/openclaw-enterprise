@@ -1,0 +1,25 @@
+{
+  "env": {
+    "OCC_TEST_QA_MATRIX": "1",
+    "OCC_TEST_QA_INSTALLATION": "all"
+  },
+  "requiredEnv": [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_REPOSITORY_AUTHORIZED",
+    "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY",
+    "OCC_TEST_QA_SLACK_APP_TOKEN_FILE",
+    "OCC_TEST_QA_SLACK_BOT_TOKEN_FILE",
+    "OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE",
+    "OCC_TEST_QA_SLACK_CHANNEL_ID",
+    "OCC_TEST_CODEX_CALENDAR_TOOL_NAME",
+    "OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/qa-matrix-real.test.mjs",
+      "expectedTests": ["shipped installations: canonical QA matrix"]
+    }
+  ]
+}

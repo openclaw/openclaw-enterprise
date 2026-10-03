@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
-import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import {
   arrangeProductionTopology,
@@ -16,7 +14,7 @@ import {
 } from "../helpers/harness-topology-k3d-real.mjs";
 
 test(
-  "production k3d gateway replies to a real Slack message through its approved proxy and Codex Agent",
+  "production k3d Slack isolates channel credentials and connects through its approved proxy",
   { ...requiresLiveSlack, timeout: 780_000 },
   async (context) => {
     for (const key of [
@@ -166,111 +164,8 @@ test(
       );
       return /\[?slack\]?\s+socket mode connected/i.test(logs) || undefined;
     });
-    const baselineLogs = await kubectl(
-      "logs",
-      topology.gatewayPod.metadata.name,
-      "--namespace",
-      topology.gatewayPlacement,
-    );
-    const nonce = `OCC-SLACK-${randomUUID()}`;
-    const message = {
-      channel: slack.channelId,
-      text: `<@${gatewayIdentity.user_id}> Reply with exactly this nonce and no other text: ${nonce}`,
-    };
-    // A distinct explicitly allowed bot proves actual Slack ingress, Codex execution, and egress.
-    const sent = await slackApi("chat.postMessage", slack.senderBotToken, message);
-    let attempts = 1;
-    let nextAttemptAt = Date.now() + 45_000;
-    const reply = await waitFor(
-      "the genuine gateway-authored Slack response from its dedicated Codex Agent",
-      async () => {
-        const history = await slackApi("conversations.history", slack.senderBotToken, {
-          channel: slack.channelId,
-          oldest: sent.ts,
-          inclusive: false,
-          limit: 30,
-        });
-        const response = history.messages?.find(
-          (candidate) =>
-            candidate.user === gatewayIdentity.user_id &&
-            Number(candidate.ts) > Number(sent.ts) &&
-            typeof candidate.text === "string" &&
-            candidate.text.includes(nonce),
-        );
-        if (response !== undefined) {
-          return response;
-        }
-        // Slack distributes shared-app events across connections, so an unrelated gateway can win.
-        if (attempts < 3 && Date.now() >= nextAttemptAt) {
-          await slackApi("chat.postMessage", slack.senderBotToken, message);
-          attempts += 1;
-          nextAttemptAt = Date.now() + 45_000;
-        }
-        await delay(2_250);
-        return undefined;
-      },
-      240_000,
-    );
-    assert.equal(reply.user, gatewayIdentity.user_id);
-    assert.match(reply.text, new RegExp(nonce));
-    const gatewayLogs = await kubectl(
-      "logs",
-      topology.gatewayPod.metadata.name,
-      "--namespace",
-      topology.gatewayPlacement,
-    );
-    const turnLogs = gatewayLogs.slice(baselineLogs.length);
-    const ingress = turnLogs
-      .split("\n")
-      .find((line) =>
-        line.includes(
-          `Inbound app_mention slack:${gatewayIdentity.team_id}:channel:${slack.channelId}:user:${senderIdentity.user_id} -> bot:${gatewayIdentity.user_id}`,
-        ),
-      );
-    if (ingress !== undefined) {
-      assert.match(ingress, new RegExp(`\\((?:channel|group), ${message.text.length} chars\\)`));
-    }
-    assert.ok(
-      turnLogs.includes(
-        "codex app-server approval reviewer updated from active thread model provider",
-      ),
-      "this gateway must route the Slack message through its own dedicated Codex Agent",
-    );
-    const transcriptProbe = String.raw`
-      const { DatabaseSync } = require("node:sqlite");
-      const database = new DatabaseSync(
-        "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite",
-        { readOnly: true },
-      );
-      const { matches } = database
-        .prepare("SELECT COUNT(*) AS matches FROM transcript_events WHERE instr(event_json, ?) > 0")
-        .get(${JSON.stringify(nonce)});
-      process.stdout.write(String(matches));
-    `;
-    const transcriptMatches = Number(
-      await kubectl(
-        "exec",
-        topology.gatewayPod.metadata.name,
-        "--namespace",
-        topology.gatewayPlacement,
-        "--",
-        "node",
-        "-e",
-        transcriptProbe,
-      ),
-    );
-    assert.ok(
-      transcriptMatches >= 2,
-      "this exact gateway must persist both the unique Slack prompt and its Codex Agent response",
-    );
     context.diagnostic(
-      `Real Slack -> gateway -> dedicated Codex -> Slack response: agent=${topology.agent.id}; channel=${slack.channelId}; sender=${slack.allowedUserId}; attempts=${attempts}; nonce=${nonce}.`,
+      "Channel credentials, approved proxy isolation, and authenticated Socket Mode verified. Single-message delivery belongs to qa-matrix-real.test.mjs.",
     );
-    if (process.env.OCC_TEST_SLACK_MANUAL_WAIT_SECONDS !== undefined) {
-      const seconds = Number(process.env.OCC_TEST_SLACK_MANUAL_WAIT_SECONDS);
-      assert.ok(Number.isInteger(seconds) && seconds >= 1 && seconds <= 300);
-      context.diagnostic(`Keeping the real Slack gateway available for ${seconds} seconds.`);
-      await delay(seconds * 1_000);
-    }
   },
 );

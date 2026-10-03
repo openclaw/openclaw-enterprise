@@ -101,10 +101,10 @@ lifecycle and enabled-plugin install/auth proofs.
 
 - `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_REAL=1` for embedded OpenClaw with the bundled
   Diffs plugin.
-- `OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_REAL=1` for dedicated Codex with Google
-  Calendar.
 - `OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_REAL=1` for catalog-selected Linear in a
   normal dedicated Codex Agent turn.
+- `OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_REAL=1` for the retained Calendar
+  per-call approval and disabled-tool acceptance scenario.
 - `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_REAL=1` for dedicated Codex with one
   successful selected install followed by one selected install or authentication
   failure.
@@ -117,9 +117,9 @@ All native scenarios use Kubernetes. Provide
 `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`,
 `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`,
 `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`, and a scenario-specific database such as
-`OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL` or
-`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL`. The Linear and Codex failure scenarios
-require their own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL` and
+`OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL`. The Linear, Calendar and Codex failure scenarios
+require their own distinct `OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL`,
+`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL` and
 `OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL`.
 The OpenClaw scenario also requires `OPENAI_API_KEY` in the process environment
 and a runtime image with `plugins install --no-enable` support. The repository's
@@ -142,9 +142,17 @@ on the test nodes and set `OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE` to its
 kubelet-relative path. Codex fixtures use a 4 GiB Gateway limit and a 2 GiB
 Harness limit; the namespace quota allows two Agent pairs and revision overlap.
 Provide enough cluster memory for the selected scenario and its other workloads.
-The Calendar proof also needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
-`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen
-`list_calendars(max_results:1)` read during a normal Agent turn.
+The [shipped QA matrix](qa-matrix.md) exercises Calendar approval coverage through
+both shipped installations. The existing `plugin-driver-real.test.mjs` Calendar
+entry point remains available with its imported service-account fixture until
+both matrix cells and the protected hosted lane are qualified. They share one
+policy scenario; neither entry point's presence proves a live pass.
+The proof needs `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
+`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and must show a model-chosen harmless
+read during a normal Agent turn. Select an exact tool advertised by the connected
+account; the historical `list_calendars` tool is not available in every catalog.
+Set `OCC_TEST_CODEX_CALENDAR_PROMPT` when selecting a different read, such as
+`codex_apps.google_calendar.get_profile`. Discovery alone does not prove execution.
 
 The Linear catalog proof requires that the same authorized account has Linear
 connected. Set `OCC_TEST_CODEX_LINEAR_PROMPT` to a harmless read request,
@@ -175,13 +183,10 @@ identifies the actual `list_calendars` call and requires its successful structur
 result without printing calendar contents. This native proof does not replace
 the controlled status boundary suite above.
 
-The Calendar fixture uses a narrow test-only ServiceAccount import that preserves
-the designated existing account token from a private service-account environment
-file, binds it to the matching Backend, and then runs normal Agent
-create/deploy/API checks. It does not prove native ChatGPT account creation,
-upstream credential issuance, workspace administrator credentials, or creation of
-a new upstream account. Never print credential values or resolved account
-identifiers.
+The focused Codex fixtures import the designated existing ServiceAccount token
+through their test fixture. The QA matrix uses the shipped Secret API and
+supported `codex_pat` authentication instead. Neither path proves creation of a
+new upstream account. Never print credential values or resolved account identifiers.
 
 ## Per-call approval acceptance
 
@@ -197,8 +202,7 @@ session. Each successful call must carry a distinct approved automatic-review ID
 Evidence is scoped to the marker-bearing user turn so an earlier successful call
 cannot satisfy a later assertion.
 
-Run with the Calendar prerequisites above and
-`OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_REAL=1`. The five turns exercise native
+Run the [QA matrix](qa-matrix.md) with its Calendar prerequisites. The five turns exercise native
 approval once, human review twice, and automatic review twice. The fixture uses
 the admitted nested policy through the normal API/deployment flow; it does not
 patch the native runtime or change the fixture's existing session configuration.

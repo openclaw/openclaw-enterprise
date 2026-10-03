@@ -41,7 +41,7 @@
     {
       "path": "tests/integration/harness-topology-k3d-slack-real.test.mjs",
       "expectedTests": [
-        "production k3d gateway replies to a real Slack message through its approved proxy and Codex Agent"
+        "production k3d Slack isolates channel credentials and connects through its approved proxy"
       ]
     }
   ]

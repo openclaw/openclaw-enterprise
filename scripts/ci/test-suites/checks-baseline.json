@@ -4,6 +4,9 @@
   },
   "files": [
     {
+      "path": "tests/integration/qa-fixture-inputs.test.mjs"
+    },
+    {
       "path": "tests/conformance/audit.test.mjs"
     },
     {
