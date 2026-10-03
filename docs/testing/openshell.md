@@ -142,8 +142,10 @@ upgrade fails with `401` instead of weakening app-server authentication. It then
 runs the real model turn over the authenticated Pod-loopback endpoint. The
 scenario also requires exact workload identity claims, approved mounts and
 privileges, denied secret exposure, allowed and denied tool egress, replacement,
-and cleanup. It separately checks the OpenClaw Control Plane (OCC) Agent Service
-selector. Missing prerequisites fail rather than skip.
+and cleanup. The Sandbox runs with the Driver's `hard_requirement` Landlock
+setting; the suite does not cover a node without Landlock. It separately checks
+the OpenClaw Control Plane (OCC) Agent Service selector. Missing prerequisites
+fail rather than skip.
 
 The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the

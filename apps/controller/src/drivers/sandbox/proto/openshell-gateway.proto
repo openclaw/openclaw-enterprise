@@ -19,6 +19,8 @@ service OpenShell {
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
+  rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
@@ -262,6 +264,7 @@ enum SandboxPhase {
   SANDBOX_PHASE_STOPPING = 6;
   SANDBOX_PHASE_STOPPED = 7;
   SANDBOX_PHASE_STARTING = 8;
+  SANDBOX_PHASE_COMPLETED = 9;
 }
 
 message CreateSandboxRequest {
@@ -282,6 +285,31 @@ message SandboxServiceExposure {
 message DeleteSandboxRequest {
   string name = 1;
   WorkspaceSelector workspace_scope = 2;
+}
+
+message GetSandboxRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 2;
+}
+
+message GetServiceRequest {
+  string sandbox = 1;
+  // Empty selects the unnamed endpoint.
+  string name = 2;
+  WorkspaceSelector workspace_scope = 3;
+}
+
+message ServiceEndpoint {
+  ObjectMeta metadata = 1;
+  string sandbox_id = 2;
+  string sandbox = 3;
+  string name = 4;
+  uint32 target_port = 5;
+}
+
+message ServiceEndpointResponse {
+  ServiceEndpoint endpoint = 1;
+  string url = 2;
 }
 
 message WorkspaceSelector {

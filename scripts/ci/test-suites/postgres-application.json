@@ -137,7 +137,7 @@
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once",
         "credential withdrawal work revokes from the active revision without redeploying it",
-        "an exhausted credential withdrawal stays pending with its reason until a replay retries it",
+        "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
         "maintenance of a withdrawn revision retries the withdrawal and stops once it is revoked",
         "a deployment retry never re-attaches a source withdrawn while it was finishing",
         "a withdrawal whose requester lost Agent operate fails once with a denial and no revocation",
@@ -175,6 +175,12 @@
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
         "failed provisioning keeps the accepted plan reserved until retry or deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-deletion-audit.test.mjs",
+      "expectedTests": [
+        "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes"
       ]
     },
     {

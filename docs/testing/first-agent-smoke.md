@@ -69,10 +69,9 @@ product code or Agent configuration is changed for the smoke.
 ## Node resolver
 
 Local Setup starts its k3d node with `IPTABLES_MODE=legacy`. On the hosted
-Ubuntu 22.04 runner, whose Docker uses iptables-nft, the node's resolver then
-refuses queries, so the node cannot pull images. The smoke therefore sets the
-documented `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` to the runner's first non-loopback
-upstream resolver unless the variable is already set. See
+Ubuntu 22.04 runner, whose Docker uses iptables-nft, k3d's default node
+resolver refuses queries. `occ dev up` therefore gives the node the runner's
+upstream resolver on Linux Docker by default, and the smoke sets nothing. See
 [Resolve node DNS failures](../guides/deploy/local-kubernetes-development.md#resolve-node-dns-failures).
 
 ## Limits

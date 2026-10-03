@@ -17,8 +17,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
-import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const root = resolve(".");
 
@@ -120,15 +120,7 @@ test(
     assert.equal(openssl.status, 0);
     await chmod(key, 0o600);
     await chmod(certificate, 0o644);
-    const reservation = createServer();
-    await new Promise((resolve, reject) => {
-      reservation.once("error", reject);
-      reservation.listen(0, "127.0.0.1", resolve);
-    });
-    const port = reservation.address().port;
-    await new Promise((resolve, reject) =>
-      reservation.close((error) => (error ? reject(error) : resolve())),
-    );
+    const port = await availablePort();
     const configuration = join(temporary, "service.json");
     await writeFile(
       configuration,

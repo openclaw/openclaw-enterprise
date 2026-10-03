@@ -31,9 +31,17 @@ export interface OpenShellSandboxCreateRequest {
   }[];
 }
 
+/** Selects one Sandbox by name in a Workspace (GetSandbox, DeleteSandbox). */
 export interface OpenShellSandboxDeleteRequest {
   readonly name: string;
   readonly workspace: string;
+}
+
+export interface OpenShellServiceRequest {
+  readonly sandbox: string;
+  readonly workspace: string;
+  /** Empty selects the unnamed endpoint. */
+  readonly service: string;
 }
 
 export interface OpenShellSandboxResponse {
@@ -41,6 +49,7 @@ export interface OpenShellSandboxResponse {
   readonly id?: string;
   readonly workspace?: string;
   readonly labels: Readonly<Record<string, string>>;
+  readonly annotations: Readonly<Record<string, string>>;
   readonly phase?: string | number;
   readonly serviceUrls: Readonly<Record<string, string>>;
 }
@@ -169,6 +178,13 @@ export interface OpenShellGatewayClient extends OpenShellSandboxLogReader {
     request: OpenShellSandboxCreateRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse>;
+  /** Undefined when the Sandbox does not exist. Service URLs are always empty. */
+  getSandbox(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxResponse | undefined>;
+  /** The exposed service's URL, or undefined when the endpoint does not exist. */
+  getServiceUrl(request: OpenShellServiceRequest, signal: AbortSignal): Promise<string | undefined>;
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
   getProviderProfile(
     workspace: string,
@@ -231,6 +247,8 @@ type OpenShellMethod =
   | "CreateWorkspace"
   | "DeleteWorkspace"
   | "CreateSandbox"
+  | "GetSandbox"
+  | "GetService"
   | "DeleteSandbox"
   | "GetSandboxLogs"
   | "GetSandboxProviderStatus"
@@ -263,6 +281,118 @@ export class OpenShellSandboxAlreadyExistsError extends Error {
     super(`OpenShell Sandbox ${sandboxName} already exists.`);
     this.sandboxName = sandboxName;
   }
+}
+
+/**
+ * The gateway refused a request_id it had already admitted: an earlier call with this ID
+ * errored server-side (REQUEST_OUTCOME_UNCERTAIN, permanent), carried another payload
+ * (REQUEST_ID_PAYLOAD_MISMATCH), or succeeded but can no longer be replayed
+ * (REQUEST_REPLAY_UNAVAILABLE). Nothing ran for this call.
+ */
+export class OpenShellRequestReplayRefusedError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string, message: string) {
+    super(`OpenShell refused the request_id (${reason}): ${message}`);
+    this.reason = reason;
+  }
+}
+
+const REPLAY_REFUSAL_REASONS: ReadonlySet<string> = new Set([
+  "REQUEST_OUTCOME_UNCERTAIN",
+  "REQUEST_ID_PAYLOAD_MISMATCH",
+  "REQUEST_REPLAY_UNAVAILABLE",
+]);
+const OPENSHELL_ERROR_DOMAIN = "openshell.nvidia.com";
+const ERROR_INFO_TYPE_URL = "type.googleapis.com/google.rpc.ErrorInfo";
+
+interface ProtobufFields {
+  readonly varints: Map<number, number[]>;
+  readonly bytes: Map<number, Uint8Array[]>;
+}
+
+/** The varint and length-delimited fields of one protobuf message, or undefined if malformed. */
+function protobufFields(bytes: Uint8Array): ProtobufFields | undefined {
+  const fields: ProtobufFields = { varints: new Map(), bytes: new Map() };
+  const append = <T>(map: Map<number, T[]>, field: number, value: T) => {
+    const values = map.get(field) ?? [];
+    values.push(value);
+    map.set(field, values);
+  };
+  let offset = 0;
+  const varint = (): number | undefined => {
+    let value = 0;
+    for (let shift = 0; shift < 70 && offset < bytes.length; shift += 7) {
+      const byte = bytes[offset++]!;
+      value += (byte & 0x7f) * 2 ** shift;
+      if (byte < 0x80) {
+        return value;
+      }
+    }
+    return undefined;
+  };
+  while (offset < bytes.length) {
+    const key = varint();
+    if (key === undefined) {
+      return undefined;
+    }
+    const field = Math.floor(key / 8);
+    const wireType = key % 8;
+    if (wireType === 0) {
+      const value = varint();
+      if (value === undefined) {
+        return undefined;
+      }
+      append(fields.varints, field, value);
+    } else if (wireType === 1 || wireType === 5) {
+      offset += wireType === 1 ? 8 : 4;
+    } else if (wireType === 2) {
+      const length = varint();
+      if (length === undefined || length > bytes.length - offset) {
+        return undefined;
+      }
+      append(fields.bytes, field, bytes.subarray(offset, offset + length));
+      offset += length;
+    } else {
+      return undefined;
+    }
+  }
+  return offset === bytes.length ? fields : undefined;
+}
+
+function utf8(bytes: Uint8Array | undefined): string | undefined {
+  return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
+}
+
+/** OpenShell's google.rpc.ErrorInfo reason from a FAILED_PRECONDITION status details trailer. */
+function openShellErrorReason(error: unknown, failedPrecondition: number): string | undefined {
+  const metadata = asRecord(error)?.metadata as { get?: unknown } | undefined;
+  const values =
+    typeof metadata?.get === "function"
+      ? (metadata.get as (key: string) => unknown)("grpc-status-details-bin")
+      : undefined;
+  const details = Array.isArray(values) ? values[0] : undefined;
+  if (!(details instanceof Uint8Array)) {
+    return undefined;
+  }
+  // google.rpc.Status: 1 = code, 3 = repeated Any details; Any: 1 = type_url,
+  // 2 = value; ErrorInfo: 1 = reason, 2 = domain. Scalars are last-wins.
+  const status = protobufFields(details);
+  if (status === undefined || (status.varints.get(1)?.at(-1) ?? 0) !== failedPrecondition) {
+    return undefined;
+  }
+  for (const any of status.bytes.get(3) ?? []) {
+    const fields = protobufFields(any)?.bytes;
+    const value = fields?.get(2)?.at(-1);
+    if (utf8(fields?.get(1)?.at(-1)) !== ERROR_INFO_TYPE_URL || value === undefined) {
+      continue;
+    }
+    const info = protobufFields(value)?.bytes;
+    if (utf8(info?.get(2)?.at(-1)) === OPENSHELL_ERROR_DOMAIN) {
+      return utf8(info?.get(1)?.at(-1));
+    }
+  }
+  return undefined;
 }
 
 export class OpenShellProviderAlreadyExistsError extends Error {
@@ -301,6 +431,42 @@ function deadline(timeoutMs: number): Date {
 function statusCode(error: unknown): number | undefined {
   const candidate = asRecord(error)?.code;
   return typeof candidate === "number" ? candidate : undefined;
+}
+
+function sandboxResponse(
+  response: RecordValue,
+  operation: string,
+  endpoint: string,
+): OpenShellSandboxResponse {
+  const sandbox = asRecord(response.sandbox);
+  const metadata = asRecord(sandbox?.metadata);
+  const name = metadata?.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw new OpenShellGatewayFailure(`OpenShell ${operation} returned no stable name.`);
+  }
+  const phase = asRecord(sandbox?.status)?.phase;
+  return Object.freeze({
+    name,
+    ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
+    ...(typeof metadata?.workspace === "string" && metadata.workspace.length > 0
+      ? { workspace: metadata.workspace }
+      : {}),
+    labels: Object.freeze({
+      ...(asRecord(metadata?.labels) as Record<string, string> | undefined),
+    }),
+    annotations: Object.freeze({
+      ...(asRecord(metadata?.annotations) as Record<string, string> | undefined),
+    }),
+    serviceUrls: Object.freeze(
+      Object.fromEntries(
+        Object.entries(asRecord(response.service_urls) ?? {}).map(([service, value]) => [
+          service,
+          normalizeServiceUrl(value, endpoint),
+        ]),
+      ),
+    ),
+    ...(phase === undefined ? {} : { phase: phase as string | number }),
+  });
 }
 
 function workspaceResponse(response: RecordValue, operation: string): OpenShellWorkspaceResponse {
@@ -715,39 +881,71 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       if (statusCode(error) === grpc.status.ALREADY_EXISTS) {
         throw new OpenShellSandboxAlreadyExistsError(request.name);
       }
+      const reason = openShellErrorReason(error, grpc.status.FAILED_PRECONDITION);
+      if (
+        statusCode(error) === grpc.status.FAILED_PRECONDITION &&
+        reason !== undefined &&
+        REPLAY_REFUSAL_REASONS.has(reason)
+      ) {
+        const details = asRecord(error)?.details;
+        throw new OpenShellRequestReplayRefusedError(
+          reason,
+          typeof details === "string" ? details : "request_id refused",
+        );
+      }
       throw error;
-    }
-    const sandbox = asRecord(response.sandbox);
-    const metadata = asRecord(sandbox?.metadata);
-    const name = metadata?.name;
-    if (typeof name !== "string" || name.trim().length === 0) {
-      throw new OpenShellGatewayFailure("OpenShell CreateSandbox returned no stable name.");
     }
     const serviceUrls = asRecord(response.service_urls);
     if (serviceUrls === undefined && request.serviceExposures.length !== 0) {
       throw new OpenShellGatewayFailure("OpenShell CreateSandbox returned no service URL map.");
     }
-    return Object.freeze({
-      name,
-      ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
-      ...(typeof metadata?.workspace === "string" && metadata.workspace.length > 0
-        ? { workspace: metadata.workspace }
-        : {}),
-      labels: Object.freeze({
-        ...(asRecord(metadata?.labels) as Record<string, string> | undefined),
-      }),
-      serviceUrls: Object.freeze(
-        Object.fromEntries(
-          Object.entries(serviceUrls ?? {}).map(([service, value]) => [
-            service,
-            normalizeServiceUrl(value, this.options.endpoint),
-          ]),
+    return sandboxResponse(response, "CreateSandbox", this.options.endpoint);
+  }
+
+  async getSandbox(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxResponse | undefined> {
+    try {
+      return sandboxResponse(
+        await this.unary(
+          "GetSandbox",
+          { name: request.name, workspace_scope: { workspace: request.workspace } },
+          signal,
         ),
-      ),
-      ...(asRecord(sandbox?.status)?.phase === undefined
-        ? {}
-        : { phase: asRecord(sandbox?.status)?.phase as string | number }),
-    });
+        "GetSandbox",
+        this.options.endpoint,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async getServiceUrl(
+    request: OpenShellServiceRequest,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    let response: RecordValue;
+    try {
+      response = await this.unary(
+        "GetService",
+        {
+          sandbox: request.sandbox,
+          name: request.service,
+          workspace_scope: { workspace: request.workspace },
+        },
+        signal,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return undefined;
+      }
+      throw error;
+    }
+    return normalizeServiceUrl(response.url, this.options.endpoint);
   }
 
   async deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void> {

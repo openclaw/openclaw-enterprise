@@ -23,8 +23,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "google-recovery@example.test";
 const password = "google-member-password";
 const authSecret = "google-sign-in-auth-test-secret-at-least-32-bytes";
@@ -52,7 +52,7 @@ const sessionCookieName = "__Host-openclaw_occ.session_token";
 // audit, IAM, Better Auth, the guarded human-login profile and Fastify are production code.
 test(
   "PostgreSQL Google sign-in admits only attached identities through the guarded profile",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

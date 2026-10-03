@@ -8,7 +8,7 @@ const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
-const form = [click("Start without Preset")];
+const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const createModelSecret = (value) => [
@@ -2042,12 +2042,38 @@ export const scenarios = {
     description:
       "Missing Secret create permission leaves the draft available with its password masked. No Agent is created.",
   },
+  createDefaultPresetLoading: {
+    group: "Pages/Create Agent",
+    name: "Loading default Preset",
+    path: create,
+    rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), hold: true }],
+    description: "Quick-start waits for the authorized Namespace Preset list.",
+  },
+  createDefaultPresetDenied: {
+    group: "Pages/Create Agent",
+    name: "Default Preset access denied",
+    path: create,
+    rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
+    description:
+      "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+  },
   createNoPresets: {
     group: "Pages/Create Agent",
     name: "No Presets",
     path: create,
     emptyPresets: true,
-    description: "Creation remains available without a Preset.",
+    description:
+      "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
+  },
+  createWithoutPreset: {
+    group: "Pages/Create Agent",
+    name: "Start without Preset",
+    path: create,
+    emptyPresets: true,
+    actions: [click("Start without Preset")],
+    description: "Create an editable Agent draft independently of a saved Preset.",
+    steps: ["Enter an Agent name, choose a model and credential, and review the Configuration."],
+    gap: "The fixture simulates API responses and does not verify deployment.",
   },
   createBoundCredentialPreset: {
     group: "Pages/Create Agent",
@@ -2450,12 +2476,12 @@ export const scenarios = {
   },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
-    name: "Enable Gateway password access",
+    name: "Enable gateway password access",
     path: draft,
     deployed: true,
-    description: "Configure the generated Gateway password without typing native JSON.",
+    description: "Configure the generated gateway password without typing native JSON.",
     steps: [
-      "Select Enable Gateway password access. The draft receives a password reference; no password value is displayed.",
+      "Select Enable gateway password access. The draft receives a password reference; no password value is displayed.",
       "Cancel to discard the edit, or Save Configuration to persist it.",
       "Confirm the saved-access message, then Deploy new version to apply the reference.",
     ],
@@ -2473,7 +2499,7 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",
     path: draft,
-    actions: [click("Enable Gateway password access"), click("Save Configuration")],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
     rules: [
       {
         method: "PATCH",
@@ -2487,7 +2513,7 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Gateway password save in progress",
     path: draft,
-    actions: [click("Enable Gateway password access"), click("Save Configuration")],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
     rules: [
       {
         method: "PATCH",
@@ -2760,6 +2786,16 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     description:
       "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
+  },
+  deploymentModelProbeFailed: {
+    group: "Pages/Agent detail",
+    name: "New version failed its model check",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    description:
+      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -3947,11 +3983,11 @@ export const scenarios = {
     group: "Flows",
     name: "Restart Agent creation",
     path: create,
-    description: "Leave a no-Preset Agent form and return to the initial creation choices.",
+    description: "Leave a default starter Agent form and return to the initial creation choices.",
     steps: [
-      "Choose Start without Preset and enter an Agent name.",
+      "Choose Start with default Preset and enter an Agent name.",
       "Select Cancel or the Agents link, then choose Create Agent again.",
-      "Confirm the initial choices are shown. Start without Preset again and check that the name is empty.",
+      "Confirm the initial choices are shown. Start with default Preset again and check that the name is empty.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
   },
@@ -3962,9 +3998,9 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     description:
-      "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
+      "Create a Dedicated Agent from the default Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
+      "Start with default Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
@@ -3991,7 +4027,7 @@ export const scenarios = {
     description:
       "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
     steps: [
-      "Start without Preset and enter the Agent name.",
+      "Start with default Preset and enter the Agent name.",
       "Open Configure Slack, choose the existing Slack app Secret, create a new Slack bot Secret from the modal, and allow everyone in the selected channel.",
       'Apply channel settings. The form receives channel JSON with users: ["*"] and Secret binding JSON while token values stay hidden.',
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",

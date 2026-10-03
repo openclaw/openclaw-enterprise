@@ -4,6 +4,7 @@ import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { pullImage } from "./image-pull.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const defaultCollectorContainerPort = 4318;
@@ -577,6 +578,8 @@ async function prepareLogging({
   let endpointHost = address.endpointHost;
   let endpointPort = port;
   try {
+    // Pull with retries; `docker run` would pull it once, without them.
+    await pullImage(image, { execFile, docker });
     await execFile(
       docker,
       dockerRunArgs({

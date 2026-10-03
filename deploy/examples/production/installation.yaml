@@ -14,7 +14,7 @@ occ:
 # See [Backend configuration](../../../docs/reference/backends.md#installation-configuration).
 backend: []
 
-# Seed standard-codex and standard-openclaw without replacing same-name copies.
+# Seed default-codex, standard-codex, and standard-openclaw without replacing same-name copies.
 # Omitted or false disables seeding; existing Presets are retained.
 presets:
   includeDefaults: true

@@ -32,9 +32,9 @@ Full Integration dispatch. See [run the local installation lane](README.md#run-t
 
 [repository-credentials-k3d-real.test.mjs](../../tests/integration/repository-credentials-k3d-real.test.mjs)
 belongs to the explicitly selected `repository-credentials-installed` CLI lane,
-excluded from both workflow groups and Full Integration dispatch. Follow the
-[installed repository credential qualification](repository-credentials.md)
-for protected App inputs, authorized live writes, model execution, and cleanup.
+excluded from both workflow groups and Full Integration dispatch. The lane is
+temporarily refused until its remote cleanup is safe; see
+[qualify an installed Agent against GitHub](repository-credentials-platform.md#qualify-an-installed-agent-against-github).
 
 [repository-credentials-live.test.mjs](../../tests/integration/repository-credentials-live.test.mjs)
 belongs to the `repository-credentials-live` lane, excluded from both workflow

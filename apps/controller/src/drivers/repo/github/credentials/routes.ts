@@ -1,6 +1,7 @@
 import type { Denied, RequestHead, RequestPlan } from "../../credentials/backend-contracts.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import type { GitHubTokenProfile } from "./types.ts";
+import { allowsGraphqlInput } from "./graphql-input.ts";
 import { createResponsePolicy } from "./response.ts";
 import { classifyRoute, nativeGraphqlAccept } from "./routes/classification.ts";
 import type { Route } from "./routes/classification.ts";
@@ -58,7 +59,7 @@ function requestHeaders(head: RequestHead, selected: Route): Readonly<Record<str
   } else {
     headers.accept =
       selected.rawResponse ||
-      (selected.target === "/graphql" && head.headers.accept === nativeGraphqlAccept)
+      (selected.graphql === true && head.headers.accept === nativeGraphqlAccept)
         ? head.headers.accept!
         : "application/vnd.github+json";
     headers["x-github-api-version"] = "2026-03-10";
@@ -111,6 +112,7 @@ function planRequest(
       connectMs: options.limits.connectMs,
     }),
     responsePolicy: dependencies.responsePolicy(git, selected.target, selected.rawResponse),
+    ...(selected.graphql === true ? { inputPolicy: allowsGraphqlInput } : {}),
   }) as RequestPlan;
 }
 

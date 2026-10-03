@@ -6,6 +6,7 @@ import {
   kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -129,6 +130,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     },
     { nodeEnrollment },
   );
+  // Fixture failures are final; skip the driver's API retry waits.
+  driver.waitBeforeRetry = async () => {};
   const revision = {
     id: "revision-repository-material",
     namespaceId: "namespace-repository-material",
@@ -1560,6 +1563,7 @@ for (const mode of ["embedded", "dedicated"]) {
         assert.deepEqual(native.volumeMounts, [{ ...mount, readOnly: false }]);
         assert.equal(pod.securityContext.runAsNonRoot, true);
         for (const initializer of [init, native]) {
+          assert.deepEqual(initializer.command, [...SETUP_WRAPPER_COMMAND]);
           assert.equal(initializer.securityContext.readOnlyRootFilesystem, true);
           assert.equal(initializer.securityContext.allowPrivilegeEscalation, false);
           assert.deepEqual(initializer.securityContext.capabilities, { drop: ["ALL"] });

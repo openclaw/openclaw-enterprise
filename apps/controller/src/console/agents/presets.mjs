@@ -50,6 +50,24 @@ export function createPresetFields(context, apply) {
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = element("p", { className: "error", role: "alert" });
   const inputs = element("div");
+  let defaultId;
+  // How the next selection change started: "shortcut" applies the default Preset at once;
+  // "restore" reopens a retained shortcut chooser. Both discard the resulting form on exit.
+  let origin;
+  let discardOnExit = false;
+  const chooseHint = () =>
+    defaultId
+      ? "Choose a Preset or start with the default Preset."
+      : "Choose a Preset. default-codex is not available in this Namespace.";
+  const startDefault = button(
+    "Start with default Preset",
+    () => {
+      selector.value = defaultId;
+      origin = "shortcut";
+      selector.dispatchEvent(new Event("change"));
+    },
+    { className: "primary", disabled: true },
+  );
   let selected;
   let fields = [];
   let loadVersion = 0;
@@ -57,6 +75,7 @@ export function createPresetFields(context, apply) {
     selector.value
       ? {
           id: selector.value,
+          discardOnExit,
           fields: fields.length
             ? Object.fromEntries(
                 fields.map((field) => [
@@ -207,7 +226,7 @@ export function createPresetFields(context, apply) {
         };
       }
       const applied = renderPresetTemplate(renderTemplate, values);
-      apply(applied, { modelSecret: secretSelection });
+      apply(applied, { modelSecret: secretSelection }, { discardOnExit });
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -233,6 +252,9 @@ export function createPresetFields(context, apply) {
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
+    const applyDefault = origin === "shortcut";
+    discardOnExit = origin !== undefined;
+    origin = undefined;
     if (retained?.id !== selectedId) {
       retained = undefined;
     }
@@ -242,7 +264,7 @@ export function createPresetFields(context, apply) {
     feedback.textContent = "";
     applyButton.disabled = true;
     if (!selectedId) {
-      status.textContent = "Choose a Preset or start without one.";
+      status.textContent = chooseHint();
       return;
     }
     status.textContent = "Loading Preset…";
@@ -389,6 +411,9 @@ export function createPresetFields(context, apply) {
       status.textContent =
         "Fill in the variables, then use this Preset to create an editable draft.";
       applyButton.disabled = false;
+      if (applyDefault && fields.length === 0) {
+        applyButton.click();
+      }
       void loadSecrets(
         version,
         fields.filter((field) => field.definition.type === "password" && field.mode),
@@ -411,7 +436,7 @@ export function createPresetFields(context, apply) {
   context
     .request(`${namespacePath(context.namespaceId)}/presets`)
     .then((presets) => {
-      if (!context.isCurrent()) {
+      if (!context.isCurrent() || !section.isConnected) {
         return;
       }
       selector.append(
@@ -422,23 +447,29 @@ export function createPresetFields(context, apply) {
           .map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
+      defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
+      startDefault.disabled = !defaultId;
       if (retained && presets.some((preset) => preset.id === retained.id)) {
         selector.value = retained.id;
+        origin = retained.discardOnExit ? "restore" : undefined;
         selector.dispatchEvent(new Event("change"));
       }
-      status.textContent = presets.length
-        ? "Choose a Preset or start with the standard defaults."
-        : "No Presets in this Namespace.";
+      if (presets.length === 0) {
+        status.textContent =
+          "No Presets in this Namespace. Ask an administrator to install default-codex or another Preset.";
+      } else {
+        status.textContent = chooseHint();
+      }
     })
     .catch((error) => {
-      if (!context.isCurrent()) {
+      if (!context.isCurrent() || !section.isConnected) {
         return;
       }
       if (error.status === 401) {
         context.onExpired();
       } else {
-        status.textContent = `Presets unavailable. ${message(error)} You can continue without one.`;
+        status.textContent = `Presets unavailable. ${message(error)} Try again or ask an administrator to check Preset access.`;
       }
     });
-  return section;
+  return { section, startDefault };
 }

@@ -8,10 +8,10 @@ The Slack card shows **Not configured**, **Disabled**, or
 **Configured (enabled)** based on saved settings: Socket Mode, selected channels, and allowed users. This is not a
 live connection indicator.
 
-Version cards are read-only. On the new version draft, **Configure** or **Edit** opens
-a drawer; **Disable** saves a disabled channel setting. These changes affect
+Version cards are read-only. On the new version draft, **Configure Slack** or **Edit Slack**
+opens a drawer; **Disable Slack** saves a disabled channel setting. These changes affect
 future deployments, including other Agents sharing that Configuration. They do
-not stop a running channel or modify an existing revision. Channels require
+not stop a running channel or modify an existing version. Channels require
 Dedicated execution; unsupported native settings can make the simple editor
 unavailable.
 

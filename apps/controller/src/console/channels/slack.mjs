@@ -54,7 +54,8 @@ function supportSlack(values) {
   if (config.account !== undefined || config.accounts !== undefined) {
     return {
       supported: false,
-      reason: "Only the default Slack account is supported by this editor.",
+      reason:
+        "Only the default Slack account is supported by this editor. Edit named accounts in the native JSON, and give each its own token environment names, not SLACK_APP_TOKEN or SLACK_BOT_TOKEN.",
       config,
     };
   }

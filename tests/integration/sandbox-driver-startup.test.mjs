@@ -9,6 +9,10 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  OpenShellRequestReplayRefusedError,
+  OpenShellSandboxAlreadyExistsError,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -109,6 +113,12 @@ function workspaceGatewayClient(seed = [], events = []) {
       events.push(["gateway", "deleteWorkspace", name]);
       workspaces.delete(name);
     },
+    async getSandbox() {
+      return undefined;
+    },
+    async getServiceUrl() {
+      return undefined;
+    },
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },
@@ -179,9 +189,12 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
 });
 
 test("startup composes both OpenShell members from one Backend", async (t) => {
+  // An explicit hard_requirement composes like the omitted default above.
+  const configuration = sandboxInstallation();
+  configuration.drivers.sandbox.configuration.policy.landlockCompatibility = "hard_requirement";
   const createdDriver = await loadInstallationConfiguration({
     mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, sandboxInstallation()) },
+    environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
   });
 
   assert.ok(createdDriver.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
@@ -368,6 +381,360 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   assert.deepEqual(requests[0].serviceExposures, []);
   assert.deepEqual(requests[0].spec.command, command);
   assert.deepEqual(requests[0].labels, labels);
+  // The real Gateway receives this mode with the Sandbox request; a weaker
+  // Landlock setting could let a ready Harness run without filesystem policy.
+  assert.equal(requests[0].spec.policy.landlock.compatibility, "hard_requirement");
+});
+
+test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {
+  // The gateway's request_id replay refuses a changed spec and forgets a create after
+  // 24 h, so a reconcile pass must find the existing Sandbox rather than create again.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const services = new Map();
+  const calls = [];
+  let createError;
+  gatewayClient.getSandbox = async ({ name, workspace }) => {
+    calls.push(["getSandbox", name, workspace]);
+    return sandboxes.get(name);
+  };
+  gatewayClient.getServiceUrl = async ({ sandbox, workspace, service }) => {
+    calls.push(["getServiceUrl", sandbox, workspace, service]);
+    return services.get(sandbox);
+  };
+  gatewayClient.createSandbox = async (request) => {
+    calls.push(["createSandbox", request.name, request.requestId]);
+    const sandbox = {
+      name: request.name,
+      labels: request.labels,
+      annotations: { ...request.annotations, "openshell.io/runtime-identity": "opaque" },
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    services.set(request.name, sandbox.serviceUrls[""]);
+    if (createError !== undefined) {
+      throw createError;
+    }
+    return sandbox;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000003",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000000003",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const requirements = (environment) => ({
+    loginMode: "api_key",
+    image: "codex-runtime@sha256:synthetic",
+    command: ["codex"],
+    serviceAccountName: "agent-codex",
+    serviceAccountToken: {
+      audience: "openclaw-enterprise",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw-enterprise",
+      path: "token",
+      readOnly: true,
+    },
+    workspaceMounts: [
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "workspace",
+        mountPath: "/home/node/workspace",
+        readOnly: false,
+      },
+    ],
+    credentialAttachments: [],
+    environment: [{ name: "APP_SERVER_PORT", value: "8080" }, ...environment],
+    labels: { "openclaw.dev/revision": revision.id },
+  });
+  const provision = (environment = [], target = revision) =>
+    driver.provisionHarness({
+      ...context,
+      revision: target,
+      requirements: requirements(environment),
+    });
+
+  const first = await provision();
+  const name = first.resourceName;
+  assert.deepEqual(
+    calls.map(([call]) => call),
+    ["getSandbox", "createSandbox"],
+  );
+  // A later pass with a different spec reads the Sandbox and its service; it never creates.
+  calls.length = 0;
+  const second = await provision([{ name: "TMPDIR", value: "/tmp/changed" }]);
+  assert.deepEqual(second, first);
+  assert.deepEqual(calls, [
+    ["getSandbox", name, calls[0][2]],
+    ["getServiceUrl", name, calls[0][2], ""],
+  ]);
+
+  // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
+  sandboxes.clear();
+  services.clear();
+  createError = new OpenShellSandboxAlreadyExistsError(name);
+  calls.length = 0;
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(
+    calls.map(([call]) => call),
+    ["getSandbox", "createSandbox", "getSandbox", "getServiceUrl"],
+  );
+  createError = undefined;
+
+  // Another revision's Sandbox, or one without its Harness service, is never adopted.
+  sandboxes.set(name, {
+    ...sandboxes.get(name),
+    annotations: { ...sandboxes.get(name).annotations, "openclaw.dev/revision-id": "rev_other" },
+  });
+  await assert.rejects(provision(), /belongs to another revision; remove the stale Sandbox/);
+  sandboxes.set(name, {
+    ...sandboxes.get(name),
+    annotations: { ...sandboxes.get(name).annotations, "openclaw.dev/revision-id": revision.id },
+  });
+  // A Sandbox on its way out is never adopted as this revision's Harness.
+  for (const [phase, message] of [
+    ["SANDBOX_PHASE_DELETING", /is being deleted; it can be created again once deletion finishes/],
+    ["SANDBOX_PHASE_STOPPED", /has stopped; remove the stale Sandbox/],
+    ["SANDBOX_PHASE_COMPLETED", /has stopped; remove the stale Sandbox/],
+  ]) {
+    sandboxes.set(name, { ...sandboxes.get(name), phase });
+    await assert.rejects(provision(), message);
+  }
+  sandboxes.set(name, { ...sandboxes.get(name), phase: "SANDBOX_PHASE_READY" });
+  services.delete(name);
+  await assert.rejects(provision(), /exists without its Harness service; remove the stale Sandbox/);
+});
+
+test("OpenShell moves a revision's create to a fresh request_id after the gateway refuses the old one", async () => {
+  // OpenShell admits a request_id before running CreateSandbox and leaves it unresolved
+  // forever if the handler errors, so reusing the revision UUID would never provision.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const admissions = new Map();
+  const calls = [];
+  let handlerError;
+  let refuseEverything;
+  let onRefusal;
+  let holdHandler;
+  let nextId = 0;
+  const refused = (reason) => new OpenShellRequestReplayRefusedError(reason, reason);
+  gatewayClient.getSandbox = async ({ name }) => {
+    calls.push(["getSandbox"]);
+    return sandboxes.get(name);
+  };
+  gatewayClient.getServiceUrl = async ({ sandbox }) => {
+    calls.push(["getServiceUrl"]);
+    return sandboxes.get(sandbox)?.serviceUrls[""];
+  };
+  gatewayClient.createSandbox = async (request) => {
+    calls.push(["createSandbox", request.requestId]);
+    const payload = JSON.stringify({ ...request, requestId: undefined });
+    const admitted = admissions.get(request.requestId);
+    let refusal;
+    if (refuseEverything !== undefined) {
+      refusal = refused(refuseEverything);
+    } else if (admitted !== undefined) {
+      if (admitted.payload !== payload) {
+        refusal = refused("REQUEST_ID_PAYLOAD_MISMATCH");
+      } else if (admitted.sandboxId === undefined) {
+        refusal = refused("REQUEST_OUTCOME_UNCERTAIN");
+      } else if (sandboxes.get(request.name)?.id !== admitted.sandboxId) {
+        refusal = refused("REQUEST_REPLAY_UNAVAILABLE");
+      } else {
+        return sandboxes.get(request.name);
+      }
+    }
+    if (refusal !== undefined) {
+      onRefusal?.(request);
+      onRefusal = undefined;
+      throw refusal;
+    }
+    admissions.set(request.requestId, { payload });
+    if (handlerError !== undefined) {
+      const error = handlerError;
+      handlerError = undefined;
+      throw error;
+    }
+    if (holdHandler !== undefined) {
+      const held = holdHandler;
+      holdHandler = undefined;
+      await held;
+    }
+    // OpenShell keeps Sandbox names unique per Workspace.
+    if (sandboxes.has(request.name)) {
+      throw new OpenShellSandboxAlreadyExistsError(request.name);
+    }
+    const sandbox = {
+      id: `sandbox-${nextId++}`,
+      name: request.name,
+      labels: request.labels,
+      annotations: request.annotations,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    admissions.get(request.requestId).sandboxId = sandbox.id;
+    return sandbox;
+  };
+  const driverFor = () =>
+    new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+    });
+  const driver = driverFor();
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000004",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000000004",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const provision = (target = driver) =>
+    target.provisionHarness({
+      ...context,
+      revision,
+      requirements: {
+        loginMode: "api_key",
+        image: "codex-runtime@sha256:synthetic",
+        command: ["codex"],
+        serviceAccountName: "agent-codex",
+        serviceAccountToken: {
+          audience: "openclaw-enterprise",
+          expirationSeconds: 900,
+          mountPath: "/var/run/secrets/openclaw-enterprise",
+          path: "token",
+          readOnly: true,
+        },
+        workspaceMounts: [
+          {
+            claimName: "harness-workspace-codex",
+            subPath: "workspace",
+            mountPath: "/home/node/workspace",
+            readOnly: false,
+          },
+        ],
+        credentialAttachments: [],
+        environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
+        labels: { "openclaw.dev/revision": revision.id },
+      },
+    });
+  const trace = () => {
+    const seen = calls.map(([call, id]) => (id === undefined ? call : `${call}:${id}`));
+    calls.length = 0;
+    return seen;
+  };
+  const id0 = "00000000-0000-4000-8000-000000000004";
+
+  // A create that errors server-side leaves its request_id unresolved.
+  handlerError = new Error("provider 'model' not found");
+  await assert.rejects(provision(), /provider 'model' not found/);
+  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`]);
+
+  // The next pass sees the refusal and no Sandbox, then creates with the next request_id.
+  const first = await provision();
+  const [, refusedCreate, , freshCreate] = trace();
+  assert.equal(refusedCreate, `createSandbox:${id0}`);
+  const id1 = freshCreate.slice("createSandbox:".length);
+  assert.match(id1, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(id1, id0);
+  assert.equal(sandboxes.size, 1);
+
+  // Each failing pass spends at most one new request_id.
+  sandboxes.clear();
+  handlerError = new Error("compute driver unavailable");
+  await assert.rejects(provision(), /compute driver unavailable/);
+  const failed = trace();
+  assert.deepEqual(failed.slice(0, 4), [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    `createSandbox:${id1}`,
+  ]);
+  assert.equal(failed.length, 6);
+  const id2 = failed[5].slice("createSandbox:".length);
+
+  // A restarted controller derives the same request_ids; a deleted Sandbox whose create
+  // succeeded (REQUEST_REPLAY_UNAVAILABLE) is replaced under the next one.
+  const restarted = driverFor();
+  assert.deepEqual(await provision(restarted), first);
+  const recreated = trace();
+  assert.deepEqual(recreated, [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    `createSandbox:${id1}`,
+    "getSandbox",
+    `createSandbox:${id2}`,
+    "getSandbox",
+    recreated[7],
+  ]);
+  assert.equal(sandboxes.size, 1);
+  assert.equal(new Set(recreated.filter((call) => call.startsWith("createSandbox"))).size, 4);
+
+  // The live Sandbox is adopted without any create.
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(trace(), ["getSandbox", "getServiceUrl"]);
+
+  // A refused request_id whose earlier call creates the Sandbox meanwhile is adopted;
+  // no further request_id is tried.
+  sandboxes.clear();
+  onRefusal = (request) => {
+    sandboxes.set(request.name, {
+      id: "sandbox-late",
+      name: request.name,
+      labels: request.labels,
+      annotations: request.annotations,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    });
+  };
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`, "getSandbox", "getServiceUrl"]);
+
+  // Two concurrent passes: the later one is refused the held request_id, advances, and
+  // creates; the held create then loses the name and adopts the same Sandbox.
+  sandboxes.clear();
+  let release;
+  holdHandler = new Promise((resolve) => {
+    release = resolve;
+  });
+  const held = provision();
+  for (let turn = 0; holdHandler !== undefined; turn++) {
+    if (turn === 1000) {
+      assert.fail("the first pass never reached CreateSandbox");
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(await provision(), first);
+  release();
+  assert.deepEqual(await held, first);
+  assert.equal(sandboxes.size, 1);
+  const creates = trace().filter((call) => call.startsWith("createSandbox"));
+  // The held pass walks to request_id X; the other walks the same IDs, is refused X, and
+  // creates under the next one, Y.
+  const walked = (creates.length - 1) / 2;
+  assert.deepEqual(creates.slice(walked, -1), creates.slice(0, walked));
+  assert.equal(new Set(creates).size, walked + 1);
+
+  // The request_ids are bounded; exhausting them never creates a Sandbox.
+  sandboxes.clear();
+  refuseEverything = "REQUEST_OUTCOME_UNCERTAIN";
+  await assert.rejects(provision(), /refused all 16 create request IDs .*deploy a new revision/);
+  const exhausted = trace().filter((call) => call.startsWith("createSandbox"));
+  assert.equal(exhausted.length, 16);
+  assert.equal(new Set(exhausted).size, 16);
+  assert.equal(sandboxes.size, 0);
+  // Every ID refused as unreplayable also points at the gateway's key material.
+  refuseEverything = "REQUEST_REPLAY_UNAVAILABLE";
+  await assert.rejects(provision(), /refused all 16 .*key material is readable/);
+  assert.equal(sandboxes.size, 0);
 });
 
 test("OpenShell rejects Secret-backed Harness environment as a permanent revision failure", async () => {
@@ -592,6 +959,21 @@ test("startup rejects OpenShell network values outside the v0.1 protocol enums",
     }),
     /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/,
   );
+});
+
+test("startup refuses OpenShell filesystem modes that can weaken containment", async (t) => {
+  for (const mode of ["best_effort", "hard-requirement"]) {
+    const configuration = sandboxInstallation();
+    configuration.drivers.sandbox.configuration.policy.landlockCompatibility = mode;
+
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+      }),
+      /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/,
+    );
+  }
 });
 
 test("startup rejects OpenShell network policies without binary identities", async (t) => {

@@ -57,6 +57,7 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import {
   AGENT_NAME_CONFLICT,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
+  DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -763,6 +764,15 @@ function databaseError(error: unknown): Error {
   return error;
 }
 
+/**
+ * pg's client-side `query_timeout` rejects with this code-less error and leaves the statement
+ * running on the connection, so anything queued after it would wait for it. The message comes
+ * from pg/lib/client.js (`query_timeout` handling); recheck it when upgrading pg.
+ */
+function queryAbandonedByClient(error: unknown): boolean {
+  return error instanceof Error && !("code" in error) && error.message === "Query read timeout";
+}
+
 function commitOutcomeUnknown(error: unknown): boolean {
   const code =
     error instanceof DatabaseError && typeof error.code === "string" ? error.code : undefined;
@@ -966,6 +976,28 @@ function validateProvisioningProgressStep(
   if (pendingEffectChanged(current.progress, next)) {
     throw new ScopeViolationError("Agent provisioning pending effects cannot be replaced.");
   }
+}
+
+function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
+  const namespaceId = optionalText(row, "namespace_id");
+  const action = text(row, "action");
+  const resourceKind = text(row, "resource_kind");
+  const resourceId = optionalText(row, "resource_id");
+  if (
+    !PERMISSION_ACTIONS.has(action) ||
+    !RESOURCE_KINDS.has(resourceKind) ||
+    text(row, "effect") !== "deny"
+  ) {
+    throw new DependencyUnavailableError("Persisted IAM restriction is invalid.");
+  }
+  return immutableCopy({
+    id: text(row, "id"),
+    ...(namespaceId === undefined ? {} : { namespaceId }),
+    action: action as Restriction["action"],
+    resourceKind: resourceKind as Restriction["resourceKind"],
+    ...(resourceId === undefined ? {} : { resourceId }),
+    effect: "deny" as const,
+  });
 }
 
 function permissions(value: unknown): readonly Permission[] {
@@ -1189,27 +1221,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       });
     });
 
-    const restrictions = restrictionRows.map((row): Restriction => {
-      const namespaceId = optionalText(row, "namespace_id");
-      const action = text(row, "action");
-      const resourceKind = text(row, "resource_kind");
-      const resourceId = optionalText(row, "resource_id");
-      if (
-        !PERMISSION_ACTIONS.has(action) ||
-        !RESOURCE_KINDS.has(resourceKind) ||
-        text(row, "effect") !== "deny"
-      ) {
-        throw new DependencyUnavailableError("Persisted IAM restriction is invalid.");
-      }
-      return immutableCopy({
-        id: text(row, "id"),
-        ...(namespaceId === undefined ? {} : { namespaceId }),
-        action: action as Restriction["action"],
-        resourceKind: resourceKind as Restriction["resourceKind"],
-        ...(resourceId === undefined ? {} : { resourceId }),
-        effect: "deny",
-      });
-    });
+    const restrictions = restrictionRows.map(restrictionFromRow);
 
     const state = { identities, groups, memberships, roles, bindings, restrictions };
     this.validateIAMState(state, true);
@@ -1543,6 +1555,9 @@ export class PostgresPlatformState implements PlatformStateStore {
     let acknowledged = false;
     let failed = false;
     let discard = false;
+    // A statement the client abandoned (query_timeout) may still run on this connection;
+    // a ROLLBACK would only queue behind it, so the connection is discarded instead.
+    let abandoned = false;
     let unit: PlatformUnitOfWork | undefined;
     try {
       try {
@@ -1554,13 +1569,20 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (transportError !== undefined) {
         throw transportError;
       }
-      await client.query(
-        readOnly
-          ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
-          : readCommitted
-            ? "BEGIN ISOLATION LEVEL READ COMMITTED"
-            : "BEGIN",
-      );
+      try {
+        await client.query(
+          readOnly
+            ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
+            : readCommitted
+              ? "BEGIN ISOLATION LEVEL READ COMMITTED"
+              : "BEGIN",
+        );
+      } catch (error) {
+        // A BEGIN abandoned by a client query timeout may still be in flight on this
+        // connection; every later statement would queue behind it. Never reuse it.
+        discard = true;
+        throw error;
+      }
       started = true;
       if (transportError !== undefined) {
         throw transportError;
@@ -1573,7 +1595,13 @@ export class PostgresPlatformState implements PlatformStateStore {
             if (transportError !== undefined) {
               throw transportError;
             }
-            const result = await client.query(statement, parameters);
+            let result: Awaited<ReturnType<PostgresClient["query"]>>;
+            try {
+              result = await client.query(statement, parameters);
+            } catch (error) {
+              abandoned ||= queryAbandonedByClient(error);
+              throw error;
+            }
             lifetime.assertActive();
             if (transportError !== undefined) {
               throw transportError;
@@ -1626,10 +1654,10 @@ export class PostgresPlatformState implements PlatformStateStore {
       return result;
     } catch (error) {
       failed = true;
-      discard ||= committing || transportError !== undefined;
+      discard ||= committing || transportError !== undefined || abandoned;
       await lifetime.finish();
-      // An uncertain COMMIT or broken transport must not be queried again.
-      if (started && !committing && transportError === undefined) {
+      // An uncertain COMMIT, broken transport or abandoned statement must not be queried again.
+      if (started && !committing && transportError === undefined && !abandoned) {
         try {
           await client.query("ROLLBACK");
         } catch {
@@ -1789,6 +1817,18 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       createNamespace: async (namespace) => {
         await this.requireInitialized(context);
+        // A tombstone keeps its name UNIQUE; say so instead of reporting a live Namespace.
+        const tombstoned = rows(
+          (
+            await client.query(
+              "SELECT EXISTS (SELECT 1 FROM occ.namespaces WHERE name = $1 AND deleted_at IS NOT NULL) AS present",
+              [namespace.name],
+            )
+          ).rows,
+        )[0];
+        if (tombstoned?.present === true) {
+          throw new ResourceStateConflictError(DELETED_NAMESPACE_NAME_CONFLICT);
+        }
         await client.query(
           `INSERT INTO occ.namespaces (id, name, existing_namespace, status, created_at)
            VALUES ($1, $2, $3, $4, $5)`,
@@ -1838,6 +1878,17 @@ export class PostgresPlatformState implements PlatformStateStore {
         )[0];
         return found?.present === true;
       },
+      listConfigurationIds: async (namespaceId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                "SELECT id FROM occ.configurations WHERE namespace_id = $1 ORDER BY created_at, id",
+                [namespaceId],
+              )
+            ).rows,
+          ).map((row) => String(row.id)),
+        ),
       hasPresets: async (namespaceId) => {
         const found = rows(
           (
@@ -2296,6 +2347,26 @@ export class PostgresPlatformState implements PlatformStateStore {
                  WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
                    AND r.admitted_spec #>> '{harness_auth,method}' IN ('api_key', 'codex_pat', 'oauth')
                    AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
+               ) OR EXISTS (
+                 -- A queued or running guided provisioning plan creates its Configuration and
+                 -- Agent from these references later. A failed plan does not block: nothing
+                 -- removes it, and reading or retrying it then names the deleted Secret.
+                 SELECT 1 FROM occ.agent_provisioning_work AS p
+                 WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
+                   AND (
+                     EXISTS (
+                       SELECT 1
+                       FROM jsonb_each(
+                         COALESCE(p.plan #> '{configuration,secretBindings}', '{}'::jsonb)
+                       ) AS binding(env, value)
+                       WHERE binding.value #>> '{source,kind}' = 'secret'
+                         AND binding.value #>> '{source,namespaceId}' = $1
+                         AND binding.value #>> '{source,id}' = $2
+                     ) OR (
+                       p.plan #>> '{harnessAuth,method}' IN ('api_key', 'codex_pat', 'oauth')
+                       AND p.plan #>> '{harnessAuth,source,id}' = $2
+                     )
+                   )
                ) AS present`,
               [namespaceId, secretId],
             )
@@ -2749,6 +2820,14 @@ export class PostgresPlatformState implements PlatformStateStore {
                  WHERE w.namespace_id = $1
                    AND w.state IN ('queued', 'claimed')
                    AND r.admitted_spec #>> '{harness_auth,serviceAccountId}' = $2
+               ) OR EXISTS (
+                 -- A queued or running guided provisioning plan creates its Agent from this
+                 -- account later. A failed plan does not block: nothing removes it, and
+                 -- reading or retrying it then names the deleted ServiceAccount.
+                 SELECT 1 FROM occ.agent_provisioning_work AS p
+                 WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
+                   AND p.plan #>> '{harnessAuth,method}' = 'chatgpt_service_account'
+                   AND p.plan #>> '{harnessAuth,serviceAccountId}' = $2
                ) AS present`,
               [namespaceId, serviceAccountId],
             )
@@ -3312,7 +3391,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         // active -> deleting transition until the policy transaction settles.
         agent:
           "SELECT 1 FROM occ.agents WHERE namespace_id = $1 AND id = $2 AND status = 'active' FOR SHARE",
-        agent_revision: "SELECT 1 FROM occ.agent_revisions WHERE namespace_id = $1 AND id = $2",
+        // A revision of a deleting Agent is removed with it, so it admits no new binding.
+        agent_revision: `SELECT 1 FROM occ.agent_revisions AS r
+           JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+           WHERE r.namespace_id = $1 AND r.id = $2 AND a.status = 'active'
+           FOR SHARE OF a`,
         configuration:
           "SELECT 1 FROM occ.configurations WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
         preset: "SELECT 1 FROM occ.presets WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
@@ -3405,6 +3488,23 @@ export class PostgresPlatformState implements PlatformStateStore {
             ).rows,
           ).map(accessBindingFromRow),
         ),
+      // Not Namespace-scoped: the Agent deletion finalizer's DELETE is not either, and an
+      // Installation Restriction (no Namespace) may name a Namespace resource.
+      listRestrictionsTargeting: async (resourceKind, resourceIds) =>
+        Object.freeze(
+          resourceIds.length === 0
+            ? []
+            : rows(
+                (
+                  await client.query(
+                    `SELECT id, namespace_id, action, resource_kind, resource_id, effect
+                     FROM occ.iam_restrictions
+                     WHERE resource_kind = $1 AND resource_id = ANY($2::text[]) ORDER BY id`,
+                    [resourceKind, [...resourceIds]],
+                  )
+                ).rows,
+              ).map(restrictionFromRow),
+        ),
       getAccessBinding: async (namespaceId, bindingId) => {
         const found = rows(
           (
@@ -3437,6 +3537,15 @@ export class PostgresPlatformState implements PlatformStateStore {
         // Same subject rule as the in-memory adapter: a human without a Namespace, a
         // non-Agent ServicePrincipal of the exact Namespace, or the ServicePrincipal of a
         // live Agent there. The Agent owner key is deferred, so it cannot vouch mid-unit.
+        // Deleting the Agent removes bindings for its ServicePrincipal, so SHARE fences
+        // the active -> deleting transition until this policy transaction settles (the
+        // Namespace lock above already serializes with deletion; this keeps the fence
+        // local to the Agent row, as lockTarget does for Agent targets).
+        await client.query(
+          `SELECT 1 FROM occ.agents
+           WHERE namespace_id = $1 AND service_principal_id = $2 FOR SHARE`,
+          [namespace.id, binding.subjectId],
+        );
         const identity = await client.query(
           `SELECT 1 FROM occ.iam_identities AS i
            WHERE i.id = $2 AND (
@@ -3445,7 +3554,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                i.agent_id IS NULL OR EXISTS (
                  SELECT 1 FROM occ.agents AS a
                  WHERE a.namespace_id = $1 AND a.id = i.agent_id
-                   AND a.service_principal_id = i.id
+                   AND a.service_principal_id = i.id AND a.status = 'active'
                )
              ))
            )`,
@@ -4182,6 +4291,24 @@ export class PostgresPlatformState implements PlatformStateStore {
             throw new ResourceConflictError("The Agent provisioning work is not retryable.");
           }
           return provisioningRecordFromRow(retried[0]);
+        },
+        releaseConfiguration: async (namespaceId, configurationId) => {
+          const released = await client.query(
+            `UPDATE occ.agent_provisioning_work AS provisioning
+             SET configuration_id = NULL,
+                 updated_at = clock_timestamp()
+             WHERE provisioning.namespace_id = $1
+               AND provisioning.configuration_id = $2
+               AND provisioning.status = 'succeeded'
+               AND NOT EXISTS (
+                 SELECT 1 FROM occ.agents AS agent
+                 WHERE agent.namespace_id = provisioning.namespace_id
+                   AND agent.id = provisioning.agent_id
+                   AND agent.configuration_id = provisioning.configuration_id
+               )`,
+            [namespaceId, configurationId],
+          );
+          return released.rowCount === 1;
         },
       },
       audit: {

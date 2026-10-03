@@ -252,6 +252,26 @@ test("native pre-push uses the exact pinned binding and actual destination", asy
     (await invoke({ OCE_REPOSITORY_REF: "restricted" }, "/unmanaged/local/repository")).code,
     0,
   );
+  // Git writes an object-name source verbatim, spaces included; refnames have none.
+  const relative = (ref) =>
+    "HEAD@{1 hour ago} " + "1".repeat(40) + " " + ref + " " + "0".repeat(40) + "\n";
+  await writeFile(inputFile, relative("refs/heads/agent/topic"));
+  assert.equal((await invoke({ OCE_REPOSITORY_REF: "permitted" })).code, 0);
+  await writeFile(inputFile, relative("refs/heads/main"));
+  const relativeDenied = await invoke({ OCE_REPOSITORY_REF: "permitted" });
+  assert.equal(relativeDenied.code, 1);
+  assert.equal(relativeDenied.stderr, "repository-push-ref-not-allowed\n");
+  // Fields forged inside the source cannot stand in for the actual remote ref.
+  await writeFile(
+    inputFile,
+    relative("refs/heads/main").replace(
+      "HEAD@{1 hour ago}",
+      "x " + "1".repeat(40) + " refs/heads/agent/topic " + "0".repeat(40),
+    ),
+  );
+  const forged = await invoke({ OCE_REPOSITORY_REF: "permitted" });
+  assert.equal(forged.code, 1);
+  assert.equal(forged.stderr, "repository-push-ref-not-allowed\n");
   // Invalid hook input is an inspection failure, not an ordinary policy denial.
   await writeFile(inputFile, "malformed input\n");
   const malformed = await invoke({ OCE_REPOSITORY_REF: "permitted" });

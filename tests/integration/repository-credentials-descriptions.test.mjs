@@ -64,6 +64,30 @@ async function waitForRevocation(github) {
   }
 }
 
+// Each lookup retires its token through a short-lived service whose shutdown
+// grace runs on the fixture clock. The provider marks the token revoked before
+// that service reads the reply, so advance the clock only after the shutdown has
+// cancelled its grace timer; an earlier jump expires the grace and blocks lookups.
+// No other timer on that clock outlives a lookup, so none pending means it finished.
+async function waitForRetiredLookup(github, clock) {
+  await waitForRevocation(github);
+  const deadline = Date.now() + 5000;
+  while (clock.pendingTimers() !== 0) {
+    if (Date.now() >= deadline) {
+      throw new Error("metadata lookup shutdown did not finish");
+    }
+    await delay(10);
+  }
+}
+
+function within(promise, message) {
+  let timer;
+  const deadline = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), 5000);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 async function settled(socketPath, payload) {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
@@ -179,8 +203,7 @@ test("protected metadata lookup restricts scope, caches descriptions, and retire
   await settled(socket, payload);
   assert.equal(fixture.byRef.get("repo-a").github.issuesOfTokens.length, 1);
   const github = fixture.byRef.get("repo-a").github;
-  await waitForRevocation(github);
-  await delay(50);
+  await waitForRetiredLookup(github, fixture.clock);
   // A provider access change must stop being masked by this display cache after five minutes.
   await fixture.clock.advance(5 * 60_000 + 1);
   const refresh = await descriptions(socket, payload);
@@ -215,6 +238,8 @@ test("shutdown cancels an active metadata read and retires its issued token", as
   const gate = new Promise((resolve) => {
     release = resolve;
   });
+  const readStarted = Promise.withResolvers();
+  const readClosed = Promise.withResolvers();
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
     gateway: { listen: "127.0.0.1:0" },
@@ -224,7 +249,11 @@ test("shutdown cancels an active metadata read and retires its issued token", as
         repository: "fixture/repository",
         repositoryId: "73",
         description: "Slow metadata",
-        beforeMetadataResponse: () => gate,
+        beforeMetadataResponse: ({ response }) => {
+          response.once("close", readClosed.resolve);
+          readStarted.resolve();
+          return gate;
+        },
       },
     ],
   });
@@ -234,22 +263,16 @@ test("shutdown cancels an active metadata read and retires its issued token", as
   });
   assert.equal(initial.body.pending, true);
   const github = fixture.byRef.get("repo-a").github;
-  const deadline = Date.now() + 5000;
-  while (
-    !github.trace.some(
-      (entry) => entry.method === "GET" && entry.target === "/repos/fixture/repository",
-    )
-  ) {
-    if (Date.now() >= deadline) {
-      throw new Error("metadata read did not start");
-    }
-    await delay(20);
-  }
+  await within(readStarted.promise, "metadata read did not start");
   // The caller can disappear while the provider has already issued a token.
-  // Closing the owning service must abort the read and revoke that token.
+  // Closing the owning service must abort the read and revoke that token. The
+  // provider still holds its reply, so only that abort can close the read.
   const closing = fixture.close();
-  await delay(20);
-  release();
+  try {
+    await within(readClosed.promise, "shutdown did not abort the metadata read");
+  } finally {
+    release();
+  }
   await closing;
   assert.equal(github.tokenState()[0].revoked, true);
 });
@@ -282,8 +305,7 @@ test("missing and temporarily unavailable descriptions do not block selection", 
   assert.equal(github.issuesOfTokens.length, 1);
   await settled(socket, payload);
   assert.equal(github.issuesOfTokens.length, 1);
-  await waitForRevocation(github);
-  await delay(50);
+  await waitForRetiredLookup(github, fixture.clock);
   // Transient errors enter a bounded cooldown; a later request can recover.
   await fixture.clock.advance(60_001);
   const retried = await settled(socket, payload);

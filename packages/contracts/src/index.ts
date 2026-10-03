@@ -332,6 +332,16 @@ export interface CredentialWithdrawal {
   readonly lastAttemptAt?: string;
 }
 
+/**
+ * A withdrawal as the API reports it. `withdrawalInProgress` is true while an attempt is queued
+ * or running. A `pending` withdrawal without one has no attempt queued (attempts ran out or a
+ * permanent failure ended them): nothing retries it until the withdraw request is sent again,
+ * or revision maintenance, where Compute or repository credentials schedule it, queues one.
+ */
+export interface CredentialWithdrawalStatus extends CredentialWithdrawal {
+  readonly withdrawalInProgress: boolean;
+}
+
 export type HarnessAuthBinding =
   | { readonly method: "api_key"; readonly source: SecretReference }
   | { readonly method: "codex_pat"; readonly source: SecretReference }
@@ -1078,6 +1088,16 @@ export interface IAMPolicyReadRepository {
     namespaceId: string,
     bindingId: string,
   ): Promise<Readonly<AccessBinding> | undefined>;
+  /**
+   * Lists the deny Restrictions on these exact resources in every scope (Installation and
+   * Namespace), as deleting the resources removes them. A store that keeps no Restrictions
+   * (the in-memory one; its IAM driver seed holds them and no deletion removes them)
+   * returns none.
+   */
+  listRestrictionsTargeting(
+    resourceKind: ResourceKind,
+    resourceIds: readonly string[],
+  ): Promise<readonly Readonly<Restriction>[]>;
 }
 
 export interface IAMPolicyRepository extends IAMPolicyReadRepository {
@@ -1352,11 +1372,23 @@ export interface PluginDeploymentWarning {
   readonly pluginId: string;
 }
 
+/**
+ * Why a runtime startup model check failed, classified by the runtime from a
+ * closed vocabulary. It never carries native output, provider responses or
+ * credentials: `detail` is a short token such as `exit-1` or `rate_limit`.
+ */
+export interface RuntimeFailureCause {
+  readonly kind: "PROCESS_EXIT" | "PROBE_STATUS" | "INVALID_OUTPUT" | "WRAPPER_ERROR";
+  readonly detail?: string;
+}
+
 export interface RuntimeFailureEvidence {
   readonly component: string;
   readonly check: string;
   readonly checkedAt: string;
   readonly code: string;
+  /** Present only with code MODEL_PROBE_FAILED. */
+  readonly cause?: RuntimeFailureCause;
 }
 
 /**

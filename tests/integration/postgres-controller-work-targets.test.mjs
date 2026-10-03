@@ -1,16 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "PostgreSQL controller work requires exactly one complete target shape",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-  },
+  requiresPostgres,
   async (context) => {
     const { Client } = await import("pg");
     const client = new Client({ connectionString: databaseUrl });

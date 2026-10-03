@@ -33,6 +33,7 @@ import {
   ResourceStateConflictError,
   RuntimeLogsError,
   ScopeViolationError,
+  SecretBindingValidationError,
   SecretValueError,
 } from "../../packages/occ/src/index.ts";
 
@@ -111,6 +112,35 @@ const cases = [
     },
   ],
   [
+    "a non-empty Namespace names the remaining resource IDs that fit and counts the rest",
+    new NamespaceNotEmptyError(
+      ["Agents", "Configurations", "Secrets", "pending Agent provisioning"],
+      {
+        Agents: [],
+        Configurations: Array.from({ length: 12 }, (_, index) => `cfg_${String(index).repeat(36)}`),
+        Secrets: ["sec_1"],
+      },
+    ),
+    {
+      status: 409,
+      code: "NAMESPACE_NOT_EMPTY",
+      message: `The requested Namespace is not empty. It still contains: Agents, Configurations (${["0", "1"].map((digit) => `cfg_${digit.repeat(36)}`).join(", ")} and 10 more), Secrets (sec_1), pending Agent provisioning.`,
+    },
+  ],
+  [
+    "a non-empty Namespace with many Agents still names its Configurations",
+    new NamespaceNotEmptyError(["Agents", "Configurations"], {
+      Agents: Array.from({ length: 5 }, (_, index) => `agt_${String(index).repeat(36)}`),
+      Configurations: [`cfg_${"5".repeat(36)}`, `cfg_${"6".repeat(36)}`],
+    }),
+    {
+      status: 409,
+      code: "NAMESPACE_NOT_EMPTY",
+      // IDs are taken one per kind in turn, so Agents cannot use up the whole message.
+      message: `The requested Namespace is not empty. It still contains: Agents (agt_${"0".repeat(36)}, agt_${"1".repeat(36)} and 3 more), Configurations (cfg_${"5".repeat(36)} and 1 more).`,
+    },
+  ],
+  [
     "a non-empty Namespace with unnamed contents",
     new NamespaceNotEmptyError(),
     { status: 409, code: "NAMESPACE_NOT_EMPTY", message: "The requested Namespace is not empty." },
@@ -172,6 +202,15 @@ const cases = [
       status: 400,
       code: "INVALID_REQUEST",
       message: "The Configuration does not select a supported Harness.",
+    },
+  ],
+  [
+    "an invalid requested Secret binding",
+    new SecretBindingValidationError("Secret references cannot cross Namespaces."),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "Secret references cannot cross Namespaces.",
     },
   ],
   [

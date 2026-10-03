@@ -2,8 +2,11 @@ import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@opencla
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 import { ScopeViolationError } from "../errors.ts";
+import { runtimeFailureCause } from "../runtime-failure-cause.ts";
 
-export type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
+export { runtimeFailureCause };
+
+export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
 
@@ -88,6 +91,11 @@ export function deploymentProgressForWork(
     case "LEASE_EXPIRED":
       code = attempt.code;
       message = "The previous worker claim expired. Reconciliation will resume.";
+      break;
+    case "ACTIVE_REVISION_RECOVERY":
+      code = attempt.code;
+      message =
+        "The previous worker claim expired after this version was published. The controller will finish activating it.";
       break;
   }
   return Object.freeze({
@@ -266,8 +274,9 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
   }
   const evidence = value as Partial<RuntimeFailureEvidence>;
   const keys = Object.keys(evidence);
+  const hasCause = keys.includes("cause");
   if (
-    keys.length !== 4 ||
+    keys.length !== (hasCause ? 5 : 4) ||
     !keys.includes("component") ||
     !keys.includes("check") ||
     !keys.includes("checkedAt") ||
@@ -279,11 +288,17 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
   if (typeof checkedAt !== "string" || !validIsoTimestamp(checkedAt)) {
     throw new ScopeViolationError("Runtime failure evidence requires an ISO timestamp.");
   }
+  const code = validateRuntimeFailureIdentifier(evidence.code, "Runtime failure code");
+  const cause = hasCause ? runtimeFailureCause(evidence.cause) : undefined;
+  if (hasCause && (cause === undefined || code !== "MODEL_PROBE_FAILED")) {
+    throw new ScopeViolationError("Runtime failure cause is invalid.");
+  }
   return Object.freeze({
     component: validateRuntimeFailureIdentifier(evidence.component, "Runtime failure component"),
     check: validateRuntimeFailureIdentifier(evidence.check, "Runtime failure check"),
     checkedAt,
-    code: validateRuntimeFailureIdentifier(evidence.code, "Runtime failure code"),
+    code,
+    ...(cause === undefined ? {} : { cause }),
   });
 }
 
@@ -314,12 +329,34 @@ export function validateFailureData(
       );
     }
     const runtimeFailure = (data as { readonly runtimeFailure?: unknown }).runtimeFailure;
+    const evidence =
+      runtimeFailure === undefined ? undefined : validateRuntimeFailureEvidence(runtimeFailure);
+    if (evidence?.cause !== undefined) {
+      throw new ScopeViolationError("Convergence deadline failure data cannot carry a cause.");
+    }
     return Object.freeze({
       timeoutMs,
-      ...(runtimeFailure === undefined
-        ? {}
-        : { runtimeFailure: validateRuntimeFailureEvidence(runtimeFailure) }),
+      ...(evidence === undefined ? {} : { runtimeFailure: evidence }),
     });
+  }
+  if (reasonCode === "RUNTIME_MODEL_PROBE_FAILED") {
+    // The held model-probe failure that ended the deployment, with its cause.
+    if (
+      typeof data !== "object" ||
+      data === null ||
+      Array.isArray(data) ||
+      Object.keys(data).length !== 1 ||
+      !Object.hasOwn(data, "runtimeFailure")
+    ) {
+      throw new ScopeViolationError("Model probe failure data has unsupported fields.");
+    }
+    const evidence = validateRuntimeFailureEvidence(
+      (data as { readonly runtimeFailure: unknown }).runtimeFailure,
+    );
+    if (evidence.code !== "MODEL_PROBE_FAILED") {
+      throw new ScopeViolationError("Model probe failure data requires its runtime failure.");
+    }
+    return Object.freeze({ runtimeFailure: evidence });
   }
   throw new ScopeViolationError("Controller work failure data is not allowed for this code.");
 }
@@ -460,6 +497,8 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment runtime failed a startup check.";
     case "REVISION_SUPERSEDED":
       return "Deployment was superseded by a newer revision.";
+    case "REVISION_STOPPED":
+      return "Deployment ended because the Agent was stopped.";
     case "AGENT_GATEWAY_UNAVAILABLE":
       return "The Agent Gateway was still not reachable through its route at the deployment deadline.";
     case "KUBERNETES_API_UNAVAILABLE":

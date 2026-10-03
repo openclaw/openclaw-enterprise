@@ -81,9 +81,10 @@ export function validRuntimeLogFrontierTime(value: unknown): value is string {
   );
 }
 
-function frontierTimeKey(value: string): string {
-  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value)!;
-  return `${match[1]}.${(match[2] ?? "").padEnd(9, "0")}Z`;
+/** Kubelet RFC 3339 times trim trailing zeros; pad the fraction before comparing. */
+export function runtimeLogTimeKey(value: string): string {
+  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
+  return match === null ? value : `${match[1]}.${(match[2] ?? "").padEnd(9, "0")}Z`;
 }
 
 function position(value: unknown): RuntimeLogCursorPosition | undefined {
@@ -110,7 +111,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
         (record.pt !== null &&
           (!validRuntimeLogFrontierTime(record.pt) ||
             !validRuntimeLogFrontierTime(record.t) ||
-            frontierTimeKey(record.pt) !== frontierTimeKey(record.t)))))
+            runtimeLogTimeKey(record.pt) !== runtimeLogTimeKey(record.t)))))
   ) {
     return undefined;
   }

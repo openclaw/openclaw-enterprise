@@ -411,6 +411,8 @@ function failureDiagnostic(error) {
       "cross-tenant Agent traffic",
       "same-tenant Agent-to-Agent traffic",
       "gateway-to-candidate Agent traffic",
+      "same-tenant gateway-to-Agent traffic",
+      "cross-tenant gateway-to-Agent traffic",
     ].includes(diagnostic.stage)
       ? { kind: "network-policy", stage: diagnostic.stage }
       : undefined;

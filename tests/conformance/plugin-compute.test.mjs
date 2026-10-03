@@ -67,8 +67,8 @@ function pluginAppServerToken(baseToken, revisionId, startupId) {
     .digest("hex");
 }
 
-async function waitForCondition(description, condition) {
-  const deadline = Date.now() + 1_000;
+async function waitForCondition(description, condition, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await condition();
     if (result !== undefined && result !== false) {
@@ -2669,6 +2669,31 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
       path: "openclaw/runtime/status",
     },
   ]);
+
+  // A model-probe cause crosses the runtime boundary only inside its closed
+  // vocabulary. Anything else is dropped and the failure code still stands.
+  const reports = [
+    [{ kind: "PROBE_STATUS", detail: "rate_limit" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "WRAPPER_ERROR" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "PROCESS_EXIT", detail: "exit-1" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "PROBE_STATUS", detail: "sk-fixture-credential" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROCESS_EXIT", detail: "HTTP 404 model not found" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "WRAPPER_ERROR", detail: "json" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROVIDER_SAID", detail: "format" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROBE_STATUS", detail: "format", text: "raw" }, "MODEL_PROBE_FAILED", false],
+    ["PROBE_STATUS", "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROBE_STATUS", detail: "format" }, "AUTHENTICATION_FAILED", false],
+  ];
+  for (const [cause, code, kept] of reports) {
+    failure.code = code;
+    failure.cause = cause;
+    const evidence = await driver.safeRuntimeFailureObservation(candidate, {
+      name: namespace,
+      plane: "execution",
+    });
+    const { cause: _reported, ...withoutCause } = failure;
+    assert.deepEqual(evidence, kept ? failure : withoutCause, `${code} ${JSON.stringify(cause)}`);
+  }
 });
 
 test("gateway runtime status maps native Slack channel status without provider data", async () => {
@@ -2979,16 +3004,19 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "tool output followed by timeout is not retried",
+      cause: { kind: "PROBE_STATUS", detail: "tool-event" },
       probeError: "ETIMEDOUT",
       events: [started, { type: "item.completed", item: { type: "command_execution" } }],
     },
     {
       name: "rejection followed by timeout is not retried",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       probeError: "ETIMEDOUT",
       events: [{ type: "error", message: "authentication rejected" }],
     },
     {
       name: "malformed output followed by timeout is not retried",
+      cause: { kind: "INVALID_OUTPUT", detail: "json" },
       probeError: "ETIMEDOUT",
       probeOutput: "not-json",
     },
@@ -3003,8 +3031,21 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       probeTimeouts: 2,
       failureCode: "MODEL_PROBE_TIMEOUT",
     },
-    { name: "external SIGKILL is not a timeout or retried", probeSignal: "SIGKILL" },
-    { name: "malformed model output is not retried", probeOutput: "not-json" },
+    {
+      name: "external SIGKILL is not a timeout or retried",
+      probeSignal: "SIGKILL",
+      cause: { kind: "PROCESS_EXIT", detail: "signal-SIGKILL" },
+    },
+    {
+      name: "malformed model output is not retried",
+      probeOutput: "not-json",
+      cause: { kind: "INVALID_OUTPUT", detail: "json" },
+    },
+    {
+      name: "non-event model output is not retried",
+      probeOutput: "null",
+      cause: { kind: "INVALID_OUTPUT", detail: "shape" },
+    },
     { name: "failed login", loginStatus: 1 },
     {
       name: "API-key login timeout is not retried",
@@ -3066,10 +3107,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "fatal top-level error despite assistant output",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [started, assistant, { type: "error", message: "authentication failed" }, completed],
     },
     {
       name: "reconnecting error with auth marker remains fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [
         started,
         {
@@ -3096,10 +3139,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "reconnecting error after completed turn remains fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [started, assistant, completed, recoveredStreamError],
     },
     {
       name: "reconnecting error before the turn starts remains fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [recoveredStreamError, started, assistant, completed],
     },
     ...[
@@ -3120,9 +3165,11 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     ].map(([description, message]) => ({
       name: `reconnecting error ${description} remains fatal`,
       events: [started, { type: "error", message }, assistant, completed],
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
     })),
     {
       name: "unbounded reconnecting errors remain fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [
         started,
         ...Array.from({ length: 11 }, () => recoveredStreamError),
@@ -3132,6 +3179,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "failed turn",
+      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
       events: [
         started,
         assistant,
@@ -3157,15 +3205,36 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "provider server error is not an authentication failure",
+      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
       events: [
         started,
         { type: "turn.failed", error: { message: "unexpected status 503 Service Unavailable" } },
       ],
       probeStatus: 1,
     },
-    { name: "completed turn without visible assistant", events: [started, advisory, completed] },
+    {
+      name: "completed turn without visible assistant",
+      events: [started, advisory, completed],
+      cause: { kind: "PROBE_STATUS", detail: "no-reply" },
+    },
+    {
+      // Provider text that echoes the credential never reaches the cause.
+      name: "provider text in a failed turn stays out of the cause",
+      events: [
+        started,
+        {
+          type: "turn.failed",
+          error: {
+            message: "unexpected status 400 Bad Request: model rejected for fixture-api-key",
+          },
+        },
+      ],
+      probeStatus: 1,
+      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+    },
     {
       name: "tool event despite completed assistant turn",
+      cause: { kind: "PROBE_STATUS", detail: "tool-event" },
       events: [
         started,
         {
@@ -3178,6 +3247,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "nonzero native exit despite completed assistant turn",
+      cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
       events: [started, assistant, completed],
       probeStatus: 1,
     },
@@ -3421,6 +3491,17 @@ test("Codex runtime gates startup and readiness on a successful native authentic
             scenario.failureCode ?? (loginFailed ? "LOGIN_FAILED" : "MODEL_PROBE_FAILED"),
           );
           assert.match(runtimeStatus.runtimeFailure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
+          // Only a failed model probe carries a cause: a closed kind and a fixed
+          // token, never native output, provider text or the credential.
+          if (runtimeStatus.runtimeFailure.code === "MODEL_PROBE_FAILED") {
+            assert.ok(scenario.cause, "every model-probe failure scenario names its cause");
+          }
+          assert.deepEqual(runtimeStatus.runtimeFailure.cause, scenario.cause);
+          assert.deepEqual(probeDiagnostics.at(-1)?.cause, scenario.cause);
+          assert.doesNotMatch(
+            JSON.stringify(runtimeStatus) + JSON.stringify(probeDiagnostics),
+            /fixture-api-key|at-fixture-token|Bad Request|Unauthorized|Unavailable|Reconnecting/,
+          );
         }
       } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -3754,6 +3835,7 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
     },
     peerAvailable: true,
     serving: true,
+    readinessProbes: [],
     children: [],
     exits: [],
     intervals: [],
@@ -3800,7 +3882,9 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
   const gatewayPort = await listen((request, response) => {
     assert.equal(request.url, "/readyz");
     const live = fixture.children.at(-1);
-    response.writeHead(fixture.serving && live?.exited === undefined ? 200 : 503).end();
+    const status = fixture.serving && live?.exited === undefined ? 200 : 503;
+    fixture.readinessProbes.push({ child: fixture.children.length, status });
+    response.writeHead(status).end();
   });
   fixture.gatewayPort = gatewayPort;
   const sandbox = {
@@ -3970,8 +4054,15 @@ test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness 
     second.config.plugins.entries.codex.config.codexPlugins.plugins.linear.enabled,
     true,
   );
-  // Spawned but not yet serving: still unready.
-  await new Promise((resolve) => setTimeout(resolve, 700));
+  // Spawned but not yet serving: still unready. The second refused probe shows
+  // that the supervisor handled the first one and kept waiting.
+  await waitForCondition(
+    "two refused readiness probes of the respawned Gateway",
+    () =>
+      gateway.readinessProbes.filter(({ child, status }) => child === 2 && status === 503).length >=
+      2,
+    10_000,
+  );
   assert.equal(gateway.status().phase, "starting");
 
   gateway.serving = true;

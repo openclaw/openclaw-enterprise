@@ -931,6 +931,7 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
   assert.deepEqual(enabledRuntime.defaultPresets.map((preset) => preset.name).sort(), [
     "Standard Codex",
     "Standard OpenClaw",
+    "default-codex",
   ]);
   for (const presets of [
     { includeDefaults: "true" },

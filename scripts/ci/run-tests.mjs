@@ -771,13 +771,19 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
 
   await writeSummary(resultsPath, summary);
   logFailures(files);
+  logIssues(allIssues);
   return summary.exitCode;
+}
+
+// One job-log line per entry: a newline in a message or name cannot start a new
+// line (or a workflow command) of its own.
+function oneLine(text) {
+  return (text ?? "").trim().replace(/\s*\n\s*/gu, " | ");
 }
 
 // The job log keeps every attempt, so name each failure there as well. The
 // reporter has already bounded and redacted the message.
 function logFailures(files) {
-  const oneLine = (text) => (text ?? "").trim().replace(/\s*\n\s*/gu, " | ");
   for (const file of files) {
     const failures = file.tests.filter((testCase) => testCase.status === "failed");
     if (file.fileFailure) {
@@ -790,6 +796,18 @@ function logFailures(files) {
         `run-tests: failed ${file.path}${at ? `:${at}` : ""} ${JSON.stringify(name)}${message ? `: ${message}` : ""}${error?.frame ? ` (${oneLine(error.frame)})` : ""}\n`,
       );
     }
+  }
+}
+
+// A lane can fail on runner issues alone, with every test passing: an expected
+// test that did not run, a file that hit the runner timeout, an unexpected skip.
+// Name those in the job log too. Issue messages are built by the runner from
+// manifest entries, paths and test names, never from test output.
+function logIssues(issues) {
+  for (const { code, message, file } of issues) {
+    process.stderr.write(
+      `run-tests: issue ${code}${file ? ` ${file}` : ""}: ${oneLine(message)}\n`,
+    );
   }
 }
 

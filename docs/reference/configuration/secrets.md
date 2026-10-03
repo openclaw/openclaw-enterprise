@@ -38,7 +38,11 @@ use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 authentication destinations are reserved for `harnessAuth`.
 
 OCC rejects cross-Namespace references and missing or foreign backend objects
-even if IAM would otherwise allow the operation. Creating or updating a
+even if IAM would otherwise allow the operation. When a Configuration write or Agent
+provisioning submits bindings, a reserved or invalid destination or a Secret
+reference to another Namespace fails with `400 INVALID_REQUEST` and a message
+naming the rule; so does an Agent `harnessAuth` source in another Namespace. A
+reference to a Secret the Namespace does not hold fails with `404`. Creating or updating a
 Configuration whose resulting document contains bindings requires the normal
 Configuration mutation permission and `operate` on every selected Secret,
 including retained bindings when PATCH omits `secretBindings`. Creating or
@@ -85,10 +89,10 @@ operator-provided ingress and remains unverified end to end.
 providers. The recognized native channel configurations consume these
 gateway-only credential values:
 
-| Provider  | Gateway Secret keys                     |
-| --------- | --------------------------------------- |
-| `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` |
-| `msteams` | `MSTEAMS_APP_PASSWORD`                  |
+| Provider  | Gateway Secret keys                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------------------- |
+| `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` for the default account; account-specific keys for named accounts |
+| `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
 Every environment SecretRef used by an enabled native channel must have a
 matching `secretBindings` entry before deployment admission. Disabled channel
@@ -112,6 +116,39 @@ Add a native default Slack account with environment SecretRefs:
   }
 }
 ```
+
+Give each named account under `channels.slack.accounts` its own environment
+names, such as `SLACK_WORK_APP_TOKEN` and `SLACK_WORK_BOT_TOKEN`, with a
+matching `secretBindings` entry for each:
+
+```json
+{
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "mode": "socket",
+      "accounts": {
+        "work": {
+          "appToken": { "source": "env", "provider": "default", "id": "SLACK_WORK_APP_TOKEN" },
+          "botToken": { "source": "env", "provider": "default", "id": "SLACK_WORK_BOT_TOKEN" },
+          "dmPolicy": "allowlist",
+          "allowFrom": ["U0123456789"]
+        }
+      }
+    }
+  }
+}
+```
+
+With named accounts, remove any `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`
+bindings unless you also want a top-level default account (or name an account
+`default`). OpenClaw reads those two names from the gateway environment as an
+implicit `default` account. That account opens a second Socket Mode connection,
+receives a share of the Slack app's events, and applies the top-level
+`channels.slack` policy (`dmPolicy`, `allowFrom`) instead of the named account's
+restrictions. The console's Slack editor handles only the default account; for
+named accounts its Credentials tab checks the keys the document references, and
+you bind them through the Configuration API.
 
 The console's new Slack setup and bundled Slack Presets set
 `channels.slack.replyToModeByChatType.channel: "all"`, which threads channel

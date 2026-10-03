@@ -9,6 +9,7 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { RuntimeLogsForbiddenByClusterError } from "../../packages/occ/src/index.ts";
+import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogComputeDriver,
   createRuntimeLogFixture,
@@ -665,13 +666,18 @@ test("sandbox sanitization stays linear on hostile 32 KiB OCSF lines", async () 
     `PROC:LAUNCH [INFO] a(1) [cmd:vault login ${"a ".repeat(size / 2)}]`,
     `PROC:LAUNCH [INFO] a(1) ${"-u -p ".repeat(size / 6)}`,
   ];
+  const budgetMs = 250;
   for (const message of hostile) {
-    const started = performance.now();
-    const { records } = sanitizeSandboxLogLines({ source: "sandbox", sandbox: "sb-1" }, [
-      sandboxLine(1, message),
-    ]);
-    const elapsed = performance.now() - started;
+    let records;
+    const elapsed = cpuTimeMs(
+      () => {
+        ({ records } = sanitizeSandboxLogLines({ source: "sandbox", sandbox: "sb-1" }, [
+          sandboxLine(1, message),
+        ]));
+      },
+      { budgetMs },
+    );
     assert.equal(records.length, 1);
-    assert.ok(elapsed < 250, `${message.slice(0, 24)} took ${elapsed.toFixed(0)} ms`);
+    assert.ok(elapsed < budgetMs, `${message.slice(0, 24)} took ${elapsed.toFixed(0)} ms of CPU`);
   }
 });

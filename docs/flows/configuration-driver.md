@@ -124,7 +124,10 @@ Agent dependency conflict with `409`, and unavailable IAM or storage with
 `503`. OpenClaw resolves inline SecretRefs at runtime; Configuration CRUD
 preserves them in `values`. OCC separately authorizes `operate` on each Secret
 selected by `secretBindings`, including retained bindings when PATCH omits the
-field. Omission preserves bindings; `{}` clears them. The
+field. Omission preserves bindings; `{}` clears them. A submitted binding with a
+reserved or invalid destination, or a Secret reference to another Namespace, fails
+with `400 INVALID_REQUEST` and a message naming the rule; a Secret the Namespace
+does not hold stays `404`. The
 [Configuration reference](../reference/configuration/secrets.md#secret-bindings) owns
 the binding contract, and the [Secret flow](secret-storage-and-delivery.md)
 traces storage and delivery. Secret Broker substitution remains unimplemented.
@@ -179,6 +182,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 16:30: Configuration writes reject reserved binding destinations and cross-Namespace Secret references as invalid requests instead of not-found, as provisioning does. (binding-400)
 
 - 2026-09-23 13:13: Align provisioning Configuration creation and recovery with canonical CP storage. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
 

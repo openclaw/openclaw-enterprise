@@ -1,4 +1,4 @@
-ARG OPENCLAW_COMMIT=9d9c8568c51e340540f634f71bd7c7582a70debc
+ARG OPENCLAW_COMMIT=6f91eda9c72d6b4c2640cb76b5a753e64089f6f2
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
@@ -38,7 +38,7 @@ FROM ${NODE_BASE_IMAGE} AS openclaw-source
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-29T15:00:01Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-30T23:05:21Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -46,12 +46,12 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo '175260a3e26e6de4c1225ff27d8c2b17b01b700640db915a8bac9ee3d4cf903f  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    echo '8e0f0332bbdb798834148895d57c19e6b622dbb3b5eac39801c14c316ad93d0c  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
-RUN echo '705b21a67f344de66a5468a07b35f6fec01635331d99cb85d9254c56bccc0c7d  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
+RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw `connect --ephemeral` accepts an expired
 # replayed setup code for a node whose saved device token can reconnect.
@@ -68,7 +68,7 @@ RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-29T15:00:01Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-30T23:05:21Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./

@@ -88,6 +88,8 @@ Restrictions. OCC activates the revision only after that containment is
 ready. `SandboxDriver` does not provision workloads, own resources, select
 another identity, grant permissions, or replace an Agent's gateway.
 
+<a id="drivers-and-providers"></a>
+
 ## Drivers and Backends
 
 A **Driver** is the common integration boundary for a selected platform

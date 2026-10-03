@@ -149,6 +149,72 @@ async function exportedRecords(out, mapRecord) {
     });
 }
 
+// A test that checks what the Collector drops ends its OTLP request with this
+// sentinel, a record the Collector exports. The logs pipeline is a single chain,
+// and its batch processor takes a request whole and sends it in one export (these
+// requests are far below send_batch_max_size), so once the sentinel reaches the
+// backend, so has every earlier record of the request that survived filtering.
+const sentinelPhase = "collector-sentinel";
+
+function sentinelLogs(resource) {
+  const record = {
+    event: "runtime.startup_phase",
+    container: "sentinel",
+    phase: sentinelPhase,
+    outcome: "ok",
+    ms: 0,
+    sinceStartMs: 0,
+  };
+  return {
+    resource,
+    scopeLogs: [
+      {
+        logRecords: [
+          {
+            timeUnixNano: String(BigInt(Date.now()) * 1000000n),
+            body: { stringValue: JSON.stringify(record) },
+            attributes: [{ key: "log.iostream", value: { stringValue: "stderr" } }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+// Waits for the sentinel and returns the other exported records.
+async function exportedThroughSentinel(out, mapRecord) {
+  const isSentinel = (record) =>
+    attributes(record.attributes)["occ.startup.phase"] === sentinelPhase;
+  let exported = [];
+  let unreadable;
+  try {
+    await waitFor(async () => {
+      try {
+        exported = await exportedRecords(out, (resource, record) => ({ resource, record }));
+        unreadable = undefined;
+      } catch (error) {
+        // The backend may still be writing the export line.
+        if (error instanceof SyntaxError) {
+          unreadable = error;
+          return false;
+        }
+        throw error;
+      }
+      return exported.some(({ record }) => isSentinel(record));
+    });
+  } catch (error) {
+    if (unreadable !== undefined) {
+      throw new Error(`The Collector export never became readable: ${unreadable.message}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  return exported
+    .filter(({ record }) => !isSentinel(record))
+    .map(({ resource, record }) => mapRecord(resource, record));
+}
+
 test(
   "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage",
   {
@@ -822,16 +888,13 @@ test(
           },
         ],
       },
+      sentinelLogs(resource("gateway")),
     ]);
-    const records = async () =>
-      exportedRecords(fixture.out, (resource, record) => ({
-        resource: attributes(resource.resource?.attributes),
-        attributes: attributes(record.attributes),
-        record,
-      }));
-    await waitFor(async () => (await records()).length >= 13);
-    await delay(1_000);
-    const exported = await records();
+    const exported = await exportedThroughSentinel(fixture.out, (resource, record) => ({
+      resource: attributes(resource.resource?.attributes),
+      attributes: attributes(record.attributes),
+      record,
+    }));
     for (const { resource } of exported) {
       assert.equal(resource["openclaw.namespace.id"], namespaceId);
       assert.equal(resource["openclaw.agent.id"], agentId);
@@ -1004,15 +1067,12 @@ test(
           },
         ],
       },
+      sentinelLogs(resource),
     ]);
-    const records = async () =>
-      exportedRecords(fixture.out, (_resource, record) => ({
-        attributes: attributes(record.attributes),
-        record,
-      }));
-    await waitFor(async () => (await records()).length >= 9);
-    await delay(1_000);
-    const exported = await records();
+    const exported = await exportedThroughSentinel(fixture.out, (_resource, record) => ({
+      attributes: attributes(record.attributes),
+      record,
+    }));
     const summary = exported
       .map(({ attributes: kept, record }) =>
         JSON.stringify([
@@ -1133,15 +1193,12 @@ test(
           },
         ],
       },
+      sentinelLogs(resource),
     ]);
-    const records = async () =>
-      exportedRecords(fixture.out, (_resource, record) => ({
-        attributes: attributes(record.attributes),
-        record,
-      }));
-    await waitFor(async () => (await records()).length >= 5);
-    await delay(1_000);
-    const exported = await records();
+    const exported = await exportedThroughSentinel(fixture.out, (_resource, record) => ({
+      attributes: attributes(record.attributes),
+      record,
+    }));
     assert.deepEqual(
       exported
         .map(({ attributes: kept, record }) =>

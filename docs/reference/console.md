@@ -11,11 +11,11 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
-Open `/console/` at your administrator-provided address. **Username** is
-your provisioned account email. Enter its password and select **Login**. Ask your
-administrator for access if you do not have an account or have forgotten your
-password; public signup, single sign-on, and self-service password recovery are
-unavailable. If you are setting up your own Installation, start with the
+At your administrator-provided address, enter your provisioned account email as
+**Username**, then its password, and select **Login**. Public
+signup, single sign-on, and self-service password recovery are unavailable; ask
+your administrator for an account or a password reset. To set up your own
+Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
 
@@ -26,10 +26,9 @@ missing or expired session clears private content and asks you to sign in again.
 ## Identify the control-plane build
 
 With `debug=true`, the sidebar shows **OCE** followed by the first eight
-characters of the running OCC image's source commit. Hover for the full revision
-or use the [build and runtime image panel](#inspect-build-and-runtime-images).
-Published images bake the checked release revision into the console HTML.
-Builds without metadata show **dev** beside OCE.
+characters of the running OCC image's source commit, or **dev** for builds
+without metadata; hover for the full revision. Published images bake the checked
+release revision into the console HTML.
 
 ## Browse and select a Namespace
 
@@ -45,66 +44,59 @@ tab is hidden. Namespace rows are read-only.
 
 The console uses a light appearance and OCC-served fonts.
 
-When available, a retained view stays mounted and inert during eligible full-page
-return validation. Unchanged results reactivate it; recovery or changed data rebuilds it.
-Agent-detail refocus revalidates access without rebuilding, preserving
-mounted editors, form input, open Slack searches, and the enabled header selector.
-Refresh rebuilds. Retained views preserve controls and panels. Scoped to account, session, route, and
-Namespace, they clear on sign-out, session changes, exit, or Backend denial;
-failed reads show recovery.
+When available, a retained view stays mounted and inert while a full-page return
+is revalidated: matching outcomes reactivate it, recovery or changed data rebuilds it, and
+Refresh always rebuilds. Agent-detail refocus revalidates access without
+rebuilding, preserving editors, form input, open Slack searches, and the enabled
+header selector. Retained views are scoped to account, session, route, and
+Namespace; sign-out, session changes, exit, or Backend denial clear them.
 
-Use the header's **Namespace** selector to switch readable scopes on desktop or
-mobile. Namespaces omits it. **OpenClaw Enterprise** at the bottom offers
+The header's **Namespace** selector switches readable scopes on desktop and
+mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offers
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
 Selection persists in `?namespace=<id>` across navigation, reload, and Back.
 An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
 namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the Namespace
-selector through session and Namespace checks, hiding choices; retained-view
-validation can extend this.
-Without readable alternatives, Agents and Namespaces show provisioning/access
-guidance; global pages remain available.
+Page load, Refresh, and admission-starting navigation disable the selector and
+hide its choices during session and Namespace checks; retained-view reads do not.
+Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
+global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new
-scope; global pages stay open. The API authorizes access; the selector cannot
-broaden it.
+scope; global pages stay open. The selector cannot broaden API authorization.
 
 ## Inspect build and runtime images
 
 Append `debug=true` to the console URL, for example
 `/console/agents?debug=true` (or `&debug=true` after an existing query).
-The sidebar shows the full OCE source commit and expandable entries for readable
-Agents in the selected Namespace. Each container lists its configured Docker
-image, observed image ID or digest, and source commit when available.
-Navigation preserves the flag; remove it to hide diagnostics and stop these reads.
-
-See [Debug sidebar fields](console/debug-fields.md) for every field, Docker and
+The sidebar shows the full OCE source commit and per-container image
+observations for readable Agents in the selected Namespace. Navigation preserves
+the flag; remove it to hide diagnostics and stop these reads. **Refresh**
+retries unavailable metadata and updates the snapshot.
+[Debug sidebar fields](console/debug-fields.md) defines every field, Docker and
 Kubernetes differences, inspection scope, and unavailable states.
-Use **Refresh** to retry unavailable metadata or update the snapshot.
 
 ## Agent creation and deployment
 
-The console creates an Agent with reusable Configuration, optional plugins and
-harness authentication, and staged workspace files. Supported Dedicated
-provisioning deploys the first revision during creation. Otherwise, creation
+Supported Dedicated provisioning deploys the first revision during creation. Otherwise, creation
 saves a draft: provide model and channel credentials when prompted, then select
-**Deploy new version**. When the selected Compute Driver requires them, OCC
-generates missing connection credentials during that first deployment. Follow
-[Create and deploy Agents](console/create-and-deploy.md) for the complete
-workflow, channel constraints, and recovery after partial or uncertain writes.
-Plugin selections use the same Agent create/update contract as the API: omitted
-updates preserve the map, `{}` clears it, and deployment startup reports
-unsupported catalog or policy choices.
+**Deploy new version**. If the Compute Driver requires them, OCC generates
+missing connection credentials during that first deployment.
+See [Create and deploy Agents](console/create-and-deploy.md) for the full
+workflow, channel constraints, and partial-write recovery.
+Plugin selections follow the API's Agent create/update contract: an omitted map
+is preserved, `{}` clears it, and deployment startup reports unsupported catalog
+or policy choices.
 
 ## Inspect detail, revisions, and channel drafts
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
-Preset variables, and Agent search survive navigation within the document.
-Drafts are scoped to user, Namespace, and Agent. Passwords clear; reload and
-sign-out clear drafts.
+Preset variables, and Agent search survive in-document navigation as drafts
+scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
+clear drafts.
 
 **Cancel**, **Start over**, and **Reload** discard edits; **Refresh** retains them.
 Saving clears drafts. Concurrent changes require reload; unsaved edits block
@@ -119,182 +111,175 @@ requires exact Agent `read`/`update` and a catalog-capable Driver. The curated
 catalog needs no Secret. Hosted browsing reads bound `codex_pat` server-side and
 requires caller and Agent ServicePrincipal Secret `operate`.
 **Save plugin selections** updates the Agent; deployment snapshots them.
-**Operator-managed credentials** saves
-`{ "method": "runtime" }` for SSH embedded OpenClaw; OCC does not validate host
-credentials or generate metadata for that binding. API permissions and topology
-checks still apply. **Current version** displays `activeRevisionId`, which
-can differ from the viewed snapshot without proving live serving.
+**Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
+OpenClaw; OCC neither validates host credentials nor generates metadata for that
+binding, but API permissions and topology checks still apply. **Current version**
+displays `activeRevisionId`, which can differ from the viewed snapshot and does
+not prove live serving.
 **Deployment activity** shows the latest visible version's persisted result;
 the viewed version shows its own recorded outcome.
 
-**Current observations** runs on **Run diagnostics for this version**: a
-bodyless POST checking the exact viewed version. Kubernetes checks cover only
-Slack (`NOT_CONFIGURED`: no Slack channel), never model credentials; recorded
-failures stay shown. Checks are timestamped `succeeded`, `failed`, or `unknown`.
-Agent `read`/`operate` and exact AgentRevision `read` are required. Unavailable
-requests show an error. Results do not change deployment history, repeat the
-startup model probe, or prove message delivery.
+**Run diagnostics for this version** fills **Current observations** with a
+bodyless POST that checks the exact viewed version. It requires Agent
+`read`/`operate` and exact AgentRevision `read`. Kubernetes checks cover only
+Slack (`NOT_CONFIGURED`: no Slack channel), never model credentials. Each check
+is timestamped `succeeded`, `failed`, or `unknown`; recorded failures stay shown,
+and unavailable requests show an error. Results do not change deployment
+history, repeat the startup model probe, or prove message delivery.
 
 **Save authentication source** stores the binding and confirms exact
 `secret:operate` access for the Agent principal on an API-key or Service Accounts
-Secret. Grant changes require Namespace IAM authority. Issued ChatGPT accounts
+Secret. Grant changes require Namespace IAM authority; issued ChatGPT accounts
 and operator-managed authentication skip the grant. A failed grant reports
 partial success and offers **Retry credential access** without repeating the
 Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
-draft or revision. Names require exact same-Namespace Secret `read`. Denied,
-missing, or failed reads retain IDs with **Metadata unavailable**; **No Secret
+draft or revision. Names require exact same-Namespace Secret `read`; denied,
+missing, or failed reads show the ID with **Metadata unavailable**. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 
-AgentRevision snapshots are read-only: they cannot be edited, rolled back, or
-redeployed. **Create new version** opens the saved draft; **Deploy new version**
-admits it as another immutable revision. **Edit current Configuration** opens
-the draft without changing the viewed snapshot. Admission, recorded activation,
-and `activeRevisionId` are separate facts. Startup evidence does not establish
-live gateway health; see the
+AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Create
+new version** and **Edit current Configuration** open the saved draft without
+changing the viewed snapshot; **Deploy new version** admits it as another
+immutable revision. Admission, recorded activation, and `activeRevisionId` are
+separate facts, and startup evidence does not establish live gateway health; see the
 [deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime)
 and [deployment reference](agents/deployment.md#revisions-and-deployment).
 
 Channels edits the saved Slack draft. Teams credentials and Bot Framework ingress
-require operator setup; Teams has no editor and blocks Console deployment.
-Its settings remain in Configuration JSON.
-Saving Slack patches `values` and includes `secretBindings` only
-for changed tokens. Existing plugin allowlists are extended; omitted ones stay omitted. Shared Configurations can
-affect other Agents' future deployments. Channel allowlists remain native
-Configuration changes.
+require operator setup; Teams has no editor, its settings remain in Configuration
+JSON, and it blocks Console deployment. Saving Slack patches `values` and
+includes `secretBindings` only for changed tokens. Existing plugin allowlists are
+extended; omitted ones stay omitted. Channel allowlists remain native
+Configuration changes, and shared Configurations can affect other Agents' future
+deployments.
 
 Before saving, Agent and Configuration reads verify association and generation;
-concurrent changes can still race the PATCH. Refresh after a
-conflict or uncertain save. An unconfirmed PATCH shows **Outcome unknown** and
-disables channel writes until Refresh loads saved state. It may have succeeded;
-there is no automatic replay. **Disable Slack** changes only the draft, not
-access, execution, or admitted revisions.
+concurrent changes can still race the PATCH. Refresh after a conflict. An
+unconfirmed PATCH may have succeeded and is never replayed automatically: it shows **Outcome unknown** and disables
+channel writes until Refresh loads saved state. **Disable Slack** changes only
+the draft, not access, execution, or admitted revisions.
 
 Slack requires dedicated execution and Kubernetes runtime projection. Socket Mode
 uses unresolved `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` references.
 New configurations use allowlist policies. **Allowed channel user IDs** replaces
 selected channels' `users` lists while preserving unrelated settings.
-**Allow everyone in these channels to mention the agent** writes `users: ["*"]`.
-Entering IDs disables that checkbox; clearing IDs enables it, and unchecking it
-restores ID entry. **Require a mention** is independent of sender access.
+**Allow everyone in these channels to mention the agent** writes `users: ["*"]`;
+it and ID entry are mutually exclusive. **Require a mention** is independent of
+sender access.
 Channel edits preserve DM and group policies. Change DM access separately with
 **Direct-message policy** and **Allowed DM user IDs**; see
 [Slack policies](configuration/secrets.md#native-channel-configuration).
 
-Model, Harness, and Slack credentials share a searchable Secret picker.
-Filter readable same-Namespace names or IDs; arrows and Enter select, Escape
-restores the binding. **Create new Secret...** remains available without
-matches. **Name** defaults to Agent name and purpose; **Value** stays masked.
-Slack shows its fixed `SLACK_APP_TOKEN` or `SLACK_BOT_TOKEN` key. Conflicts
-retain both inputs without overwriting Secrets. Namespace readiness errors
-require refresh.
+Model, Harness, and Slack credentials share one searchable Secret picker; the
+[Slack editor](../guides/console/channels-and-credentials.md#slack-editor) lists
+its controls. Escape restores the binding, and **Create new Secret...** stays
+available without matches, with **Name** defaulting to the Agent name and
+purpose. A name conflict keeps both inputs and overwrites no Secret. Namespace
+readiness errors require refresh.
 
-Creation stores the Secret immediately; cancelling the surrounding editor does
-not delete it. Values are never read back. Existing
-[Secret IAM checks](drivers/secret.md#iam) apply. An uncertain creation blocks
-resubmission: refresh and inspect metadata first, because the Secret may exist.
+Creation stores the Secret immediately, under existing
+[Secret IAM checks](drivers/secret.md#iam); cancelling the surrounding editor
+does not delete it, and values are never read back. An uncertain creation blocks
+resubmission: the Secret may exist, so refresh and inspect metadata first.
 
-Selections remain staged until **Save configuration**; Cancel discards them.
-Saving patches Configuration, then grants Agent access through Namespace IAM.
-Both require caller permission. Failed grants leave Configuration saved and
-require access recovery. Neither creation nor saving deploys a Secret.
+Selections stay staged until **Save configuration**; Cancel discards them.
+Saving patches Configuration, then grants Agent access through Namespace IAM;
+both require caller permission. A failed grant leaves Configuration saved and
+requires access recovery. Neither creation nor saving deploys a Secret.
 
 Metadata and **Open Agent Credentials** links open new tabs, preserving edits.
-Save channel changes before editing credentials elsewhere, then refresh the
-original page.
+Save channel changes before editing credentials there, then refresh the original
+page.
 
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed
-per-channel mention settings, mixed per-channel sender lists, `*` channel maps,
-or unsupported plugin shapes. Inspect unsupported settings in the native
-Configuration view and edit them through the API or operator workflow.
+per-channel mention settings or sender lists, `*` channel maps, or unsupported
+plugin shapes. Inspect those settings in the native Configuration view; edit them
+through the API or operator workflow.
 
 ## Stop and resume an Agent
 
-Open the Agent, select **Stop Agent**, and confirm after reviewing the effect on
-running work. Stop requires `operate` permission on that exact Agent. It requests
-shutdown while retaining revision history, credentials, gateway state, and
-workspace files.
+Open the Agent, select **Stop Agent**, review the effect on running work, and
+confirm. Stop requires exact Agent `operate`. It requests shutdown while
+retaining revision history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued. **Refresh stop status** rereads
-the Agent's desired state and selected revision; it does not probe the runtime.
-If the result is uncertain, refresh before retrying. Permission denials remain
-visible, and the console never automatically repeats a stop request.
+the Agent's desired state and selected revision without probing the runtime.
+Refresh before retrying an uncertain result. Permission denials remain visible,
+and the console never repeats a stop request automatically.
 
-To resume, open **Create new version** and select **Deploy new version**. This creates a
-new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
+To resume, open **Create new version** and select **Deploy new version**, which
+creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
 worker lifecycle and preservation guarantees.
 
 ## Delete an Agent
 
-Open the Agent and find **Delete Agent** below the detail tabs. In the
-confirmation dialog, select **Permanently delete Agent**. This requires `delete`
-permission on that Agent; being able to read or operate it does not grant
-deletion. Deletion is permanent: it removes the Agent, its revision history, and its workspace data.
-Namespace-owned Configurations and Secrets remain. See the [Agent deletion
-reference](agents.md#deletion) for the complete cleanup behavior.
+Select **Delete Agent** below the Agent detail tabs, then **Permanently delete
+Agent** in the confirmation dialog. This requires exact
+Agent `delete`; `read` or `operate` is not enough. Deletion permanently removes
+the Agent, its version history, and its workspace data; Namespace-owned
+Configurations and Secrets remain; see
+[Agent deletion](agents.md#deletion).
 
-An accepted request starts asynchronous cleanup. The detail page shows the Agent
-as deleting; select **Refresh deletion status** to check progress. When the API
-confirms that the Agent is gone, the console returns to the Agents list in the
-same Namespace. An access-denied response stays on the detail page and tells you
-that deletion requires permission. If the console cannot confirm the outcome,
-the request may have succeeded; refresh before retrying. The console never
-resends a delete request automatically.
+An accepted request starts asynchronous cleanup, and the detail page shows the
+Agent as deleting; **Refresh deletion status** checks progress. Once the API
+confirms the Agent is gone, the console returns to Agents in the same Namespace.
+An access denial stays on the detail page and says deletion requires permission.
+An unconfirmed outcome may have succeeded; refresh before retrying. The console
+never resends a delete request automatically.
 
 ## Failures and logout
 
-An authorized empty list is different from a failed read. Access denied,
-unavailable dependencies, missing resources, and network failures clear affected
-rows and offer the relevant recovery action. Include a displayed request ID when
-reporting an API failure. Backend error text is not rendered. A current protected
-`401` clears private content and closes an open channel editor and harness authentication controls. Backend
-discovery shows configured IDs and types only; see
-[Backends](backends.md#read-configured-backends) for its limits.
+An authorized empty list differs from a failed read. Access denials, unavailable
+dependencies, missing resources, and network failures clear affected rows and
+offer recovery. Backend error text is not rendered; include any displayed request
+ID when reporting an API failure. A current protected `401` clears private
+content and closes open channel editors and harness authentication controls.
+Backend discovery shows only configured IDs and types; see its
+[limits](backends.md#read-configured-backends).
 
 Logout immediately hides private content and stops pending reads. The console
-returns to login after sign-out succeeds or a session check confirms the session
-is absent. If it cannot confirm logout, it stays on a blocking error with
-Retry. Do not treat that error as confirmation that the server session was revoked.
+returns to login once sign-out succeeds or a session check confirms no session.
+If it cannot confirm logout, it shows a blocking error with Retry; the server
+session may not be revoked.
 
 ## Set initial workspace contents
 
 The create form's **Workspace files** section contains editable OpenClaw defaults
-for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`. These are complete rendered
-templates, so you can keep them, replace them, or clear a field to create an empty
-file. Browser textareas submit LF newlines. The form submits all four fields,
-including unchanged values, for application before the first deployment runs.
+for `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, and `USER.md`, as complete rendered
+templates: keep or replace each, or clear a field for an empty file.
+Textareas submit LF newlines. The form submits all four fields, including unchanged values,
+for application before the first deployment runs.
 
-Creating the Agent stages these inputs privately. The live workspace editor
-becomes available after deployment. There is no editor for staged inputs on an
-undeployed Agent; to correct them, delete and recreate the Agent through the API.
-If creation reports that defaults changed, reload the form and review the new
-defaults before resubmitting. See [initial contents](agents.md#initial-contents-at-creation)
+Creation stages these inputs privately; the live workspace editor becomes
+available after deployment. Staged inputs on an undeployed Agent have no editor;
+to correct them, delete and recreate the Agent through the API. If creation
+reports that defaults changed, reload the form and review them before
+resubmitting. See [initial contents](agents.md#initial-contents-at-creation)
 for the release binding, limits, and deployment failure behavior.
 
 ## Edit workspace files
 
-Open **Workspace files** on an Agent to load `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. This view reads the live Agent workspace, not the
-Configuration draft or browsed AgentRevision. It requires an active revision and
-reachable gateway; selection alone does not prove access. Files remain in the
-Agent workspace and are never copied into a Configuration or revision.
+Open **Workspace files** on an Agent to load the same four files. This view reads the live Agent workspace, not the
+Configuration draft or browsed AgentRevision, and requires an active revision
+and reachable gateway; selection alone does not prove access. Files are never
+copied into a Configuration or revision.
 
-Each file has its own **Save** and **Reload** action. A save creates or replaces
-only that file through the [workspace file API](agents.md#workspace-files).
-The editor enforces the API's 16 KiB UTF-8 and Unicode limits. Agent `read`
-permits loading, while `operate` is required to save. Workspace writes have no
-version check; the last writer wins. Reload replaces unsaved edits with the
-current file.
+Each file has its own **Save** and **Reload**. A save creates or replaces only
+that file through the [workspace file API](agents.md#workspace-files); the editor
+enforces the API's 16 KiB UTF-8 and Unicode limits. Loading requires Agent `read`; saving
+requires `operate`. Writes have no version check: the last writer wins. Reload
+replaces unsaved edits with the current file.
 
 A failed write preserves the editor contents. An unknown outcome disables that
-file's Save action until a successful reload, so an uncertain write is never
-replayed automatically. Review loaded contents before writing again. Files load
-and save independently; success for one file says nothing about another file's
-result. For unavailable gateways, follow the
+file's Save until a successful reload, so it is never replayed automatically; review the loaded contents before
+writing again. Files load and
+save independently, so one file's result says nothing about another's. For
+unavailable gateways, follow the
 [workspace access setup](../guides/deploy/workspace-routing.md#agent-workspace-files).
 
 ## Open the native admin UI
@@ -303,20 +288,19 @@ When [Agent native admin UI access](agent-native-admin.md) is enabled, the
 Agent detail tabs, including Configuration and Workspace files, include a
 **OpenClaw** panel for people with Agent `use` and a runtime assignment.
 It is hidden otherwise, when the Installation disables the feature, and until
-the next sign-in or new tab after a denial.
-Installation administrators can [share an Agent](console/agent-sharing.md)
-with an existing person. A stopped Agent reports that it must be started,
-including before its first deployment. If a desired-running Agent has no active
-revision yet, the panel asks you to check its deployment and refresh access. It also reports when
-native admin is unsupported.
+the next sign-in or new tab after a denial. The panel reports a stopped Agent
+(including before first deployment) as needing to be started, asks you to check
+deployment and refresh access when a desired-running Agent has no active
+revision, and reports when native admin is unsupported. Installation
+administrators can [share an Agent](console/agent-sharing.md) with an existing
+person.
 
 **Open OpenClaw** opens the Agent's active revision in a new tab, even
-when you are viewing a draft or an older revision. The visible warning is part
-of the operator contract: the native UI can change the gateway outside OCE, and
-those changes are not recorded in AgentRevisions. Use OCE for durable
-configuration. The Agent tab uses the same OCE session cookie as the console
-through the configured shared cookie parent domain; native chat or other
-Agent-host activity does not extend that console session.
+from a draft or older revision. Its visible warning is part of the operator
+contract: native UI changes to the gateway bypass OCE and are not recorded in
+AgentRevisions. Use OCE for durable configuration. The tab shares
+the console's OCE session cookie through the configured shared cookie parent
+domain; native chat or other Agent-host activity does not extend that session.
 
 ## Routes
 

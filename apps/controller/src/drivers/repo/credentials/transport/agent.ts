@@ -1,10 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import type { RepositoryBackendFactory, Clock } from "../backend-contracts.ts";
 import type { ServiceConfig } from "../service-contracts.ts";
 import type { ExchangeRef, ExchangeService } from "../internal-contracts.ts";
 import { inspectRequestHead } from "./request.ts";
 import { createUpstreamSender } from "./upstream.ts";
 import { sendError } from "./errors.ts";
+import { readBoundedInput } from "./streams.ts";
 
 export interface AgentHandlerOptions {
   readonly config: ServiceConfig;
@@ -81,8 +83,30 @@ export function createAgentHandler(
       if (parsed.expectContinue) {
         response.writeContinue();
       }
+      let input: Readable | undefined;
+      if (plan.inputPolicy !== undefined) {
+        // Inspect the decoded body before credential use or provider dispatch.
+        if (parsed.head.contentEncoding !== "identity") {
+          sendError(response, 400, "unsupported-request");
+          return;
+        }
+        let body: Buffer;
+        try {
+          body = await readBoundedInput(request, plan.limits, clock, abort.signal);
+        } catch {
+          request.destroy();
+          response.destroy();
+          return;
+        }
+        if (!plan.inputPolicy(body)) {
+          sendError(response, 400, "unsupported-request");
+          return;
+        }
+        input = Readable.from(body.length ? [body] : [], { objectMode: false });
+      }
       const sender = createUpstreamSender({
         request,
+        ...(input === undefined ? {} : { input }),
         response,
         head: parsed.head,
         trustedUpstreamOrigins,

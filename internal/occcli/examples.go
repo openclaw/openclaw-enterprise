@@ -9,7 +9,8 @@ const iamRoleCreateExample = `  cat > role.json <<'JSON'
   JSON
   occ iam role create --file role.json
 
-  Permissions pair an action with a resource kind. See docs/reference/authorization.md.`
+  Permissions pair an action with a resource kind. See
+  https://docs-enterprise.openclaw.org/reference/authorization/`
 
 const iamAccessBindingCreateExample = `  cat > binding.json <<'JSON'
   {"subjectKind": "identity", "subjectId": "<principal-id>", "roleId": "<role-id>",
@@ -18,7 +19,8 @@ const iamAccessBindingCreateExample = `  cat > binding.json <<'JSON'
   occ iam access-binding create --file binding.json
 
   subjectId is a human Principal or a ServicePrincipal in the Namespace. The Role
-  and the exact target must exist in the Namespace. See docs/reference/authorization.md.`
+  and the exact target must exist in the Namespace. See
+  https://docs-enterprise.openclaw.org/reference/authorization/`
 
 const configurationCreateExample = `  cat > configuration.json <<'JSON'
   {"kind": "agent", "values": {"agents": {"defaults": {"model": "<provider>/<model>"}}}}
@@ -27,7 +29,8 @@ const configurationCreateExample = `  cat > configuration.json <<'JSON'
 
   values is a native OpenClaw configuration document. This minimal one is accepted
   at create; a deployable Agent also needs gateway and Harness runtime settings.
-  See docs/guides/deploy/production-agents.md for a complete example.`
+  For a complete example, see
+  https://docs-enterprise.openclaw.org/guides/deploy/production-agents/`
 
 const secretCreateExample = `  (umask 077; tr -d '\n' < /path/to/key | jq -Rs '{name: "openai-model-key", value: .}' > secret.json)
   occ secret create --file secret.json
@@ -41,7 +44,8 @@ const agentCreateExample = `  cat > agent.json <<'JSON'
   JSON
   occ agent create --file agent.json
 
-  Add harnessAuth to select model authentication. See docs/reference/agents.md.`
+  Add harnessAuth to select model authentication. See
+  https://docs-enterprise.openclaw.org/reference/agents/`
 
 const credentialSourceCreateExample = `  cat > credential-source.json <<'JSON'
   {"name": "openai", "type": "openai",
@@ -50,4 +54,5 @@ const credentialSourceCreateExample = `  cat > credential-source.json <<'JSON'
   occ credential-source create --file credential-source.json
 
   Each secrets field is the ref that occ secret create -o json returns. The gateway
-  keeps its own copy of the value; see docs/reference/credential-sources.md.`
+  keeps its own copy of the value; see
+  https://docs-enterprise.openclaw.org/reference/credential-sources/`

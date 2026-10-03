@@ -31,7 +31,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
       "p",
       { className: "hint" },
       element("strong", {}, "Experimental. "),
-      "Codex OAuth is intended for trying a first deployment. Reconnects, later revisions, and credential recovery have known limitations.",
+      "Codex OAuth is intended for trying a first deployment. Reconnects, later versions, and credential recovery have known limitations.",
     ),
     element("p", { className: "hint" }, hint),
     instructions,

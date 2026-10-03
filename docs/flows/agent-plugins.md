@@ -69,7 +69,10 @@ graph TD
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
 transient PATs, same-Namespace Secrets, or supported credential-free access.
 OCC checks Namespace Agent `create` and caller Secret `operate` before Driver
-support; unsupported discovery reads no Secret.
+support; unsupported discovery reads no Secret. A `secretRef` or `oauthLogin` in
+another Namespace, here or in existing-Agent discovery, fails with
+`400 INVALID_REQUEST` before any Secret check; a Secret the Namespace does not
+hold is `404`.
 
 Existing-Agent discovery requires active Agent `read`/`update`; inputs are queries,
 cursors, or plugin IDs. Hosted discovery resolves bound `codex_pat` and rechecks

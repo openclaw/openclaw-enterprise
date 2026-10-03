@@ -133,8 +133,34 @@ test("docs validation rejects broken links, anchors and navigation through the C
   let result = validate();
   assert.equal(result.status, 0, result.stderr || result.stdout);
 
+  // Duplicate headings: the site ID counts from -2, its GitHub alias from -1.
+  // Links outside docs/ resolve against GitHub's heading slugs and HTML anchors.
+  await writeFile(
+    join(fixture, "docs/example.md"),
+    "---\ntitle: Example\n---\n# Example\n\n## Setup\n\n## Setup\n",
+  );
+  await writeFile(
+    join(fixture, "CONTRIBUTING.md"),
+    '# Contributing\n\n## `pnpm` checks\n\n## `pnpm` checks\n\n<a id="legacy"></a>\n',
+  );
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    "# Home\n\n" +
+      ["example.md#setup", "example.md#setup-1", "example.md#setup-2"]
+        .concat(["../CONTRIBUTING.md#pnpm-checks-1", "../CONTRIBUTING.md#legacy"])
+        .map((target) => `[Link](${target})\n`)
+        .join(""),
+  );
+  result = validate();
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
   // Fail closed on authoring errors instead of publishing a dead navigation path.
-  for (const target of ["missing.md", "example.md#missing-heading"]) {
+  for (const target of [
+    "missing.md",
+    "example.md#missing-heading",
+    "example.md#setup-3",
+    "../CONTRIBUTING.md#pnpm-checks-2",
+  ]) {
     await writeFile(join(fixture, "docs/README.md"), `# Home\n\n[Broken](${target})\n`);
     result = validate();
     assert.notEqual(result.status, 0, `Build accepted ${target}`);
@@ -203,6 +229,31 @@ test("docs validation checks Markdown links in deploy example YAML comments", as
   assert.notEqual(result.status, 0, "Build accepted a missing YAML-comment link heading");
   assert.match(result.stderr + result.stdout, /deploy\/examples\/production\/installation\.yaml/);
   assert.match(result.stderr + result.stdout, /missing heading/);
+});
+
+test("spec validation rejects links to missing headings", async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), "enterprise-specs-check-"));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await mkdir(join(fixture, "specs/rfcs"), { recursive: true });
+  await mkdir(join(fixture, "docs"), { recursive: true });
+  await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
+  const validate = async (target) => {
+    await writeFile(join(fixture, "specs/plan.md"), `# Plan\n\n## Scope\n\n[Link](${target})\n`);
+    return spawnSync(process.execPath, [join(root, "scripts/check-specs.mjs")], {
+      cwd: fixture,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+  };
+  for (const target of ["../docs/guide.md#setup-1", "#scope"]) {
+    const result = await validate(target);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+  for (const target of ["../docs/guide.md#setup-2", "#missing"]) {
+    const result = await validate(target);
+    assert.notEqual(result.status, 0, `Spec validation accepted ${target}`);
+    assert.match(result.stderr, /missing heading/);
+  }
 });
 
 function matrixFixtureData() {

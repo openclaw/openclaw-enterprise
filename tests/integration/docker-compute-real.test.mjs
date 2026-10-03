@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,6 +18,7 @@ import {
   createOtelLogObservation,
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const executeFile = promisify(execFile);
 const tuiPty = fileURLToPath(new URL("../helpers/tui-pty.py", import.meta.url));
@@ -128,21 +128,6 @@ async function dockerLines(args, options) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-}
-
-async function reserveLoopbackPort() {
-  const server = createServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  const port = address.port;
-  await new Promise((resolveClose, reject) => {
-    server.close((error) => (error === undefined ? resolveClose() : reject(error)));
-  });
-  return port;
 }
 
 async function waitFor(description, operation, timeoutMs = 180_000) {
@@ -998,7 +983,7 @@ test(
     const env = {
       ...process.env,
       COMPOSE_PROJECT_NAME: project,
-      OCC_POSTGRES_PORT: String(await reserveLoopbackPort()),
+      OCC_POSTGRES_PORT: String(await availablePort()),
       OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: randomComposeSubnet(),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: engineBinary,
@@ -1087,8 +1072,8 @@ test(
       ),
     );
 
-    const apiPort = await reserveLoopbackPort();
-    const postgresPort = await reserveLoopbackPort();
+    const apiPort = await availablePort();
+    const postgresPort = await availablePort();
     const project = `oce-${engineBinary}-${randomUUID().replaceAll("-", "").slice(0, 18)}`;
     const namespaceIds = [];
     let cleanupServiceKey;
@@ -1099,8 +1084,8 @@ test(
     const otelLogs = createOtelLogObservation(context, {
       description: `${engineName} Compose real-runtime OTel logs`,
     });
-    const loggingPort = otelLogs.enabled ? await reserveLoopbackPort() : undefined;
-    const loggingMetricsPort = otelLogs.enabled ? await reserveLoopbackPort() : undefined;
+    const loggingPort = otelLogs.enabled ? await availablePort() : undefined;
+    const loggingMetricsPort = otelLogs.enabled ? await availablePort() : undefined;
     const composeOptions = {
       withLogging: otelLogs.enabled,
       removeApplicationImage: podmanSelected,

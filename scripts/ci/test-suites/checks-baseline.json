@@ -61,6 +61,9 @@
       "path": "tests/conformance/kubernetes-preflight.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
+    },
+    {
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
     },
     {
@@ -218,6 +221,9 @@
       ]
     },
     {
+      "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
+    },
+    {
       "path": "tests/integration/first-agent-startup.test.mjs",
       "expectedTests": [
         "first-Agent accepts current Compose-backed Kubernetes development state",
@@ -247,13 +253,11 @@
         "datasource readiness retries a transient HTTP 400",
         "non-retryable Grafana health failures retain their stage and status",
         "non-retryable Grafana datasource failures retain their stage and status",
-        "malformed Grafana datasource responses retain their stage and status",
         "datasource readiness retries an interrupted response body",
-        "invalid Grafana datasource response shapes retain their stage and status",
+        "malformed or invalid Grafana datasource responses retain their stage and status",
         "a timed-out Prometheus response body retries and accepts a later valid query",
         "Prometheus readiness retries an interrupted response body",
-        "a null Prometheus response retains its stage and status",
-        "malformed Prometheus responses remain query errors"
+        "null or malformed Prometheus responses retain their stage and status"
       ]
     },
     {
@@ -267,6 +271,9 @@
     },
     {
       "path": "tests/integration/ci-prepare.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-image-pull.test.mjs"
     },
     {
       "path": "tests/integration/k3d-launcher.test.mjs"

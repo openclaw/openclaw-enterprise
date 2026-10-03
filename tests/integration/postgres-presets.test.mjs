@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const identifier = (kind) => `${kind}_${randomUUID()}`;
 
 async function exercisePresets(store, reopened = store) {
@@ -139,11 +139,7 @@ test("in-memory Presets preserve template copies, Namespace isolation, and delet
 
 test(
   "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-  },
+  requiresPostgres,
   async (context) => {
     const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
       import("pg"),

@@ -37,7 +37,7 @@ export class RepositoryTransactionLifetime {
 
   async finish(): Promise<void> {
     this.accepting = false;
-    await Promise.all([...this.pending]);
+    await Promise.all(this.pending);
     this.active = false;
   }
 

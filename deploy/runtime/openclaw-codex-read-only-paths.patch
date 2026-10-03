@@ -1,5 +1,5 @@
 diff --git a/extensions/codex/openclaw.plugin.json b/extensions/codex/openclaw.plugin.json
-index d3c11de..295dec5 100644
+index 8755f1b..bd525a5 100644
 --- a/extensions/codex/openclaw.plugin.json
 +++ b/extensions/codex/openclaw.plugin.json
 @@ -454,6 +454,10 @@
@@ -147,7 +147,7 @@ index 56a05ef..d2a98d7 100644
    socksUrl: z.string().trim().min(1).optional(),
    enableSocks5: z.boolean().optional(),
 diff --git a/extensions/codex/src/app-server/config-security.ts b/extensions/codex/src/app-server/config-security.ts
-index ab2fc60..c662704 100644
+index 211fdb9..bfad9f9 100644
 --- a/extensions/codex/src/app-server/config-security.ts
 +++ b/extensions/codex/src/app-server/config-security.ts
 @@ -1,4 +1,5 @@
@@ -156,7 +156,7 @@ index ab2fc60..c662704 100644
  import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
  import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
  import type {
-@@ -66,6 +67,7 @@ export function resolveCodexAppServerNetworkProxy(
+@@ -65,6 +66,7 @@ export function resolveCodexAppServerNetworkProxy(
    const profile = {
      filesystem: {
        ":minimal": "read",
@@ -164,7 +164,7 @@ index ab2fc60..c662704 100644
        ":project_roots": {
          ".": fileSystemMode,
        },
-@@ -115,6 +117,72 @@ function normalizeNetworkProxyPermissionMap(
+@@ -109,6 +111,72 @@ function normalizeNetworkProxyPermissionMap(
    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
  }
 
@@ -238,63 +238,60 @@ index ab2fc60..c662704 100644
    return Object.fromEntries(
      Object.entries(value).filter((entry): entry is [string, JsonValue] => entry[1] !== undefined),
 diff --git a/extensions/codex/src/app-server/config.test.ts b/extensions/codex/src/app-server/config.test.ts
-index 4b6e1b0..2a55ace 100644
+index 97fbc47..5ef2dd3 100644
 --- a/extensions/codex/src/app-server/config.test.ts
 +++ b/extensions/codex/src/app-server/config.test.ts
-@@ -165,21 +165,28 @@ describe("Codex app-server config", () => {
-           networkProxy: {
-             enabled: true,
-             profileName: "mock-proxy",
--            mode: "limited",
-+            mode: "full",
-             domains: {
-+              " git.123-control.svc ": "allow",
-               " api.openai.com ": "allow",
-               "blocked.example.com": "deny",
-+              "169.254.169.254": "deny",
-             },
-             unixSockets: {
-               " /tmp/mock-proxy.sock ": "allow",
-               "/tmp/blocked.sock": "none",
-             },
-+            readOnlyPaths: [
-+              "/opt/openclaw/repository-credentials",
-+              "/app/node_modules/openclaw",
-+              "/app/node_modules/openclaw/",
-+            ],
-             proxyUrl: "http://127.0.0.1:3128",
-             socksUrl: "socks5h://127.0.0.1:8081",
-             enableSocks5: true,
-             enableSocks5Udp: false,
-             allowUpstreamProxy: true,
--            allowLocalBinding: false,
-+            allowLocalBinding: true,
-           },
-         },
+@@ -204,15 +204,25 @@ describe("Codex app-server config", () => {
+       networkProxy: {
+         enabled: true,
+         profileName: "mock-proxy",
+-        mode: "limited",
+-        domains: { " api.openai.com ": "allow", "blocked.example.com": "deny" },
++        mode: "full",
++        domains: {
++          " git.123-control.svc ": "allow",
++          " api.openai.com ": "allow",
++          "blocked.example.com": "deny",
++          "169.254.169.254": "deny",
++        },
+         unixSockets: { " /tmp/mock-proxy.sock ": "allow", "/tmp/blocked.sock": "none" },
++        readOnlyPaths: [
++          "/opt/openclaw/repository-credentials",
++          "/app/node_modules/openclaw",
++          "/app/node_modules/openclaw/",
++        ],
+         proxyUrl: "http://127.0.0.1:3128",
+         socksUrl: "socks5h://127.0.0.1:8081",
+         enableSocks5: true,
+         enableSocks5Udp: false,
+         allowUpstreamProxy: true,
+-        allowLocalBinding: false,
++        allowLocalBinding: true,
        },
-@@ -199,16 +206,20 @@ describe("Codex app-server config", () => {
+     });
+
+@@ -230,19 +240,26 @@ describe("Codex app-server config", () => {
            "mock-proxy": {
              filesystem: {
                ":minimal": "read",
 +              "/app/node_modules/openclaw": "read",
 +              "/opt/openclaw/repository-credentials": "read",
-               ":project_roots": {
-                 ".": "write",
-               },
+               ":project_roots": { ".": "write" },
              },
              network: {
                enabled: true,
 -              mode: "limited",
+-              domains: { "api.openai.com": "allow", "blocked.example.com": "deny" },
 +              mode: "full",
-               domains: {
++              domains: {
 +                "git.123-control.svc": "allow",
-                 "api.openai.com": "allow",
-                 "blocked.example.com": "deny",
++                "api.openai.com": "allow",
++                "blocked.example.com": "deny",
 +                "169.254.169.254": "deny",
-               },
-               unix_sockets: {
-                 "/tmp/mock-proxy.sock": "allow",
-@@ -219,7 +230,7 @@ describe("Codex app-server config", () => {
++              },
+               unix_sockets: { "/tmp/mock-proxy.sock": "allow", "/tmp/blocked.sock": "deny" },
+               proxy_url: "http://127.0.0.1:3128",
+               socks_url: "socks5h://127.0.0.1:8081",
                enable_socks5: true,
                enable_socks5_udp: false,
                allow_upstream_proxy: true,

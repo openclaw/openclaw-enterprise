@@ -86,6 +86,42 @@ function assertRepositorySessionCanOpen(attempts: readonly Attempt[], repository
   }
 }
 
+/** Whether repository cleanup settled and, when it is stuck rather than waiting, why. */
+export interface RepositoryCleanupOutcome {
+  readonly settled: boolean;
+  /**
+   * Set when another pass cannot settle cleanup on its own: an `invalidated` attempt (it has no
+   * outgoing transition) or a cleanup error. A `closing` session awaiting disposal has none.
+   */
+  readonly cause?: string;
+}
+
+const CLEANUP_CAUSE = /^[A-Z][A-Z0-9_]{0,63}$/u;
+
+/** A loggable code for a cleanup failure, never provider text. */
+export function repositoryCleanupFailureCode(error: unknown): string {
+  if (error instanceof RepositoryCredentialAuthorityError) {
+    return error.code;
+  }
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  if (typeof code === "string" && CLEANUP_CAUSE.test(code)) {
+    return code;
+  }
+  if (error instanceof Error && CLEANUP_CAUSE.test(error.message)) {
+    return error.message;
+  }
+  return "REPOSITORY_CLEANUP_FAILED";
+}
+
+function settleCleanup(attempts: readonly Readonly<RepositorySessionAttempt>[]): {
+  settled: boolean;
+  cause?: string;
+} {
+  return attempts.some((attempt) => attempt.phase === "invalidated")
+    ? { settled: false, cause: "REPOSITORY_ATTEMPT_INVALIDATED" }
+    : { settled: true };
+}
+
 /** Owns only persisted session correlations; material remains ephemeral until Compute accepts it. */
 export class RepositoryCredentialLifecycle {
   private readonly dependencies: Dependencies;
@@ -301,14 +337,14 @@ export class RepositoryCredentialLifecycle {
     if (options.awaitCleanup === false) {
       return false;
     }
-    return this.cleanup(claim, revision);
+    return (await this.cleanup(claim, revision)).settled;
   }
 
   async cleanup(
     claim: ClaimedWork,
     revision: Revision,
     options: { readonly retireRuntime?: boolean } = {},
-  ): Promise<boolean> {
+  ): Promise<RepositoryCleanupOutcome> {
     if (options.retireRuntime) {
       await this.dependencies.state.transactWithQueue(async (unit, queue) => {
         await this.heartbeat(queue, claim);
@@ -326,38 +362,36 @@ export class RepositoryCredentialLifecycle {
     const attempts = await this.dependencies.state.read((view) =>
       view.repositorySessions.listRevisionAttempts(owner(revision)),
     );
-    let complete = !attempts.some((attempt) => attempt.phase === "invalidated");
-    for (const attempt of attempts.filter((candidate) => candidate.phase === "closing")) {
-      try {
-        const closed = await this.closeAttempt(claim, revision, attempt);
-        complete = closed.settled && complete;
-      } catch (error) {
-        if (error instanceof WorkClaimLostError) {
-          throw error;
-        }
-        complete = false;
-      }
-    }
-    return complete;
+    return this.closeEach(attempts, (attempt) => this.closeAttempt(claim, revision, attempt));
   }
 
   async cleanupRetained(
     claim: ClaimedWork,
     attempts: readonly Readonly<RepositorySessionAttempt>[],
-  ): Promise<boolean> {
-    let complete = !attempts.some((attempt) => attempt.phase === "invalidated");
+  ): Promise<RepositoryCleanupOutcome> {
+    return this.closeEach(attempts, (attempt) =>
+      this.closeAttemptWithContext(claim, attempt, attempt.cleanupContext),
+    );
+  }
+
+  private async closeEach(
+    attempts: readonly Readonly<RepositorySessionAttempt>[],
+    close: (attempt: Readonly<RepositorySessionAttempt>) => Promise<{ readonly settled: boolean }>,
+  ): Promise<RepositoryCleanupOutcome> {
+    const outcome = settleCleanup(attempts);
     for (const attempt of attempts.filter((candidate) => candidate.phase === "closing")) {
       try {
-        const closed = await this.closeAttemptWithContext(claim, attempt, attempt.cleanupContext);
-        complete = closed.settled && complete;
+        const closed = await close(attempt);
+        outcome.settled = closed.settled && outcome.settled;
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        complete = false;
+        outcome.settled = false;
+        outcome.cause ??= repositoryCleanupFailureCode(error);
       }
     }
-    return complete;
+    return outcome;
   }
 
   private driver(revision: Revision): RepoDriver {

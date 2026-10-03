@@ -973,27 +973,6 @@ async function diagnostics(stack) {
   }
 }
 
-// Local Setup starts its k3d node with IPTABLES_MODE=legacy. On a host whose
-// Docker uses iptables-nft (the hosted Ubuntu 22.04 runner), the node's resolver
-// then refuses queries, so no image pulls and no Pod sandbox starts. Give the
-// node the host's upstream resolver, the documented Local Setup workaround
-// (OCC_DEVELOPMENT_K3D_DNS_RESOLVER), unless one is already selected.
-async function upstreamResolver() {
-  for (const path of ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"]) {
-    try {
-      const text = await readFile(path, "utf8");
-      for (const [, address] of text.matchAll(/^nameserver\s+(\d+\.\d+\.\d+\.\d+)\s*$/gm)) {
-        if (!address.startsWith("127.")) {
-          return address;
-        }
-      }
-    } catch {
-      // Try the next file.
-    }
-  }
-  return undefined;
-}
-
 async function smoke() {
   if (!process.env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY) {
     try {
@@ -1017,13 +996,6 @@ async function smoke() {
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
   delete environment.OPENAI_API_KEY;
-  if (!environment.OCC_DEVELOPMENT_K3D_DNS_RESOLVER) {
-    const resolver = await upstreamResolver();
-    if (resolver) {
-      environment.OCC_DEVELOPMENT_K3D_DNS_RESOLVER = resolver;
-      log(`k3d node resolver: ${resolver}`);
-    }
-  }
   let stack;
   try {
     stack = await step("Local Setup (occ dev up)", () => startLocalSetup(environment));

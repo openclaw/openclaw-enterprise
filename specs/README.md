@@ -27,6 +27,9 @@ IDs. Mixed design-and-delivery documents remain intact. Historical audit and
 verification evidence now lives beside its owning plan or as an existing delivery
 record under `plans/`; there is no separate reports workflow.
 
+Historical records keep the terminology they were written with. Current names
+are **OCE** (OpenClaw Enterprise) and **OCC** (OpenClaw Control Plane).
+
 ## Active specifications
 
 This is the non-archived inventory, including completed records. A document's

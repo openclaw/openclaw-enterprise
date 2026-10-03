@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createServer } from "node:http";
 import test from "node:test";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { oidcLoginConfiguration, oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
@@ -14,6 +13,7 @@ import {
   redirectProviderFetch,
   startProviderServer,
 } from "../helpers/human-login-transport.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const subject = "auth0|65f0c1d2e3a4b5c6d7e8f901";
 const environment = {
@@ -255,10 +255,7 @@ function assertNoSecrets(lines) {
 
 test("an unreachable OIDC token endpoint logs connect_refused with its code", async (t) => {
   // A port that was just released refuses connections.
-  const closed = createServer();
-  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
-  const { port } = closed.address();
-  await new Promise((resolve) => closed.close(resolve));
+  const port = await availablePort();
   redirectProviderFetch(t, pinned, `http://127.0.0.1:${port}`);
   const fixture = loginFixture();
   await expectDenied(await fixture.callback());

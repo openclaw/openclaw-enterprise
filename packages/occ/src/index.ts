@@ -28,7 +28,7 @@ import type {
   CredentialSource,
   CredentialSourceMetadata,
   CredentialSourceStatus,
-  CredentialWithdrawal,
+  CredentialWithdrawalStatus,
   CredentialSourceType,
   AuditEvent,
   Driver,
@@ -74,6 +74,7 @@ import type {
   RevisionHarnessDescriptor,
   ResourceKind,
   ResourceRef,
+  Restriction,
   Role,
   SandboxDriver,
   SandboxFacet,
@@ -141,8 +142,10 @@ import {
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   ScopeViolationError,
+  SecretBindingValidationError,
   SecretValueError,
 } from "./errors.ts";
+import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
   readRuntimeLogPage,
   readSandboxLogPage,
@@ -194,6 +197,7 @@ import {
   normalizeProvisioningConfiguration,
   normalizeProvisioningHarnessAuth,
   normalizeProvisioningWorkspace,
+  normalizeRequestSecretBindings,
   provisioningProgress,
   requireProvisioningRequestId,
   type ProvisionAgentInput,
@@ -231,6 +235,7 @@ export {
   IAMPolicyValidationError,
   IAMRoleInUseError,
   ModelCredentialValueError,
+  ModelProviderSettingError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -244,6 +249,7 @@ export {
   RuntimeLogsSandboxNotFoundError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
+  SecretBindingValidationError,
   SecretValueError,
   TransientDependencyError,
   type ActivationPendingCode,
@@ -384,11 +390,13 @@ export {
   CREDENTIAL_WITHDRAWAL_TARGET,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
+  runtimeFailureCause,
   validateRuntimeFailureEvidence,
   type DeploymentStatus,
   type DeploymentStatusError,
   type DeploymentStatusResult,
   type PluginDeploymentWarning,
+  type RuntimeFailureCause,
   type RuntimeFailureEvidence,
 } from "./state/controller-work.ts";
 export {
@@ -879,6 +887,25 @@ function removedAccessBinding(binding: Readonly<AccessBinding>): RemovedAccessBi
 }
 
 /**
+ * Rejects requested Secret references (bindings and Harness authentication) that name
+ * another Namespace. It compares only the request against its route Namespace, so it
+ * reveals nothing about other Namespaces and can run before any Secret lookup.
+ */
+function rejectCrossNamespaceSecretSources(
+  namespaceId: string,
+  secretBindings: SecretBindings | undefined,
+  harnessAuth: HarnessAuthBinding | null | undefined,
+): void {
+  const sources = Object.values(secretBindings ?? {}).map(({ source }) => source);
+  if (harnessAuth !== undefined && harnessAuth !== null && "source" in harnessAuth) {
+    sources.push(harnessAuth.source);
+  }
+  if (sources.some((source) => source.namespaceId !== namespaceId)) {
+    throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
+  }
+}
+
+/**
  * Lists the Namespace AccessBindings that target one exact resource. Deleting the resource
  * removes them, so callers record the list in that deletion's audit event.
  */
@@ -894,6 +921,65 @@ export async function accessBindingsTargeting(
         (binding) => binding.resourceKind === resourceKind && binding.resourceId === resourceId,
       )
       .map(removedAccessBinding),
+  );
+}
+
+/**
+ * Lists the AccessBindings that completing an Agent's deletion removes: those that target
+ * the Agent or one of its AgentRevisions, and those whose subject is the Agent's
+ * ServicePrincipal (the same three groups the deletion finalizer deletes). A deleting
+ * Agent refuses new bindings of each kind, so the list is final unless a binding is
+ * deleted explicitly first. The finalizer's DELETE is not Namespace-scoped, but policy
+ * admission keeps every such binding in the Agent's Namespace, so reading that
+ * Namespace's bindings sees all of them.
+ */
+export async function accessBindingsRemovedWithAgent(
+  state: Pick<PlatformReadView, "iamPolicy" | "revisions">,
+  agent: Pick<Agent, "namespaceId" | "id" | "servicePrincipalId">,
+): Promise<readonly RemovedAccessBinding[]> {
+  const revisionIds = new Set(await agentRevisionIds(state, agent));
+  return Object.freeze(
+    (await state.iamPolicy.listAccessBindings(agent.namespaceId))
+      .filter(
+        (binding) =>
+          (binding.subjectKind === "identity" && binding.subjectId === agent.servicePrincipalId) ||
+          (binding.resourceKind === "agent" && binding.resourceId === agent.id) ||
+          (binding.resourceKind === "agent_revision" &&
+            binding.resourceId !== undefined &&
+            revisionIds.has(binding.resourceId)),
+      )
+      .map(removedAccessBinding),
+  );
+}
+
+/**
+ * Lists the IAM Restrictions that completing an Agent's deletion removes: those on the
+ * Agent or one of its AgentRevisions, in any scope (the same two groups the deletion
+ * finalizer deletes). OCC has no API that writes Restrictions; they come from the
+ * Installation's IAM seed, so the list stays final unless an operator edits them directly.
+ */
+export async function restrictionsRemovedWithAgent(
+  state: Pick<PlatformReadView, "iamPolicy" | "revisions">,
+  agent: Pick<Agent, "namespaceId" | "id">,
+): Promise<readonly Readonly<Restriction>[]> {
+  const restrictions = [
+    ...(await state.iamPolicy.listRestrictionsTargeting("agent", [agent.id])),
+    ...(await state.iamPolicy.listRestrictionsTargeting(
+      "agent_revision",
+      await agentRevisionIds(state, agent),
+    )),
+  ];
+  return Object.freeze(
+    restrictions.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)),
+  );
+}
+
+async function agentRevisionIds(
+  state: Pick<PlatformReadView, "revisions">,
+  agent: Pick<Agent, "namespaceId" | "id">,
+): Promise<readonly string[]> {
+  return (await state.revisions.listRevisions(agent.namespaceId, agent.id)).map(
+    (revision) => revision.id,
   );
 }
 
@@ -1878,6 +1964,13 @@ export class OpenClawController {
         "Agent provisioning requires dedicated Harness authentication.",
       );
     }
+    // Refuse before any lookup, authorization or write: the worker cannot hand off a
+    // credential-source plan, and admission does not authorize the source.
+    if (harnessAuth.method === "credential_source") {
+      throw new SecretBindingValidationError(
+        "Agent provisioning does not support credential-source Harness authentication. Create the Agent, then deploy it.",
+      );
+    }
     const acceptedInput = Object.freeze({
       requestId,
       namespaceId: input.namespaceId,
@@ -1916,6 +2009,12 @@ export class OpenClawController {
         id: input.namespaceId,
         namespaceId: input.namespaceId,
       });
+      // Reject foreign references before channel validation can report them as a scope miss.
+      rejectCrossNamespaceSecretSources(
+        input.namespaceId,
+        configurationInput.secretBindings,
+        harnessAuth,
+      );
       await this.validateChannelCredentials(principalId, input.namespaceId, configurationInput);
     }
     return this.mutate(async (state) => {
@@ -1962,6 +2061,7 @@ export class OpenClawController {
         configurationInput.secretBindings,
         harnessAuth,
       );
+      validateModelProviderSettings(configurationInput.values);
       await configurationDriver.validate({
         id: "cfg_00000000-0000-4000-8000-000000000000",
         namespaceId: namespace.id,
@@ -3454,7 +3554,7 @@ export class OpenClawController {
       }
       if (await state.secrets.hasReferences(namespace.id, secret.id)) {
         throw new ResourceStateConflictError(
-          "A Configuration, credential source, Agent draft, active revision, or pending deployment still references the Secret. Remove those references first.",
+          "A Configuration, credential source, Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the Secret. Remove those references, or let provisioning finish, first.",
         );
       }
       const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
@@ -3570,11 +3670,12 @@ export class OpenClawController {
     namespace: Readonly<Namespace>,
     references: Readonly<Record<string, SecretReference>>,
   ): Promise<Record<string, string>> {
+    // Reject a foreign reference before any authorization or Secret lookup, as Secret bindings do.
+    if (Object.values(references).some((reference) => reference.namespaceId !== namespace.id)) {
+      throw new SecretBindingValidationError("Credential source Secrets cannot cross Namespaces.");
+    }
     const values: Record<string, string> = {};
     for (const [field, reference] of Object.entries(references)) {
-      if (reference.namespaceId !== namespace.id) {
-        throw new ScopeViolationError("Credential source Secrets cannot cross Namespaces.");
-      }
       await this.authorize(principalId, "operate", reference);
       const secret = await state.secrets.lockSecret(namespace.id, reference.id);
       if (secret === undefined) {
@@ -3851,7 +3952,8 @@ export class OpenClawController {
       if (namespace.existingNamespace !== undefined && namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      const secretBindings = this.bindings(input.secretBindings);
+      const secretBindings = normalizeRequestSecretBindings(input.secretBindings);
+      rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
       await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const driver = this.configurationDriver();
       const configuration: Configuration = Object.freeze({
@@ -3862,6 +3964,7 @@ export class OpenClawController {
         values,
         createdAt: this.timestamp(),
       });
+      validateModelProviderSettings(values);
       await driver.validate(configuration);
       const metadata = await state.configurations.createConfiguration({
         id: configuration.id,
@@ -4017,7 +4120,7 @@ export class OpenClawController {
       }
       if (await state.serviceAccounts.hasReferences(namespace.id, account.id)) {
         throw new ResourceStateConflictError(
-          "An Agent draft, active revision, or pending deployment still references the ServiceAccount. Remove those references first.",
+          "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
         );
       }
       const driver = this.serviceAccountDriver();
@@ -4097,9 +4200,13 @@ export class OpenClawController {
         ),
         metadata,
       );
-      const secretBindings = this.bindings(
-        input.secretBindings === undefined ? metadata.secretBindings : input.secretBindings,
-      );
+      let secretBindings: SecretBindings;
+      if (input.secretBindings === undefined) {
+        secretBindings = this.bindings(metadata.secretBindings);
+      } else {
+        secretBindings = normalizeRequestSecretBindings(input.secretBindings);
+        rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
+      }
       await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const advanced = await state.configurations.advanceConfigurationGeneration(
         namespace.id,
@@ -4118,6 +4225,7 @@ export class OpenClawController {
         values,
         createdAt: advanced.createdAt,
       });
+      validateModelProviderSettings(values);
       await driver.validate(configuration);
       const updated = await this.driverOperation(() => driver.update(configuration));
       this.registerRollback(async () => {
@@ -4152,6 +4260,17 @@ export class OpenClawController {
       if (agents.some((agent) => agent.configurationId === configuration.id)) {
         throw new ResourceStateConflictError(
           "An Agent still references the Configuration. Delete the Agent or select another Configuration first.",
+        );
+      }
+      // A provisioning record references the Configuration it created. Once its Agent has
+      // succeeded and selects another Configuration (checked above), the record releases it.
+      if (
+        (await state.provisioning.findByConfiguration(namespace.id, configuration.id)) !==
+          undefined &&
+        !(await state.provisioning.releaseConfiguration(namespace.id, configuration.id))
+      ) {
+        throw new ResourceStateConflictError(
+          "An Agent provisioning request that has not succeeded still references the Configuration. Let it finish or retry it, or delete the Agent it provisioned, first.",
         );
       }
       const previous = this.exactConfiguration(
@@ -4726,8 +4845,11 @@ export class OpenClawController {
   ): Promise<T> {
     const source = credential.secretRef ?? credential.oauthLogin;
     if (source !== undefined) {
-      if (source.kind !== "secret" || source.namespaceId !== namespaceId) {
+      if (source.kind !== "secret") {
         throw new ScopeViolationError("Secret references cannot cross Namespaces.");
+      }
+      if (source.namespaceId !== namespaceId) {
+        throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
       }
       await this.authorize(principalId, "operate", source);
     }
@@ -5053,6 +5175,7 @@ export class OpenClawController {
         );
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
+      rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, harnessAuth);
       this.validatePluginPolicies(plugins, pluginApprovers);
       const agentId = this.nextIdentifier("agent");
@@ -5145,6 +5268,7 @@ export class OpenClawController {
       const previousAuth = this.harnessAuthBinding(agent.harnessAuth);
       await this.authorizeHarnessAuthSource(state, principalId, namespace.id, previousAuth);
       if (requestedAuth !== undefined) {
+        rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
         await this.authorizeHarnessAuthSource(state, principalId, namespace.id, requestedAuth);
       }
       const secretBindings = this.bindings(configuration.secretBindings);
@@ -5566,7 +5690,7 @@ export class OpenClawController {
   async withdrawAgentCredentialSource(
     principalId: string,
     input: AgentCredentialSourceInput,
-  ): Promise<Readonly<CredentialWithdrawal>> {
+  ): Promise<Readonly<CredentialWithdrawalStatus>> {
     return this.mutate(async (state) => {
       await this.lockNamespace(state, input.namespaceId);
       const agent = await state.agents.lockAgent(input.namespaceId, input.agentId);
@@ -5609,14 +5733,21 @@ export class OpenClawController {
           operationId: crypto.randomUUID(),
         });
       }
-      return withdrawal;
+      // A pending withdrawal now has an attempt queued or running, either earlier or just now.
+      // Like the read, this reflects the queue at commit: a claim that expired on its last
+      // attempt counts until recoverStale fails it.
+      return Object.freeze({ ...withdrawal, withdrawalInProgress: withdrawal.state === "pending" });
     });
   }
 
+  /**
+   * A `pending` withdrawal whose attempts ran out has no outstanding work, whether the last
+   * attempt failed or its claim expired, so `withdrawalInProgress` is read from the queue.
+   */
   async readAgentCredentialWithdrawal(
     principalId: string,
     input: AgentCredentialSourceInput,
-  ): Promise<Readonly<CredentialWithdrawal>> {
+  ): Promise<Readonly<CredentialWithdrawalStatus>> {
     await this.authorize(principalId, "read", {
       kind: "agent",
       id: input.agentId,
@@ -5638,7 +5769,15 @@ export class OpenClawController {
           "The credential source was not withdrawn from the Agent's active revision.",
         );
       }
-      return withdrawal;
+      return Object.freeze({
+        ...withdrawal,
+        withdrawalInProgress:
+          withdrawal.state === "pending" &&
+          (await state.operations.hasOutstandingCredentialWithdrawalWork(
+            withdrawal.namespaceId,
+            withdrawal.revisionId,
+          )),
+      });
     });
   }
 
@@ -5799,32 +5938,52 @@ export class OpenClawController {
         }
         return namespace;
       }
+      // The 409 names each remaining resource's ID: Configurations have no list view, so
+      // the error is the only place an operator can find what to delete.
       const contents: string[] = [];
+      const ids: Record<string, readonly string[]> = {};
+      const remaining = (kind: string, resources: readonly { readonly id: string }[]) => {
+        contents.push(kind);
+        ids[kind] = resources.map((resource) => resource.id);
+      };
       if (await state.namespaces.hasAgents(namespace.id)) {
-        contents.push("Agents");
+        remaining("Agents", await state.agents.listAgents(namespace.id));
       }
-      if (await state.namespaces.hasConfigurations(namespace.id)) {
-        contents.push("Configurations");
+      const configurationIds = await state.namespaces.listConfigurationIds(namespace.id);
+      if (configurationIds.length > 0) {
+        remaining(
+          "Configurations",
+          configurationIds.map((id) => ({ id })),
+        );
       }
       const presets = await state.presets.listPresets(namespace.id);
       const seededPresets = presets.filter((preset) => this.isUnmodifiedDefaultPreset(preset));
       if (seededPresets.length < presets.length) {
-        contents.push("Presets");
+        remaining(
+          "Presets",
+          presets.filter((preset) => !seededPresets.includes(preset)),
+        );
       }
       if (await state.namespaces.hasSecrets(namespace.id)) {
-        contents.push("Secrets");
+        remaining("Secrets", await state.secrets.listSecrets(namespace.id));
       }
       if (await state.namespaces.hasCredentialSources(namespace.id)) {
-        contents.push("credential sources");
+        remaining(
+          "credential sources",
+          await state.credentialSources.listCredentialSources(namespace.id),
+        );
       }
       if (await state.namespaces.hasServiceAccounts(namespace.id)) {
-        contents.push("service accounts");
+        remaining(
+          "service accounts",
+          await state.serviceAccounts.listServiceAccounts(namespace.id),
+        );
       }
       if (await state.provisioning.hasPendingNamespaceProvisioning(namespace.id)) {
         contents.push("pending Agent provisioning");
       }
       if (contents.length > 0) {
-        throw new NamespaceNotEmptyError(contents);
+        throw new NamespaceNotEmptyError(contents, ids);
       }
       // Installation defaults were seeded by Namespace creation, so deletion removes
       // them only while they still match the defaults; edited copies block above.
@@ -6506,6 +6665,10 @@ export class OpenClawController {
       executionMode: plan.executionMode,
       configuration: plan.configuration.values,
     });
+    if (record.status === "failed") {
+      // A failed plan does not keep its Secrets or ServiceAccount from deletion; say which is gone.
+      await this.assertProvisioningSourcesExist(state, namespaceId, plan);
+    }
     await this.authorizeProvisioningSecretSources(
       state,
       principalId,
@@ -7053,13 +7216,52 @@ export class OpenClawController {
     });
   }
 
+  private async assertProvisioningSourcesExist(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    plan: ReturnType<OpenClawController["provisioningPlan"]>,
+  ): Promise<void> {
+    const ids = Object.values(plan.configuration.secretBindings ?? {}).map(
+      (binding) => binding.source.id,
+    );
+    const auth = plan.harnessAuth;
+    if (auth?.method === "api_key" || auth?.method === "codex_pat" || auth?.method === "oauth") {
+      ids.push(auth.source.id);
+    }
+    for (const id of ids) {
+      if ((await state.secrets.findSecret(namespaceId, id)) === undefined) {
+        throw new ResourceStateConflictError(
+          `Secret ${id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`,
+        );
+      }
+    }
+    if (
+      auth?.method === "chatgpt_service_account" &&
+      (await state.serviceAccounts.findServiceAccount(namespaceId, auth.serviceAccountId)) ===
+        undefined
+    ) {
+      throw new ResourceStateConflictError(
+        `ServiceAccount ${auth.serviceAccountId}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`,
+      );
+    }
+  }
+
   private provisioningPlan(record: Readonly<AgentProvisioningRecord>): {
     readonly configuration: AgentProvisioningConfigurationInput;
     readonly harnessAuth: HarnessAuthBinding | null;
     readonly executionMode: HarnessExecutionMode;
   } {
     const plan = asRecord(record.plan);
-    const configuration = normalizeProvisioningConfiguration(plan?.configuration);
+    let configuration: AgentProvisioningConfigurationInput;
+    try {
+      configuration = normalizeProvisioningConfiguration(plan?.configuration);
+    } catch (error) {
+      // A stored plan that no longer validates is not the caller's invalid request.
+      if (error instanceof SecretBindingValidationError) {
+        throw new ScopeViolationError("The accepted provisioning plan is no longer valid.");
+      }
+      throw error;
+    }
     const executionMode = plan?.executionMode;
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The provisioning execution mode is invalid.");
@@ -7210,7 +7412,7 @@ export class OpenClawController {
     source: SecretReference,
   ): Promise<void> {
     if (source.namespaceId !== namespaceId) {
-      throw new ScopeViolationError("Secret references cannot cross Namespaces.");
+      throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
     }
     await this.authorize(principalId, "operate", source);
     const secret = await state.secrets.lockSecret(namespaceId, source.id);

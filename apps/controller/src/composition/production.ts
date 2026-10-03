@@ -17,6 +17,7 @@ import {
   type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
+  type PasswordSlowLaneFloors,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
@@ -52,6 +53,8 @@ export interface ProductionConfig {
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
   readonly passwordSignIn?: "recovery-only";
   readonly clientAddress?: ClientAddressConfiguration;
+  /** Test seam: shortens or observes sign-in pacing; unset in the server (see auth/index.ts). */
+  readonly passwordSlowLaneFloors?: PasswordSlowLaneFloors;
   readonly poolMax?: number;
   readonly drivers: InstallationRuntimeDrivers;
   readonly logger?: OccLogger;
@@ -133,6 +136,9 @@ export async function composeProduction(config: ProductionConfig) {
         ? {}
         : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
       ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
+      ...(config.passwordSlowLaneFloors === undefined
+        ? {}
+        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
       ...(config.logger === undefined
         ? {}
         : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),

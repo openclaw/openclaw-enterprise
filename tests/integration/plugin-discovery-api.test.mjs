@@ -1038,9 +1038,40 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
     403,
   );
   fixture.calls.length = 0;
-  for (const ref of [foreign.ref, { ...foreign.ref, namespaceId: fixture.namespace.id }]) {
-    const response = await fixture.request("POST", fixture.path, { body: { secretRef: ref } });
-    assert.equal(response.status, 404);
+  // A reference to another Namespace breaks a static rule, so it is an invalid request with
+  // that rule's message; a Secret this Namespace does not hold stays a not-found.
+  for (const [suffix, extra] of [
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
+  ]) {
+    for (const [description, ref, status, code, message] of [
+      [
+        "cross-Namespace Secret",
+        foreign.ref,
+        400,
+        "INVALID_REQUEST",
+        "Secret references cannot cross Namespaces.",
+      ],
+      [
+        "missing Secret",
+        { ...foreign.ref, namespaceId: fixture.namespace.id },
+        404,
+        "NOT_FOUND",
+        undefined,
+      ],
+    ]) {
+      for (const field of ["secretRef", "oauthLogin"]) {
+        const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
+          body: { [field]: ref, ...extra },
+        });
+        const label = `${suffix || "list"} ${field}, ${description}: ${JSON.stringify(response.body)}`;
+        assert.equal(response.status, status, label);
+        assert.equal(response.body.error.code, code, label);
+        if (message !== undefined) {
+          assert.equal(response.body.error.message, message, label);
+        }
+      }
+    }
   }
   assert.deepEqual(fixture.calls, []);
   for (const body of [

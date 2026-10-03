@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KubernetesApiUnavailableError } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -63,7 +63,8 @@ test("Kubernetes preflight rejects an invalid API server version response", asyn
 });
 
 test("Kubernetes preflight names the unreachable API server endpoint", async () => {
-  const port = await closedLoopbackPort();
+  // A just-released loopback port refuses connections.
+  const port = await availablePort();
   const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-preflight-"));
   try {
     const kubeconfigPath = join(directory, "kubeconfig");
@@ -193,11 +194,3 @@ test("Kubernetes preflight without a recorded endpoint keeps the original failur
   });
   await assert.rejects(driver.preflight(), (error) => error === refused);
 });
-
-async function closedLoopbackPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}

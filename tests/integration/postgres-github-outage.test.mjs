@@ -19,8 +19,8 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "outage-recovery@example.test";
 const password = "outage-member-password";
 const authSecret = "outage-auth-test-secret-at-least-32-bytes";
@@ -37,7 +37,7 @@ const memberSubject = 7_000_001;
 // The provider fixture replaces only remote HTTP to github.com and api.github.com.
 test(
   "a GitHub outage fails GitHub sign-in closed while password sign-in keeps working",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

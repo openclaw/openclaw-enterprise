@@ -11,6 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
@@ -19,20 +20,6 @@ const devUp = join(repository, "scripts", "dev-up");
 const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
-
-async function unusedPort() {
-  const server = net.createServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  await new Promise((resolveClose, reject) =>
-    server.close((error) => (error === undefined ? resolveClose() : reject(error))),
-  );
-  return address.port;
-}
 
 async function exists(path) {
   try {
@@ -219,8 +206,8 @@ test(
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-openshell-${suffix}`;
-    const apiPort = await unusedPort();
-    const kubernetesPort = await unusedPort();
+    const apiPort = await availablePort();
+    const kubernetesPort = await availablePort();
     const environment = {
       ...process.env,
       OPENCLAW_DEV_PORT: String(apiPort),
@@ -450,7 +437,7 @@ test(
 
     // The namespace is not ready until the Sandbox Driver has created and
     // adopted its corresponding Gateway Workspace through the real gRPC API.
-    const gatewayPort = await unusedPort();
+    const gatewayPort = await availablePort();
     const forward = spawn(
       "kubectl",
       [
@@ -663,8 +650,8 @@ test(
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-os-compose-${suffix}`;
-    const apiPort = await unusedPort();
-    const kubernetesPort = await unusedPort();
+    const apiPort = await availablePort();
+    const kubernetesPort = await availablePort();
     const environment = {
       ...process.env,
       OPENCLAW_DEV_PORT: String(apiPort),
@@ -761,7 +748,7 @@ test(
       { cwd: repository, env: environment },
     );
 
-    const gatewayPort = await unusedPort();
+    const gatewayPort = await availablePort();
     const forward = spawn(
       "kubectl",
       [

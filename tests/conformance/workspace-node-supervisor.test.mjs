@@ -174,6 +174,7 @@ test(
     const childPath = join(directory, "child.cjs");
     const setupDirectory = join(directory, "setup");
     const setupPath = join(setupDirectory, "setup-code");
+    const setupReadsPath = join(directory, "setup-reads.jsonl");
     const identityPath = join(directory, "identity.json");
     await writeFile(
       childPath,
@@ -200,6 +201,14 @@ test(
         ", " +
         JSON.stringify(eventsPath) +
         ', args[0] === "/app/openclaw.mjs" ? "node" : "codex", JSON.stringify(args)], options);',
+      // Record each setup poll and what it read, so the test waits for polls.
+      'const fs = require("node:fs"); const realRead = fs.readFileSync;',
+      "fs.readFileSync = (path, ...rest) => {",
+      `  if (path !== ${JSON.stringify(setupPath)}) return realRead(path, ...rest);`,
+      "  let content = null;",
+      "  try { content = realRead(path, ...rest); return content; }",
+      `  finally { fs.appendFileSync(${JSON.stringify(setupReadsPath)}, JSON.stringify({ content }) + "\\n"); }`,
+      "};",
       AGENT_WITH_NODE_ENTRYPOINT.replace(
         "\ninitializeRuntimeAssets();\npublishAgentPluginSkillPath();\n",
         "\n",
@@ -220,8 +229,8 @@ test(
       output += chunk;
     });
     const exited = once(supervisor, "exit");
-    const events = async () => {
-      const contents = await readFile(eventsPath, "utf8").catch((error) => {
+    const jsonLines = async (path) => {
+      const contents = await readFile(path, "utf8").catch((error) => {
         if (error.code === "ENOENT") {
           return "";
         }
@@ -232,6 +241,7 @@ test(
         .filter(Boolean)
         .map((line) => JSON.parse(line));
     };
+    const events = () => jsonLines(eventsPath);
     t.after(async () => {
       supervisor.kill("SIGTERM");
       await exited;
@@ -246,10 +256,10 @@ test(
       }
       await rm(directory, { recursive: true, force: true });
     });
-    const waitFor = async (description, predicate) => {
+    const waitFor = async (description, predicate, read = events) => {
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
-        const observed = await events();
+        const observed = await read();
         if (predicate(observed)) {
           return observed;
         }
@@ -259,15 +269,24 @@ test(
       assert.fail(description + ": " + output);
     };
     const nodes = (rows) => rows.filter(({ kind }) => kind === "node");
-    // Several setup polls (250 ms) pass with each state below.
-    const pollInterval = 750;
+    // The supervisor polls the setup file until it starts a node. A poll that read
+    // `content` followed by another poll proves that content started no node.
+    const evaluated = (content) =>
+      waitFor(
+        `a setup poll after reading ${JSON.stringify(content)}`,
+        (reads) => {
+          const index = reads.findIndex((read) => read.content === content);
+          return index !== -1 && index < reads.length - 1;
+        },
+        () => jsonLines(setupReadsPath),
+      );
 
     const [codex] = await waitFor("Codex started without the setup", (rows) =>
       rows.some(({ kind }) => kind === "codex"),
     );
     assert.equal(codex.hasSetupPath, false, "Codex does not learn where the setup code lives");
     assert.equal(codex.hasDisplayName, false);
-    await delay(pollInterval);
+    await evaluated(null);
     assert.deepEqual(nodes(await events()), [], "no node without a setup or a saved identity");
 
     // The kubelet swaps Secret files atomically; an empty or truncated code is
@@ -278,7 +297,7 @@ test(
     await mkdir(setupDirectory);
     for (const incomplete of ["", "\n", code.slice(0, 17)]) {
       await writeFile(setupPath, incomplete);
-      await delay(pollInterval);
+      await evaluated(incomplete);
       assert.deepEqual(nodes(await events()), [], JSON.stringify(incomplete));
     }
 

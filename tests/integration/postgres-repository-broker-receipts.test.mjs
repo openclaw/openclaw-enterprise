@@ -6,7 +6,11 @@ import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import pg from "pg";
-import { PostgresPlatformState, DependencyUnavailableError } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  PostgresPlatformState,
+  DependencyUnavailableError,
+} from "../../packages/occ/src/index.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -18,8 +22,7 @@ import { startRegistryCredentialServiceFixture } from "../fixtures/repository-cr
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function useGateway(fixture, opened) {
   return new Promise((resolve, reject) => {
@@ -46,13 +49,98 @@ function useGateway(fixture, opened) {
 }
 
 test(
-  "confirmed broker disposal survives service restart in PostgreSQL",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to a disposable migrated PostgreSQL database.",
-    timeout: 60_000,
+  "only the reserving broker generation fences its own reservation",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
+    t.after(() => pool.end());
+    for (const [name, state] of [
+      ["memory", new InMemoryPlatformState()],
+      ["postgres", new PostgresPlatformState(pool)],
+    ]) {
+      await t.test(name, async () => {
+        const generation = randomUUID();
+        let revision;
+        // Each attempt gets its own revision: one repository has one opening attempt.
+        const reserve = async (phase) => {
+          ({ revision } = await seedSessionRevision(state));
+          const attempt = sessionAttempt(revision, { brokerProtocol: 1 });
+          await state.transact(async (unit) => {
+            await unit.repositorySessions.createAttempt(attempt);
+            await unit.repositorySessions.createBrokerReceipt({
+              admissionId: attempt.admissionId,
+              state: "reserved",
+              generation,
+            });
+            if (phase !== undefined) {
+              await unit.repositorySessions.advanceAttempt({
+                admissionId: attempt.admissionId,
+                expectedPhase: "opening",
+                phase,
+                ...(phase === "open" ? { sessionId: `session-${randomUUID()}` } : {}),
+                updatedAt: revision.createdAt,
+              });
+            }
+          });
+          return attempt.admissionId;
+        };
+        const fence = (admissionId, by = generation) =>
+          state.transact((unit) =>
+            unit.repositorySessions.fenceBrokerReceipt({ admissionId, generation: by }),
+          );
+        const reserved = await reserve();
+        assert.equal(await fence(reserved, randomUUID()), undefined);
+        assert.deepEqual(await fence(reserved), {
+          admissionId: reserved,
+          state: "fenced",
+          generation,
+        });
+        // A fence is terminal: it cannot be fenced again or bound.
+        assert.equal(await fence(reserved), undefined);
+        assert.equal(
+          await state.transact((unit) =>
+            unit.repositorySessions.advanceBrokerReceipt({
+              admissionId: reserved,
+              expectedState: "reserved",
+              generation,
+              state: "active",
+              sessionId: `session-${randomUUID()}`,
+              deadlineWallMs: revision.repositoryCredentials.deadlineWallMs,
+            }),
+          ),
+          undefined,
+        );
+        // A worker that already recorded the session keeps the reservation unfenced.
+        const opened = await reserve("open");
+        await assert.rejects(fence(opened));
+        assert.equal(
+          (await state.read((view) => view.repositorySessions.findBrokerReceipt(opened))).state,
+          "reserved",
+        );
+        // A closing attempt without a session may still be fenced.
+        const closing = await reserve("closing");
+        assert.equal((await fence(closing)).state, "fenced");
+      });
+    }
+    // Only a reservation may become fenced, and only a recovery fence starts that way.
+    const { revision } = await seedSessionRevision(new PostgresPlatformState(pool));
+    const attempt = sessionAttempt(revision, { brokerProtocol: 1 });
+    await new PostgresPlatformState(pool).transact((unit) =>
+      unit.repositorySessions.createAttempt(attempt),
+    );
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO occ.repository_broker_receipts (admission_id,state,generation) VALUES ($1,'fenced',$2)",
+        [attempt.admissionId, randomUUID()],
+      ),
+      { code: "23514" },
+    );
   },
+);
+
+test(
+  "confirmed broker disposal survives service restart in PostgreSQL",
+  { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
     t.after(() => pool.end());
@@ -129,6 +217,13 @@ test(
         [admissionId, randomUUID()],
       ),
       { code: "42501" },
+    );
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.repository_broker_receipts SET state='fenced' WHERE admission_id = $1",
+        [admissionId],
+      ),
+      { code: "23514" },
     );
     await assert.rejects(
       pool.query("DELETE FROM occ.repository_broker_receipts WHERE admission_id = $1", [
@@ -399,12 +494,7 @@ test(
 
 test(
   "broker shutdown waits for receipts and loss of unconfirmed authority stays unknown",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to a disposable migrated PostgreSQL database.",
-    timeout: 45_000,
-  },
+  { ...requiresPostgres, timeout: 45_000 },
   async (t) => {
     for (const mode of ["delayed-commit", "unavailable", "abrupt-death"]) {
       await t.test(mode, async (context) => {
@@ -413,6 +503,8 @@ test(
           bound: true,
           shutdownGraceMs: 100,
           namespaceId,
+          // A free slot lets the later admission open and then meet the lost journal.
+          ...(mode === "unavailable" ? { sessions: 2 } : {}),
         });
         const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
         context.after(() => pool.end());

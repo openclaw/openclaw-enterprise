@@ -18,16 +18,11 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";
 const authSecret = "runtime-logs-postgres-auth-secret-minimum-32-bytes";
-const requiresPostgres = {
-  skip: databaseUrl
-    ? false
-    : "Set OCC_TEST_DATABASE_URL to a migrated disposable PostgreSQL database.",
-};
 
 async function ensureBootstrap(t) {
   const observer = new pg.Pool({ connectionString: databaseUrl, max: 2 });

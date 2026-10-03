@@ -54,6 +54,7 @@ export function createPlatformReadView(
       "getRole",
       "listAccessBindings",
       "getAccessBinding",
+      "listRestrictionsTargeting",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",

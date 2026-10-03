@@ -144,6 +144,12 @@ without its selector and fails on missing selected prerequisites.
 
 ## Qualify an installed Agent against GitHub
 
+The installed GitHub journey is temporarily unavailable: its previous automatic
+remote cleanup could race with changes to the branch or pull request. Preparation
+and selected direct execution fail before creating resources or dispatching a task.
+The procedure below describes the intended journey, which must not be used for
+qualification until safe cleanup and its independent ownership are supported.
+
 The [standalone live smoke](repository-credentials.md#run-an-authorized-live-smoke)
 does not exercise OCC admission or a model.
 Use `repository-credentials-k3d-real.test.mjs` for the joined installed path:
@@ -191,15 +197,15 @@ session. An earlier error alone neither proves success nor hides a later complet
 The installed case additionally uses these variables with prefix
 `OCC_TEST_REPOSITORY_CREDENTIALS_`:
 
-| Suffix            | Required value                                                                                        |
-| ----------------- | ----------------------------------------------------------------------------------------------------- |
-| `AUTHORIZED`      | `1`, explicitly permitting temporary branch/PR writes and cleanup                                     |
-| `REPOSITORY`      | Exact authorized `owner/repository`                                                                   |
-| `APP_CONFIG_FILE` | Protected mode-0600 JSON with only string `appId`, `githubInstallationId`, `repositoryId`             |
-| `APP_KEY_FILE`    | Protected mode-0600 App PEM key                                                                       |
-| `IMAGE`           | Immutable credential-service image reference                                                          |
-| `UPSTREAM_CIDRS`  | Comma-separated approved public IPv4 `/32` destinations; no broad fallback                            |
-| `GH_BINARY`       | Optional absolute managed host `gh` path for independently authenticated readback and guarded cleanup |
+| Suffix            | Required value                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `AUTHORIZED`      | `1`, explicitly permitting temporary branch/PR writes                                     |
+| `REPOSITORY`      | Exact authorized `owner/repository`                                                       |
+| `APP_CONFIG_FILE` | Protected mode-0600 JSON with only string `appId`, `githubInstallationId`, `repositoryId` |
+| `APP_KEY_FILE`    | Protected mode-0600 App PEM key                                                           |
+| `IMAGE`           | Immutable credential-service image reference                                              |
+| `UPSTREAM_CIDRS`  | Comma-separated approved public IPv4 `/32` destinations; no broad fallback                |
+| `GH_BINARY`       | Optional absolute managed host `gh` path for independently authenticated readback         |
 
 The runner sets `OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1` and runs
 `tests/integration/repository-credentials-k3d-real.test.mjs` from prepared state;
@@ -241,8 +247,8 @@ must show no new branch. Both bind native command completions to the Gateway's
 mirrored turn. The full-access case also matches the remote commit and PR.
 The fixture checks separate Gateway/Codex Pod identities, repository material and
 model-key delivery to Codex only, and credential-service connectivity from Codex
-with denial from Gateway. The test runner observes and cleans up but does not
-execute the repository task. Dedicated task submission uses the private
+with denial from Gateway. The test runner observes and stops the local Agent but does not
+execute the repository task or reconcile remote resources. Dedicated task submission uses the private
 authenticated route from the installed worker. Console file transfer and Slack
 remain outside this shell-task proof; see [Kubernetes testing](kubernetes.md).
 
@@ -250,7 +256,7 @@ The fixture installs OCC before constructing the registry, because its exact
 Namespace ID comes from the API. It then enables the optional sidecar and
 verifies the installed containers' credential boundaries. Only the model executes
 the working clone/edit/commit/push/PR sequence; host `gh` observes the authorized
-repository and reconciles owned temporary resources during cleanup. Missing
+repository. Remote reconciliation requires an independent operator. Missing
 live selection skips; selected missing authorization, protected inputs, images,
 networking or model credentials fails.
 

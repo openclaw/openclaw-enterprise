@@ -371,6 +371,14 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  // Every issue is named in the job log, which keeps every attempt.
+  for (const line of [
+    "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
+    "run-tests: issue expected-test-not-passed tests/integration/skips.test.mjs: expected test did not pass: expected but skipped",
+    "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected test did not run to completion: todo case",
+  ]) {
+    assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
 });
 
 test("run records failed, skipped, todo, and passed dispositions separately", async (t) => {

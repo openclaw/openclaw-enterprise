@@ -186,6 +186,7 @@ test("console static routes expose only public assets and preserve API JSON fail
     ["/console/favicon.ico", /image\/vnd\.microsoft\.icon/i],
     ["/console/workspace-defaults.mjs", /javascript/i],
     ["/console/preset-variables.mjs", /javascript/i],
+    ["/console/default-codex-preset.mjs", /javascript/i],
     ["/console/console.css", /text\/css/i],
     ["/console/fonts/instrument-sans-latin.woff2", /font\/woff2/i],
     ["/console/console.mjs", /javascript/i],

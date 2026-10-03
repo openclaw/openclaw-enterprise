@@ -22,8 +22,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "recovery-only-admin@example.test";
 const password = "recovery-only-member-password";
 const authSecret = "recovery-only-auth-test-secret-at-least-32-bytes";
@@ -51,7 +51,7 @@ const warnings = (log) =>
 // fixtures replace only remote HTTP; State, audit, IAM, Better Auth and Fastify are real.
 test(
   "recovery-only password sign-in admits only the recovery account's password",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

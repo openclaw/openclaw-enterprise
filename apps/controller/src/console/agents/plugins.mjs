@@ -43,10 +43,10 @@ export function renderAgentPlugins(
         "p",
         { className: "muted" },
         snapshot.pluginApprovers === undefined
-          ? "No Agent default was set when this revision was admitted; the existing OpenClaw approval routing applies."
+          ? "No Agent default was set when this version was created; the existing OpenClaw approval routing applies."
           : snapshot.pluginApprovers.length === 0
-            ? "Explicit empty list: no Slack user can approve plugins in this revision by default."
-            : "This revision's Agent default approvers are immutable.",
+            ? "Explicit empty list: no Slack user can approve plugins in this version by default."
+            : "This version's Agent default approvers are immutable.",
       ),
       ...(snapshot.pluginApprovers?.length
         ? [
@@ -97,7 +97,7 @@ export function renderAgentPlugins(
     context,
     agentId: agent.id,
     initial: retained?.oauthLogin,
-    hint: "Use a separate ChatGPT login to browse plugins for this revision. This does not replace or refresh the deployed Agent's credential. Discard this login when you finish.",
+    hint: "Use a separate ChatGPT login to browse plugins for this version. This does not replace or refresh the deployed Agent's credential. Discard this login when you finish.",
     onChange() {
       discovery.reset();
     },

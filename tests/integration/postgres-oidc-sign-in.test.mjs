@@ -27,8 +27,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "oidc-recovery@example.test";
 const password = "oidc-member-password";
 const authSecret = "oidc-sign-in-auth-test-secret-at-least-32-bytes";
@@ -69,7 +69,7 @@ const coverageWarnings = (log) =>
 // Auth, the guarded human-login profile and Fastify are production code.
 test(
   "PostgreSQL OIDC sign-in admits only attached (issuer, subject) pairs",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

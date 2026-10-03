@@ -654,7 +654,12 @@ export const ProvisionAgentBody = Type.Object(
     name: Name,
     configuration: ProvisionAgentConfigurationBody,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
-    harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    harnessAuth: Type.Optional(
+      Type.Union([HarnessAuthBindingSchema, Type.Null()], {
+        description:
+          "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it.",
+      }),
+    ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),

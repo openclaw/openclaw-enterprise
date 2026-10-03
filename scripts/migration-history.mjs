@@ -145,7 +145,7 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 41) {
         return "preRestrictionReadLogs";
       }
-      if (receipts.length === 44) {
+      if (receipts.length === 47) {
         return "preRuntimeRoles";
       }
       if (receipts.length === 42) {
@@ -153,6 +153,15 @@ function classifyReceipts(receipts, manifest) {
       }
       if (receipts.length === 43) {
         return "preCredentialWithdrawals";
+      }
+      if (receipts.length === 44) {
+        return "preBrokerReceiptFence";
+      }
+      if (receipts.length === 45) {
+        return "preModelProbeFailureCause";
+      }
+      if (receipts.length === 46) {
+        return "preProvisioningConfigurationRelease";
       }
       return "providerCompleted";
     }
@@ -219,7 +228,7 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 41) {
     return "preRestrictionReadLogs";
   }
-  if (receipts.length === 44) {
+  if (receipts.length === 47) {
     return "preRuntimeRoles";
   }
   if (receipts.length === 42) {
@@ -227,6 +236,15 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 43) {
     return "preCredentialWithdrawals";
+  }
+  if (receipts.length === 44) {
+    return "preBrokerReceiptFence";
+  }
+  if (receipts.length === 45) {
+    return "preModelProbeFailureCause";
+  }
+  if (receipts.length === 46) {
+    return "preProvisioningConfigurationRelease";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

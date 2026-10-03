@@ -5,10 +5,10 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import https from "node:https";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { availablePort } from "../helpers/available-port.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { installProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
 import {
@@ -251,13 +251,7 @@ test(
       await writeFile(join(directory, "installation.json"), JSON.stringify(configuration), {
         mode: 0o600,
       });
-      const port = await new Promise((resolve) => {
-        const server = net.createServer();
-        server.listen(0, "127.0.0.1", () => {
-          const result = server.address().port;
-          server.close(() => resolve(result));
-        });
-      });
+      const port = await availablePort();
       const baseURL = `https://localhost:${port}`;
       await installProductionHelmControlPlane({
         selection,

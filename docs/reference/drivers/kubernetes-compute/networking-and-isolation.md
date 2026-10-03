@@ -21,15 +21,14 @@ model egress exclusions below.
 
 For Compute-owned startup failure evidence, plugin reporting, and on-demand
 deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
-Kubernetes API server's source addresses when proxying requests to workload Pods.
-The policy allows those sources only to the private status port, TCP/18791.
-Worker and API ServiceAccounts each need namespace-local `get` on `pods/proxy`.
-The ingress rule also applies when an Agent has no enabled plugins.
-Prefer individual `/32` or `/128` addresses. On overlay networks, the source may
-be the control-plane node's overlay address rather than its node IP. Verify it
-across nodes with enforced policies.
-An omitted list adds no API-proxy ingress rule and leaves status unavailable
-where the cluster blocks that traffic. It also restarts the Gateway once on each
+Kubernetes API server's source addresses for Pod proxy requests, preferably
+individual `/32` or `/128` addresses. On overlay networks, the source may be the
+control-plane node's overlay address rather than its node IP; verify it across
+nodes with enforced policies. The policy allows those sources only to the private
+status port, TCP/18791, even when an Agent has no enabled plugins. Worker and API
+ServiceAccounts each need namespace-local `get` on `pods/proxy`. An omitted list
+adds no API-proxy ingress rule and leaves status unavailable where the cluster
+blocks that traffic. It also restarts the Gateway once on each
 dedicated Codex first deploy. This setting does not expose the native
 gateway or grant workloads Kubernetes API access.
 
@@ -84,10 +83,9 @@ Agent Pod for dedicated Codex, or the gateway for embedded OpenClaw with
 Selected Codex plugins receive a filesystem-only profile that grants read-only
 access to the stock runtime package at `/app/node_modules/openclaw` and
 published plugin skills at `/home/node/.openclaw/plugin-skills` and
-`/home/node/openclaw-runtime-assets/plugin-skills`. This lets sandboxed skill
-reads use the installed runtime and packaged skills without enabling proxy
-networking, granting repository credential paths, granting whole-filesystem
-reads, or changing project write permissions.
+`/home/node/openclaw-runtime-assets/plugin-skills`. It does not enable proxy
+networking, grant repository credential paths or whole-filesystem reads, or
+change project write permissions.
 
 For Codex consumers with repository bindings, Compute also adds the exact broker
 hostname from admitted session material to the tool proxy's domain allowlist and
@@ -95,8 +93,8 @@ sets stock Codex `allow_local_binding = true` and `mode = "full"`. An explicit
 deny matching the broker hostname fails closed. The repository-bound filesystem
 profile additionally grants read-only access to the repository client at
 `/opt/oce/repository-credentials` and admitted session material at
-`/run/oce/repository-credentials`. Unbound Agents receive none of those network
-or repository-material changes; their existing policy remains in effect.
+`/run/oce/repository-credentials`. Unbound Agents keep their existing policy
+without those changes.
 
 These settings apply to the Agent's whole tool proxy: local binding is allowed,
 Codex's additional private-address guard is disabled, and every HTTP method is
@@ -130,14 +128,14 @@ Direct public channel-provider access is denied.
 
 Ordinary DNS, model, repository-credential, authentication, channel, workspace-node,
 plugin-status, sandbox-preview ingress and gateway/Harness allow policies require the reserved Pod label
-`openclaw.dev/network-profile=broad-egress-v1`, together with their existing
+`openclaw.dev/network-profile=broad-egress-v1` plus their existing
 role, Agent, namespace and revision selectors. Gateway/Harness peer selectors require the
 same profile. Missing, empty or unknown profiles receive no ordinary grant;
 the tenant and separate Gateway namespace default-deny policies still select every Pod.
 
-Compute assigns this profile when creating ordinary embedded and dedicated
-workload templates. Their existing routes and ports remain unchanged. Deployment
-readiness requires the expected template profile.
+Compute assigns this profile to ordinary embedded and dedicated workload
+templates without changing their routes or ports. Deployment readiness requires
+the expected template profile.
 
 Harness Pods provisioned by a SandboxDriver, such as OpenShell, carry
 `provider-fenced-v1` instead. The provider fences their egress, so Compute grants
@@ -169,14 +167,14 @@ which carries no `openclaw.dev` labels; supervisor-labelled peers admit it, not
 the ordinary profile. Platform services retain their existing Helm policy selectors.
 
 Profile assignment is a trusted controller decision. The label qualifies a Pod
-for network grants; it does not supply workload identity or authorization to
+for network grants but does not supply workload identity or authorization to
 request those grants. Operators must control workload creation, profile-label
-mutation and NetworkPolicy writes. This component does not install admission
-controls for those privileges.
+mutation and NetworkPolicy writes; this Driver installs no admission controls
+for them.
 
 Kubernetes combines grants from every matching policy, so stale or additional
 allow policies can bypass this restriction. Inspect installed policies and
-verify allowed and denied connections on a cluster with NetworkPolicy enforcement.
+verify allowed and denied connections with NetworkPolicy enforcement.
 
 ## Private Agent gateway routes
 
@@ -197,22 +195,20 @@ gatewayRouting:
   envoyNamespace: envoy-gateway-system
 ```
 
-The Gateway name and namespace must match the Helm-managed Gateway;
-`envoyNamespace` identifies its Envoy data-plane Pods. The chart always creates
-the Gateway in its release namespace. These three settings are required when
-routing is enabled; `hostname` is optional. `envoyHttpsTargetPort` defaults to
+These three settings are required when routing is enabled; `hostname` is
+optional. The Gateway name and namespace must match the Helm-managed Gateway,
+which the chart always creates in its release namespace; `envoyNamespace`
+identifies its Envoy data-plane Pods. `envoyHttpsTargetPort` defaults to
 `10443` and must match Helm. Compute grants Harness egress only to this
 installation's Envoy Pods on that port, before waiting for node enrollment.
 `endpointPort` defaults to `443` and changes only the port in generated WSS URLs.
 When set, the external load balancer must forward that port to the HTTPS listener.
 
-When `hostname` is omitted or empty, Compute and Helm derive the same Service
-name: `occ-gateway-` followed by the first 12 hexadecimal characters of the
-SHA-256 of `<gatewayNamespace>/<gatewayName>`. The hostname is
-`<serviceName>.<envoyNamespace>.svc`. It uses standard Linux Pod DNS search and
-does not assume a `cluster.local` suffix. Set the same explicit `hostname` in
-Compute and Helm for custom DNS or clients outside that cluster DNS context.
-The operator installs Envoy Gateway and cert-manager and configures the
+When `hostname` is omitted or empty, Compute and Helm derive the same Envoy
+Service hostname without a lookup; see
+[endpoint and route](../../gateway-routing.md#endpoint-and-route). Set the same
+explicit `hostname` in Compute and Helm for custom DNS or clients outside that
+cluster DNS context. The operator installs Envoy Gateway and cert-manager and configures the
 [private gateway infrastructure](../../../guides/deploy/workspace-routing.md#agent-workspace-files).
 Do not put an Agent endpoint, service key, certificate, or file contents into
 native Configuration or an AgentRevision.
@@ -243,17 +239,18 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and routes remain stable across revision cutover. Retirement
-preserves newer routes; final cleanup removes owned routes. The revision
-lifecycle reconciles them without periodic drift repair. Missing CRDs or denied
-worker permissions fail reconciliation.
+The Service and routes stay stable across revision cutover and are repaired only
+during revision reconciliation; see
+[endpoint and route](../../gateway-routing.md#endpoint-and-route). Missing CRDs
+or denied worker permissions fail reconciliation rather than disabling routing
+silently.
 
-Envoy's Gateway-level SecurityPolicy authenticates the OCC service key before
-forwarding. The service route overwrites the native identity and real-IP headers and
-removes caller forwarding and scope headers. Native `allowRealIpFallback`
-accepts Envoy's direct downstream connection address when OCC and Envoy share a
-Pod CIDR. That source address must be nonloopback; a loopback port-forward alone
-is not a working native attribution path.
+Envoy authenticates the OCC service key and the service route rewrites identity headers
+([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).
+The service route overwrites native identity and real-IP headers and removes
+caller forwarding and scope headers. Native `allowRealIpFallback` accepts Envoy's direct downstream address when OCC
+and Envoy share a Pod CIDR. That address must be nonloopback; a loopback
+port-forward alone is not a working native attribution path.
 
 ## Namespaces and isolation
 
@@ -261,8 +258,8 @@ Each OpenClaw Namespace has a data-plane Kubernetes namespace and a managed
 Gateway runtime namespace, `oce-gateways-<hash>`, where `hash` is the first 24
 hexadecimal characters of `sha256(namespaceId)`. The latter is discovered by
 `openclaw.dev/gateway-namespace=<namespaceId>`; it deliberately omits the
-data-plane discovery label `openclaw.dev/namespace`. Existing data-plane
-namespace adoption does not adopt or reuse OCC's own namespace for Gateways.
+data-plane discovery label `openclaw.dev/namespace`. Adopting an existing
+data-plane namespace never adopts or reuses OCC's own namespace for Gateways.
 
 Compute prepares restricted Pod security, quotas, defaults, default-deny and DNS
 policies in both targets. Dedicated Gateway resources, private PVCs, configuration,
@@ -278,13 +275,16 @@ selector. Active Gateway Services include Namespace, Agent, and gateway-role
 labels, satisfying gateway policy selectors without tying the stable route to a
 revision. These Service selectors support the
 [AWS VPC CNI pre-DNAT policy resolution requirement](https://github.com/aws/amazon-network-policy-controller-k8s#networkpolicy-podselector-must-match-the-target-services-selector).
-Current app-server transport is capability-token `ws://`, not mTLS; this change
-does not implement cross-cluster transport or runtime attestation.
+App-server transport is capability-token `ws://`, not mTLS; cross-cluster
+transport and runtime attestation are not implemented.
 
 Stop and revision retirement inspect both targets and retain durable claims.
-Agent deletion removes its owned claims; Namespace deletion deletes only the
-exact managed Gateway namespace and preserves an adopted data namespace.
-Neither operation may remove shared OCC infrastructure. A missing or foreign
+Agent deletion removes its owned claims. Namespace deletion deletes the exact
+managed Gateway namespace and any data namespace the driver created. From an
+adopted data namespace it removes only its exact-owned quota, limit, and
+tenant NetworkPolicies; the namespace, ownership markers, RoleBindings, and
+unrelated resources remain. Neither operation may remove shared OCC
+infrastructure. A missing or foreign
 Gateway target fails preparation rather than falling back to data-plane placement.
 
 Identity labels under `openclaw.dev/` contain the full platform Namespace,
@@ -307,34 +307,21 @@ Prepare the namespace by annotating
 `openclaw.dev/namespace-lifecycle=external`, applying
 `pod-security.kubernetes.io/enforce=restricted`,
 `pod-security.kubernetes.io/audit=restricted`, and
-`pod-security.kubernetes.io/warn=restricted`, and granting tenant-local worker
-and API RoleBindings. The running worker rechecks Installation administrator
-authorization, rejects foreign NetworkPolicies and competing tenant claims, and
-binds the generated tenant identity through one resource-version-guarded,
-non-forced Kubernetes patch. No worker pause or restart is required. Missing
-worker permissions keep provisioning pending; missing API permissions prevent
-Configuration access. Docker and external Compute Drivers reject
+`pod-security.kubernetes.io/warn=restricted`, and granting the tenant-local
+[worker and API RoleBindings](../../../guides/deploy/production-agents.md#grant-tenant-rolebindings).
+The running worker rechecks
+[administrator authorization and foreign ownership](../../security.md#namespace-admission-and-resource-isolation)
+before binding the tenant identity; no worker pause or restart is required.
+Missing worker permissions keep provisioning pending; missing API permissions
+prevent Configuration access. Docker and external Compute Drivers reject
 existing-namespace selection with `409`.
 
-See [tenant RoleBindings](../../../guides/deploy/production-agents.md#grant-tenant-rolebindings)
-for the required worker and API grants.
-
-Workload Pods run as nonroot, use `RuntimeDefault` seccomp by default, drop
-Linux capabilities, disable privilege escalation, and use read-only root
-filesystems. When `runtime.codexSeccompProfile` is configured, only the
-dedicated Codex Agent container uses
-`seccompProfile: { type: "Localhost", localhostProfile: <profile> }`; the Pod,
-gateway container, embedded runtime, controller, and init containers keep their
-default seccomp settings. The profile path must be relative to the kubelet's
-localhost seccomp profile root and cannot be empty, absolute, traversing, or
-unconfined. Agent identity is provided through an audience-scoped, short-lived
-projected ServiceAccount token. Workloads never receive controller credentials.
-
-The driver deletes Kubernetes namespaces it created when their corresponding
-OpenClaw Namespaces are deleted. For an operator-owned existing namespace, it
-removes only its exact-owned quota, limit, and three tenant NetworkPolicies;
-the Kubernetes namespace, ownership markers, RoleBindings, and unrelated
-resources remain intact.
+Workload Pods use the restricted
+[Pod and container hardening](../../security.md#pod-and-container-hardening),
+including the optional `runtime.codexSeccompProfile`, which applies only to the
+dedicated Codex Agent container. Agent identity is provided through an
+audience-scoped, short-lived projected ServiceAccount token. Workloads never
+receive controller credentials.
 
 ## Related
 

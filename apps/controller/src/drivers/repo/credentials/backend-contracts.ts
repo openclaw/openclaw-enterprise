@@ -116,6 +116,8 @@ export interface RequestPlan {
   readonly requestHeaders: HeaderFields;
   readonly limits: ExchangeLimits;
   readonly responsePolicy: ResponsePolicy;
+  /** When set, the complete request body is buffered and must pass before dispatch. */
+  readonly inputPolicy?: (body: Uint8Array) => boolean;
 }
 export interface PrivateUpstreamRequest {
   readonly plan: RequestPlan;

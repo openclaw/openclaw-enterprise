@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer as createNetServer } from "node:net";
 import {
   createGitHubDriverFactory,
   createGitHubKeyOwner,
@@ -10,15 +11,17 @@ import { createCustody } from "../../apps/controller/src/drivers/repo/credential
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { eventually } from "../fixtures/repository-credentials/service.mjs";
 import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport.ts";
 import {
   githubConfigurationData,
   requestHead,
   serviceConfigurationData,
 } from "../fixtures/repository-credentials/builders.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const config = validateServiceConfig(serviceConfigurationData());
-function owner(factory, clock, profile, id, captured = () => {}) {
+function owner(factory, clock, profile, id, captured = () => {}, observeDispatch = () => {}) {
   const authority = { sessionId: id, ...factory.resolve(profile).binding };
   const attempts = new WeakSet();
   const records = new Map();
@@ -55,7 +58,7 @@ function owner(factory, clock, profile, id, captured = () => {}) {
         assertAdmitted() {
           assert.ok(clock.monotonicNow() < this.deadlineMonoMs);
         },
-        observeDispatch() {},
+        observeDispatch,
       });
       attempts.add(attempt);
       return attempt;
@@ -692,6 +695,76 @@ test("refused and cancelled observations remain independently captured and token
   }
   assert.ok(fixture.tokenState().every((token) => token.revoked));
   assert.deepEqual(fixture.errors, []);
+});
+
+test("token issue failures before a connection are definite; after one they stay uncertain", async (t) => {
+  const clock = createControlledClock();
+  const fixture = await startGitHubFixture(t, { clock });
+  const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
+  t.after(() => key.close());
+  // A closed port refuses the connection; a raw TCP server accepts and then drops it.
+  const refused = `https://127.0.0.1:${await availablePort()}`;
+  const dropping = createNetServer((socket) => socket.destroy());
+  await new Promise((resolve) => dropping.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dropping.close(resolve)));
+  const factoryFor = (origin) =>
+    createGitHubDriverFactory({
+      configuration: githubConfigurationData({ providerInstanceId: "fixture-instance" }),
+      key,
+      clock,
+      gatewayOrigin: config.gateway.publicOrigin,
+      limits: config.limits,
+      trustedEndpoints: { apiOrigin: origin, gitOrigin: origin, ca: fixture.tls.ca },
+    });
+  const closedAtConnect = () => {
+    throw new Error("ATTEMPT_CLOSED");
+  };
+  for (const { name, origin, observeDispatch, expected } of [
+    { name: "connection refused", origin: refused, expected: "not-dispatched" },
+    {
+      name: "connection dropped",
+      origin: `https://127.0.0.1:${dropping.address().port}`,
+      expected: "uncertain",
+    },
+    // Admission closing before connect cancels the request before any byte is sent.
+    {
+      name: "admission closed at connect",
+      origin: fixture.origin,
+      observeDispatch: closedAtConnect,
+      expected: "not-dispatched",
+    },
+  ]) {
+    await t.test(name, async () => {
+      const owned = owner(factoryFor(origin), clock, "git-read", name, undefined, observeDispatch);
+      const result = await owned.driver.acquire(owned.attempt("acquire"), undefined, 360000);
+      assert.equal(result.kind, expected);
+      await owned.driver.settle(result);
+      assert.equal(owned.records.size, 0);
+    });
+  }
+  assert.deepEqual(fixture.trace, []);
+
+  // A definite failure releases the reservation, so a closed session reaches DISPOSED.
+  const service = createCredentialService({ config, factory: factoryFor(refused), clock });
+  t.after(async () => {
+    // Grace runs on the controlled clock; advance it so a stuck session cannot hang.
+    const stopped = service.shutdown(1000);
+    await clock.advance(1000);
+    await stopped;
+  });
+  const opened = service.open({ durationSeconds: 3600, profile: "git-read" });
+  const exchange = service.reserve(
+    opened.bearer,
+    requestHead("GET", "/repos/fixture/repository"),
+    new AbortController().signal,
+  );
+  const outcome = await service.execute(exchange, async () =>
+    assert.fail("no upstream exchange without a credential"),
+  );
+  assert.equal(outcome.kind, "not-dispatched");
+  service.close(opened.session.sessionId);
+  await clock.advance(0);
+  await eventually(() => service.status(opened.session.sessionId)?.state === "DISPOSED");
 });
 
 test("retirement uncertainty retains real custody after non-204 replies and lost responses", async (t) => {

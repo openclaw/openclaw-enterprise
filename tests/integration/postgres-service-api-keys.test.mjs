@@ -3,19 +3,14 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 // Storage/admission integration only: the HTTP suite separately proves IAM
 // authorization. These server-only operations model an already authorized key
 // manager; referenceId can belong to an external IAM Driver, not a local user.
 test(
   "PostgreSQL Better Auth keys remain hashed, scoped, and revocable across instances",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to a migrated disposable PostgreSQL database.",
-  },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
     let key;

@@ -330,6 +330,29 @@ test("followed JSON links validate field purpose while GraphQL human URLs remain
   };
   assert.deepEqual(planFor("POST", "/graphql").responsePolicy.rewriteJson(graphql), graphql);
 });
+test("GraphQL input policy refuses clone credential selections hidden by JSON encoding", async (t) => {
+  const { bind } = await createGitHubPlanningFixture(t);
+  const bound = bind();
+  const { inputPolicy } = bound.plan(head("POST", "/graphql"));
+  const allows = (text) => inputPolicy(Buffer.from(text));
+  assert.equal(allows('{"query":"query { viewer { login } }"}'), true);
+  assert.equal(
+    allows('{"query":"query($q: String!) { viewer { login } }","variables":{"q":"\\""}}'),
+    true,
+  );
+  for (const text of [
+    '{"query":"{ repository(owner: \\"o\\", name: \\"r\\") { tempCloneToken } }"}',
+    '{"query":"{ repository(owner: \\"o\\", name: \\"r\\") { \\u0074empCloneToken } }"}',
+    '{"query":"{ viewer { login } }","query":"{ repository { tempCloneToken } }"}',
+    '{"query":"{ repository { tempCloneToken } }","query":"{ viewer { login } }"}',
+    '{"query":"{ viewer { login } }"',
+  ]) {
+    assert.equal(allows(text), false, text);
+  }
+  assert.equal(bound.plan(head("GET", "/repos/fixture/repository")).inputPolicy, undefined);
+  // An empty query string cannot select another spelling of the GraphQL route.
+  assert.equal(bound.plan(head("POST", "/graphql?")).kind, "denied");
+});
 test("response policy rewrites admitted machine links without changing human content or forwarding credential headers", async (t) => {
   const { bind } = await createGitHubPlanningFixture(t);
   const bound = bind();

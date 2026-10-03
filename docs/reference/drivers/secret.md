@@ -48,7 +48,9 @@ deploying actor and the consuming Agent's ServicePrincipal to have `operate` on
 each Secret; the worker rechecks them before preparing delivery. Registering a
 credential source requires the caller's `operate` on each referenced Secret. Namespace
 membership, possession of a reference, and backend permissions grant no OCC
-authority. Cross-Namespace bindings are rejected. Plugin discovery using a Secret also
+authority. A Secret binding, Harness authentication source, credential source
+Secret, or plugin discovery Secret that names another Namespace is rejected with
+`400 INVALID_REQUEST`; a Secret the Namespace does not hold is `404`. Plugin discovery using a Secret also
 requires caller `operate` on that exact Secret. Create Agent discovery also
 requires Namespace Agent `create`; it does not require an Agent ServicePrincipal.
 Saved-Agent discovery requires exact Agent `read` and `update`, plus `operate`
@@ -79,8 +81,10 @@ OCC registers backend deletion for a known failed transaction; it does not do
 so when the commit outcome is unknown. Updates overwrite the backend value: OCC
 keeps no prior value for rollback, and success means stored, not delivered.
 Deletion is refused with `409` while a Configuration, credential source, Agent
-draft, active revision, or pending deployment still references the Secret; the
-message lists these kinds, not the specific resources. Otherwise OCC calls the
+draft, active revision, pending deployment, or queued or running Agent
+provisioning request still references the Secret; the message lists these
+kinds, not the specific resources. A failed provisioning request does not block
+deletion; reading or retrying it then names the deleted Secret. Otherwise OCC calls the
 Driver before removing its own record.
 
 For plugin discovery, OCC checks permissions and reads current Secret metadata,

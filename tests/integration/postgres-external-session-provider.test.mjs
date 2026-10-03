@@ -26,8 +26,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "session-provider-recovery@example.test";
 const password = "session-provider-member-password";
 const authSecret = "session-provider-auth-test-secret-at-least-32-bytes";
@@ -75,7 +75,7 @@ function settingsFor(adminId, { providers = ["github", "google", "oidc"], issuer
 // Auth, the guarded human-login profile and Fastify are production code.
 test(
   "PostgreSQL sessions end when their external provider instance is no longer configured",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

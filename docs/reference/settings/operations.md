@@ -59,7 +59,8 @@ An exit-0 `migration.checked` record reports one reviewed history shape:
 `preBrokerReceipts`, `preAgentDeletion`, `preDeploymentProgress`,
 `preHumanAuthentication`, `preAgentDeletionTakeover`,
 `preNamespaceDeletionTakeover`, `preRepositoryAccess`, `preRestrictionReadLogs`,
-`preOAuth`, `preCredentialWithdrawals`, or `completed`.
+`preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
+`preModelProbeFailureCause`, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -80,8 +81,10 @@ has 38 through `0037_human_authentication`; `preNamespaceDeletionTakeover` has
 `0039_namespace_deletion_takeover`; `preRestrictionReadLogs` has 41 through
 `0040_repository_access`; `preOAuth` has 42 through
 `0041_restriction_read_logs`; `preCredentialWithdrawals` has 43 through
-`0042_oauth_harness_auth`. `completed` is the current canonical history with
-all receipts, including `0043_credential_withdrawals`.
+`0042_oauth_harness_auth`; `preBrokerReceiptFence` has 44 through
+`0043_credential_withdrawals`; `preModelProbeFailureCause` has 45 through
+`0045_repository_broker_receipt_fence`. `completed` is the current canonical
+history with all receipts, including `0046_model_probe_failure_cause`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
@@ -195,7 +198,14 @@ it does not use the API's listener or authentication settings.
 | `OCC_WORKER_LEASE_DURATION_MS`      | `5000`.                        | Positive safe integer controlling the claim lease in milliseconds.                                                                                            |
 | `OCC_WORKER_MAX_ATTEMPTS`           | `5`.                           | Positive safe integer limiting attempts before permanent failure.                                                                                             |
 | `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` | `900000`.                      | Positive safe integer bounding Namespace convergence from operation creation.                                                                                 |
+| `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt.         |
 | `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                   |
+| `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.   |
+
+The run loop writes the liveness marker at startup, at the start of every pass
+and on every claim renewal. A database outage keeps it moving; the packaged
+liveness probe fails only when it is older than
+`max(120 s, 240 polls, 6 leases, 2 database timeouts)`.
 
 Start the worker only after the controller is healthy and the Installation exists:
 

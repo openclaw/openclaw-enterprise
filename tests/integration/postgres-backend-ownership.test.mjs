@@ -7,7 +7,6 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import {
   alternateWorkspaceId,
-  availablePort,
   createAccessTokenServiceAccount,
   createBootstrappedBackendState,
   createBackendController,
@@ -19,9 +18,10 @@ import {
   serviceAccountDriverId,
   startBackendlessDevelopmentServer,
   stopProcess,
-  waitFor,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 async function request(origin, session, method, path, body) {
   const response = await fetch(`${origin}${path}`, {

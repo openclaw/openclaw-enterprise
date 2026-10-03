@@ -50,11 +50,11 @@ both entrypoints against this image and fails when the image disagrees with it.
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584` |
-| OpenClaw source commit                       | `9d9c8568c51e340540f634f71bd7c7582a70debc`                                                                   |
-| Source archive SHA-256                       | `175260a3e26e6de4c1225ff27d8c2b17b01b700640db915a8bac9ee3d4cf903f`                                           |
+| OpenClaw source commit                       | `6f91eda9c72d6b4c2640cb76b5a753e64089f6f2`                                                                   |
+| Source archive SHA-256                       | `8e0f0332bbdb798834148895d57c19e6b622dbb3b5eac39801c14c316ad93d0c`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.158.0`                                                                                                    |
 
-The source's package version is `2026.9.6`; it does not identify this custom
+The source's package version is `2026.9.7`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, all three bridge patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -97,7 +97,7 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/9d9c8568c51e340540f634f71bd7c7582a70debc/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/6f91eda9c72d6b4c2640cb76b5a753e64089f6f2/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

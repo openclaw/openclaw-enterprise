@@ -73,7 +73,7 @@ export async function newPage(t, fixture, options = {}) {
       throw cleanupError;
     }
   });
-  context = await browser.newContext();
+  context = await browser.newContext(options.context);
   diagnostics = await watchBrowserContext(t, context);
   await keepRequestInterceptionEnabled(context);
   const page = await context.newPage();
@@ -87,24 +87,11 @@ export async function login(
   path = "/console/agents",
   credentials = fixture.credentials,
 ) {
-  await page.goto(`${fixture.origin}${path}`);
+  await page.goto(new URL(path, fixture.origin).href);
   await page.getByLabel("Username").fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
   await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
-}
-
-export async function routeRuntimeCredentials(page, fixture, namespaceId, agentId, data) {
-  await page.route(
-    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/runtime-credentials`,
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data, meta: { requestId: "req_test_runtime_credentials" } }),
-      });
-    },
-  );
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer
@@ -181,6 +168,70 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
     value,
     expected,
     `input value was ${JSON.stringify(value)}, not ${JSON.stringify(expected)}, after ${timeoutMs} ms`,
+  );
+}
+
+// Ordering sentinel for "this action sends no request" checks. After one macrotask turn, the
+// page fetches a static asset and this waits for the response. Chromium reports requests in
+// the order the page starts them, so any request started before the sentinel (synchronously,
+// from a microtask or from a zero-delay timer) is already in the apiRequests() log.
+export async function settlePageRequests(page) {
+  await page.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const response = await fetch(`/console/favicon-16.png?request-sentinel=${Date.now()}`, {
+      cache: "no-store",
+    });
+    await response.arrayBuffer();
+  });
+}
+
+// Test-only page hook: counts, per URL path, the page's fetches that have settled, meaning the
+// fetch rejected or the page finished reading the response body. Install it before the page
+// loads. A count observed by waitForSettledFetches() is read in a later task, so the page's own
+// continuation of that fetch (for example dropping a stale response) has already run.
+export async function trackSettledFetches(page) {
+  await page.addInitScript(() => {
+    const settled = new Map();
+    const record = (input) => {
+      const path = new URL(
+        input instanceof Request ? input.url : String(input),
+        globalThis.location.href,
+      ).pathname;
+      settled.set(path, (settled.get(path) ?? 0) + 1);
+    };
+    const pageFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      let response;
+      try {
+        response = await pageFetch(input, init);
+      } catch (error) {
+        record(input);
+        throw error;
+      }
+      for (const method of ["arrayBuffer", "blob", "json", "text"]) {
+        const read = response[method].bind(response);
+        response[method] = async () => {
+          try {
+            return await read();
+          } finally {
+            record(input);
+          }
+        };
+      }
+      return response;
+    };
+    globalThis.settledFetchCount = (path) => settled.get(path) ?? 0;
+  });
+}
+
+export async function settledFetches(page, path) {
+  return page.evaluate((target) => globalThis.settledFetchCount(target), path);
+}
+
+export async function waitForSettledFetches(page, path, count) {
+  await page.waitForFunction(
+    ([target, expected]) => globalThis.settledFetchCount(target) >= expected,
+    [path, count],
   );
 }
 

@@ -114,7 +114,7 @@ export function createGitHubProtocol({
         return;
       }
       if (request.method === "GET" && url.pathname === `/repos/${repository}`) {
-        await beforeMetadataResponse?.();
+        await beforeMetadataResponse?.({ request, response });
       }
       if (url.pathname === "/graphql") {
         entry.query = body.query;

@@ -380,6 +380,28 @@ test("native selected-model policy explicitly chooses Codex or OpenClaw", () => 
     }),
     "codex",
   );
+  // A model ID may itself contain slashes. The provider ends at the first slash, so the
+  // catalog entry `vendor/model` must match `openai/vendor/model` and keep its authored name.
+  assert.equal(
+    resolveConfiguredHarnessId({
+      agents: {
+        defaults: {
+          model: "openai/vendor/model",
+          models: { "openai/vendor/model": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://gateway.example.test/v1",
+            api: "openai-responses",
+            models: [{ id: "vendor/model", name: "Team Fast", agentRuntime: { id: "openclaw" } }],
+          },
+        },
+      },
+    }),
+    "openclaw",
+  );
 });
 
 test("an unambiguous built-in model defaults to embedded OpenClaw", () => {
@@ -758,6 +780,24 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       },
     },
     {
+      // The nested catalog entry must still be found, or its conflicting runtime would go unseen.
+      name: "selected model policy cannot mask a conflicting nested-slash provider-model runtime",
+      executionMode: "embedded",
+      values: {
+        agents: {
+          defaults: {
+            model: "openai/vendor/model",
+            models: { "openai/vendor/model": { agentRuntime: { id: "openclaw" } } },
+          },
+        },
+        models: {
+          providers: {
+            openai: { models: [{ id: "vendor/model", agentRuntime: { id: "codex" } }] },
+          },
+        },
+      },
+    },
+    {
       name: "per-agent model policy cannot mask a conflicting default runtime",
       executionMode: "embedded",
       values: {
@@ -896,7 +936,9 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     (error) =>
       error instanceof NativeWorkerSupportError &&
       /cloudWorkers\.requiredProfile/.test(error.message) &&
-      /docs\/reference\/harness-execution\.md#native-worker-support/.test(error.message),
+      /docs-enterprise\.openclaw\.org\/reference\/harness-execution\/#native-worker-support/.test(
+        error.message,
+      ),
   );
   assert.equal((await controller.getInstallation(administrator)).capabilities, undefined);
   assert.deepEqual(await controller.listRevisions(administrator, namespace.id, agent.id), [

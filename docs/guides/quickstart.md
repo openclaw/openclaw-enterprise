@@ -60,6 +60,12 @@ browser console URL. Only import the public `browser-ca.crt`; keep its private
 key and the entire state directory private. Remove the CA from your browser's
 trust store when you discard this installation.
 
+Open the printed URL on the machine that ran `./bin/occ dev up`. Kubernetes-only
+mode publishes the console port on that machine's loopback, and the hostname
+ends in `.localhost`, so another computer resolves it to itself. When the
+browser is on a different computer, follow
+[Open the console from another machine](operate/troubleshooting.md#open-the-console-from-another-machine).
+
 Sign in as `admin@development.openclaw.invalid` using the generated password in
 the administrator password file printed by startup. That file and the service
 key are private credentials; keep them on your machine. The separate HTTP API

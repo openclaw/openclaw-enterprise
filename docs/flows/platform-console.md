@@ -128,7 +128,8 @@ Completed views retain their DOM, handlers, and draft capture callbacks. On retu
 `loadPage` rereads their GET dependencies and compares outcomes and user identity.
 `readSuccess` records response data; `readFailure` records HTTP error status and
 code, excluding per-attempt request IDs. Unchanged outcomes reactivate the view;
-recovery or a changed failure rebuilds it. A remembered tab-local `403` remains
+recovery or a changed failure rebuilds it, as does a first readable Namespace
+for a view retained without a selection. A remembered tab-local `403` remains
 denied without another audited request; its owning panel's Retry clears that
 memory. Page/session admission still runs before reuse.
 Pending reads, transport or malformed-response failures, expired sessions,
@@ -162,7 +163,7 @@ unavailable; selection never becomes an API query selector.
 
 `shell.mjs:namespaceSelector` disables and hides choices through session and
 Namespace checks for loads, Refresh, and admission-starting navigation;
-retained-view validation can extend this.
+retained-view reads do not extend this.
 Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
@@ -336,6 +337,8 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
+- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
 - 2026-10-03 09:42: Track completed GET failures centrally and revalidate their outcomes before restoring a view. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
 
 - 2026-09-30 19:00: Remember denied Agent detail snapshot reads per tab so reloads do not add an audited denial per view.

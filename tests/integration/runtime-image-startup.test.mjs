@@ -1543,18 +1543,15 @@ test(
     assert.ok(
       (await gatewayProcessEnvironment(containerName)).includes("OPENCLAW_CONFIG_READONLY=1"),
     );
-    // OpenClaw promotes its last-known-good backup just after it reports ready.
-    const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
-    let logs = "";
-    while (!logs.includes("heartbeat: started") && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const output = await runDocker(["logs", containerName]);
-      logs = `${output.stdout}\n${output.stderr}`;
-    }
+    // OpenClaw promotes its last-known-good backup just after it reports ready,
+    // and only then releases its post-ready work. That work includes the remote
+    // model catalog refresh, which fails at once without a network. Its log line
+    // therefore comes after any promotion failure would have been logged. This
+    // ordering is OpenClaw's (checked at the pinned source): re-check it when the
+    // pin moves, since a promotion moved after post-ready work would pass here.
+    const logs = await waitForDockerLog(containerName, /remote model catalog refresh failed/);
     assert.match(logs, /heartbeat: started/);
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-    const output = await runDocker(["logs", containerName]);
-    assert.doesNotMatch(`${output.stdout}\n${output.stderr}`, /last-known-good|EROFS/);
+    assert.doesNotMatch(logs, /last-known-good|EROFS/);
   },
 );
 
@@ -2757,9 +2754,9 @@ assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "c
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.158.0");
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "9d9c8568c51e340540f634f71bd7c7582a70debc");
-assert.equal(provenance.sourceArchiveSha256, "175260a3e26e6de4c1225ff27d8c2b17b01b700640db915a8bac9ee3d4cf903f");
-assert.equal(provenance.openclawBridgePatchSha256, "705b21a67f344de66a5468a07b35f6fec01635331d99cb85d9254c56bccc0c7d");
+assert.equal(provenance.commit, "6f91eda9c72d6b4c2640cb76b5a753e64089f6f2");
+assert.equal(provenance.sourceArchiveSha256, "8e0f0332bbdb798834148895d57c19e6b622dbb3b5eac39801c14c316ad93d0c");
+assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca");
 assert.equal(provenance.openclawConnectPatchSha256, "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f");
 assert.equal(provenance.openclawTrustedProxyRolePatchSha256, "a8d5e59d74fdbdab4df4974663c7a40cabe6086572d84c8baec998f208d17ab5");
 assert.equal(provenance.codex.version, "0.158.0");

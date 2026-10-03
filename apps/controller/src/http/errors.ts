@@ -16,6 +16,7 @@ import {
   IAMRoleInUseError,
   ModelCredentialValueError,
   ModelDiscoveryError,
+  ModelProviderSettingError,
   PluginDiscoveryError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
@@ -27,6 +28,7 @@ import {
   ResourceStateConflictError,
   RuntimeLogsError,
   ScopeViolationError,
+  SecretBindingValidationError,
   SecretValueError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
@@ -295,6 +297,51 @@ function capped(message: string): string {
   return characters.length <= 256 ? characters.join("") : `${characters.slice(0, 255).join("")}…`;
 }
 
+/**
+ * Names each remaining kind and as many of its resource IDs as fit the 256-character
+ * message contract; a kind whose IDs do not all fit says how many are left.
+ */
+function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
+  const prefix = "The requested Namespace is not empty.";
+  if (error.contents.length === 0) {
+    return prefix;
+  }
+  const shown = new Map(error.contents.map((kind) => [kind, 0]));
+  const render = (): string => {
+    const parts = error.contents.map((kind) => {
+      const ids = error.ids[kind] ?? [];
+      const count = shown.get(kind) ?? 0;
+      if (ids.length === 0) {
+        return kind;
+      }
+      if (count === 0) {
+        return `${kind} (${ids.length})`;
+      }
+      const more = ids.length - count;
+      return `${kind} (${ids.slice(0, count).join(", ")}${more === 0 ? "" : ` and ${more} more`})`;
+    });
+    return `${prefix} It still contains: ${parts.join(", ")}.`;
+  };
+  // Add one ID per kind in turn, so a kind with many IDs cannot crowd out the ones after it
+  // (Configurations, the kind with no list route). A kind whose next ID does not fit is done.
+  const kinds = new Set(error.contents);
+  const done = new Set<string>();
+  while (done.size < kinds.size) {
+    for (const kind of kinds) {
+      const count = shown.get(kind) ?? 0;
+      if (done.has(kind)) {
+        continue;
+      }
+      shown.set(kind, count + 1);
+      if (count + 1 > (error.ids[kind]?.length ?? 0) || Array.from(render()).length > 256) {
+        shown.set(kind, count);
+        done.add(kind);
+      }
+    }
+  }
+  return capped(render());
+}
+
 function errorName(error: unknown): string | undefined {
   return error instanceof Error ? error.name : undefined;
 }
@@ -501,6 +548,9 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof ConfigurationHarnessError) {
     return failure(400, "INVALID_REQUEST", error.message);
   }
+  if (error instanceof SecretBindingValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message);
+  }
   if (error instanceof NativeWorkerSupportError) {
     return failure(400, "INVALID_REQUEST", error.message);
   }
@@ -512,7 +562,7 @@ export function requestFailure(error: unknown): RequestFailure {
     // rule, not submitted values.
     return failure(400, "INVALID_REQUEST", capped(error.message));
   }
-  if (error instanceof ModelCredentialValueError) {
+  if (error instanceof ModelCredentialValueError || error instanceof ModelProviderSettingError) {
     // The message names only the field; other Configuration validation stays generic.
     // The field's path includes a submitted provider name, so it is capped like other
     // messages that name submitted object keys.
@@ -532,9 +582,7 @@ export function requestFailure(error: unknown): RequestFailure {
     );
   }
   if (error instanceof NamespaceNotEmptyError) {
-    const contents =
-      error.contents.length === 0 ? "" : ` It still contains: ${error.contents.join(", ")}.`;
-    return failure(409, "NAMESPACE_NOT_EMPTY", `The requested Namespace is not empty.${contents}`);
+    return failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");

@@ -96,6 +96,9 @@ func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
 		{[]string{"namespace", "get", "default"}, "occ namespace list"},
 		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, "occ secret list"},
 		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, "occ agent revisions"},
+		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, "occ credential-source list"},
+		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_1"}, "occ agent list"},
+		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "get", testAgentID, "openai"}, "occ credential-source list"},
 	}
 	for _, testCase := range cases {
 		_, requested, err := runOCC(t, map[string]string{}, testCase.args...)
@@ -211,6 +214,29 @@ func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	}
 }
 
+func TestDeploymentStatusShowsModelProbeFailureCause(t *testing.T) {
+	// Finding 323: a failed startup model check names its classified cause.
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses := map[string]string{
+		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
+			`","namespaceId":"` + testNamespaceID + `","status":"failed","error":{"code":"RUNTIME_MODEL_PROBE_FAILED",` +
+			`"message":"Deployment runtime startup model check failed.","data":{"runtimeFailure":{"component":"gateway",` +
+			`"check":"model-probe","checkedAt":"2026-10-03T08:00:00.000Z","code":"MODEL_PROBE_FAILED",` +
+			`"cause":{"kind":"PROBE_STATUS","detail":"rate_limit"}}}}}`,
+	}
+	for _, output := range []string{"table", "json"} {
+		out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "--output", output, "agent", "deployment-status", testAgentID, testRevision2ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"RUNTIME_MODEL_PROBE_FAILED", "PROBE_STATUS", "rate_limit"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("%s output lacks %s:\n%s", output, want, out)
+			}
+		}
+	}
+}
+
 func TestDeploymentStatusTableShowsStartupWarnings(t *testing.T) {
 	// D331: a succeeded deployment that disabled a plugin must not look clean.
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
@@ -259,5 +285,42 @@ func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
 	if err == nil || !strings.Contains(err.Error(), "occ agent deploy") {
 		t.Fatalf("expected a deploy hint, got %v", err)
+	}
+}
+
+// Go maps have no order, so JSON output must sort object keys (as YAML does) to be
+// diffable from run to run, including nested objects in table cells.
+func TestJSONOutputAndTableCellsKeepAStableKeyOrder(t *testing.T) {
+	responses := map[string]string{
+		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID: `{"status":"active","name":"a","id":"` + testAgentID + `","executionMode":"embedded","desiredRuntimeState":"running","createdAt":"2026-09-30T00:00:00.000Z","configurationId":"cfg_1","activeRevisionId":"rev_1","servicePrincipalId":"sp_1"}`,
+		"GET /namespaces/" + testNamespaceID + "/iam/roles/role_1":      `{"id":"role_1","permissions":[{"resourceKind":"agent","action":"read"}]}`,
+	}
+	want := `{
+  "activeRevisionId": "rev_1",
+  "configurationId": "cfg_1",
+  "createdAt": "2026-09-30T00:00:00.000Z",
+  "desiredRuntimeState": "running",
+  "executionMode": "embedded",
+  "id": "` + testAgentID + `",
+  "name": "a",
+  "servicePrincipalId": "sp_1",
+  "status": "active"
+}
+`
+	for range 20 {
+		out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "-o", "json", "agent", "get", testAgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != want {
+			t.Fatalf("JSON output must list keys in a stable, sorted order:\n%s", out)
+		}
+		out, _, err = runOCC(t, responses, "--namespace", testNamespaceID, "iam", "role", "get", "role_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, `[{"action":"read","resourceKind":"agent"}]`) {
+			t.Fatalf("table cells must render nested objects with sorted keys:\n%s", out)
+		}
 	}
 }

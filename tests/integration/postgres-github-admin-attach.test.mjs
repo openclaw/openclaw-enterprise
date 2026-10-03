@@ -18,8 +18,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "attach-recovery@example.test";
 const password = "attach-member-password";
 const authSecret = "attach-admin-auth-test-secret-at-least-32-bytes";
@@ -35,7 +35,7 @@ const secondSubject = "9100002";
 // GitHub identities and manage other accounts' identities, all without contacting GitHub.
 test(
   "Installation administrators attach, detach and re-attach GitHub identities and disable accounts",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

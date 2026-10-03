@@ -4,11 +4,11 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer as httpsServer } from "node:https";
-import { createServer as netServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { availablePort } from "../helpers/available-port.mjs";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
 const execute = promisify(execFile);
@@ -36,11 +36,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     certificate,
   ]);
 
-  const reservation = netServer();
-  reservation.listen(0, "127.0.0.1");
-  await once(reservation, "listening");
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
+  const port = await availablePort();
   const environment = {
     PATH: process.env.PATH,
     OPENCLAW_PLUGIN_STATUS_PORT: String(port),

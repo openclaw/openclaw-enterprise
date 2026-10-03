@@ -11,8 +11,8 @@ import {
   passwordSignIn,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "password-default-admin@example.test";
 const memberEmail = "password-default-member@example.test";
 const memberPassword = "password-default-member-password";
@@ -23,7 +23,7 @@ const authSecret = "password-default-auth-test-secret-at-least-32-bytes";
 // settings, with no OCC_AUTH_GITHUB_* or trusted-proxy names. No provider is reachable.
 test(
   "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;

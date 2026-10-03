@@ -15,8 +15,8 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "activation-admin@example.test";
 const password = "activation-member-password";
 const authSecret = "activation-default-auth-test-secret-at-least-32-bytes";
@@ -31,7 +31,7 @@ const secrets = {
 // administrators keep creating password accounts afterwards.
 test(
   "password accounts from before GitHub activation keep signing in, and creation continues after it",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

@@ -9144,7 +9144,8 @@
                         ]
                       },
                       { "type": "null" }
-                    ]
+                    ],
+                    "description": "Dedicated Harness authentication. `credential_source` is refused with 400 INVALID_REQUEST: create the Agent with the source, then deploy it."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -11377,6 +11378,10 @@
                             { "const": "revoked", "type": "string" }
                           ],
                           "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
+                        },
+                        "withdrawalInProgress": {
+                          "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -11386,7 +11391,8 @@
                         "credentialSourceId",
                         "state",
                         "requestedBy",
-                        "requestedAt"
+                        "requestedAt",
+                        "withdrawalInProgress"
                       ],
                       "type": "object"
                     },
@@ -11538,6 +11544,10 @@
                             { "const": "revoked", "type": "string" }
                           ],
                           "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
+                        },
+                        "withdrawalInProgress": {
+                          "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -11547,7 +11557,8 @@
                         "credentialSourceId",
                         "state",
                         "requestedBy",
-                        "requestedAt"
+                        "requestedAt",
+                        "withdrawalInProgress"
                       ],
                       "type": "object"
                     },
@@ -12090,42 +12101,105 @@
                               "properties": {
                                 "code": { "maxLength": 64, "minLength": 1, "type": "string" },
                                 "data": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "runtimeFailure": {
+                                  "anyOf": [
+                                    {
                                       "additionalProperties": false,
                                       "properties": {
-                                        "check": {
-                                          "maxLength": 64,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
-                                          "type": "string"
+                                        "runtimeFailure": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "check": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            },
+                                            "checkedAt": {
+                                              "format": "date-time",
+                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+                                              "type": "string"
+                                            },
+                                            "code": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            },
+                                            "component": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["component", "check", "checkedAt", "code"],
+                                          "type": "object"
                                         },
-                                        "checkedAt": {
-                                          "format": "date-time",
-                                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
-                                          "type": "string"
-                                        },
-                                        "code": {
-                                          "maxLength": 64,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
-                                          "type": "string"
-                                        },
-                                        "component": {
-                                          "maxLength": 64,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
-                                          "type": "string"
-                                        }
+                                        "timeoutMs": { "minimum": 1, "type": "integer" }
                                       },
-                                      "required": ["component", "check", "checkedAt", "code"],
+                                      "required": ["timeoutMs"],
                                       "type": "object"
                                     },
-                                    "timeoutMs": { "minimum": 1, "type": "integer" }
-                                  },
-                                  "required": ["timeoutMs"],
-                                  "type": "object"
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "runtimeFailure": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "cause": {
+                                              "additionalProperties": false,
+                                              "description": "Why the startup model check failed, classified by the runtime.",
+                                              "properties": {
+                                                "detail": {
+                                                  "description": "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. Never native output.",
+                                                  "maxLength": 32,
+                                                  "minLength": 1,
+                                                  "pattern": "^[A-Za-z0-9_-]{1,32}$",
+                                                  "type": "string"
+                                                },
+                                                "kind": {
+                                                  "anyOf": [
+                                                    { "const": "PROCESS_EXIT", "type": "string" },
+                                                    { "const": "PROBE_STATUS", "type": "string" },
+                                                    { "const": "INVALID_OUTPUT", "type": "string" },
+                                                    { "const": "WRAPPER_ERROR", "type": "string" }
+                                                  ],
+                                                  "description": "PROCESS_EXIT: the check process exited nonzero, was killed or could not run. PROBE_STATUS: the check ran and reported the model unusable. INVALID_OUTPUT: its output was not the expected JSON. WRAPPER_ERROR: the runtime wrapper could not prepare or read the check."
+                                                }
+                                              },
+                                              "required": ["kind"],
+                                              "type": "object"
+                                            },
+                                            "check": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            },
+                                            "checkedAt": {
+                                              "format": "date-time",
+                                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+                                              "type": "string"
+                                            },
+                                            "code": {
+                                              "const": "MODEL_PROBE_FAILED",
+                                              "type": "string"
+                                            },
+                                            "component": {
+                                              "maxLength": 64,
+                                              "minLength": 1,
+                                              "pattern": "^[A-Za-z0-9._~:@-]{1,64}$",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["component", "check", "checkedAt", "code"],
+                                          "type": "object"
+                                        }
+                                      },
+                                      "required": ["runtimeFailure"],
+                                      "type": "object"
+                                    }
+                                  ]
                                 },
                                 "message": { "minLength": 1, "type": "string" }
                               },
@@ -12133,7 +12207,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. Native error text is never returned."
+                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

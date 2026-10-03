@@ -1,3 +1,4 @@
+import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
 import swePreset from "/console/swe-preset.mjs";
@@ -61,6 +62,38 @@ function configurationValues(scenario) {
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
+function candidateDeploymentError(scenario, checkedAt) {
+  if (scenario.candidateModelProbeCause) {
+    return {
+      code: "RUNTIME_MODEL_PROBE_FAILED",
+      message: "Deployment runtime startup model check failed.",
+      data: {
+        runtimeFailure: {
+          component: "gateway",
+          check: "model-probe",
+          code: "MODEL_PROBE_FAILED",
+          checkedAt,
+          cause: scenario.candidateModelProbeCause,
+        },
+      },
+    };
+  }
+  if (scenario.candidateSelected) {
+    return {
+      code: "REVISION_FINALIZATION_INCOMPLETE",
+      message: "Deployment reconciliation failed.",
+    };
+  }
+  return {
+    code: "CONVERGENCE_DEADLINE_EXCEEDED",
+    message: "Deployment convergence deadline exceeded.",
+    data: {
+      timeoutMs: 60000,
+      runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },
+    },
+  };
+}
+
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
   let signedIn = !scenario.signedOut;
@@ -296,24 +329,7 @@ export function installFixture(scenario, evidence) {
           : null,
         error:
           scenario.candidateDeploymentStatus === "failed"
-            ? scenario.candidateSelected
-              ? {
-                  code: "REVISION_FINALIZATION_INCOMPLETE",
-                  message: "Deployment reconciliation failed.",
-                }
-              : {
-                  code: "CONVERGENCE_DEADLINE_EXCEEDED",
-                  message: "Deployment convergence deadline exceeded.",
-                  data: {
-                    timeoutMs: 60000,
-                    runtimeFailure: {
-                      component: "harness",
-                      check: "readiness",
-                      code: "TIMEOUT",
-                      checkedAt: candidate.createdAt,
-                    },
-                  },
-                }
+            ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
       });
@@ -391,7 +407,14 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
-  const presets = [preset];
+  const presets = [
+    preset,
+    {
+      ...structuredClone(defaultCodexPreset),
+      id: "pre_default_codex",
+      namespaceId,
+    },
+  ];
   if (scenario.swePreset) {
     for (const [name, definition] of [
       ["standard-codex", standardCodexPreset],

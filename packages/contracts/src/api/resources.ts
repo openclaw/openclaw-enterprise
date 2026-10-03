@@ -44,6 +44,36 @@ const RuntimeFailureIdentifier = Type.String({
   pattern: "^[A-Za-z0-9._~:@-]{1,64}$",
 });
 
+const RuntimeFailureCauseSchema = Type.Object(
+  {
+    kind: Type.Union(
+      [
+        Type.Literal("PROCESS_EXIT"),
+        Type.Literal("PROBE_STATUS"),
+        Type.Literal("INVALID_OUTPUT"),
+        Type.Literal("WRAPPER_ERROR"),
+      ],
+      {
+        description:
+          "PROCESS_EXIT: the check process exited nonzero, was killed or could not run. PROBE_STATUS: the check ran and reported the model unusable. INVALID_OUTPUT: its output was not the expected JSON. WRAPPER_ERROR: the runtime wrapper could not prepare or read the check.",
+      },
+    ),
+    detail: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 32,
+        pattern: "^[A-Za-z0-9_-]{1,32}$",
+        description:
+          "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. Never native output.",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description: "Why the startup model check failed, classified by the runtime.",
+  },
+);
+
 export const AgentDeviceAuthorizationResponse = Type.Object(
   {
     data: Type.Object(
@@ -695,6 +725,10 @@ export const CredentialWithdrawalSchema = Type.Object(
       }),
     ),
     lastAttemptAt: Type.Optional(Type.String({ format: "date-time" })),
+    withdrawalInProgress: Type.Boolean({
+      description:
+        "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+    }),
   },
   { additionalProperties: false },
 );
@@ -965,23 +999,40 @@ export const AgentDeploymentStatusSchema = Type.Object(
             code: Type.String({ minLength: 1, maxLength: 64 }),
             message: Type.String({ minLength: 1 }),
             data: Type.Optional(
-              Type.Object(
-                {
-                  timeoutMs: Type.Integer({ minimum: 1 }),
-                  runtimeFailure: Type.Optional(
-                    Type.Object(
+              Type.Union([
+                Type.Object(
+                  {
+                    timeoutMs: Type.Integer({ minimum: 1 }),
+                    runtimeFailure: Type.Optional(
+                      Type.Object(
+                        {
+                          component: RuntimeFailureIdentifier,
+                          check: RuntimeFailureIdentifier,
+                          checkedAt: RuntimeEvidenceTimestamp,
+                          code: RuntimeFailureIdentifier,
+                        },
+                        { additionalProperties: false },
+                      ),
+                    ),
+                  },
+                  { additionalProperties: false },
+                ),
+                Type.Object(
+                  {
+                    runtimeFailure: Type.Object(
                       {
                         component: RuntimeFailureIdentifier,
                         check: RuntimeFailureIdentifier,
                         checkedAt: RuntimeEvidenceTimestamp,
-                        code: RuntimeFailureIdentifier,
+                        code: Type.Literal("MODEL_PROBE_FAILED"),
+                        cause: Type.Optional(RuntimeFailureCauseSchema),
                       },
                       { additionalProperties: false },
                     ),
-                  ),
-                },
-                { additionalProperties: false },
-              ),
+                  },
+                  { additionalProperties: false },
+                ),
+              ]),
             ),
           },
           { additionalProperties: false },
@@ -989,7 +1040,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. Native error text is never returned.",
+          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned.",
       },
     ),
     warnings: Type.Array(

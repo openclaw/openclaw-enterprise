@@ -73,6 +73,18 @@ export class RepositoryReceiptClient {
     }
   }
 
+  async fence(id: string, input: RepositoryCredentialBoundSessionInput): Promise<void> {
+    const result = await this.call({
+      kind: "fence",
+      admissionId: id,
+      generation: this.generation,
+      input,
+    });
+    if (result.kind !== "acknowledged") {
+      throw new Error("RECEIPT_UNAVAILABLE");
+    }
+  }
+
   async status(sessionId: string): Promise<SessionStatus | undefined> {
     const result = await this.call({ kind: "status", sessionId });
     if (result.kind === "missing") {

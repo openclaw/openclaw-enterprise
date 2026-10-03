@@ -43,7 +43,7 @@ input is not supported. The server validates document fields against the
 | `occ namespace list`                                   | Lists authorized Namespaces. `ADOPTED NAMESPACE` is set only for adopted Kubernetes namespaces.                                                                  |
 | `occ namespace get ID`                                 | Reads one Namespace and its status.                                                                                                                              |
 | `occ namespace create NAME`                            | Creates a Namespace. `--existing-namespace K8S_NAME` requests adoption of an operator-prepared Kubernetes namespace and also requires Installation `administer`. |
-| `occ namespace delete ID`                              | Begins deleting an empty Namespace. Use `namespace get` to inspect the resulting state.                                                                          |
+| `occ namespace delete ID`                              | Begins deleting an empty Namespace. Use `namespace get` to inspect the resulting state. Its name stays reserved and cannot be reused.                            |
 | `occ configuration create --file FILE`                 | Creates a Configuration. The body contains `kind` and `values`.                                                                                                  |
 | `occ configuration get ID`                             | Reads a Configuration.                                                                                                                                           |
 | `occ configuration update ID --file FILE`              | Updates a Configuration; the body must replace `values`. Omit the create-only `kind`.                                                                            |
@@ -117,7 +117,7 @@ notice names the newer revision to pass. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
-Agent `administer` and `read` plus `read` on the revision, and each view is
+Agent `read_logs` (or `administer`) and `read` plus `read` on the revision, and each view is
 audited.
 
 | `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |

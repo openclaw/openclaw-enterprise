@@ -498,6 +498,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.deepEqual(drivers.defaultPresets.map(({ name }) => name).sort(), [
     "Standard Codex",
     "Standard OpenClaw",
+    "default-codex",
   ]);
   assert.equal(drivers.pluginDriver.id, "codex-plugin");
   assert.equal(drivers.pluginDriver.discoveryCredential, "none");
@@ -1858,11 +1859,21 @@ test(
           container.env.find(({ name }) => name === "OCC_WORKER_READINESS_PATH").value,
           `${readinessMount.mountPath}/ready`,
         );
+        // Liveness restarts a wedged run loop, so its progress marker must be writable too.
+        assert.equal(
+          container.env.find(({ name }) => name === "OCC_WORKER_LIVENESS_PATH").value,
+          `${readinessMount.mountPath}/alive`,
+        );
         assert.deepEqual(container.readinessProbe.exec.command, [
           "node",
           "scripts/production-healthcheck.mjs",
           "worker",
           "ready",
+        ]);
+        assert.deepEqual(container.livenessProbe.exec.command, [
+          "node",
+          "scripts/production-healthcheck.mjs",
+          "worker",
         ]);
       }
     }

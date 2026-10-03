@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-30
-last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
+updated: 2026-10-03
+last_updated_session: authoring-run/264cfb8c-8627-40cb-8ac4-0b67ef3134dc
 ---
 
 # Container publication flow
@@ -237,6 +237,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-03 16:19: Refresh the OpenClaw main pin to `6f91eda9c72` (openclaw/openclaw#162156), its archive checksum, the rebased read-only-paths bridge patch checksum, and the matching workspace-template version; bridge behavior is unchanged. (authoring-run/264cfb8c-8627-40cb-8ac4-0b67ef3134dc - 8193ad3cadec560e3f97401fb999e672b1517aec)
 
 - 2026-09-30 11:18: Change publication and recovery policy to public source with public GHCR packages; no-push preparation remains allowed only with literal `PUBLISH=false`. (authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584 - 76e9de599a1c5b1319af4f9003f86ecbf53aa9ec)
 

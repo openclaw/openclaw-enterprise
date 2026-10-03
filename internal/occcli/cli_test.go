@@ -665,6 +665,48 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	}
 }
 
+func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *testing.T) {
+	source := `{"id":"cs_1","name":"openai","type":"openai","state":"ready"`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/namespaces/ns_1/credential-sources":
+			// The list API returns metadata only, never a live status.
+			_, _ = io.WriteString(w, `{"data":[`+source+`}],"meta":{"requestId":"req_1"}}`)
+		case "/namespaces/ns_1/credential-sources/cs_1":
+			_, _ = io.WriteString(w, `{"data":`+source+`,"status":{"state":"ready"}},"meta":{"requestId":"req_2"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		args []string
+		rows [][]string
+	}{
+		{[]string{"list"}, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_1", "openai", "openai", "ready"}}},
+		{[]string{"get", "cs_1"}, [][]string{{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS"}, {"cs_1", "openai", "openai", "ready", "ready"}}},
+	} {
+		var out strings.Builder
+		command := New(&out, io.Discard)
+		command.SetArgs(append(append([]string{"credential-source"}, test.args...), "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"))
+		if err := command.Execute(); err != nil {
+			t.Fatalf("%v: %v", test.args, err)
+		}
+		var got [][]string
+		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			got = append(got, strings.Fields(line))
+		}
+		if !reflect.DeepEqual(got, test.rows) {
+			t.Errorf("%v table = %q, want %q", test.args, got, test.rows)
+		}
+	}
+}
+
 func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 	var followed bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

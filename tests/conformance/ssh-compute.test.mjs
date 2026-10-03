@@ -21,7 +21,6 @@ import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   SshComputeDriver,
@@ -30,6 +29,7 @@ import {
 import { SystemSshCommandExecutor } from "../../apps/controller/src/drivers/compute/ssh/executor.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { Check } = require("typebox/value");
@@ -274,6 +274,15 @@ async function fixture(t, selection = {}) {
   };
 }
 
+// The fixture flock(1) logs each attempt (about 50 ms apart) that finds the host
+// lock held, so a test can act while a helper is waiting for the lock.
+function waitForLockWait(f, attempts = 1) {
+  return waitFor(`the helper to find the host lock held ${attempts} times`, async () => {
+    const log = await readFile(join(f.state, "flock-waiting"), "utf8").catch(() => "");
+    return log.split("\n").length - 1 >= attempts ? true : undefined;
+  });
+}
+
 // Hold the host lock exactly as a live helper would: a flock(2) on <root>/.compute-lock
 // owned by a child that exits when its stdin closes. Releasing always ends stdin first:
 // the sh child inherits the stdio pipes, so killing only its parent would orphan it and
@@ -331,21 +340,6 @@ async function json(path) {
 async function missing(path) {
   await assert.rejects(access(path), { code: "ENOENT" });
 }
-// Polls `read` until it returns a value other than undefined, failing after the deadline.
-async function waitFor(description, read, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await read();
-    if (value !== undefined) {
-      return value;
-    }
-    if (Date.now() >= deadline) {
-      assert.fail(`Timed out waiting for ${description}.`);
-    }
-    await delay(10);
-  }
-}
-
 function setOption(object, keys, value) {
   let target = object;
   for (const key of keys.slice(0, -1)) {
@@ -1006,10 +1000,7 @@ test("SSH local executor cancellation terminates the real helper waiting for the
   t.after(() => held.kill());
   const controller = new AbortController();
   const pending = withComputeAbortSignal(controller.signal, () => f.driver.ensureNamespace(tenant));
-  while (f.children.length === 0) {
-    await delay(10);
-  }
-  await delay(100);
+  await waitForLockWait(f);
   controller.abort();
   assert.equal((await pending).failure, "retryable");
   assert.notEqual(f.children[0].signalCode ?? f.children[0].exitCode, null);
@@ -1045,11 +1036,8 @@ test("SSH helper stops mutating when its session pipe closes, without any signal
   const held = await holdLock(f);
   t.after(() => held.kill());
   const pending = f.driver.ensureNamespace(tenant);
-  while (f.children.length === 0) {
-    await delay(10);
-  }
+  await waitForLockWait(f);
   const child = f.children[0];
-  await delay(100);
   child.stdout.destroy();
   const started = Date.now();
   assert.equal((await pending).failure, "retryable");
@@ -1066,11 +1054,9 @@ test("SSH host lock excludes concurrent helpers and is released by the kernel wh
   const held = await holdLock(f);
   t.after(() => held.kill());
   const pending = f.driver.ensureNamespace(tenant);
-  while (f.children.length === 0) {
-    await delay(10);
-  }
-  // While another helper holds the lock, this one must wait without mutating the host.
-  await delay(1_500);
+  // While another helper holds the lock, this one must keep waiting without mutating
+  // the host: thirty held attempts span about the 1.5 s this test used to sleep.
+  await waitForLockWait(f, 30);
   await missing(f.nsDir);
   assert.equal(f.children[0].exitCode, null);
   // A holder killed without any cleanup (SIGKILL) releases the flock through the kernel;

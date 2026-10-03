@@ -15,6 +15,7 @@ import {
 } from "./kubernetes-real.mjs";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
 import { ensureEnvoyGatewayControllers } from "./envoy-workspace-gateway.mjs";
+import { availablePort } from "./available-port.mjs";
 
 export async function readProtectedInput(path, label) {
   assert.ok(path && isAbsolute(path), `${label} requires an explicit absolute file`);
@@ -248,13 +249,7 @@ export async function createInstalledRepositoryFixture(
     kind: "Namespace",
     metadata: { name: system, labels: { "oce-test": suffix } },
   });
-  const port = await new Promise((resolve) => {
-    const server = net.createServer();
-    server.listen(0, "127.0.0.1", () => {
-      const value = server.address().port;
-      server.close(() => resolve(value));
-    });
-  });
+  const port = await availablePort();
   const baseURL = `https://localhost:${port}`;
   const configuration = createKubernetesInstallationConfiguration({
     authentication: { mode: "inCluster" },

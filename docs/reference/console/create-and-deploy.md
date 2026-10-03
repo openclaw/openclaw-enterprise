@@ -11,13 +11,12 @@ The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 ## Create an Agent
 
-Embedded and Dedicated starters enable native Control UI at
-`http://127.0.0.1:18789` and `http://localhost:18789`. Compute renders gateway
-authentication from Installation trust; starters supply no gateway token.
-Do not expose the gateway publicly. **Open native admin UI** requires
-[native admin setup](../../guides/deploy/native-admin.md): trusted-proxy authentication
-and the exact Agent HTTPS origin. Loopback origins alone are insufficient.
-Presets and edited Configuration JSON retain their settings.
+Starters enable native Control UI at `http://127.0.0.1:18789` and
+`http://localhost:18789`. Compute renders gateway authentication from Installation
+trust; starters supply no token. Do not expose the gateway publicly.
+**Open native admin UI** requires [native admin setup](../../guides/deploy/native-admin.md):
+trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
+are insufficient. Presets and edited Configuration JSON retain their settings.
 
 Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
 and full-facet Sandbox provisioning. The pinned runtime lacks this support;
@@ -29,7 +28,8 @@ still block initial workspace files and Secret-backed environment projection.
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
    Review defaults and choose an existing or new model Secret.
-   Select **Start without Preset** for standard defaults.
+   **Start with default Preset** loads `default-codex`; **Start without Preset**
+   skips Presets.
 3. Enter a unique name within the Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** by default and **OpenClaw**;
    Anthropic offers only **OpenClaw**. **Execution mode** is Dedicated for Codex,
@@ -45,9 +45,8 @@ still block initial workspace files and Secret-backed environment projection.
    Choose a model Secret or **Create new Secret...**.
    New Secrets persist after cancellation.
    Choose a model from the starter list or select **Enter model ID manually**.
-   No model is preselected. Confirm credential and runtime support;
-   credentials stay outside Configuration.
-4. Confirm your Installation has access to the chosen model. Primary and fallback
+   No model is preselected.
+4. Confirm the Installation, credential, and runtime support the chosen model. Primary and fallback
    models must use the same supported provider and Harness. For custom settings,
    open **Advanced settings**. Selection changes preserve unrelated JSON edits;
    **Reset template** replaces them.
@@ -55,11 +54,10 @@ still block initial workspace files and Secret-backed environment projection.
    and set their access levels. Kubernetes supports Codex (Dedicated) or OpenClaw
    (Embedded), without a Sandbox Driver. Dedicated OpenClaw requires a Sandbox
    Driver, so repository credentials remain unsupported. Use Codex for repositories
-   with Slack. Leave repositories unselected if none are needed.
+   with Slack.
 
 6. If you need Slack, select **Dedicated** execution and use its channel card.
    Each token menu selects a readable Namespace Secret or **Create new Secret...**.
-   New Secrets persist even if you cancel Agent creation.
    **Apply channel settings** stages settings and bindings into the form;
    cancelling the drawer discards its selections.
    Settings and Secret bindings are saved with the Configuration;
@@ -79,11 +77,10 @@ still block initial workspace files and Secret-backed environment projection.
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-Before saving, Preset variables and forms survive navigation; passwords clear.
-Leaving a form started without a Preset discards its unsaved state. Saved Agents and
-Secrets remain. **Start over** confirms discard. Reload, page exit, and sign-out
-clear local drafts. After saving begins, navigation does not retain partial-save
-or uncertain-outcome form state; follow save recovery below.
+Before saving, selected Preset forms keep variables across Back/Forward; passwords
+clear. Leaving a default or no-Preset form discards unsaved state. Saved Agents and Secrets remain. **Start over** confirms discard.
+Reload, page exit, and sign-out clear local drafts. Once saving begins, navigation
+does not retain partial-save or uncertain-outcome state; follow save recovery below.
 
 For Codex plugins, open **Configure plugins**. With the
 [OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),
@@ -93,8 +90,8 @@ inventory and account access are unknown. In hosted mode, select **Service Accou
 (optional)**. **Previous page** and **Next page** fetch hosted pages; **Filter this
 page** filters locally. PAT catalog search is unavailable.
 Select a plugin to load tools, then **Add**. Use toggles and **Tool policy** for
-overrides. **Configured plugins** includes selections from other pages. **Done**
-closes the modal; **Create Agent** saves changes.
+overrides. **Configured plugins** includes selections from other pages. **Done** closes the modal;
+**Create Agent** saves changes.
 
 [Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) requires
 permission to use any selected Secret. The server reads its value without returning
@@ -104,8 +101,7 @@ or outbound access on failure, then retry. Editing follows installation capabili
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. Provisioning creates exact grants; ordinary drafts
-require IAM administration permission.
+responses, and browser storage.
 
 Presets preselect their authentication method or retain saved bindings.
 Method-only Presets require a model Secret. Bound API-key and Service Accounts
@@ -113,8 +109,8 @@ Presets fix the provider, including JSON edits; saved service account tokens als
 OpenClaw Presets retain their configured Harness independently of execution mode.
 Without model runtime policy, Presets keep the default Harness.
 Mode changes preserve provider transport settings.
-Operator-managed credentials fix OpenClaw across provider changes. Start without a
-Preset to change these choices, or edit authentication later in **Credentials**.
+Operator-managed credentials fix OpenClaw across provider changes. Start with
+`default-codex` to change these choices, or edit authentication later in **Credentials**.
 
 Provider changes reset Harness, credential, and model; authentication changes
 reset credential/model. Selecting OpenClaw clears an unsaved PAT and model and
@@ -150,18 +146,19 @@ Correct conflicting names or permissions, then retry those resources.
 If model/Slack Secret grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 Uncertain responses block another attempt: check displayed IDs and the Agents list;
-give the request ID to your operator if the outcome remains unknown. Leaving the
-form retains saved resources.
+give the request ID to your operator if the outcome remains unknown.
 
 If provisioning admission loses its response, **Retry provisioning request** resubmits
 the same request ID and saved Secret references. An acknowledged job is retried through
 its job URL; if that retry is refused after an unknown outcome, **Create Agent** resends
-the same request. Saved Secrets are reused, never deleted automatically. After a lost
-Secret save, check existing Namespace Secrets before starting again.
+the same request. A refused retry of a failed job shows the API's reason when it names
+one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
+Secrets are reused, never deleted automatically. After a lost Secret save, check
+existing Namespace Secrets before starting again.
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-Repository discovery is independent of model authentication. Select up to 16 approved
-repositories. Small catalogs offer **Add**; larger ones support search and paging.
+Repository discovery is independent of model authentication. Small catalogs offer
+**Add**; larger ones support search and paging.
 Suggestions favor repositories you recently saved in this browser and Namespace,
 then sort alphabetically.
 
@@ -180,9 +177,10 @@ merges, and the API contract. Edit saved drafts in **Create new version** >
 navigating away; returning to the tab can refresh the session and discard them.
 An interrupted save may still complete; inspect the saved draft before retrying.
 
-Failed rediscovery and navigation retain unsaved repository choices.
+Failed rediscovery retains unsaved repository choices for retry and across
+navigation in explicitly selected Preset forms.
 **Create Agent** stays blocked until discovery succeeds and filters choices against
-current policy. **Start over** discards selections.
+current policy.
 
 Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no selected repositories permits
 saving a draft; provisioning requires successful discovery.
@@ -190,9 +188,8 @@ Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
 distinct. Each subsequent write rechecks authorization.
 
-If the Configuration saves but Agent creation fails, the form shows its ID and
-keeps its JSON and Secret bindings fixed. After a known rejection of an ordinary
-zero-binding Agent, correct the editable Agent fields and retry directly. The
+If Agent creation is rejected after the Configuration saves, correct an ordinary
+zero-binding Agent's editable fields and retry directly. The
 retry reuses the saved Configuration and does not depend on repository choices
 or a Repo Driver.
 
@@ -203,13 +200,11 @@ one approved repository; an empty catalog cannot turn this attempt into an ordin
 Agent. Failed reloads disable creation and show the Configuration ID. Expiry returns
 to sign-in. **Start a new draft** opens a new form without deleting the Configuration.
 
-If the Agent response is lost or otherwise unknown, the save may have succeeded.
-The form disables further creation and does not expose the known-rejection
-recovery actions. Check the **Agents** list and, if the form showed a
-Configuration ID, the
+If the Agent response is unknown, the save may have succeeded: the form hides
+the known-rejection actions. Besides the **Agents** list, check any displayed
+Configuration ID's
 [exact Configuration](../configuration.md#create-read-update-and-delete) before
-starting again. If you cannot determine the outcome, give the displayed request
-ID, if available, to your operator.
+starting again.
 
 ## Use repositories and Slack on the same Agent
 
@@ -234,45 +229,38 @@ approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
-Select model authentication and bind any Slack tokens as Namespace Secrets.
-When Compute requires generated credentials, OCC creates missing transport
-credentials before first revision admission. Supported Dedicated Agent creation
-does so during provisioning. Neither path creates the selected `harnessAuth`
-model credential or channel tokens.
+Select model authentication and bind Slack tokens as Namespace Secrets. When
+Compute requires them, OCC creates missing transport credentials before first
+revision admission; supported Dedicated provisioning does so during creation.
+Neither path creates the selected `harnessAuth` model credential or channel tokens.
 
-The Kubernetes Driver generates an app-server token and local gateway password.
-Gateway authentication is trusted-proxy only. The password is projected only
-when native Configuration selects the supported environment reference; the API
-never returns it. Generation checks for Agent runtime Deployments before writing
+The Kubernetes Driver generates an app-server token and local gateway password,
+which the API never returns; gateway authentication is trusted-proxy only. Generation checks for Agent runtime Deployments before writing
 so it cannot change values after startup.
 
 The credential API retains `GET` and explicit initial `POST {}` on
 `/namespaces/:namespaceId/agents/:agentId/runtime-credentials` for API clients.
 Reading requires exact Agent `read`; generation also requires `operate`.
-Deploying requires `deploy`. Status reports transport storage only. The server derives Kubernetes names from the admitted
-Namespace, Agent, and Installation driver configuration. The browser receives no generated values. Audit records contain the actor, target,
-action, and outcome, never credential bytes.
+Deploying requires `deploy`. Status reports transport storage only. The browser
+receives no generated values. Audit records contain the actor, target, action,
+and outcome, never credential bytes.
 
 Generation creates missing whole Secrets before any AgentRevision. It never
-rotates existing values and reuses complete, owned groups on retry. Dedicated
-Agents keep `app-server-token` and `gateway-password` in separate CP Secrets;
-Compute delivers only the transport token to the Harness. Embedded Agents use
-one tenant-local group with both keys. Unexpected keys, foreign ownership, or
-malformed values cause a conflict. Failed generation creates no revision;
+rotates existing values and reuses complete, owned groups on retry. Secret
+names, shapes, password projection, and delivery per execution mode are in
+[Kubernetes runtime credentials](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
+Unexpected keys, foreign ownership, or malformed values cause a conflict. Failed generation creates no revision;
 retries reread status. A lost deployment reply requires revision-history
 readback. Created Secrets remain after later storage or audit failure. Missing
 credentials after a historical revision require investigation, not regeneration.
 
-On the **Credentials** tab, Slack token fields use the same Secret picker as the
-creation and channel-editing flows. Select a readable Namespace Secret or
-**Create new Secret...**. The browser never reads saved token values. Missing
-tokens must be bound before saving. **Save channel Secrets** requires at least
-one changed selection and a saved binding for each token.
+On the **Credentials** tab, Slack token fields use the same Secret picker as
+creation; [Channel Secrets](../../guides/console/channels-and-credentials.md#channel-secrets)
+lists the save requirements. The browser never reads saved token values.
 
 Saving writes only Configuration `secretBindings` and exact IAM bindings for
 the changed Secret references. It reuses only Roles with the required permission
-set. Unchanged token bindings are preserved. Switching a picker changes which
-Secret is referenced; it does not overwrite an existing shared Secret value.
+set. Unchanged token bindings are preserved.
 Tokens are never stored in local storage, URLs, or native Configuration values.
 A stored channel Secret confirms storage and binding only; it does not prove
 provider acceptance, runtime readiness, or a channel connection.
@@ -298,13 +286,12 @@ readiness is not exposed; use the operator deployment workflow for those Agents.
 
 If a deployment response is lost, inspect **Versions** before retrying; the
 console does not repeat an uncertain request. **Deployment activity** follows
-the most recent visible deployment's persisted status; use the
+the most recent visible deployment; use the
 [deployment status API](../agents.md#deployment-status) for an exact revision.
-The viewed version shows stored startup evidence; missing evidence leaves the
-cause unspecified. [Current observations](../../guides/console/agent-details.md#follow-deployment-activity)
-can request limited checks for that version, including Slack configuration,
-authentication, and connectivity when supported. They do not prove serving or
-a model response. Give your operator the Namespace ID, Agent ID, and full
+Missing startup evidence leaves the cause unspecified. Stored evidence and
+[on-demand diagnostics](../../guides/console/agent-details.md#browse-versions-or-create-a-new-version)
+(Slack configuration, authentication, and connectivity when supported) do not
+prove serving or a model response. Give your operator the Namespace ID, Agent ID, and full
 revision ID from the page URL's `revision` query parameter. Ask them to
 [verify that exact workload and get a real model response](../../guides/deploy/production-agents.md#verify-production-workloads).
 Do not create another Agent to verify this one.

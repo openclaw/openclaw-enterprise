@@ -6,7 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/detail.mjs";
-import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
@@ -32,6 +31,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settlePageRequests,
   waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
@@ -159,7 +159,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .waitFor();
   const observations = page.locator(".version-diagnostics");
   await observations
-    .getByText(/For Kubernetes Compute, Gateway checks cover only the Slack channel/)
+    .getByText(/For Kubernetes Compute, gateway checks cover only the Slack channel/)
     .waitFor();
   await observations
     .getByText("No current observation has been requested for this version.")
@@ -403,10 +403,8 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
 });
 
 test("Configuration save names the field that holds an inline model credential without showing it", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-inline-credential-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const fixture = await createConsoleAppFixture(t, {
-    configurationDriver: new FilesystemConfigurationDriver(root),
+    filesystemConfiguration: true,
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Inline credential", { ready: true });
@@ -642,10 +640,8 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
 });
 
 test("Gateway password access saves the generated reference without changing admitted versions or Secret bindings", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-gateway-password-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const fixture = await createConsoleAppFixture(t, {
-    configurationDriver: new FilesystemConfigurationDriver(root),
+    filesystemConfiguration: true,
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Gateway password", { ready: true });
@@ -665,7 +661,7 @@ test("Gateway password access saves the generated reference without changing adm
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url.pathname + url.search);
   requests.length = 0;
-  const enable = page.getByRole("button", { name: "Enable Gateway password access", exact: true });
+  const enable = page.getByRole("button", { name: "Enable gateway password access", exact: true });
   await enable.click();
   const expected = structuredClone(values);
   expected.gateway.auth.password = {
@@ -2161,7 +2157,15 @@ test("Agent delete confirmation can be canceled without sending a write request"
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
-  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
+  // Deletion keeps the Agent's Configuration and model credential Secret, which the console
+  // cannot list or delete, so the dialog gives the commands that remove them by ID.
+  assert.equal(agent.harnessAuth.method, "api_key");
+  await dialog
+    .getByText(
+      `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${agent.harnessAuth.source.id}.`,
+    )
+    .waitFor();
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
   const unexpectedDelete = page.waitForResponse(
@@ -2199,7 +2203,7 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Success Candidate?" });
-  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
   const deleteResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
@@ -2274,7 +2278,7 @@ test("Agent delete uncertainty requires refresh before another destructive reque
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Uncertain Candidate?" });
-  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
 
   await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
@@ -2439,7 +2443,7 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Denied Candidate?" });
-  await dialog.getByText(/Agent, its revision history, and its workspace data/i).waitFor();
+  await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
   const denied = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
@@ -2660,7 +2664,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByText("OpenClaw is available for this Agent’s active revision.").waitFor();
+  await page.getByText("OpenClaw is available for this Agent’s current version.").waitFor();
   const expectedAccess = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
@@ -2693,7 +2697,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
 
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Available versions").selectOption(historicalRevisionId);
-  await page.getByText("OpenClaw is available for this Agent’s active revision.").waitFor();
+  await page.getByText("OpenClaw is available for this Agent’s current version.").waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
     await page.getByRole("link", { name: "Open OpenClaw" }).getAttribute("href"),
@@ -3276,7 +3280,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   await page.getByRole("button", { name: "Workspace files", exact: true }).click();
   await page
     .getByText(
-      "Workspace files require a deployed Agent with an active revision and a reachable gateway.",
+      "Workspace files require a deployed Agent with a current version and a reachable gateway.",
     )
     .waitFor();
   assert.equal(await secretElement.evaluate((node) => node.isConnected), false);
@@ -3804,7 +3808,8 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
     await page.reload();
     await unavailable.waitFor();
   }
-  await page.waitForTimeout(300);
+  // The native admin card asks for status as it renders, before the denial panel shows.
+  await settlePageRequests(page);
   assert.equal(reads(configurationPath), 1);
   assert.equal(reads(nativeAdminPath), 1);
   assert.equal(denials("openclaw.configurations.read"), 1);

@@ -48,7 +48,9 @@ reach (refused connection, unknown host) usually reports
 `RUNTIME_MODEL_PROBE_TIMEOUT` with OpenClaw and `RUNTIME_MODEL_PROBE_FAILED`
 with Codex.
 Startup evidence may identify the runtime component, failed check, code, and
-check time. Plugin warnings describe that attempt. An unavailable record has
+check time. A failed startup model check may also show its **Cause**, such as
+the provider reporting a rate limit or the check process exiting with an error
+([causes](../../reference/agents/deployment.md#model-check-failure-cause)). Plugin warnings describe that attempt. An unavailable record has
 unknown status. While the record is `queued` or `running`, the panel rereads it
 every few seconds and stops at `succeeded`, `failed`, or a read error.
 **Refresh deployment** rereads it, the selected version, and that version's
@@ -141,7 +143,7 @@ deployment; nothing repairs them.
 | **Compute**                            | Revision's Compute Driver identifier and implementation.                                                         |
 | **View admitted native configuration** | Expands the revision's formatted native JSON. The draft uses **View native Configuration**.                      |
 
-In the draft, **Enable Gateway password access** stages the generated-password
+In the draft, **Enable gateway password access** stages the generated-password
 reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference.
 
@@ -259,8 +261,11 @@ revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-re
 ## Delete Agent and error recovery
 
 **Delete Agent** opens a confirmation dialog. **Cancel** closes it without changes.
-**Permanently delete Agent** irreversibly removes the Agent, revision history,
-and workspace data; Namespace Configurations and Secrets remain. Exact Agent
+**Permanently delete Agent** irreversibly removes the Agent, version history,
+and workspace data; Namespace Configurations and Secrets remain. The dialog
+gives the commands that delete the Agent's Configuration and, if it has one, its
+model credential Secret: both are kept even when Create Agent made them, and the
+console cannot list or delete them. Exact Agent
 `delete` permission is required. Accepted deletion starts asynchronous cleanup;
 the page checks it every few seconds and returns to Agents once the Agent is gone.
 **Refresh deletion status** checks it immediately.

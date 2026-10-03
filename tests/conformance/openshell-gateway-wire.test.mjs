@@ -5,11 +5,27 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  GrpcOpenShellGatewayClient,
+  OpenShellRequestReplayRefusedError,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
+// An independent encoder for google.rpc.Status details, as tonic-types writes them.
+const protobuf = createRequire(require.resolve("@grpc/proto-loader"))("protobufjs");
+const rpcStatus = protobuf.parse(
+  `
+  syntax = "proto3";
+  package google.rpc;
+  message Any { string type_url = 1; bytes value = 2; }
+  message Status { int32 code = 1; string message = 2; repeated Any details = 3; }
+  message ErrorInfo { string reason = 1; string domain = 2; map<string, string> metadata = 3; }
+  message RetryInfo { int64 seconds = 1; }
+`,
+  { keepCase: true },
+).root;
 
 test("OpenShell client serializes v0.1.3-pre.1 create-time service exposure", async () => {
   const proto = await loader.load(
@@ -131,6 +147,199 @@ test("OpenShell client serializes v0.1.3-pre.1 create-time service exposure", as
       ),
       /OpenShell CreateSandbox returned no service URL map/,
     );
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client reads an existing Sandbox and its service endpoint", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.1-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const requests = [];
+  const notFound = (callback) =>
+    callback(Object.assign(new Error("not found"), { code: grpc.status.NOT_FOUND }));
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      requests.push(["GetSandbox", call.request]);
+      if (call.request.name !== "sandbox-wire") {
+        notFound(callback);
+        return;
+      }
+      callback(null, {
+        sandbox: {
+          metadata: {
+            id: "sandbox-id",
+            name: call.request.name,
+            workspace: call.request.workspace_scope.workspace,
+            labels: { owner: "openclaw" },
+            annotations: { "openclaw.dev/revision-id": "rev_wire" },
+          },
+        },
+      });
+    },
+    GetService(call, callback) {
+      requests.push(["GetService", call.request]);
+      if (call.request.sandbox !== "sandbox-wire") {
+        notFound(callback);
+        return;
+      }
+      callback(null, {
+        endpoint: { sandbox: call.request.sandbox, name: call.request.name, target_port: 18_790 },
+        url: "http://tenant-workspace--sandbox-wire.openshell.localhost:8080/",
+      });
+    },
+  });
+  const port = await new Promise((resolve, reject) =>
+    server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+      error ? reject(error) : resolve(value),
+    ),
+  );
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const signal = AbortSignal.timeout(2_000);
+  try {
+    const sandbox = await client.getSandbox(
+      { name: "sandbox-wire", workspace: "tenant-workspace" },
+      signal,
+    );
+    assert.equal(sandbox.name, "sandbox-wire");
+    assert.equal(sandbox.workspace, "tenant-workspace");
+    assert.deepEqual(sandbox.annotations, { "openclaw.dev/revision-id": "rev_wire" });
+    assert.deepEqual(sandbox.serviceUrls, {});
+    assert.equal(
+      await client.getSandbox({ name: "missing", workspace: "tenant-workspace" }, signal),
+      undefined,
+    );
+    assert.equal(
+      await client.getServiceUrl(
+        { sandbox: "sandbox-wire", workspace: "tenant-workspace", service: "" },
+        signal,
+      ),
+      `http://tenant-workspace--sandbox-wire.openshell.localhost:${port}/`,
+    );
+    assert.equal(
+      await client.getServiceUrl(
+        { sandbox: "missing", workspace: "tenant-workspace", service: "" },
+        signal,
+      ),
+      undefined,
+    );
+    assert.deepEqual(requests[0], [
+      "GetSandbox",
+      {
+        name: "sandbox-wire",
+        workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
+      },
+    ]);
+    assert.deepEqual(requests[2], [
+      "GetService",
+      {
+        sandbox: "sandbox-wire",
+        name: "",
+        workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
+      },
+    ]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client reports a refused CreateSandbox request_id from its ErrorInfo reason", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.1-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const any = (type, message) => ({
+    type_url: `type.googleapis.com/google.rpc.${type}`,
+    value: rpcStatus.lookupType(`google.rpc.${type}`).encode(message).finish(),
+  });
+  const failure = (
+    reason,
+    domain = "openshell.nvidia.com",
+    code = grpc.status.FAILED_PRECONDITION,
+  ) => {
+    const metadata = new grpc.Metadata();
+    const Status = rpcStatus.lookupType("google.rpc.Status");
+    metadata.set(
+      "grpc-status-details-bin",
+      Buffer.from(
+        Status.encode(
+          Status.fromObject({
+            code,
+            message: `refused ${reason}`,
+            details: [
+              any("RetryInfo", { seconds: 5 }),
+              any("ErrorInfo", { reason, domain, metadata: { recovery: "none" } }),
+            ],
+          }),
+        ).finish(),
+      ),
+    );
+    return { code: grpc.status.FAILED_PRECONDITION, details: `refused ${reason}`, metadata };
+  };
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    CreateSandbox(call, callback) {
+      const [reason, domain, code] = call.request.name.split("|");
+      callback(
+        reason === "PLAIN"
+          ? { code: grpc.status.FAILED_PRECONDITION, details: "provider 'x' not found" }
+          : failure(reason, domain || undefined, code === undefined ? undefined : Number(code)),
+      );
+    },
+  });
+  const port = await new Promise((resolve, reject) =>
+    server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+      error ? reject(error) : resolve(value),
+    ),
+  );
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const create = (name) =>
+    client.createSandbox(
+      {
+        name,
+        workspace: "tenant-workspace",
+        requestId: "7dfed2b8-8cef-4513-ab04-020baf3ccbf3",
+        labels: {},
+        annotations: {},
+        spec: {},
+        serviceExposures: [],
+      },
+      AbortSignal.timeout(2_000),
+    );
+  try {
+    for (const reason of [
+      "REQUEST_OUTCOME_UNCERTAIN",
+      "REQUEST_ID_PAYLOAD_MISMATCH",
+      "REQUEST_REPLAY_UNAVAILABLE",
+    ]) {
+      await assert.rejects(create(reason), (error) => {
+        assert.ok(error instanceof OpenShellRequestReplayRefusedError);
+        assert.equal(error.reason, reason);
+        assert.match(error.message, new RegExp(`refused ${reason}`));
+        return true;
+      });
+    }
+    // Only OpenShell's own replay reasons are refusals; anything else is the handler's error.
+    for (const name of [
+      "REQUEST_OUTCOME_UNCERTAIN|example.com",
+      // The details envelope must carry the same status code.
+      `REQUEST_OUTCOME_UNCERTAIN||${grpc.status.ABORTED}`,
+      "SANDBOX_INVALID",
+      "PLAIN",
+    ]) {
+      await assert.rejects(create(name), (error) => {
+        assert.ok(!(error instanceof OpenShellRequestReplayRefusedError));
+        assert.equal(error.code, grpc.status.FAILED_PRECONDITION);
+        return true;
+      });
+    }
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

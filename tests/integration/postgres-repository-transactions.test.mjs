@@ -5,16 +5,11 @@ import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/errors.ts";
 import { verifyRepositoryLifetime } from "../conformance/repository-lifetime.contract.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 test(
   "PostgreSQL repository ownership, lifetime, and atomicity",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to a disposable migrated PostgreSQL database.",
-    timeout: 60000,
-  },
+  { ...requiresPostgres, timeout: 60000 },
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
     t.after(() => pool.end());

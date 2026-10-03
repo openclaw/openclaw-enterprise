@@ -17,7 +17,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import { ScopeViolationError } from "./errors.ts";
+import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
 import type { ControllerWork } from "./state/controller-work.ts";
 
@@ -76,22 +76,28 @@ function configurationDocument(value: unknown): OpenClawConfigurationDocument {
   return immutableCopy(record as OpenClawConfigurationDocument);
 }
 
-function normalizeBindingError(error: unknown): never {
-  throw new ScopeViolationError(
-    error instanceof Error ? error.message : "Agent provisioning Secret bindings are invalid.",
-  );
+/**
+ * Normalizes Secret bindings a caller submitted. A binding that breaks the grammar is the
+ * caller's invalid request, reported with the rule it broke. Bindings read back from state
+ * use the plain grammar instead: a stored binding that no longer validates is not the
+ * caller's fault.
+ */
+export function normalizeRequestSecretBindings(input: unknown): SecretBindings {
+  try {
+    return normalizeSecretBindings(input);
+  } catch (error) {
+    throw new SecretBindingValidationError(
+      error instanceof Error ? error.message : "Secret bindings are invalid.",
+    );
+  }
 }
 
 function normalizeProvisioningSecretBindings(input: unknown): SecretBindings | undefined {
   if (input === undefined) {
     return undefined;
   }
-  try {
-    const normalized = normalizeSecretBindings(input);
-    return Object.keys(normalized).length === 0 ? undefined : normalized;
-  } catch (error) {
-    normalizeBindingError(error);
-  }
+  const normalized = normalizeRequestSecretBindings(input);
+  return Object.keys(normalized).length === 0 ? undefined : normalized;
 }
 
 export function requireProvisioningRequestId(value: unknown): string {

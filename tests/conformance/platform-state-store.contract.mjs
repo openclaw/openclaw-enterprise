@@ -115,6 +115,9 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       configuration,
     );
     assert.equal(await transaction.namespaces.hasConfigurations(namespace.id), true);
+    assert.deepEqual(await transaction.namespaces.listConfigurationIds(namespace.id), [
+      configuration.id,
+    ]);
     await transaction.secrets.createSecret(harnessSecret);
     assert.deepEqual(await transaction.agents.createAgent(agent), agent);
     assert.deepEqual(await transaction.revisions.createRevision(revision), revision);
@@ -646,6 +649,22 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     }),
   );
   assert.equal(retryNamespace.existingNamespace, lifecycleNamespace.existingNamespace);
+
+  // The tombstone keeps its name, and the conflict says the name belongs to a deleted Namespace.
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.namespaces.createNamespace({
+        ...lifecycleNamespace,
+        id: identifier("ns"),
+        existingNamespace: undefined,
+      }),
+    ),
+    {
+      name: "ResourceStateConflictError",
+      message:
+        "This name belongs to a deleted Namespace and cannot be reused. Choose a different name.",
+    },
+  );
 
   await assert.rejects(
     store.transact((transaction) =>
@@ -1304,7 +1323,7 @@ async function verifyDuplicateNameContract(store) {
     [
       (transaction) =>
         transaction.namespaces.createNamespace({ ...namespace, id: identifier("ns") }),
-      "A Namespace with this name already exists or was deleted. Choose a different name.",
+      "A Namespace with this name already exists. Choose a different name.",
     ],
     [
       (transaction) => transaction.secrets.createSecret({ ...secret, id: identifier("sec") }),

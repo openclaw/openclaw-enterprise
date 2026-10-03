@@ -502,6 +502,7 @@ test(
       assert.deepEqual(defaults.data.map((preset) => preset.name).sort(), [
         "Standard Codex",
         "Standard OpenClaw",
+        "default-codex",
       ]);
       const copied = defaults.data.find((preset) => preset.name === "Standard Codex");
       const copiedOpenClaw = defaults.data.find((preset) => preset.name === "Standard OpenClaw");
@@ -552,6 +553,7 @@ test(
       assert.deepEqual(afterRestart.data.map((preset) => preset.name).sort(), [
         "Standard Codex",
         "Standard OpenClaw",
+        "default-codex",
       ]);
       assert.deepEqual(
         afterRestart.data.find((preset) => preset.name === "Standard Codex"),
@@ -569,6 +571,7 @@ test(
       assert.deepEqual(newPresets.data.map((preset) => preset.name).sort(), [
         "Standard Codex",
         "Standard OpenClaw",
+        "default-codex",
       ]);
       assert.notEqual(
         newPresets.data.find((preset) => preset.name === "Standard Codex").id,

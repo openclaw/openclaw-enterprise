@@ -451,7 +451,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       (error) => {
         assert.match(
           error.stderr,
-          /HTTP 409\): CREDENTIAL_GATEWAY_NOT_CONFIGURED: This Installation has no Credential Gateway.*docs\/reference\/credential-sources\.md/,
+          /HTTP 409\): CREDENTIAL_GATEWAY_NOT_CONFIGURED: This Installation has no Credential Gateway.*docs-enterprise\.openclaw\.org\/reference\/credential-sources\//,
         );
         return true;
       },

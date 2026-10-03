@@ -119,6 +119,11 @@ export interface AgentProvisioningRepository extends AgentProvisioningReadReposi
     workId: string,
     actorId: string,
   ): Promise<Readonly<AgentProvisioningRecord>>;
+  /**
+   * Clears a succeeded record's Configuration once its Agent selects another one, so that
+   * Configuration can be deleted. Returns false when the record still holds it.
+   */
+  releaseConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
 const PHASE_ORDER: Record<AgentProvisioningPhase, number> = Object.freeze({

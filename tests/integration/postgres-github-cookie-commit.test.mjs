@@ -12,14 +12,11 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "opted-in HTTP login and logout preserve cookies until real State commit acknowledgement",
-  {
-    skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof.",
-  },
+  requiresPostgres,
   async (t) => {
     const email = "commit-recovery@example.test";
     const password = "commit-recovery-long-password";

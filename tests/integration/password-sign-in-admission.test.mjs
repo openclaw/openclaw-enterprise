@@ -155,20 +155,49 @@ test("an administrator is slowed, never refused, and slow guesses are bounded", 
   assert.ok(performance.now() - started >= slow.maxFloorMs - 2, "the floor grew to its cap");
 });
 
+// One macrotask turn: every promise chain that needs no timer or I/O has settled by then.
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
 test("refusals take the growing floor whether or not the email administers", async () => {
-  const limiter = admission({ administrators: ["admin@example.test"] });
+  // Floors end only when the test ends them, so the order of events shows that a refusal
+  // waits for its whole floor and answers as soon as it ends, at any machine speed.
+  const floors = [];
+  const limiter = admission({
+    administrators: ["admin@example.test"],
+    slow: {
+      ...slow,
+      waitFloor: (floorMs) =>
+        new Promise((resolve) => floors.push({ floorMs, end: () => resolve() })),
+    },
+  });
   const client = "203.0.113.9";
   for (let index = 0; index < 4; index += 1) {
     assert.equal(await status(limiter, { clientAddress: client, email: `f-${index}@x.test` }), 401);
   }
+  assert.deepEqual(floors, []);
   const expected = [20, 40, 80, 80];
   const emails = ["member@x.test", "admin@example.test", "missing@x.test", "admin@example.test"];
   for (const [index, email] of emails.entries()) {
-    const started = performance.now();
-    assert.equal(await status(limiter, { clientAddress: client, email }), 429);
-    const elapsed = performance.now() - started;
-    assert.ok(elapsed >= expected[index] - 2, `refusal ${index}: ${elapsed} ms`);
-    assert.ok(elapsed < expected[index] + 60, `refusal ${index}: ${elapsed} ms`);
+    let answer;
+    const refusal = status(limiter, { clientAddress: client, email }).then(
+      (code) => {
+        answer = code;
+      },
+      (error) => {
+        answer = error;
+      },
+    );
+    await turn();
+    assert.deepEqual(
+      floors.map(({ floorMs }) => floorMs),
+      expected.slice(0, index + 1),
+      `refusal ${index} waits one floor of ${expected[index]} ms`,
+    );
+    assert.equal(answer, undefined, `refusal ${index} answered before its floor ended`);
+    floors[index].end();
+    await turn();
+    assert.equal(answer, 429, `refusal ${index} kept waiting after its floor ended`);
+    await refusal;
   }
 });
 

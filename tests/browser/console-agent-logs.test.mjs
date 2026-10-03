@@ -11,6 +11,7 @@ import {
   login,
   nativeValues,
   newPage,
+  settlePageRequests,
   waitForCondition,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -167,7 +168,6 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
   const release = Promise.withResolvers();
   t.after(() => release.resolve());
   let state = "untouched";
-  const arrivedWhileHeld = [];
   await page.route(`**/deployments/${revisionId}/runtime/logs?*`, async (route, request) => {
     const target = new URL(request.url());
     const cursor = target.searchParams.get("cursor");
@@ -178,9 +178,7 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
       await route.continue({ url: target.href });
       return;
     }
-    if (state === "holding") {
-      arrivedWhileHeld.push(target.search);
-    } else if (state === "tampered" && cursor === null) {
+    if (state === "tampered" && cursor === null) {
       state = "holding";
       held.resolve();
       await release.promise;
@@ -192,9 +190,10 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
   await held.promise;
   // A restart while the replacement read is in flight waits for it.
   computeDriver.state.lines = [line(1, "first view line"), line(2, "debug floor line")];
+  const readsWhileHeld = logRequests(requests, revisionId).length;
   await page.getByLabel("Include debug").check();
-  await page.waitForTimeout(500);
-  assert.deepEqual(arrivedWhileHeld, []);
+  await settlePageRequests(page);
+  assert.equal(logRequests(requests, revisionId).length, readsWhileHeld);
   release.resolve();
   await pane.getByText("debug floor line").waitFor();
   // The queued restart read the new debug view.
@@ -688,8 +687,9 @@ test("a reader without operate learns what log text needs and is asked for statu
   // Every denied read is an audited authorization denial: reopening the tab does not ask again.
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Logs", exact: true }).click();
+  // The reopened tab shows this text only after its status decision, so a repeat read has started.
   await page.getByText(/Log text needs Agent read_logs/).waitFor();
-  await page.waitForTimeout(500);
+  await settlePageRequests(page);
   assert.equal(statusReads(), 1);
 });
 

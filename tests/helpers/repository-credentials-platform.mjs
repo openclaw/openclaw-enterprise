@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer, isIPv4 } from "node:net";
+import { isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { signInWithEmailPassword, authenticatedHeaders } from "./auth-session.mjs";
@@ -23,6 +23,7 @@ import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startControlResponseRelay } from "../fixtures/repository-credentials/control-relay.mjs";
 import { startRepositoryPlatformWorker } from "./repository-credentials-platform-worker.mjs";
 import { startRepositoryPlatformService } from "./repository-credentials-platform-service.mjs";
+import { availablePort } from "./available-port.mjs";
 
 export const repositoryPlatformSelected =
   process.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM === "1";
@@ -53,19 +54,6 @@ const materialScript = String.raw`
   });
   console.log(JSON.stringify({generation:manifest.generation, bindings}));
 `;
-
-async function availablePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "0.0.0.0", resolve);
-  });
-  const { port } = server.address();
-  await new Promise((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return port;
-}
 
 async function gatewayTls(directory, host, execute) {
   const keyFile = join(directory, "gateway.key");
@@ -591,7 +579,7 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
   diagnostic.stage = "credential-service-startup";
   const gatewayHost = `repository-credentials.${system}.svc.cluster.local`;
   const tls = await gatewayTls(directory, gatewayHost, execute);
-  const gatewayPort = await availablePort();
+  const gatewayPort = await availablePort({ host: "0.0.0.0" });
   const credentialsFixture = await startRepositoryPlatformService(scope, {
     namespaceId: namespace.id,
     signal: context.signal,

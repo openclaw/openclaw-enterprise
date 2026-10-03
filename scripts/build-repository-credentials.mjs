@@ -57,7 +57,12 @@ function dependencies(source, path) {
         unsupported();
       }
     }
-    for (const value of Object.values(node)) {
+    for (const key of Object.keys(node)) {
+      // Babel locations contain coordinates, never runtime dependencies.
+      if (key === "loc") {
+        continue;
+      }
+      const value = node[key];
       if (Array.isArray(value)) {
         value.forEach(visit);
       } else if (value && typeof value === "object") {

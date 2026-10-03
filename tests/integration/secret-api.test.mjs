@@ -898,7 +898,7 @@ for (const [model, method, executionMode] of [
     assert.equal(blocked.status, 409);
     assert.equal(
       blocked.body.error.message,
-      "A Configuration, credential source, Agent draft, active revision, or pending deployment still references the Secret. Remove those references first.",
+      "A Configuration, credential source, Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the Secret. Remove those references, or let provisioning finish, first.",
     );
     // Authorization precedes the reference check: a caller without delete learns nothing about references.
     const { app: outsiderApp } = await fixture.createPrincipal("secret-outsider");
@@ -1067,7 +1067,9 @@ test("Harness source admission rejects foreign references and superseded model s
       harnessAuth: { method: "api_key", source: key.data.ref },
     },
   });
-  assert.equal(rejected.status, 404);
+  // A foreign Secret reference is an invalid request (#1033), not a scope miss.
+  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+  assert.equal(rejected.body.error.message, "Secret references cannot cross Namespaces.");
   for (const method of ["POST", "PATCH"]) {
     const rejected = await request(
       fixture.app,
@@ -1095,17 +1097,23 @@ test("Harness source admission rejects foreign references and superseded model s
   });
   assert.equal(malformed.status, 400);
   for (const destination of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+    const reserved = await request(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.id}/configurations`,
+      {
+        body: {
+          kind: "agent",
+          values: {},
+          secretBindings: { [destination]: { source: localKey.data.ref } },
+        },
+      },
+    );
+    assert.equal(reserved.status, 400, destination);
     assert.equal(
-      (
-        await request(fixture.app, "POST", `/namespaces/${namespace.id}/configurations`, {
-          body: {
-            kind: "agent",
-            values: {},
-            secretBindings: { [destination]: { source: localKey.data.ref } },
-          },
-        })
-      ).status,
-      404,
+      reserved.body.error.message,
+      "A secret binding uses a reserved or invalid environment destination.",
+      destination,
     );
   }
   assert.equal(

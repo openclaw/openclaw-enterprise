@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import net from "node:net";
 import { createRequire } from "node:module";
 import https from "node:https";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -18,20 +18,6 @@ const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
 const occ = join(repository, "bin", "occ");
 const selected = process.env.OCC_TEST_DEV_UP_K3D_REAL === "1";
-
-async function unusedPort() {
-  const server = net.createServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  await new Promise((resolveClose, reject) =>
-    server.close((error) => (error ? reject(error) : resolveClose())),
-  );
-  return address.port;
-}
 
 async function exists(path) {
   try {
@@ -117,7 +103,7 @@ test(
     const cluster = `occ-dev-policy-${randomUUID().slice(0, 8)}`;
     const ports = new Set();
     while (ports.size < 3) {
-      ports.add(await unusedPort());
+      ports.add(await availablePort());
     }
     const [apiPort, kubernetesPort, browserPort] = ports;
     const realK3d = (await execute("which", ["k3d"])).stdout.trim();
@@ -220,14 +206,14 @@ test(
     const root = await mkdtemp(join(tmpdir(), "oce-dev-up-k3d-real-"));
     const stateDirectory = join(root, "state");
     const cluster = `occ-dev-k3d-${randomUUID().slice(0, 8)}`;
-    const apiPort = await unusedPort();
-    let kubernetesPort = await unusedPort();
+    const apiPort = await availablePort();
+    let kubernetesPort = await availablePort();
     while (kubernetesPort === apiPort) {
-      kubernetesPort = await unusedPort();
+      kubernetesPort = await availablePort();
     }
-    let browserPort = await unusedPort();
+    let browserPort = await availablePort();
     while (browserPort === apiPort || browserPort === kubernetesPort) {
-      browserPort = await unusedPort();
+      browserPort = await availablePort();
     }
     const environment = {
       ...process.env,
@@ -372,6 +358,7 @@ test(
     assert.deepEqual(presets.data.map(({ name }) => name).sort(), [
       "Standard Codex",
       "Standard OpenClaw",
+      "default-codex",
     ]);
     const catalog = await request(`/namespaces/${namespace.id}/agents/plugins`, {
       method: "POST",
@@ -583,14 +570,14 @@ test(
     const root = await mkdtemp(join(tmpdir(), "oce-dev-compose-sandbox-"));
     const stateDirectory = join(root, "state");
     const cluster = `occ-dev-compose-${randomUUID().slice(0, 8)}`;
-    const apiPort = await unusedPort();
-    let kubernetesPort = await unusedPort();
+    const apiPort = await availablePort();
+    let kubernetesPort = await availablePort();
     while (kubernetesPort === apiPort) {
-      kubernetesPort = await unusedPort();
+      kubernetesPort = await availablePort();
     }
-    let postgresPort = await unusedPort();
+    let postgresPort = await availablePort();
     while (postgresPort === apiPort || postgresPort === kubernetesPort) {
-      postgresPort = await unusedPort();
+      postgresPort = await availablePort();
     }
     const environment = {
       ...process.env,

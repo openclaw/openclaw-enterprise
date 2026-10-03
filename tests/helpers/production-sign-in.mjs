@@ -217,7 +217,10 @@ function resolveSettings(settings, secrets) {
  * Composes the production API from rendered API Pod settings, parsing the sign-in and
  * native-admin names the way apps/controller/src/server.mjs does.
  */
-export async function composeProductionSignIn(context, { databaseUrl, settings, secrets, logger }) {
+export async function composeProductionSignIn(
+  context,
+  { databaseUrl, settings, secrets, logger, passwordSlowLaneFloors },
+) {
   const environment = resolveSettings(settings, secrets);
   // The chart mounts the gateway service key Secret at this path; use a private file.
   const keyDirectory = await privateBootstrapDirectory(context, "openclaw-gateway-key-");
@@ -255,6 +258,7 @@ export async function composeProductionSignIn(context, { databaseUrl, settings, 
         }
       : {}),
     ...(logger === undefined ? {} : { logger }),
+    ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
     drivers: {
       installation,
       defaultPresets: runtime.defaultPresets,

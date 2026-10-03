@@ -9,6 +9,7 @@ import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const token = "xoxb-fixture";
 
@@ -63,8 +64,8 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
 });
 
 test("bundled Slack proxy process restricts methods and CONNECT targets", async (t) => {
-  const proxyPort = await reservePort();
-  const upstreamPort = await reservePort();
+  const proxyPort = await availablePort();
+  const upstreamPort = await availablePort();
   const upstream = net.createServer((socket) => {
     socket.on("error", () => {});
     socket.write("fixture-upstream");
@@ -135,16 +136,6 @@ net.connect = (...args) => {
 `,
   );
   return path;
-}
-
-async function reservePort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const port = address.port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
 }
 
 async function waitForProxy(port) {

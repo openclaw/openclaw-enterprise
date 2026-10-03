@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -1025,86 +1025,84 @@ test("repository platform preparation refuses a public relay gateway before buil
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });
 
-test("installed repository preparation requires explicit authorization and protected inputs before side effects", async (t) => {
+test("installed repository preparation is refused before prerequisite checks or side effects", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "installed-state.json");
   const configPath = join(root, "app.json");
   const keyPath = join(root, "app.pem");
   await writeFile(configPath, "{}", { mode: 0o600 });
   await writeFile(keyPath, "test-only key", { mode: 0o600 });
-  const env = {
+  const args = ["--lane", "repository-credentials-installed", "--state", statePath];
+
+  // An operator who selects the lane without any inputs learns that it is
+  // unavailable, instead of being asked for model, App and image inputs first.
+  const unprepared = runPrepare(args, {});
+  assert.equal(unprepared.status, 1);
+  assert.match(unprepared.stderr, /Installed repository qualification is temporarily unavailable/);
+  assert.doesNotMatch(unprepared.stderr, /Missing required CI input/);
+  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+
+  // Inputs that previously passed the early checks cannot create a preparation state
+  // while remote cleanup lacks a safe ownership boundary.
+  const blocked = runPrepare(args, {
     OPENAI_API_KEY: "test-only-model-key",
     OCC_TEST_OPENAI_MODEL: "test-model",
-    NODE_BASE_IMAGE: `docker.io/library/node:24-bookworm@sha256:${digest}`,
-    OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "0",
+    NODE_BASE_IMAGE: "",
+    OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
     OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY: "fixture/repository",
     OCC_TEST_REPOSITORY_CREDENTIALS_APP_CONFIG_FILE: configPath,
     OCC_TEST_REPOSITORY_CREDENTIALS_APP_KEY_FILE: keyPath,
     OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: immutableImage,
-    OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS: "203.0.113.1/32",
-    OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
-    OCC_TEST_PRODUCTION_NODE_IMAGE: immutableImage,
-  };
-  const args = ["--lane", "repository-credentials-installed", "--state", statePath];
-  const unauthorized = runPrepare(args, env);
-  assert.equal(unauthorized.status, 1);
-  assert.match(unauthorized.stderr, /explicit write and cleanup authorization/);
-  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-  await chmod(keyPath, 0o644);
-  const unprotected = runPrepare(args, { ...env, OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1" });
-  assert.equal(unprotected.status, 1);
-  assert.match(unprotected.stderr, /must have mode 0600/);
-  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-  await chmod(keyPath, 0o600);
-  const linkedKey = join(root, "linked-key.pem");
-  await symlink(keyPath, linkedKey);
-  const linked = runPrepare(args, {
-    ...env,
-    OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
-    OCC_TEST_REPOSITORY_CREDENTIALS_APP_KEY_FILE: linkedKey,
-  });
-  assert.equal(linked.status, 1);
-  assert.match(linked.stderr, /bounded regular private file/);
-  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-  const invalidScope = runPrepare(args, {
-    ...env,
-    OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
-    OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS: "10.0.0.1/32",
-  });
-  assert.equal(invalidScope.status, 1);
-  assert.match(invalidScope.stderr, /approved public IPv4/);
-  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-  const releaseEnv = {
-    ...env,
-    OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
     OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE: "release",
+    OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS: "203.0.113.1/32",
     OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
     OCC_TEST_KUBERNETES_RUNTIME_IMAGE: immutableImage,
-    NODE_BASE_IMAGE: "",
-  };
-  for (const [override, expected] of [
-    [{ OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: "" }, /OCC_TEST_PRODUCTION_CONTROLLER_IMAGE/],
-    [{ OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "runtime:latest" }, /OCC_TEST_KUBERNETES_RUNTIME_IMAGE/],
-    [{ OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE: "unexpected" }, /must be source or release/],
-    [{ OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE: "source" }, /NODE_BASE_IMAGE/],
-  ]) {
-    const rejected = runPrepare(args, { ...releaseEnv, ...override });
-    assert.equal(rejected.status, 1);
-    assert.match(rejected.stderr, expected);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  }
+    OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
+    OCC_TEST_PRODUCTION_NODE_IMAGE: immutableImage,
+  });
+  assert.equal(blocked.status, 1);
+  assert.match(blocked.stderr, /Installed repository qualification is temporarily unavailable/);
+  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
 
-  // A complete release selection reaches tool discovery without a build base;
-  // no cluster or image is created by this preflight check.
-  const admitted = runPrepare(args, { ...releaseEnv, OCC_HELM_BIN: join(root, "missing-helm") });
-  assert.equal(admitted.status, 1);
-  assert.match(admitted.stderr, /missing-helm/);
-  const state = JSON.parse(await readFile(statePath, "utf8"));
-  assert.deepEqual(state.resources, []);
+  // Per-file preparation, which the test runner uses, is refused the same way.
+  const perFile = runPrepare(
+    [...args, "--file", "tests/integration/repository-credentials-k3d-real.test.mjs"],
+    {},
+  );
+  assert.equal(perFile.status, 1);
+  assert.match(perFile.stderr, /Installed repository qualification is temporarily unavailable/);
+  await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+});
+
+test("the installed repository journey refuses direct execution before fixture setup", async (t) => {
+  const root = await fixture(t);
+  // Direct execution must fail at the safety guard even without credentials or
+  // a cluster, before any setup or provider operation can be attempted.
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--test",
+      "--test-name-pattern=^installed ",
+      "tests/integration/repository-credentials-k3d-real.test.mjs",
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: {
+        HOME: root,
+        PATH: process.env.PATH,
+        OCC_TEST_REPOSITORY_CREDENTIALS_REAL: "1",
+      },
+      timeout: 15000,
+    },
+  );
+  assert.equal(result.status, 1);
+  const output = `${result.stdout}\n${result.stderr}`;
+  assert.match(output, /tests 3/);
+  assert.equal(
+    (output.match(/Installed repository qualification is temporarily unavailable/g) ?? []).length,
+    3,
+  );
 });
 
 test("production upgrade preparation requires two distinct immutable image pairs before creating resources", async (t) => {
@@ -1559,10 +1557,46 @@ test("prepareLane preserves an explicit logging Collector Node image over its de
   const githubEnv = join(root, "github.env");
   const customNodeImage =
     "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const collectorImage = loadYaml(
+    await readFile(join(repositoryRoot, "compose.logging.yaml"), "utf8"),
+  ).services.collector.image;
+  // Images are absent until pulled; the first pull of each hits a rate limit.
+  const dockerPath = join(root, "docker");
+  await writeFile(
+    dockerPath,
+    `#!${process.execPath}
+const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+const log = ${JSON.stringify(join(root, "docker.jsonl"))};
+const args = process.argv.slice(2);
+const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\\n").map(JSON.parse) : [];
+appendFileSync(log, JSON.stringify(args) + "\\n");
+const image = args.at(-1);
+const pulls = calls.filter((call) => call[0] === "pull" && call[1] === image).length;
+if (args[0] === "pull") {
+  if (pulls === 0) {
+    process.stderr.write("Error response from daemon: toomanyrequests: rate limit\\n");
+    process.exit(1);
+  }
+  process.exit(0);
+}
+if (args[0] === "image" && args[1] === "inspect") {
+  if (pulls < 2) {
+    process.stderr.write("Error response from daemon: No such image: " + image + "\\n");
+    process.exit(1);
+  }
+  process.stdout.write(args[3] === "{{.Id}}" ? "sha256:${"e".repeat(64)}\\n" : JSON.stringify([image]));
+  process.exit(0);
+}
+process.stderr.write("unexpected docker " + args.join(" ") + "\\n");
+process.exit(2);
+`,
+    { mode: 0o700 },
+  );
 
   const result = runPrepare(
     ["--lane", "logging-collector", "--state", statePath, "--github-env", githubEnv],
     {
+      OCC_DOCKER_BIN: dockerPath,
       OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
     },
   );
@@ -1571,6 +1605,21 @@ test("prepareLane preserves an explicit logging Collector Node image over its de
   const exported = await readFile(githubEnv, "utf8");
   assert.match(exported, /OCC_TEST_LOGGING_COLLECTOR=1/);
   assert.match(exported, new RegExp(`OCC_TEST_LOGGING_NODE_IMAGE=${customNodeImage}`));
+  // Both pinned images are pulled before the tests run, the rate limit retried.
+  const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter((args) => args[0] === "pull")
+    .map((args) => args[1]);
+  assert.deepEqual(
+    pulls.toSorted(),
+    [collectorImage, collectorImage, customNodeImage, customNodeImage].toSorted(),
+  );
+  assert.match(
+    result.stderr,
+    /Transient image pull failure \(Error response from daemon: toomanyrequests/,
+  );
 });
 
 test("images packaging lane prepares Codex seccomp before native runtime smoke tests", () => {

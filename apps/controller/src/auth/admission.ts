@@ -199,6 +199,12 @@ export interface PasswordSlowLaneOptions {
   readonly floorMs: number;
   /** The largest floor. */
   readonly maxFloorMs: number;
+  /**
+   * Waits out one floor and must resolve, never reject. Test seam: the default is a real
+   * timer that does not keep the process alive; tests pass a wrapper to observe when floors
+   * start (each slot is held from its floor's start) or to hold them.
+   */
+  readonly waitFloor?: (floorMs: number) => Promise<void>;
   /** Slow attempts running at once for one email; each holds its slot for its floor. */
   readonly concurrentPerEmail: number;
   /** Slow attempts that may wait for one email's slots. */
@@ -321,6 +327,10 @@ function passwordTable(capacity: number) {
       return entry;
     },
   };
+}
+
+function defaultWaitFloor(floorMs: number): Promise<void> {
+  return delay(floorMs, undefined, { ref: false });
 }
 
 /** A counting semaphore whose waiters are bounded. */
@@ -482,7 +492,7 @@ export function passwordFailureAdmission(
       entry.slowed += 1;
     }
     const floorMs = Math.min(slow.maxFloorMs, slow.floorMs * 2 ** slowed);
-    const floor = () => delay(floorMs, undefined, { ref: false });
+    const floor = () => (slow.waitFloor ?? defaultWaitFloor)(floorMs);
     const refused = new SignInRateLimited(retryAfter(pacing, now));
     try {
       if (occupancy >= slow.occupancy) {

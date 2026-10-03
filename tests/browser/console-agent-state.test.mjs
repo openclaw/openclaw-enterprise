@@ -278,7 +278,7 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const observations = page.locator(".version-diagnostics");
-  await observations.getByText(/Gateway checks cover only the Slack channel/).waitFor();
+  await observations.getByText(/gateway checks cover only the Slack channel/).waitFor();
   await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
   await observations.getByText("gateway / authentication").waitFor();
   await observations.getByText(/NOT_CONFIGURED means this version has no Slack channel/).waitFor();
@@ -496,9 +496,20 @@ test("Deployment activity guides a failed or timed-out startup model check", asy
       error: {
         code: "RUNTIME_MODEL_PROBE_FAILED",
         message: "Deployment runtime startup model check failed.",
+        data: {
+          runtimeFailure: {
+            component: "gateway",
+            check: "model-probe",
+            checkedAt: "2026-10-03T08:00:00.000Z",
+            code: "MODEL_PROBE_FAILED",
+            cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+          },
+        },
       },
       guidance:
         /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\./,
+      // The runtime's classified cause names why this check failed.
+      cause: "The model provider check reported a failure (rate_limit)",
     },
     {
       error: {
@@ -509,7 +520,7 @@ test("Deployment activity guides a failed or timed-out startup model check", asy
         /^The startup model check did not get a reply from the model provider in time\. With OpenClaw this includes a provider the runtime cannot reach \(refused connection or unknown host\)\./,
     },
   ];
-  for (const [index, { error, guidance }] of cases.entries()) {
+  for (const [index, { error, guidance, cause }] of cases.entries()) {
     const agent = await fixture.createAgent(namespace.id, `Agent ${index}`, nativeValues("v1"));
     const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     await routeDeploymentStatus(page, fixture, namespace, agent, revision, "failed", error);
@@ -523,6 +534,13 @@ test("Deployment activity guides a failed or timed-out startup model check", asy
     const activity = page.locator(".deployment-status");
     await activity.getByText(`${error.code}: ${error.message}`).waitFor();
     await activity.locator(".deployment-failure-guidance").getByText(guidance).waitFor();
+    assert.equal(
+      await activity.getByText("Cause", { exact: true }).count(),
+      cause === undefined ? 0 : 1,
+    );
+    if (cause !== undefined) {
+      await activity.getByText(cause, { exact: true }).waitFor();
+    }
     assert.match(
       await activity.getByRole("link", { name: "Open Configuration" }).getAttribute("href"),
       new RegExp(`agents/${agent.id}\\?revision=draft&tab=configuration`),

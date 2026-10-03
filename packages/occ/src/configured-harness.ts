@@ -1,5 +1,5 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { ConfigurationHarnessError } from "./errors.ts";
 
@@ -40,7 +40,8 @@ function configuredModels(value: unknown): readonly string[] {
     }
     return selected;
   });
-  if (models.some((selected) => selected.split("/", 2)[0] !== models[0]!.split("/", 2)[0])) {
+  const primaryProvider = splitModelRef(models[0]!).provider;
+  if (models.some((selected) => splitModelRef(selected).provider !== primaryProvider)) {
     throw new ConfigurationHarnessError(
       "Configured model fallbacks must retain the primary provider.",
     );
@@ -56,13 +57,19 @@ function matchingSelectableModels(
     return false;
   }
   const selectedRuntime = configuredRuntime(value[selectedModel]);
+  const selectedProvider = splitModelRef(selectedModel).provider;
   return Object.entries(value).every(
     ([model, policy]) =>
       model === selectedModel ||
       (selectedRuntime !== undefined &&
-        model.split("/", 2)[0] === selectedModel.split("/", 2)[0] &&
+        splitModelRef(model).provider === selectedProvider &&
         configuredRuntime(policy) === selectedRuntime),
   );
+}
+
+// A provider catalog ID is the complete model ref or the remainder after the provider.
+function isCatalogModelId(id: unknown, reference: string): boolean {
+  return id === reference || id === splitModelRef(reference).id;
 }
 
 function providerModelEntry(
@@ -76,10 +83,9 @@ function providerModelEntry(
   if (!Array.isArray(configured)) {
     throw new ConfigurationHarnessError("Configured provider models must be a native model array.");
   }
-  const matches = configured.filter((candidate) => {
-    const value = asRecord(candidate);
-    return value?.id === model || value?.id === model.split("/", 2)[1];
-  });
+  const matches = configured.filter((candidate) =>
+    isCatalogModelId(asRecord(candidate)?.id, model),
+  );
   if (matches.length > 1) {
     throw new ConfigurationHarnessError("The selected provider model Harness policy is ambiguous.");
   }
@@ -148,11 +154,11 @@ export function resolveConfiguredHarnessId(
     }
     if (
       provider.models.some((value) => {
-        const model = asRecord(value)?.id;
+        const id = asRecord(value)?.id;
         return !candidates.some(
           (candidate) =>
-            candidate.model.split("/", 2)[0] === providerId &&
-            (model === candidate.model || model === candidate.model.split("/", 2)[1]),
+            splitModelRef(candidate.model).provider === providerId &&
+            isCatalogModelId(id, candidate.model),
         );
       })
     ) {
@@ -169,7 +175,7 @@ export function resolveConfiguredHarnessId(
   const plugins = asRecord(asRecord(values.plugins)?.entries);
 
   for (const candidate of candidates) {
-    const providerId = candidate.model.split("/", 2)[0]!;
+    const providerId = splitModelRef(candidate.model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
     const providerModel =
       provider === undefined ? undefined : providerModelEntry(provider, candidate.model);

@@ -1,7 +1,7 @@
 import type {
   CredentialSourceMetadata,
   CredentialSourceStatus,
-  CredentialWithdrawal,
+  CredentialWithdrawalStatus,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
@@ -23,7 +23,7 @@ function clientCredentialSource(
 }
 
 function clientCredentialWithdrawal(
-  withdrawal: Readonly<CredentialWithdrawal>,
+  withdrawal: Readonly<CredentialWithdrawalStatus>,
 ): Record<string, unknown> {
   return {
     namespaceId: withdrawal.namespaceId,
@@ -36,6 +36,7 @@ function clientCredentialWithdrawal(
     ...(withdrawal.completedAt === undefined ? {} : { completedAt: withdrawal.completedAt }),
     ...(withdrawal.lastReason === undefined ? {} : { reason: withdrawal.lastReason }),
     ...(withdrawal.lastAttemptAt === undefined ? {} : { lastAttemptAt: withdrawal.lastAttemptAt }),
+    withdrawalInProgress: withdrawal.withdrawalInProgress,
   };
 }
 

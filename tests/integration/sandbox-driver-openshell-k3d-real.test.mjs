@@ -9,7 +9,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
-import { connect, createServer } from "node:net";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -31,6 +31,7 @@ import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
 } from "../helpers/envoy-workspace-gateway.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const executeFile = promisify(execFile);
 
@@ -375,20 +376,6 @@ async function waitForLoopbackPort(port) {
   });
 }
 
-async function reserveLoopbackPort() {
-  const reservation = createServer();
-  await new Promise((resolve, reject) => {
-    reservation.once("error", reject);
-    reservation.listen(0, "127.0.0.1", resolve);
-  });
-  const address = reservation.address();
-  assert.ok(address && typeof address === "object");
-  await new Promise((resolve, reject) =>
-    reservation.close((error) => (error ? reject(error) : resolve())),
-  );
-  return address.port;
-}
-
 async function waitForWorkspaceGatewayTls(hostname, port) {
   await waitFor("OpenShell host-side Gateway TLS path", async () => {
     try {
@@ -442,7 +429,7 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
     /^(?:\d{1,3}\.){3}\d{1,3}$/,
     "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
   );
-  const endpointPort = usesPodmanMachine ? await reserveLoopbackPort() : 443;
+  const endpointPort = usesPodmanMachine ? await availablePort() : 443;
   if (usesPodmanMachine) {
     const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
     assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
@@ -1281,6 +1268,16 @@ function integrationGatewayClient(
       const created = await gateway.createSandbox(compatible, signal);
       observeServiceUrl(created.serviceUrls[""]);
       return created;
+    },
+    getSandbox(request, signal) {
+      return gateway.getSandbox(request, signal);
+    },
+    async getServiceUrl(request, signal) {
+      const serviceUrl = await gateway.getServiceUrl(request, signal);
+      if (serviceUrl !== undefined) {
+        observeServiceUrl(serviceUrl);
+      }
+      return serviceUrl;
     },
     deleteSandbox(request, signal) {
       return gateway.deleteSandbox(request, signal);

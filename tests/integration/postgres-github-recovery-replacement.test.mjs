@@ -19,8 +19,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "replacement-recovery@example.test";
 const password = "replacement-member-password";
 const authSecret = "replacement-auth-test-secret-at-least-32-bytes";
@@ -36,7 +36,7 @@ const secondSubject = "9200002";
 // OCC_AUTH_GITHUB_RECOVERY_USER_ID keeps that designation instead of the seed.
 test(
   "online recovery replacement moves the reserved lane and survives a restart with the original seed",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

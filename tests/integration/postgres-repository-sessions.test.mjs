@@ -14,8 +14,7 @@ import {
   repositoryCredentials,
   repositoryGrant,
 } from "../fixtures/repository-credentials/session-state.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function insertAttempt(
   pool,
@@ -47,12 +46,7 @@ function insertAttempt(
 
 test(
   "PostgreSQL repository sessions enforce durable admission boundaries",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to a disposable migrated PostgreSQL database.",
-    timeout: 60_000,
-  },
+  { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
     t.after(() => pool.end());

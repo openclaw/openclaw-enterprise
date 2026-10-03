@@ -10,7 +10,9 @@ import { createServiceConfiguration } from "../fixtures/repository-credentials/s
 // unresolved alternate-provider callback must never defeat finite process exit.
 test(
   "process shutdown reports unresolved ownership and exits within grace",
-  { timeout: 10000 },
+  // Longer than the 10 s drain window below, so waiting for it fails on the
+  // elapsed-time assertion rather than on the test timeout.
+  { timeout: 20_000 },
   async (t) => {
     const tls = await createTlsMaterial(t);
     const original = await createServiceConfiguration(t, { shutdownGraceMs: 100 });
@@ -78,12 +80,18 @@ test(
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.ok(stdout.includes("ready\n"), "child did not reach pending-settlement readiness");
-    const started = Date.now();
+    const started = performance.now();
     child.kill("SIGTERM");
     const outcome = await exited;
+    const elapsed = performance.now() - started;
     assert.equal(outcome.code, 1);
     assert.equal(outcome.signal, null);
-    assert.ok(Date.now() - started < 2000);
+    // The service's shutdown and the process's wall-time guard both use the 100 ms
+    // grace, and nothing here drains, so the process must not wait for the 10 s window
+    // it keeps for a drained broker's last writes. Exit takes about 110 ms, also at a
+    // 10% CPU quota: 2 s leaves room for a loaded runner and still fails a process
+    // that ignores the grace.
+    assert.ok(elapsed < 2000, `shutdown took ${elapsed.toFixed(0)} ms`);
     const summary = [...stdout.split("\n"), ...stderr.split("\n")]
       .filter((line) => line.startsWith("{"))
       .map((line) => JSON.parse(line))

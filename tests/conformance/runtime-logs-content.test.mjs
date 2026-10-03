@@ -9,6 +9,7 @@ import {
 } from "../../packages/occ/src/runtime-logs/redact.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { readRuntimeLogPage } from "../../packages/occ/src/runtime-logs/read.ts";
+import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
@@ -358,6 +359,93 @@ test("a failed startup phase keeps its fixed cause code", () => {
   );
 });
 
+test("a failed model probe keeps its closed-vocabulary cause, never other cause text", () => {
+  const probe = (event, cause) =>
+    JSON.stringify({ event, elapsedMs: 2340, code: "MODEL_PROBE_FAILED", cause });
+  const { records, withheld } = sanitizeRuntimeLogChunk({
+    stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
+    truncated: false,
+    lines: [
+      {
+        time: lineTime(1),
+        raw: probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "format" }),
+      },
+      {
+        time: lineTime(2),
+        raw: probe("codex.model_probe", { kind: "PROBE_STATUS", detail: "error-event" }),
+      },
+      { time: lineTime(3), raw: probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }) },
+      // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
+      {
+        time: lineTime(4),
+        raw: probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
+      },
+      { time: lineTime(5), raw: probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }) },
+      {
+        time: lineTime(6),
+        raw: probe("codex.model_probe", { kind: "PROBE_STATUS", detail: "format", text: "x" }),
+      },
+      { time: lineTime(7), raw: probe("codex.model_probe", "PROBE_STATUS") },
+      {
+        time: lineTime(8),
+        raw: probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: 42 }),
+      },
+      // Only a failed check carries a cause, and only probe records keep one.
+      {
+        time: lineTime(9),
+        raw: JSON.stringify({
+          event: "codex.model_probe",
+          elapsedMs: 2340,
+          code: "READY",
+          cause: { kind: "PROBE_STATUS", detail: "format" },
+        }),
+      },
+      {
+        time: lineTime(10),
+        raw: JSON.stringify({
+          event: "runtime.startup_phase",
+          phase: "model-probe",
+          outcome: "failed",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "format" },
+        }),
+      },
+    ],
+  });
+  assert.equal(withheld, 0);
+  const fields = (event, cause = {}) => ({
+    kind: "wrapper",
+    level: "error",
+    message: event,
+    fields: { elapsedMs: 2340, code: "MODEL_PROBE_FAILED", ...cause },
+  });
+  assert.deepEqual(
+    records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
+    [
+      fields("openclaw.model_probe", { causeKind: "PROBE_STATUS", causeDetail: "format" }),
+      fields("codex.model_probe", { causeKind: "PROBE_STATUS", causeDetail: "error-event" }),
+      fields("openclaw.model_probe", { causeKind: "WRAPPER_ERROR" }),
+      fields("openclaw.model_probe"),
+      fields("openclaw.model_probe"),
+      fields("codex.model_probe"),
+      fields("codex.model_probe"),
+      fields("openclaw.model_probe"),
+      {
+        kind: "wrapper",
+        level: "info",
+        message: "codex.model_probe",
+        fields: { elapsedMs: 2340, code: "READY" },
+      },
+      {
+        kind: "wrapper",
+        level: "error",
+        message: "runtime.startup_phase",
+        fields: { phase: "model-probe", outcome: "failed", code: "MODEL_PROBE_FAILED" },
+      },
+    ],
+  );
+});
+
 test("a Gateway settings override keeps its setting names, never values (D322)", () => {
   const event = (settings) =>
     JSON.stringify({
@@ -595,16 +683,19 @@ test("a PEM block printed over several lines is masked on every line", () => {
   for (const unit of [" ", "a", "A:", "A: ", "-----BEGIN A-----", "-----END A-----"]) {
     const hostile = unit.repeat(Math.ceil((32 * 1024) / unit.length)).slice(0, 32 * 1024 - 1);
     for (const suffix of ["!", " x"]) {
-      const started = performance.now();
-      sanitizeRuntimeLogChunk({
-        stream,
-        truncated: false,
-        lines: ["-----BEGIN X-----", hostile + suffix, hostile + suffix, "-----END X-----"].map(
-          (raw, index) => ({ time: lineTime(index), raw }),
-        ),
-      });
-      const elapsed = performance.now() - started;
-      assert.ok(elapsed < 400, `${JSON.stringify(unit)} took ${elapsed.toFixed(0)} ms`);
+      const budgetMs = 400;
+      const elapsed = cpuTimeMs(
+        () =>
+          sanitizeRuntimeLogChunk({
+            stream,
+            truncated: false,
+            lines: ["-----BEGIN X-----", hostile + suffix, hostile + suffix, "-----END X-----"].map(
+              (raw, index) => ({ time: lineTime(index), raw }),
+            ),
+          }),
+        { budgetMs },
+      );
+      assert.ok(elapsed < budgetMs, `${JSON.stringify(unit)} took ${elapsed.toFixed(0)} ms of CPU`);
     }
   }
 });
@@ -673,28 +764,33 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
   for (const unit of units) {
     for (const suffix of ["", "?", "token", "=x"]) {
       const input = line(unit, suffix);
-      const started = performance.now();
-      redactRuntimeLogText(input);
-      maskRuntimeEventText(input);
-      const elapsed = performance.now() - started;
+      const elapsed = cpuTimeMs(
+        () => {
+          redactRuntimeLogText(input);
+          maskRuntimeEventText(input);
+        },
+        { budgetMs },
+      );
       assert.ok(
         elapsed < budgetMs,
-        `${JSON.stringify(unit)} + ${JSON.stringify(suffix)} took ${elapsed.toFixed(0)} ms`,
+        `${JSON.stringify(unit)} + ${JSON.stringify(suffix)} took ${elapsed.toFixed(0)} ms of CPU`,
       );
     }
   }
   // A whole page of such messages stays well inside one request's budget.
-  const started = performance.now();
-  sanitizeRuntimeLogChunk({
-    stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
-    truncated: false,
-    lines: Array.from({ length: 50 }, (_, index) => ({
-      time: lineTime(index),
-      raw: JSON.stringify({ level: "info", message: "a-".repeat(15 * 1024) }),
-    })),
-  });
-  const elapsed = performance.now() - started;
-  assert.ok(elapsed < 50 * budgetMs, `50 hostile lines took ${elapsed.toFixed(0)} ms`);
+  const elapsed = cpuTimeMs(
+    () =>
+      sanitizeRuntimeLogChunk({
+        stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
+        truncated: false,
+        lines: Array.from({ length: 50 }, (_, index) => ({
+          time: lineTime(index),
+          raw: JSON.stringify({ level: "info", message: "a-".repeat(15 * 1024) }),
+        })),
+      }),
+    { budgetMs: 50 * budgetMs },
+  );
+  assert.ok(elapsed < 50 * budgetMs, `50 hostile lines took ${elapsed.toFixed(0)} ms of CPU`);
 });
 
 test("redaction stays linear on a generated sweep of short repeated units", () => {
@@ -746,10 +842,13 @@ test("redaction stays linear on a generated sweep of short repeated units", () =
   const started = performance.now();
   for (const unit of units) {
     const input = unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
-    const unitStarted = performance.now();
-    redactRuntimeLogText(input);
-    maskRuntimeEventText(input);
-    const elapsed = performance.now() - unitStarted;
+    const elapsed = cpuTimeMs(
+      () => {
+        redactRuntimeLogText(input);
+        maskRuntimeEventText(input);
+      },
+      { budgetMs },
+    );
     if (elapsed > worst.elapsed) {
       worst = { unit, elapsed };
     }
@@ -757,7 +856,7 @@ test("redaction stays linear on a generated sweep of short repeated units", () =
   const total = performance.now() - started;
   assert.ok(
     worst.elapsed < budgetMs,
-    `${JSON.stringify(worst.unit)} took ${worst.elapsed.toFixed(0)} ms (sweep total ${total.toFixed(0)} ms)`,
+    `${JSON.stringify(worst.unit)} took ${worst.elapsed.toFixed(0)} ms of CPU (sweep total ${total.toFixed(0)} ms)`,
   );
 });
 
@@ -1156,6 +1255,15 @@ test("a resumed page cut by the byte limit still reports lines lost before it", 
   assert.deepEqual(
     overlap.records.map((record) => record.reason ?? record.message),
     ["retrying in 700s", "truncated"],
+  );
+  // One line longer than the byte limit fills the page; its leading time still dates the loss.
+  const single = await reader.poll([timedLog("retr", 900)], {
+    elapsed: 900_000,
+    truncated: true,
+  });
+  assert.deepEqual(
+    single.records.map((record) => record.reason ?? record.message),
+    ["window_exceeded", "truncated"],
   );
 });
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -84,16 +83,27 @@ func (r *runner) checkDevelopmentNodeDNS(ctx context.Context, state *development
 	case nodeDNSResolved:
 		return nil
 	case nodeDNSRefused:
-		return developmentNodeDNSError(server, r.env["OCC_DEVELOPMENT_K3D_DNS_RESOLVER"], hostUpstreamResolver(os.ReadFile))
+		if r.automaticNodeResolver != "" {
+			return automaticNodeDNSError(server, r.automaticNodeResolver)
+		}
+		configured := r.env["OCC_DEVELOPMENT_K3D_DNS_RESOLVER"]
+		if configured == developmentResolverK3dDefault {
+			configured = ""
+		}
+		return developmentNodeDNSError(server, configured, hostUpstreamResolver(readHostResolverFile))
 	default:
-		fmt.Fprintf(r.opts.Err, "Warning: could not confirm that the k3d node %s resolves %s; continuing. If image pulls stall, see OCC_DEVELOPMENT_K3D_DNS_RESOLVER in the local Kubernetes development guide.\n", server, developmentNodeDNSName)
+		automatic := ""
+		if r.automaticNodeResolver != "" {
+			automatic = fmt.Sprintf(" The node uses this host's upstream resolver %s; OCC_DEVELOPMENT_K3D_DNS_RESOLVER=%s keeps k3d's default.", r.automaticNodeResolver, developmentResolverK3dDefault)
+		}
+		fmt.Fprintf(r.opts.Err, "Warning: could not confirm that the k3d node %s resolves %s; continuing.%s If image pulls stall, see OCC_DEVELOPMENT_K3D_DNS_RESOLVER in the local Kubernetes development guide.\n", server, developmentNodeDNSName, automatic)
 		return nil
 	}
 }
 
 func developmentNodeDNSError(server, configured, upstream string) error {
 	if configured != "" {
-		return fmt.Errorf("the k3d node %s cannot resolve %s: OCC_DEVELOPMENT_K3D_DNS_RESOLVER=%s refused the query; set it to an IPv4 DNS server the node can reach, or unset it to keep k3d's default node resolver", server, developmentNodeDNSName, configured)
+		return fmt.Errorf("the k3d node %s cannot resolve %s: OCC_DEVELOPMENT_K3D_DNS_RESOLVER=%s refused the query; set it to an IPv4 DNS server the node can reach, or to %s to keep k3d's default node resolver", server, developmentNodeDNSName, configured, developmentResolverK3dDefault)
 	}
 	hint := ""
 	if upstream != "" {
@@ -102,6 +112,10 @@ func developmentNodeDNSError(server, configured, upstream string) error {
 	return errors.New("the k3d node " + server + " cannot resolve " + developmentNodeDNSName + ": its DNS resolver refused the query, so image pulls would time out. " +
 		"k3d forwards node DNS through the container network gateway, which fails on some hosts (for example Docker using iptables-nft). " +
 		"Set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to an IPv4 DNS server the node can reach" + hint + " and run occ dev up again")
+}
+
+func automaticNodeDNSError(server, upstream string) error {
+	return fmt.Errorf("the k3d node %s cannot resolve %s: this host's upstream resolver %s, which startup gave the node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER is unset, refused the query; set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to an IPv4 DNS server the node can reach, or to %s to keep k3d's default node resolver, and run occ dev up again", server, developmentNodeDNSName, upstream, developmentResolverK3dDefault)
 }
 
 // hostUpstreamResolver returns the host's first non-loopback IPv4 nameserver,

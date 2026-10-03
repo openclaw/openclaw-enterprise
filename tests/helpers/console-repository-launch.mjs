@@ -15,7 +15,7 @@ import { createConsoleAppFixture } from "./console-app.mjs";
 /** Real Console/API/Drivers with passive storage, but no cluster or external providers. */
 export async function createConsoleRepositoryLaunchFixture(
   t,
-  { secretDriver: suppliedSecretDriver } = {},
+  { secretDriver: suppliedSecretDriver, filesystemConfiguration } = {},
 ) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
@@ -155,6 +155,7 @@ export async function createConsoleRepositoryLaunchFixture(
     computeDriver: compute,
     secretDriver,
     recordOperations: true,
+    filesystemConfiguration,
     // Credential provisioning requires a configured browser CSRF origin.
     publicOrigin: true,
   });

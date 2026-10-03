@@ -17,8 +17,8 @@ import {
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "scope-recovery@example.test";
 const password = "scope-limited-password";
 const authSecret = "scope-admin-auth-test-secret-at-least-32-bytes";
@@ -35,7 +35,7 @@ const takeoverSubject = "9200002";
 // grants, such as the unscoped bootstrap administrator, or it could sign in as that account.
 test(
   "an exact-scope Installation administrator cannot manage an account with broader grants",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);

@@ -390,6 +390,28 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     { body: { oauthLogin: savedLogin.source, q: "knowledge" } },
   );
   assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
+  // A login reference in another Namespace is an invalid request; a missing one stays not-found.
+  for (const [oauthLogin, status, code, message] of [
+    [
+      { ...savedLogin.source, namespaceId: `ns_${crypto.randomUUID()}` },
+      400,
+      "INVALID_REQUEST",
+      "Secret references cannot cross Namespaces.",
+    ],
+    [{ ...savedLogin.source, id: `sec_${crypto.randomUUID()}` }, 404, "NOT_FOUND", undefined],
+  ]) {
+    const refused = await fixture.request(
+      "POST",
+      `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`,
+      { body: { oauthLogin, q: "knowledge" } },
+    );
+    const label = JSON.stringify(refused.body);
+    assert.equal(refused.status, status, label);
+    assert.equal(refused.body.error.code, code, label);
+    if (message !== undefined) {
+      assert.equal(refused.body.error.message, message, label);
+    }
+  }
   const discarded = await fixture.rawRequest("DELETE", `${agentPath}/${savedLogin.source.id}`, {
     headers: authenticatedHeaders(await fixture.signIn(), { origin: fixture.origin }),
   });

@@ -170,7 +170,9 @@ the local diagnostic message is excluded from remote export.
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step`, `.cause` and `.status`, plus a transport code as
-`occ.code`; the provider instance ID stays local. It drops malformed,
+`occ.code`; the provider instance ID stays local.
+`worker.repository-cleanup-warning` keeps `occ.code` and its bounded cause as
+`occ.worker.cause`. It drops malformed,
 oversized, unclassified, unspecified-severity, and Codex protocol stdout records.
 OpenClaw's Gateway startup failure (an `error` record with no subsystem whose
 message starts `Gateway failed to start:`) is exported as

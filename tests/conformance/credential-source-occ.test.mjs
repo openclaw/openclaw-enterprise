@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
@@ -393,6 +394,109 @@ test("registration requires operate on every referenced Secret before reading it
   );
   assert.equal(secretDriver.calls.filter(({ operation }) => operation === "withValue").length, 0);
   assert.equal(gateway.calls.length, 0);
+});
+
+test("a cross-Namespace Secret is an invalid request; a Secret the Namespace lacks stays not-found", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace, secretDriver } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  gateway.calls.length = 0;
+  secretDriver.calls.length = 0;
+  const foreign = { ...secret.ref, namespaceId: `ns_${crypto.randomUUID()}` };
+  const missing = { ...secret.ref, id: `sec_${crypto.randomUUID()}` };
+  const writes = [
+    [
+      "create",
+      (ref) =>
+        controller.createCredentialSource(administrator, {
+          namespaceId: namespace.id,
+          name: `openai-${crypto.randomUUID().slice(0, 8)}`,
+          type: "openai",
+          secrets: { api_key: ref },
+        }),
+    ],
+    [
+      "update",
+      (ref) =>
+        controller.updateCredentialSource(administrator, {
+          namespaceId: namespace.id,
+          credentialSourceId: source.id,
+          secrets: { api_key: ref },
+        }),
+    ],
+  ];
+  for (const [write, call] of writes) {
+    for (const [description, ref, expected] of [
+      [
+        "cross-Namespace Secret",
+        foreign,
+        {
+          status: 400,
+          code: "INVALID_REQUEST",
+          message: "Credential source Secrets cannot cross Namespaces.",
+        },
+      ],
+      [
+        "missing Secret",
+        missing,
+        {
+          status: 404,
+          code: "NOT_FOUND",
+          message: "The requested platform resource was not found.",
+        },
+      ],
+    ]) {
+      const rejection = await call(ref).then(
+        () => assert.fail(`${write}, ${description}: expected a rejection`),
+        (error) => error,
+      );
+      const { status, code, message } = requestFailure(rejection);
+      assert.deepEqual({ status, code, message }, expected, `${write}, ${description}`);
+    }
+  }
+  // Every reference is checked before any of them is authorized: a foreign second field wins
+  // over a first field the deployer may not operate.
+  const listSourceTypes = gateway.listSourceTypes.bind(gateway);
+  gateway.listSourceTypes = async (...args) => [
+    ...(await listSourceTypes(...args)),
+    {
+      type: "pair",
+      config: [],
+      secrets: [
+        { name: "first", required: true },
+        { name: "second", required: true },
+      ],
+      rotation: "none",
+    },
+  ];
+  const mixed = await controller
+    .createCredentialSource(deployer, {
+      namespaceId: namespace.id,
+      name: "pair",
+      type: "pair",
+      secrets: { first: secret.ref, second: foreign },
+    })
+    .then(
+      () => assert.fail("a foreign second field must be rejected"),
+      (error) => error,
+    );
+  const { status, code, message } = requestFailure(mixed);
+  assert.deepEqual(
+    { status, code, message },
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "Credential source Secrets cannot cross Namespaces.",
+    },
+  );
+  assert.deepEqual(gateway.calls, []);
+  assert.equal(secretDriver.calls.filter(({ operation }) => operation === "withValue").length, 0);
 });
 
 function auditEvent(namespaceId, id, action) {

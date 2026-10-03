@@ -95,6 +95,19 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
 ].join("; ");
 
 export async function readConsoleAsset(pathname: string): Promise<ConsoleAsset> {
+  if (pathname === "/console/default-codex-preset.mjs") {
+    const preset = JSON.parse(
+      await readFile(
+        new URL("../../../deploy/presets/default-codex.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    return {
+      body: Buffer.from(`export default ${JSON.stringify(preset)};\n`),
+      contentType: "text/javascript; charset=utf-8",
+      statusCode: 200,
+    };
+  }
   const asset = CONSOLE_ASSETS.get(pathname);
   if (asset !== undefined) {
     return {
