@@ -88,16 +88,14 @@ async function checkPush(destination: string, input: Buffer): Promise<boolean> {
     throw new Error("invalid-pre-push-input");
   }
   for (const line of lines) {
-    const fields = line.split(" ");
-    if (
-      fields.length !== 4 ||
-      !fields[0] ||
-      !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(fields[1] ?? "") ||
-      !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(fields[3] ?? "")
-    ) {
+    // Git writes an object-name source (`HEAD@{1 hour ago}`) verbatim, so the
+    // local ref may contain spaces; the last three fields cannot.
+    const fields =
+      /^(.+) ([a-f0-9]{40}(?:[a-f0-9]{24})?) ([^ ]+) ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/.exec(line);
+    if (!fields) {
       throw new Error("invalid-pre-push-input");
     }
-    if (!allowsPushRef(binding.client.pushRefAllowlist, fields[2] ?? "")) {
+    if (!allowsPushRef(binding.client.pushRefAllowlist, fields[3]!)) {
       return false;
     }
   }
