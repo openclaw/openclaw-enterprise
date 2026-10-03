@@ -59,7 +59,8 @@ credentials. Never put plaintext values in Configuration `values`.
 
 The Kubernetes and filesystem Configuration Drivers reject literal model API
 keys, credential headers, and model credential environment values in their
-known native fields before storage. Unresolved references remain valid
+known native fields before storage. The `400` names the field as a JSON pointer
+within `values`, never the value. Unresolved references remain valid
 Configuration data; deployment separately rejects model credential selectors
 that compete with the Agent's binding.
 

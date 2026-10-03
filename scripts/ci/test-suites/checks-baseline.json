@@ -37,6 +37,9 @@
       "path": "tests/conformance/harness-device-auth.test.mjs"
     },
     {
+      "path": "tests/conformance/http-errors.test.mjs"
+    },
+    {
       "path": "tests/conformance/credential-source-occ.test.mjs"
     },
     {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -264,6 +264,9 @@ node_args="$*"
     },
   });
 
+  if (staleDemo) {
+    await assert.rejects(access(join(state, "demo.json")), { code: "ENOENT" });
+  }
   assert.equal(
     await readFile(prepareCount, "utf8"),
     action === "get" ||

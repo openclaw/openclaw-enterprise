@@ -1,132 +1,29 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
-import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/index.ts";
+import {
+  callbackState,
+  cookiePairs,
+  createLoginFixture,
+  expectDenied,
+  loginOrigin as origin,
+  redirectProviderFetch,
+  startProviderServer,
+  until,
+} from "../helpers/human-login-transport.mjs";
 
-const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { APIError, betterAuth } = await import(require.resolve("better-auth"));
-const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
-const origin = "https://console.example.test";
-const binding = "b".repeat(43);
-const callbackState = "s".repeat(43);
+const providerId = `github:${createHash("sha256").update("fixture-client").digest("hex")}`;
 
-// The actual Better Auth handler and provider transport run here. State is a
-// boundary fixture; these cases make no PostgreSQL or session-commit claims.
-// `trustedClientAddress` says whether x-occ-client-ip came through a configured trusted proxy.
-function loginFixture(overrides = {}, { trustedClientAddress = true } = {}) {
-  const subjects = [];
-  const denialReasons = [];
-  const errors = [];
-  const state = {
-    createAttempt: async () => {
-      const createdAt = new Date("2030-01-01T00:00:00Z");
-      return { createdAt, expiresAt: new Date(createdAt.getTime() + 300_000) };
-    },
-    consumeAttempt: async () => ({ codeVerifier: "v".repeat(43), createdAt: new Date() }),
-    snapshotExternal: async (_providerId, subject) => {
-      subjects.push(subject);
-    },
-    snapshotPassword: async () => undefined,
-    recordDenied: async (reason) => {
-      denialReasons.push(reason);
-    },
-    ...overrides,
-  };
-  const login = createHumanLogin(
+function loginFixture(state = {}, { trustedClientAddress = true } = {}) {
+  return createLoginFixture({
+    provider: "github",
+    providers: { github: { clientId: "fixture-client", clientSecret: "fixture-client-secret" } },
     state,
-    {
-      recoveryUserId: "fixture-recovery",
-      github: { clientId: "fixture-client", clientSecret: "fixture-client-secret" },
-    },
-    origin,
-    { trustedClientAddress },
-  );
-  login.designateRecovery("Recovery@example.test");
-  const db = { user: [], session: [], account: [], verification: [] };
-  const auth = betterAuth({
-    baseURL: origin,
-    secret: "test-only-authentication-secret-with-at-least-32-characters",
-    database: login.database(memoryAdapter(db)),
-    session: {
-      expiresIn: 8 * 60 * 60,
-      disableSessionRefresh: true,
-      cookieCache: { enabled: false },
-    },
-    plugins: [login.plugin],
-    rateLimit: { enabled: false },
-    logger: { disabled: true },
-    onAPIError: {
-      onError(error) {
-        if (error instanceof APIError) {
-          throw error;
-        }
-        errors.push(error);
-        throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
-          message: "Authentication dependency unavailable.",
-        });
-      },
-    },
+    trustedClientAddress,
+    recoveryEmail: "Recovery@example.test",
   });
-  return {
-    auth,
-    db,
-    subjects,
-    denialReasons,
-    errors,
-    get denied() {
-      return denialReasons.length;
-    },
-    // The controller wrapper sets x-occ-client-ip from the socket peer or a trusted ingress.
-    callback: (
-      query = `state=${callbackState}&code=fixture-code`,
-      ip = "10.0.0.1",
-      cookie = `__Host-occ_login_attempt=${binding}`,
-    ) =>
-      auth.handler(
-        new Request(`${origin}/api/auth/oce/providers/github/callback?${query}`, {
-          headers: { ...(cookie === null ? {} : { cookie }), "x-occ-client-ip": ip },
-        }),
-      ),
-    start: (ip = "10.0.0.1") =>
-      auth.handler(
-        new Request(`${origin}/api/auth/oce/providers/github/start`, {
-          method: "POST",
-          headers: { origin, "x-occ-client-ip": ip },
-        }),
-      ),
-    result: (attemptId, cookie, ip = "10.0.0.1") =>
-      auth.handler(
-        new Request(`${origin}/api/auth/oce/providers/github/result`, {
-          method: "POST",
-          headers: { origin, cookie, "content-type": "application/json", "x-occ-client-ip": ip },
-          body: JSON.stringify({ attemptId }),
-        }),
-      ),
-    password: (password = "too-short", { ip = "10.0.0.1", email = "missing@example.test" } = {}) =>
-      auth.handler(
-        new Request(`${origin}/api/auth/oce/password`, {
-          method: "POST",
-          headers: { origin, "content-type": "application/json", "x-occ-client-ip": ip },
-          body: JSON.stringify({ email, password }),
-        }),
-      ),
-  };
-}
-
-async function expectDenied(response) {
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { message: "Authentication was not accepted." });
-  assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
-}
-
-function cookiePairs(response) {
-  return response.headers
-    .getSetCookie()
-    .map((cookie) => cookie.split(";", 1)[0])
-    .join("; ");
 }
 
 function token(response) {
@@ -136,41 +33,20 @@ function token(response) {
   );
 }
 
-async function until(predicate) {
-  const deadline = performance.now() + 2_000;
-  while (!predicate()) {
-    assert.ok(performance.now() < deadline, "Expected transport observation before deadline");
-    await delay(10);
-  }
-}
-
 test(
   "GitHub login bounds actual provider HTTP transport and local admission",
   { timeout: 60_000 },
   async (t) => {
     let serve;
-    const requests = [];
-    const server = createServer((request, response) => {
-      requests.push(request.url);
-      serve(request, response);
-    });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(async () => {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-    });
-    const providerOrigin = `http://127.0.0.1:${server.address().port}`;
-    const originalFetch = globalThis.fetch;
-    // Change only the fixed destinations. Real fetch, cancellation, stream reads,
-    // response parsing, and redirect handling remain production behavior.
-    t.mock.method(globalThis, "fetch", (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input);
-      assert.ok(
-        url.href === "https://github.com/login/oauth/access_token" ||
-          url.href === "https://api.github.com/user",
-      );
-      return originalFetch(new URL(url.pathname, providerOrigin), init);
-    });
+    const { requests, port } = await startProviderServer(t, (request, response) =>
+      serve(request, response),
+    );
+    const providerOrigin = `http://127.0.0.1:${port}`;
+    redirectProviderFetch(
+      t,
+      new Set(["https://github.com/login/oauth/access_token", "https://api.github.com/user"]),
+      providerOrigin,
+    );
 
     await t.test(
       "nonexpiring App token preserves client authentication, callback and PKCE without email lookup",
@@ -197,8 +73,8 @@ test(
         assert.equal(exchange.get("redirect_uri"), `${origin}/api/auth/providers/github/callback`);
         assert.equal(exchange.get("code_verifier"), "v".repeat(43));
         assert.equal(exchange.get("grant_type"), "authorization_code");
-        assert.deepEqual(login.subjects, ["12345678"]);
-        assert.deepEqual(login.denialReasons, ["EXTERNAL_IDENTITY_REJECTED"]);
+        assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
+        assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
         assert.deepEqual(requests.slice(before), ["/login/oauth/access_token", "/user"]);
       },
     );
@@ -219,7 +95,7 @@ test(
           await expectDenied(await login.callback());
           assert.equal(requests.slice(before).includes("/redirect-target"), false);
           assert.deepEqual(login.subjects, []);
-          assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
+          assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
         },
       );
 
@@ -266,7 +142,7 @@ test(
       assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
-      assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
+      assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
     });
 
     await t.test("profile body reads use the remaining overall deadline", async () => {
@@ -289,7 +165,7 @@ test(
       assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
-      assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
+      assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
     });
 
     await t.test(
@@ -305,7 +181,7 @@ test(
           );
         await expectDenied(await login.callback());
         assert.deepEqual(login.subjects, []);
-        assert.deepEqual(login.denialReasons, ["EXTERNAL_IDENTITY_REJECTED"]);
+        assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
       },
     );
 
@@ -367,7 +243,7 @@ test(
           const login = loginFixture(overrides);
           serve = handler;
           await expectDenied(await login.callback(query));
-          assert.deepEqual(login.denialReasons, [reason], name);
+          assert.deepEqual(login.denials, [[reason, "github"]], name);
         }
       },
     );
@@ -412,7 +288,7 @@ test(
         // A lost COMMIT acknowledgement may follow a committed login. The callback
         // must preserve that uncertainty without retrying or recording identity denial.
         assert.deepEqual(login.errors, [failure]);
-        assert.deepEqual(login.denialReasons, []);
+        assert.deepEqual(login.denials, []);
         assert.equal(issueAttempts, failurePoint === "issueSession" ? 1 : 0);
         assert.equal(requests.length - before, failurePoint === "consumeAttempt" ? 0 : 2);
         assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token/);
@@ -484,7 +360,7 @@ test(
           }),
         );
       }
-      assert.deepEqual(login.denialReasons, []);
+      assert.deepEqual(login.denials, []);
     });
 
     await t.test("the admission table stays bounded and evicts idle keys", async () => {
@@ -646,7 +522,13 @@ test(
     await t.test(
       "attempt cookie lifetime uses State duration despite controller clock skew",
       async () => {
-        const login = loginFixture();
+        // State's clock runs years ahead of the controller's.
+        const login = loginFixture({
+          createAttempt: async () => {
+            const createdAt = new Date("2030-01-01T00:00:00Z");
+            return { createdAt, expiresAt: new Date(createdAt.getTime() + 300_000) };
+          },
+        });
         const response = await login.start();
         assert.equal(response.status, 200);
         const cookie = response.headers.get("set-cookie");

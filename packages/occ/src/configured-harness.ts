@@ -35,7 +35,7 @@ function configuredModels(value: unknown): readonly string[] {
       selected.endsWith("/")
     ) {
       throw new ConfigurationHarnessError(
-        "The configured Agent model must identify its provider and model.",
+        "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
       );
     }
     return selected;

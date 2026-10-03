@@ -13,6 +13,7 @@ import {
   newPage,
   secretOptionLabel,
   selectSecret,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 
 function detailUrl(fixture, namespaceId, agentId, tab = "credentials") {
@@ -21,17 +22,6 @@ function detailUrl(fixture, namespaceId, agentId, tab = "credentials") {
   url.searchParams.set("revision", "draft");
   url.searchParams.set("tab", tab);
   return `${url.pathname}${url.search}`;
-}
-
-// Bound pickers show a placeholder until Secret metadata loads, so poll for the resolved name.
-async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  let value = await locator.inputValue();
-  while (value !== expected && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    value = await locator.inputValue();
-  }
-  assert.equal(value, expected);
 }
 
 function nativeValues(marker, { slack = false } = {}) {

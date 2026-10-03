@@ -1126,8 +1126,16 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (this.client !== undefined) {
       return this.client;
     }
-    this.client = this.createClient();
-    return this.client;
+    const created = this.createClient();
+    this.client = created;
+    // A failed setup (unreadable root certificate, missing gRPC module) is retried
+    // by the next call instead of failing every later call for this endpoint.
+    created.catch(() => {
+      if (this.client === created) {
+        this.client = undefined;
+      }
+    });
+    return created;
   }
 
   private async createClient(): Promise<{

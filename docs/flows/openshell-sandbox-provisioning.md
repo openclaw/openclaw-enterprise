@@ -222,7 +222,8 @@ returns the same result; a Sandbox that predates replayable creation fails.
 For each unary Gateway call, the client checks cancellation after client setup
 and credential-metadata preparation and before dispatch. An abort during setup
 is observed when the pending setup step settles; it does not bound a stalled
-initialization or file read. Once dispatched, an abort requests cancellation
+initialization or file read. The Backend shares one client per gateway endpoint;
+a failed setup is not cached, so the next call retries it. Once dispatched, an abort requests cancellation
 of the local gRPC call and rejects the caller. That request does not prove a
 remote mutation stopped; the calling lifecycle must handle any uncertain
 effect through its existing recovery and cleanup path.

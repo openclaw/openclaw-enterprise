@@ -51,6 +51,14 @@ export function message(error, mutation = false) {
       : "Service unavailable. The read could not be completed. Try again.";
 }
 
+// A rejected write shows the API's own sentence, which names the field to fix (for example
+// an inline model credential); other failures keep the generic status text.
+export function rejectionMessage(error, mutation = false) {
+  return error.status === 400 && error.serverMessage !== undefined
+    ? error.serverMessage
+    : message(error, mutation);
+}
+
 export function assertReadableConfiguration(resource) {
   if (resource.configurationReadError) {
     throw Object.assign(

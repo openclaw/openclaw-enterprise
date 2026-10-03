@@ -716,6 +716,11 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
     body: { kind: "agent", values: unsafe },
   });
   assert.equal(rejected.status, 400);
+  // The caller learns which field must become a reference, never the submitted value.
+  assert.equal(
+    rejected.body.error.message,
+    "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+  );
   assert.equal(JSON.stringify(rejected.body).includes(sentinel), false);
   assert.deepEqual(await readdir(root), []);
 
@@ -732,6 +737,44 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   });
   assert.equal(failedUpdate.status, 400);
   assert.equal(JSON.stringify(failedUpdate.body).includes(sentinel), false);
+  // Credential environment values and headers name their own field the same way.
+  for (const [unsafeValues, field] of [
+    [{ env: { vars: { OPENAI_API_KEY: sentinel } } }, "/env/vars/OPENAI_API_KEY"],
+    [
+      { models: { providers: { "a/b~c": { headers: { Authorization: `Bearer ${sentinel}` } } } } },
+      "/models/providers/a~1b~0c/headers/Authorization",
+    ],
+    // A long provider name shortens the path so the message stays within the 256-character contract.
+    [
+      { models: { providers: { ["p".repeat(300)]: { apiKey: sentinel } } } },
+      `/models/providers/p+…`,
+    ],
+  ]) {
+    const named = await request(context.app, "PATCH", `${collection}/${id}`, {
+      body: { values: unsafeValues },
+    });
+    assert.equal(named.status, 400);
+    assert.match(named.body.error.message, new RegExp(`^Configuration field ${field} holds`));
+    assert.ok(named.body.error.message.length <= 256);
+    assert.equal(JSON.stringify(named.body).includes(sentinel), false);
+  }
+  // A provider name is a submitted object key: control and format characters in it are
+  // replaced, and a shortened path never ends in half of a surrogate pair, as for other
+  // contract messages that name submitted keys.
+  for (const [providerName, field] of [
+    ["evil\u001b[2J\u202Ename", "/models/providers/evil?[2J?name/apiKey"],
+    ["\u{1F600}".repeat(150), `/models/providers/${"\u{1F600}".repeat(72)}…`],
+  ]) {
+    const named = await request(context.app, "PATCH", `${collection}/${id}`, {
+      body: { values: { models: { providers: { [providerName]: { apiKey: sentinel } } } } },
+    });
+    assert.equal(named.status, 400);
+    const { message } = named.body.error;
+    assert.equal(message.startsWith(`Configuration field ${field} holds`), true, message);
+    assert.equal(/[\p{Cc}\p{Cf}]/u.test(message), false);
+    assert.equal(message.isWellFormed(), true);
+    assert.ok(Array.from(message).length <= 256);
+  }
   assert.equal(await readFile(path, "utf8"), original);
   const unchanged = await request(context.app, "GET", `${collection}/${id}`);
   assert.equal(unchanged.status, 200);
@@ -741,7 +784,7 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   const persisted = JSON.parse(original);
   await assert.rejects(
     configurationDriver.create({ ...persisted, values: unsafe }),
-    /Model credentials must use unresolved references/,
+    /holds a credential value inline, where a reference is required/,
   );
   assert.equal(await readFile(path, "utf8"), original);
   await writeFile(path, JSON.stringify({ ...persisted, values: unsafe }));

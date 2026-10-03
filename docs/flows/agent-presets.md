@@ -126,8 +126,10 @@ path records mutations and denials without template or variable contents.
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
 lists only readable Presets, then reads the selected resource once with
 `revalidate: false`: the snapshot becomes a local draft, not an ongoing page
-dependency. The user
-reviews prefilled scalar defaults and fills typed inputs. The bound password
+dependency. The user reviews prefilled scalar defaults and fills typed inputs.
+Inputs for referenced variables without defaults are required, so the browser
+flags an empty one before rendering; defaulted or unreferenced variables stay
+optional. The bound password
 variable offers a new masked token or an existing same-Namespace Secret. The
 chooser fetches only Secret metadata, validates the original template, and replaces
 the password token with the selected reference in a temporary copy. Mode changes

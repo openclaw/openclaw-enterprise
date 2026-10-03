@@ -18,6 +18,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 
 function apiRequests(page, origin) {
@@ -767,7 +768,7 @@ test("Channel drawer reports partial save when post-PATCH Secret grant is reject
   const appToken = page.getByLabel("Slack app token");
   await appToken.waitFor();
   assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
-  assert.equal(await appToken.evaluate((node) => node.value), secretOptionLabel(slackAppSecret));
+  await waitForInputValue(appToken, secretOptionLabel(slackAppSecret));
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
 });
 

@@ -6,6 +6,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
+import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   authenticatedHeaders,
@@ -646,6 +647,30 @@ test("Secret API stores values through the selected driver and returns metadata 
     assert.equal(rejected.status, 400);
     assert.equal(rejected.body.error.code, "INVALID_REQUEST");
   }
+  // An empty value or name also names the schema's minimum length, so the caller can fix it.
+  for (const [method, path, body, field] of [
+    ["POST", `/namespaces/${namespace.id}/secrets`, { name: "Empty", value: "" }, "value"],
+    ["POST", `/namespaces/${namespace.id}/secrets`, { name: "", value: "nonempty" }, "name"],
+    ["PATCH", `/namespaces/${namespace.id}/secrets/${created.data.id}`, { value: "" }, "value"],
+  ]) {
+    const empty = await request(fixture.app, method, path, { body });
+    assert.equal(empty.status, 400);
+    assert.equal(
+      empty.body.error.message,
+      `The request does not match the operation contract: body /${field} has an unsupported value (expected at least 1 character).`,
+    );
+    assert.deepEqual(empty.body.error.details, [{ path: `/${field}`, code: "INVALID_VALUE" }]);
+  }
+  // A name over the schema's maximum length names that bound too.
+  const longName = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "n".repeat(201), value: "nonempty" },
+  });
+  assert.equal(longName.status, 400);
+  assert.equal(
+    longName.body.error.message,
+    "The request does not match the operation contract: body /name is too long (expected at most 200 characters).",
+  );
+  assert.deepEqual(longName.body.error.details, [{ path: "/name", code: "TOO_LONG" }]);
   const deleted = await request(
     fixture.app,
     "DELETE",
@@ -864,11 +889,26 @@ for (const [model, method, executionMode] of [
       body: { configurationId: configuration.id },
     });
     assert.deepEqual(unchanged.data.harnessAuth, binding);
-    assert.equal(
-      (await request(fixture.app, "DELETE", `/namespaces/${namespace.id}/secrets/${key.data.id}`))
-        .status,
-      409,
+    // The caller holds delete on the Secret, so the conflict names what still depends on it.
+    const blocked = await request(
+      fixture.app,
+      "DELETE",
+      `/namespaces/${namespace.id}/secrets/${key.data.id}`,
     );
+    assert.equal(blocked.status, 409);
+    assert.equal(
+      blocked.body.error.message,
+      "A Configuration, credential source, Agent draft, active revision, or pending deployment still references the Secret. Remove those references first.",
+    );
+    // Authorization precedes the reference check: a caller without delete learns nothing about references.
+    const { app: outsiderApp } = await fixture.createPrincipal("secret-outsider");
+    const forbidden = await request(
+      outsiderApp,
+      "DELETE",
+      `/namespaces/${namespace.id}/secrets/${key.data.id}`,
+    );
+    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.body.error.code, "FORBIDDEN");
     // Administrative rights on the actor do not give the Agent permission to receive a key.
     const denied = await request(fixture.app, "POST", `${path}/deploy`);
     assert.equal(denied.status, 403);
@@ -1076,4 +1116,27 @@ test("Harness source admission rejects foreign references and superseded model s
     ).status,
     400,
   );
+});
+
+test("Contract messages give no bound hint for keywords inherited from Object.prototype", () => {
+  for (const keyword of ["constructor", "toString", "__proto__"]) {
+    const validation = Object.assign(new Error("body/x is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation: [
+        {
+          keyword,
+          instancePath: "/x",
+          schemaPath: `#/properties/x/${keyword}`,
+          params: { limit: 1 },
+        },
+      ],
+    });
+    const failure = requestFailure(validation);
+    assert.equal(failure.status, 400);
+    assert.equal(
+      failure.message,
+      "The request does not match the operation contract: body /x has an unsupported value.",
+    );
+  }
 });

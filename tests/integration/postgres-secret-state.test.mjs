@@ -222,7 +222,10 @@ async function exerciseRepository(store) {
         backendRef: { ...storedSecret.backendRef, uid: randomUUID() },
       }),
     ),
-    { name: "ResourceConflictError" },
+    {
+      name: "ResourceStateConflictError",
+      message: "A Secret with this name already exists in this Namespace. Choose a different name.",
+    },
   );
 
   await store.transact(async (state) => {

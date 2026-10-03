@@ -229,7 +229,12 @@ async function fixture(t, selection = {}) {
       if (!name.endsWith(".pid")) {
         continue;
       }
-      const pid = Number(await readFile(join(state, name), "utf8"));
+      const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
+      // A pid file read between create and write is empty (0): kill(0) would signal
+      // this runner's own process group. A removed file reads as empty too.
+      if (!Number.isSafeInteger(pid) || pid <= 0) {
+        continue;
+      }
       try {
         process.kill(pid, "SIGTERM");
       } catch (error) {
@@ -325,6 +330,20 @@ async function json(path) {
 }
 async function missing(path) {
   await assert.rejects(access(path), { code: "ENOENT" });
+}
+// Polls `read` until it returns a value other than undefined, failing after the deadline.
+async function waitFor(description, read, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await read();
+    if (value !== undefined) {
+      return value;
+    }
+    if (Date.now() >= deadline) {
+      assert.fail(`Timed out waiting for ${description}.`);
+    }
+    await delay(10);
+  }
 }
 
 function setOption(object, keys, value) {
@@ -1178,17 +1197,30 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
     withComputeAbortSignal(controller.signal, () => executor.execute(waiting)),
     /cancelled or timed out/,
   );
-  for (let attempts = 0; attempts < 100; attempts++) {
-    try {
-      await access(pidFile);
-      break;
-    } catch {
-      await delay(10);
-    }
-  }
-  const pid = Number(await readFile(pidFile, "utf8"));
+  // writeFileSync creates the file before it writes the pid, so wait for a complete pid
+  // rather than for the file to exist: an empty read is Number("") === 0, and
+  // process.kill(0, 0) signals this test's own process group.
+  const pid = await waitFor("the remote helper pid", async () => {
+    const recorded = Number(await readFile(pidFile, "utf8").catch(() => ""));
+    return Number.isSafeInteger(recorded) && recorded > 0 ? recorded : undefined;
+  });
   controller.abort();
   await pending;
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  // The stand-in forwards SIGTERM and exits only after reaping the helper, so it is normally
+  // gone already. If a starved runner hits the executor's SIGKILL grace after the forward,
+  // the dead helper is reaped by init instead, so allow a bounded wait for that.
+  await waitFor(
+    "the cancelled remote helper to exit",
+    () => {
+      try {
+        process.kill(pid, 0);
+        return undefined;
+      } catch (error) {
+        assert.equal(error.code, "ESRCH");
+        return true;
+      }
+    },
+    5_000,
+  );
   await assert.rejects(executor.execute({ ...waiting, timeoutMs: 100 }), /cancelled or timed out/);
 });

@@ -18,6 +18,7 @@ import {
   setSlackSelection,
   selectSecret,
   waitForCondition,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -632,10 +633,8 @@ for (const changed of ["generation", "identity"]) {
         .first()
         .waitFor();
       assert.equal(pathRequests(requests, "PATCH", secretPath).length, 0);
-      assert.equal(
-        await page.getByLabel("Slack app token").inputValue(),
-        secretOptionLabel(appSecret),
-      );
+      // The failed save re-renders the panel; its pickers reload the Secret list before naming.
+      await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
       assert.equal(await deploy.isEnabled(), true);
       await page.unroute(`${fixture.origin}${configurationPath}`);
       await selectSecret(page, "Slack app token", replacementSecret);
@@ -670,10 +669,7 @@ for (const changed of ["generation", "identity"]) {
       (await fixture.request("GET", configurationPath)).data.values,
       changed === "generation" ? newerValues : values,
     );
-    assert.equal(
-      await page.getByLabel("Slack app token").inputValue(),
-      secretOptionLabel(appSecret),
-    );
+    await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
     assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
     assert.equal(await deploy.isDisabled(), true);
     assert.equal(

@@ -202,9 +202,8 @@ test("REST issue and PR responses preserve informational URLs on reads and succe
         };
         const output = plan.responsePolicy.rewriteJson(scenario.list ? [input] : input);
         assert.deepEqual(JSON.parse(JSON.stringify(output)), scenario.list ? [expected] : expected);
-        assert.doesNotThrow(() =>
-          plan.responsePolicy.headers(scenario.status, { "content-type": "application/json" }),
-        );
+        const headers = { "content-type": "application/json" };
+        assert.deepEqual(plan.responsePolicy.headers(scenario.status, headers), headers);
       });
     }
   }

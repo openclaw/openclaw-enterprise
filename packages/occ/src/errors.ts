@@ -173,6 +173,31 @@ export class ConfigurationHarnessError extends ScopeViolationError {
   }
 }
 
+const modelCredentialMessage = (path: string): string =>
+  `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
+
+/**
+ * A literal credential in a known model credential field of Configuration values. The
+ * message names the field's JSON pointer and never the value, so HTTP returns it.
+ */
+export class ModelCredentialValueError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    // The error contract caps messages at 256 characters; a long provider name shortens the
+    // path. The cut counts code points, so it never leaves half of a surrogate pair.
+    const budget = 256 - modelCredentialMessage("").length;
+    const characters = Array.from(path);
+    super(
+      modelCredentialMessage(
+        characters.length <= budget ? path : `${characters.slice(0, budget - 1).join("")}…`,
+      ),
+    );
+    this.name = "ModelCredentialValueError";
+    this.path = path;
+  }
+}
+
 export class ResourceConflictError extends ScopeViolationError {
   constructor(message: string) {
     super(message);
@@ -191,9 +216,25 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
-/** Shared by the memory and PostgreSQL stores so both report a duplicate Agent name alike. */
+/*
+ * Duplicate caller-chosen names, shared by the memory and PostgreSQL stores so both report
+ * them alike. Each is raised only after the caller was authorized to create (or rename) that
+ * resource kind in that scope, and the 409 already revealed that the name is taken, so naming
+ * the kind discloses nothing new.
+ */
 export const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
+export const SECRET_NAME_CONFLICT =
+  "A Secret with this name already exists in this Namespace. Choose a different name.";
+export const PRESET_NAME_CONFLICT =
+  "A Preset with this name already exists in this Namespace. Choose a different name.";
+export const SERVICE_ACCOUNT_NAME_CONFLICT =
+  "A ServiceAccount with this name already exists in this Namespace. Choose a different name.";
+export const CREDENTIAL_SOURCE_NAME_CONFLICT =
+  "A credential source with this name already exists in this Namespace. Choose a different name.";
+/** Deleted Namespaces keep their name, so a name can be taken by one no longer listed. */
+export const NAMESPACE_NAME_CONFLICT =
+  "A Namespace with this name already exists or was deleted. Choose a different name.";
 
 export class AgentDeletingError extends ResourceConflictError {
   constructor(message = "The Agent is being deleted.") {

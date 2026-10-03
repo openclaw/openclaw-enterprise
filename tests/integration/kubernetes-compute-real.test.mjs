@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import pg from "pg";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
@@ -3244,50 +3244,77 @@ test(
         const placement = placements.get(namespaceId);
         await assertReadyGateway(placement, agent.id, namespaceId, candidate);
         const imagePath = `/namespaces/${namespaceId}/agents/${agent.id}/runtime-images`;
-        const imageRead = await request("GET", imagePath);
-        assert.equal(imageRead.status, 200, JSON.stringify(imageRead.error));
-        assert.equal(imageRead.data.status, "observed");
-        const observedPods = (
-          await Promise.all(
-            [...new Set([placement, kubernetesGatewayNamespaceName(namespaceId)])].map(
-              (namespace) => resources("pods", namespace),
-            ),
-          )
-        )
-          .flat()
-          .filter(
-            (pod) =>
-              pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
-              pod.metadata.labels?.["openclaw.dev/revision"] === candidate.id &&
-              !pod.metadata.deletionTimestamp,
-          );
-        const expectedImages = observedPods.flatMap((pod) =>
-          [
-            [pod.spec.containers, pod.status.containerStatuses],
-            [pod.spec.initContainers, pod.status.initContainerStatuses],
-            [pod.spec.ephemeralContainers, pod.status.ephemeralContainerStatuses],
-          ].flatMap(([containers = [], statuses = []]) =>
-            containers.map((container) => ({
-              workload: `${pod.metadata.namespace}/${pod.metadata.name}`,
-              container: container.name,
-              image: container.image,
-              imageId: statuses.find((state) => state.name === container.name)?.imageID ?? null,
-            })),
-          ),
-        );
-        assert.ok(expectedImages.length > 0);
         const byContainer = (a, b) =>
           `${a.workload}/${a.container}`.localeCompare(`${b.workload}/${b.container}`);
-        assert.deepEqual(
-          imageRead.data.images
-            .map(({ commit, openclawCommit, ...identity }) => {
-              assert.ok(commit === null || /^[a-f0-9]{40}$/.test(commit));
-              assert.ok(openclawCommit === null || /^[a-f0-9]{40}$/.test(openclawCommit));
-              return identity;
-            })
-            .sort(byContainer),
-          expectedImages.sort(byContainer),
-        );
+        const podImages = async () =>
+          (
+            await Promise.all(
+              [...new Set([placement, kubernetesGatewayNamespaceName(namespaceId)])].map(
+                (namespace) => resources("pods", namespace),
+              ),
+            )
+          )
+            .flat()
+            .filter(
+              (pod) =>
+                pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+                pod.metadata.labels?.["openclaw.dev/revision"] === candidate.id &&
+                !pod.metadata.deletionTimestamp,
+            )
+            .flatMap((pod) =>
+              [
+                [pod.spec.containers, pod.status.containerStatuses],
+                [pod.spec.initContainers, pod.status.initContainerStatuses],
+                [pod.spec.ephemeralContainers, pod.status.ephemeralContainerStatuses],
+              ].flatMap(([containers = [], statuses = []]) =>
+                containers.map((container) => ({
+                  workload: `${pod.metadata.namespace}/${pod.metadata.name}`,
+                  container: container.name,
+                  image: container.image,
+                  // Kubernetes reports an unknown image ID as "", which the API returns as null.
+                  imageId: statuses.find((state) => state.name === container.name)?.imageID || null,
+                })),
+              ),
+            )
+            .sort(byContainer);
+        // The read lists live Pods through the Kubernetes API on every call, and its
+        // contract reports a failed Kubernetes read as 503 DEPENDENCY_UNAVAILABLE for
+        // the caller to retry, so activation cannot make a single read infallible.
+        // Pod snapshots taken before and after each read bound what it could see:
+        // when they agree the Pods did not change, and the API must match exactly.
+        const imagesDeadline = Date.now() + 60_000;
+        for (;;) {
+          const before = await podImages();
+          const imageRead = await request("GET", imagePath);
+          const after = await podImages();
+          const retry = Date.now() < imagesDeadline;
+          if (
+            retry &&
+            imageRead.status === 503 &&
+            imageRead.error?.code === "DEPENDENCY_UNAVAILABLE"
+          ) {
+            await delay(500);
+            continue;
+          }
+          assert.equal(imageRead.status, 200, JSON.stringify(imageRead.error));
+          assert.equal(imageRead.data.status, "observed");
+          if (retry && !isDeepStrictEqual(before, after)) {
+            await delay(500);
+            continue;
+          }
+          assert.ok(after.length > 0);
+          assert.deepEqual(
+            imageRead.data.images
+              .map(({ commit, openclawCommit, ...identity }) => {
+                assert.ok(commit === null || /^[a-f0-9]{40}$/.test(commit));
+                assert.ok(openclawCommit === null || /^[a-f0-9]{40}$/.test(openclawCommit));
+                return identity;
+              })
+              .sort(byContainer),
+            after,
+          );
+          break;
+        }
         assert.equal((await request("GET", imagePath, undefined, { session: false })).status, 401);
         if (runtimeImage !== undefined) {
           // These bytes came through normal HTTP creation, PostgreSQL and the worker;

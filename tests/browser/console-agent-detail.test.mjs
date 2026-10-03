@@ -33,6 +33,7 @@ import {
   secretPostRequests,
   selectSecret,
   waitForCondition,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -399,6 +400,245 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.deepEqual(saved.data.values, nativeValues("saved"));
+});
+
+test("Configuration save names the field that holds an inline model credential without showing it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "occ-inline-credential-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = await createConsoleAppFixture(t, {
+    configurationDriver: new FilesystemConfigurationDriver(root),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Inline credential", { ready: true });
+  const values = nativeValues("inline-credential");
+  const agent = await fixture.createAgent(namespace.id, "Inline credential Agent", values);
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  // A pasted provider key is a value, not the Secret reference the field requires.
+  const sentinel = `synthetic-inline-key-${randomUUID()}`;
+  const edited = structuredClone(values);
+  edited.models = {
+    ...edited.models,
+    providers: { ...edited.models?.providers, openai: { apiKey: sentinel } },
+  };
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(edited, null, 2));
+  const rejected = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      response.url().endsWith(`/configurations/${agent.configurationId}`),
+  );
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  assert.equal((await rejected).status(), 400);
+  const feedback = page.getByText(
+    "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+  );
+  await feedback.waitFor();
+  // Only the editor holds the key; the explanation never repeats it.
+  assert.equal((await feedback.textContent()).includes(sentinel), false);
+  const saved = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  );
+  assert.deepEqual(saved.data.values, values);
+});
+
+test("Agent deployment shows the API's reason when it rejects the saved model", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unqualified model");
+  const values = nativeValues("unqualified-model");
+  const agent = await fixture.createAgent(namespace.id, "Unqualified model Agent", values, {
+    harnessAuth: { method: "runtime" },
+  });
+  // The Configuration accepts a bare model name; only deployment requires provider/model form.
+  const saved = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    {
+      body: {
+        values: {
+          ...values,
+          agents: { ...values.agents, defaults: { ...values.agents.defaults, model: "gpt-5.1" } },
+        },
+      },
+    },
+  );
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url.pathname + url.search);
+  const rejected = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/agents/${agent.id}/deploy`),
+  );
+  await page.getByRole("button", { name: "Deploy new version" }).click();
+  assert.equal((await rejected).status(), 400);
+  // The generic "check the entered values" text cannot tell the user which setting to fix.
+  await page
+    .getByText(
+      "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
+      { exact: true },
+    )
+    .waitFor();
+  const revisions = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
+  );
+  assert.deepEqual(revisions.data, []);
+});
+
+test("Plugin save shows the API's reason when it rejects the selections, else the plugin text", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Plugin rejection", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Plugin rejection Agent",
+    nativeValues("plugin-rejection", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  await login(page, fixture, url.pathname + url.search);
+  const pluginId = "codex-plugin:linear@openai-curated-remote";
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await page
+    .getByLabel("Plugin selections JSON", { exact: true })
+    .fill(JSON.stringify({ [pluginId]: { enabled: "yes" } }));
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const patched = (response) =>
+    response.request().method() === "PATCH" && response.url() === agentUrl;
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+
+  // A 400 without a server sentence keeps the plugin-specific text, not the generic one.
+  const unexplained = async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "INVALID_REQUEST" } }),
+    });
+  };
+  await page.route(agentUrl, unexplained);
+  const unexplainedResponse = page.waitForResponse(patched);
+  await save.click();
+  assert.equal((await unexplainedResponse).status(), 400);
+  await page
+    .getByText("Plugin selections were rejected. Check plugin IDs and policy JSON, then retry.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await page.getByText("Check the entered values", { exact: false }).count(), 0);
+  await page.unroute(agentUrl, unexplained);
+  await page.getByRole("button", { name: "Save plugin selections", disabled: false }).waitFor();
+
+  const rejected = page.waitForResponse(patched);
+  await save.click();
+  const response = await rejected;
+  assert.equal(response.status(), 400);
+  // The API's sentence names the field; the generic text only says the selections were rejected.
+  const reason = (await response.json()).error.message;
+  assert.equal(
+    reason,
+    `The request does not match the operation contract: body /plugins/${pluginId}/enabled has the wrong type (expected boolean).`,
+  );
+  await page.getByText(reason, { exact: true }).waitFor();
+  assert.equal(
+    await page.getByText("Plugin selections were rejected.", { exact: false }).count(),
+    0,
+  );
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(saved.data.plugins ?? {}, {});
+});
+
+test("Agent sharing shows a rejected write's reason, but generic text after an accepted write", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["sharing-recipient"],
+    computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/sharing"),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Sharing rejection", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Sharing Agent",
+    nativeRolesGateway(nativeValues("sharing"), fixture.origin),
+  );
+  // Sharing needs the role catalog from an active, admitted revision.
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, `${detail.pathname}${detail.search}`);
+  const policyPath = `${fixture.origin}/namespaces/${namespace.id}/iam`;
+  const reason = "The request does not match the operation contract: body /name is too long.";
+  // The real API accepts these writes, so a 400 naming a field is simulated for one request.
+  const reject = async (route) => {
+    if (route.request().method() === "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "INVALID_REQUEST", message: reason },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000999" },
+      }),
+    });
+  };
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel
+    .getByLabel("Existing person’s Principal ID")
+    .fill(fixture.provisionedAccounts[0].principal.id);
+  await panel.getByRole("checkbox").check();
+
+  // The first write (the discovery Role) is rejected: its reason is shown.
+  await page.route(`${policyPath}/roles`, reject);
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel.getByText(reason, { exact: false }).waitFor();
+  assert.equal(await panel.getByText("Check the entered values", { exact: false }).count(), 0);
+  await page.unroute(`${policyPath}/roles`, reject);
+
+  // The Role is created, then its binding is rejected: the outcome is partial, so generic text.
+  await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await panel.getByText("Current policy loaded.", { exact: false }).waitFor();
+  await page.route(`${policyPath}/access-bindings`, reject);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel.getByText("Check the entered values and resource IDs", { exact: false }).waitFor();
+  assert.equal(await panel.getByText(reason, { exact: false }).count(), 0);
+  const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+  assert.equal(roles.data.length, 1);
+
+  // The discovery Role now exists, so its rejected binding is the first write: reason shown.
+  await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await panel.getByText("Current policy loaded.", { exact: false }).waitFor();
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel.getByText(reason, { exact: false }).waitFor();
+  assert.equal(await panel.getByText("Check the entered values", { exact: false }).count(), 0);
+  await page.unroute(`${policyPath}/access-bindings`, reject);
+
+  // A rejected binding removal also shows its reason.
+  await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await panel.getByText("Current policy loaded.", { exact: false }).waitFor();
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  assert.equal(bindings.data.length, 2);
+  await page.route(`${policyPath}/access-bindings/*`, reject);
+  await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
+  await panel.getByText(reason, { exact: false }).waitFor();
+  assert.equal(await panel.getByText("Check the entered values", { exact: false }).count(), 0);
+  assert.equal(await panel.getByText("Binding removed.", { exact: false }).count(), 0);
 });
 
 test("Gateway password access saves the generated reference without changing admitted versions or Secret bindings", async (t) => {
@@ -1196,11 +1436,12 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await saveResponse).status(), 200);
-  await page.getByLabel("API key Secret").waitFor({ state: "visible" });
-  assert.equal(
-    await page.getByLabel("API key Secret").evaluate((node) => node.value),
-    secretOptionLabel(replacementSecret),
+  // The saved source re-renders the picker, which reloads the Secret list before naming it.
+  // The old, disabled picker already shows the staged Secret, so wait for the rebuilt form.
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
   );
+  await waitForInputValue(page.getByLabel("API key Secret"), secretOptionLabel(replacementSecret));
 
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.deepEqual(current.data.harnessAuth, {
@@ -1213,10 +1454,7 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   const serviceAccountSecret = page.getByLabel("Service account token Secret");
   assert.equal(await serviceAccountSecret.evaluate((node) => node.value), "");
   await page.getByLabel("Authentication source").selectOption("api_key");
-  assert.equal(
-    await page.getByLabel("API key Secret").evaluate((node) => node.value),
-    secretOptionLabel(replacementSecret),
-  );
+  await waitForInputValue(page.getByLabel("API key Secret"), secretOptionLabel(replacementSecret));
 
   await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
     await route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
@@ -1233,6 +1471,59 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
       .getAttribute("href"),
     `/namespaces/${namespace.id}/secrets/${replacementSecret.id}`,
   );
+});
+
+test("Agent credentials bind a Secret typed by its exact name without picking the suggestion", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Typed Secret name", { ready: true });
+  const originalSecret = await fixture.createSecret(namespace.id, "Original key", "hidden-a");
+  const typedSecret = await fixture.createSecret(namespace.id, "Typed key", "hidden-b");
+  const enteredSecret = await fixture.createSecret(namespace.id, "Entered key", "hidden-c");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Typed Secret Agent",
+    nativeValues("typed-secret", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+  await login(page, fixture, url.pathname + url.search);
+  await page.getByText("Choose an existing Secret or create a new one.").waitFor();
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  const savedSource = async () =>
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+      .harnessAuth.source;
+  const save = async () => {
+    const saved = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}`) &&
+        response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    assert.equal((await saved).status(), 200);
+  };
+
+  // Clicking Save straight after typing the full name used to keep the old Secret silently.
+  await picker.fill(typedSecret.name);
+  await save();
+  assert.deepEqual(await savedSource(), typedSecret.ref);
+  // A successful save re-renders the tab; wait for its picker to load the Secrets again.
+  await page.getByText("Choose an existing Secret or create a new one.").waitFor();
+  assert.equal(await picker.inputValue(), typedSecret.name);
+
+  // Enter commits an exact name the same way, before any save.
+  await picker.fill(`  ${enteredSecret.name} `);
+  await picker.press("Enter");
+  await page.getByText("Secret binding staged. Save changes to apply it.").waitFor();
+  assert.equal(await picker.inputValue(), enteredSecret.name);
+  await save();
+  assert.deepEqual(await savedSource(), enteredSecret.ref);
+
+  // A partial name is not a choice: leaving the field restores the bound Secret.
+  await picker.fill("Origin");
+  await picker.blur();
+  assert.equal(await picker.inputValue(), enteredSecret.name);
 });
 
 test("Agent credential Secret picker distinguishes action labels from Secret names", async (t) => {
@@ -3974,11 +4265,10 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
   // Explicit reload recovers the committed source; saving it again confirms the missing grant.
   await page.unroute(`**${agentPath}`);
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
-  await page.getByLabel("API key Secret").waitFor();
-  assert.equal(
-    await page.getByLabel("API key Secret").evaluate((node) => node.value),
-    secretOptionLabel(replacement),
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
   );
+  await waitForInputValue(page.getByLabel("API key Secret"), secretOptionLabel(replacement));
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page.waitForFunction(
     () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
@@ -4114,8 +4404,12 @@ test("authentication drafts retain Secret references and their original save bas
   });
   assert.equal(changed.status, 200);
   await page.goBack();
-  assert.equal(
-    await page.getByLabel("API key Secret", { exact: true }).evaluate((node) => node.value),
+  // Back first restores a disabled copy of the old view, whose picker still shows the Secret.
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
+  );
+  await waitForInputValue(
+    page.getByLabel("API key Secret", { exact: true }),
     secretOptionLabel(secret),
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();

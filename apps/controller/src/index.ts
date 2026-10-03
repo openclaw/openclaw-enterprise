@@ -216,6 +216,7 @@ const RESOURCE_ID_PREFIX = {
   credentialSourceId: "cs_",
   agentId: "agt_",
   revisionId: "rev_",
+  deploymentId: "rev_",
 } as const;
 const RESOURCE_ID = Object.fromEntries(
   Object.entries(RESOURCE_ID_PREFIX).map(([parameter, prefix]) => [

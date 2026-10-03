@@ -214,7 +214,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw failure(
         403,
         "FORBIDDEN",
-        "Native admin UI requires a signed-in console session; service API keys cannot open it.",
+        "OpenClaw requires a signed-in console session; service API keys cannot open it.",
       );
     }
     const session = admitted.session;

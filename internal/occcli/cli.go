@@ -1171,6 +1171,9 @@ func (app *application) agentRevision(
 	namespace, agentID, revision string,
 ) (string, any, error) {
 	if revision != "" {
+		if err := revisionIDArg.check(revision); err != nil {
+			return "", nil, err
+		}
 		return revision, nil, nil
 	}
 	agent, err := client.GetAgent(namespace, agentID)

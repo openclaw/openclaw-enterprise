@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -24,6 +25,12 @@ async function markdownFiles(directory) {
 
 // Exercise the shipped CLI against the authored corpus and generated API.
 test("docs build renders every authored page and preserves repository ownership", async () => {
+  // `docs:build` indexes the site with the docs-site package's Pagefind, which only
+  // `pnpm docs:install` provides (the CI docs step runs it before this lane).
+  assert.ok(
+    existsSync(join(root, "scripts/docs-site/node_modules/.bin/pagefind")),
+    "Pagefind is missing: run `pnpm docs:install` before this test.",
+  );
   execFileSync("npm", ["run", "docs:build"], {
     cwd: root,
     encoding: "utf8",

@@ -140,6 +140,8 @@ export function createSecretReferenceField({
   createFixedKey,
   metadataLabel = `View ${label} Secret metadata`,
   noSecretLabel = "No Secret bound",
+  // Callers whose form applies the binding with another control name it here.
+  stagedHint = "Secret binding staged. Save changes to apply it.",
   fieldClassName = "form-field",
   selectClassName,
   disabled = false,
@@ -375,10 +377,17 @@ export function createSecretReferenceField({
         secrets.push(secret);
       }
       setSecretOptions();
-      status.textContent = "Secret binding staged. Save changes to apply it.";
+      status.textContent = stagedHint;
     } finally {
       updateValidity();
     }
+  }
+
+  // Typing a Secret's exact name selects it, as clicking its suggestion would; names are
+  // unique in a Namespace. Anything else still restores the current binding.
+  function typedSecret() {
+    const query = searchQuery.trim();
+    return query === "" ? undefined : secrets.find((secret) => secret.name === query);
   }
 
   function selectOption(option) {
@@ -648,6 +657,8 @@ export function createSecretReferenceField({
       event.preventDefault();
       if (activeOptionIndex >= 0) {
         selectOption(options[activeOptionIndex]);
+      } else if (typedSecret() !== undefined) {
+        selectOption({ kind: "secret", secret: typedSecret() });
       }
       return;
     }
@@ -658,6 +669,11 @@ export function createSecretReferenceField({
     }
   });
   input.addEventListener("blur", () => {
+    const typed = listboxOpen && !manuallyDisabled ? typedSecret() : undefined;
+    if (typed !== undefined) {
+      selectOption({ kind: "secret", secret: typed });
+      return;
+    }
     closeListbox({ restoreSelection: true });
   });
 

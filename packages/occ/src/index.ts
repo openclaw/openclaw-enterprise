@@ -230,6 +230,7 @@ export {
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
+  ModelCredentialValueError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -3452,8 +3453,8 @@ export class OpenClawController {
         throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
       }
       if (await state.secrets.hasReferences(namespace.id, secret.id)) {
-        throw new ResourceConflictError(
-          "A Configuration, active revision, or pending deployment still references the Secret.",
+        throw new ResourceStateConflictError(
+          "A Configuration, credential source, Agent draft, active revision, or pending deployment still references the Secret. Remove those references first.",
         );
       }
       const removed = await accessBindingsTargeting(state, namespace.id, "secret", secret.id);
@@ -4015,8 +4016,8 @@ export class OpenClawController {
         throw new ScopeViolationError("The ServiceAccount does not belong to the exact Namespace.");
       }
       if (await state.serviceAccounts.hasReferences(namespace.id, account.id)) {
-        throw new ResourceConflictError(
-          "An Agent draft, active revision, or pending deployment still references the exact ServiceAccount.",
+        throw new ResourceStateConflictError(
+          "An Agent draft, active revision, or pending deployment still references the ServiceAccount. Remove those references first.",
         );
       }
       const driver = this.serviceAccountDriver();

@@ -25,10 +25,7 @@ test("the real factory retains the caller pool and complete canonical schema wit
   // Caller-added properties must not make Drizzle interpret the pool as config.
   Object.assign(pool, { schema: {}, logger: false, connection: {}, client: {} });
   const calls = forbidPoolIO(pool);
-  let pending;
-  assert.doesNotThrow(() => {
-    pending = createPostgresAuthBinding(pool);
-  });
+  const pending = createPostgresAuthBinding(pool);
   assert.ok(pending instanceof Promise);
   const binding = await pending;
   assert.strictEqual(binding.schema, canonicalSchema);

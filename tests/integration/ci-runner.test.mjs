@@ -40,6 +40,8 @@ function run(root, args, env = {}) {
       ...process.env,
       GITHUB_SHA: currentSha(),
       CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
+      // Fixture failures quote this value; the reporter must redact env values.
+      CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
       ...env,
     },
   });
@@ -280,7 +282,13 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.equal(summary.counts.passed, 2);
   assert.equal(summary.counts.failed, 0);
   assert.deepEqual(summary.files[0].fileFailure, {
-    error: { code: "ERR_TEST_FAILURE", name: "Error", failureType: "testCodeFailure", exitCode: 1 },
+    error: {
+      code: "ERR_TEST_FAILURE",
+      name: "Error",
+      failureType: "testCodeFailure",
+      exitCode: 1,
+      message: "test failed",
+    },
     diagnosticKind: "post-test-async-activity",
   });
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
@@ -861,6 +869,9 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       `  console.error("${secret}-stderr");`,
       `  assert.equal("${secret}-actual", "expected");`,
       "});",
+      'test("job env redaction", () => {',
+      '  throw new Error("owner openclaw-public-owner strippedjobvalue42");',
+      "});",
       'test("redacted custom error", () => {',
       `  console.log("${secret}-custom-stdout");`,
       `  console.error("${secret}-custom-stderr");`,
@@ -1036,22 +1047,31 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   });
 
-  const result = run(root, [
-    "run",
-    "redacted",
-    "--manifest",
-    "manifest.json",
-    "--root",
+  const result = run(
     root,
-    "--state",
-    "state/redacted.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+    [
+      "run",
+      "redacted",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/redacted.jsonl",
+      "--results",
+      resultsPath,
+    ],
+    {
+      // Public runner metadata stays readable; the runner strips OCC_TEST_* from
+      // the test child, so only its own second pass can redact this value.
+      GITHUB_REPOSITORY_OWNER: "openclaw-public-owner",
+      OCC_TEST_STRIPPED_VALUE: "strippedjobvalue42",
+    },
+  );
 
   assert.equal(result.status, 1);
   const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`;
-  assert.doesNotMatch(cliAndArtifact, /secretauthvalue/);
+  assert.doesNotMatch(cliAndArtifact, /secretauthvalue|strippedjobvalue42/);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
   assert.equal(summary.files[0].tests[0].line, 3);
@@ -1066,12 +1086,25 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   );
   assert.equal(failure.location.line, 6);
   assert.ok(failure.location.column > 0);
+  // The bounded message and top frame name the failure; env values never survive.
+  assert.match(failure.message, /'\[env:CI_RUNNER_FIXTURE_CREDENTIAL\]-actual'/);
+  assert.match(failure.message, /'expected'/);
+  assert.match(failure.frame, /\(tests\/integration\/redacted\.test\.mjs:6:\d+\)$/);
+  assert.match(
+    result.stderr,
+    /run-tests: failed tests\/integration\/redacted\.test\.mjs:6 "redacted failure locator": Expected values/,
+  );
   const customFailure = summary.files[0].tests.find(
     (entry) => entry.name === "redacted custom error",
   );
   assert.equal(customFailure.status, "failed");
   assert.equal(customFailure.error.cause, undefined);
-  assert.equal(customFailure.error.location.line, 11);
+  assert.equal(customFailure.error.location.line, 14);
+  assert.equal(customFailure.error.message, "[env:CI_RUNNER_FIXTURE_CREDENTIAL]-message");
+  assert.equal(
+    summary.files[0].tests.find((entry) => entry.name === "job env redaction").error.message,
+    "owner openclaw-public-owner [env:OCC_TEST_STRIPPED_VALUE]",
+  );
   const httpFailure = summary.files[0].tests.find(
     (entry) => entry.name === "allowlisted controller HTTP diagnostic",
   );
@@ -1192,6 +1225,79 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     assert.equal(rejected.status, "failed");
     assert.equal(rejected.error.diagnostic, undefined);
   }
+});
+
+test("failure text is bounded and redacts env values and credential shapes", async () => {
+  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([
+    { GITHUB_REPOSITORY_OWNER: "openclaw", JOB_ONLY_KEY: "jobonlyopaque123" },
+    { CHILD_URL: "postgres://app:childpw77@db/app", JOB_ONLY_KEY: "otheropaque456" },
+  ]);
+  const render = async (cause) => {
+    let text = "";
+    for await (const chunk of reporter([
+      { type: "test:fail", data: { name: "case", details: { error: { cause } } } },
+    ])) {
+      text += chunk;
+    }
+    return redactFailure(JSON.parse(text).data.error, secrets, "/repo");
+  };
+  const credentials = [
+    "Authorization: Bearer abcdefghijklmnop0123",
+    "postgres://occ:hunter2pass@db.internal:5432/occ",
+    "token=ghp_0123456789abcdefghijABCDEFGHIJ",
+    'password: "correct-horse"',
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.c2lnbmF0dXJl",
+    "sk-proj-0123456789abcdef",
+    "xoxb-1234-5678-abcdefgh",
+    "xapp-1-A0123-4567-abcdef",
+    "redis://:redispw99@cache:6379 https://tokenvalue123@git.example",
+    '{"privateKey":"pkvalue123"}',
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEabc\n-----END RSA PRIVATE KEY-----",
+    "job jobonlyopaque123 child otheropaque456 password childpw77",
+  ];
+  const error = await render(
+    new Error(`request failed for openclaw at /repo/x.mjs\n${credentials.join("\n")}`),
+  );
+  // Public runner metadata stays readable; the repository path is stripped.
+  assert.match(error.message, /^request failed for openclaw at x\.mjs\n/);
+  assert.match(
+    error.message,
+    /job \[env:JOB_ONLY_KEY\] child \[env:JOB_ONLY_KEY\] password \[env:CHILD_URL\]/,
+  );
+  for (const leaked of [
+    "abcdefghijklmnop0123",
+    "hunter2pass",
+    "ghp_0123",
+    "correct-horse",
+    "eyJhbGci",
+    "sk-proj",
+    "xoxb-",
+    "MIIEabc",
+    "xapp-1",
+    "redispw99",
+    "tokenvalue123",
+    "pkvalue123",
+  ]) {
+    assert.doesNotMatch(error.message, new RegExp(leaked));
+  }
+  assert.match(error.frame, /^at /);
+  // A stack quoted in the message is not the frame.
+  const quoted = await render({
+    message: "child failed\n    at quoted (/elsewhere/child.js:1:1)",
+    stack:
+      "Error: child failed\n    at quoted (/elsewhere/child.js:1:1)\n    at real (helper.mjs:2:3)",
+  });
+  assert.equal(quoted.frame, "at real (helper.mjs:2:3)");
+  // A value split by the cut survives as neither the value nor a prefix of it.
+  const long = await render(new Error(`${"x".repeat(16_370)} jobonlyopaque123`));
+  assert.ok(long.message.length < 700);
+  assert.match(long.message, /\.\.\. \[truncated\]$/);
+  const straddle = await render(new Error(`${"y ".repeat(296)}key jobonlyopaque123 tail`));
+  assert.doesNotMatch(straddle.message, /jobonly/);
+  assert.equal((await render("thrown string")).message, "thrown string");
+  assert.equal((await render(undefined)).message, undefined);
 });
 
 test("run keeps bounded Agent namespace activity from a passing k3d file", async (t) => {

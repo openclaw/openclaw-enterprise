@@ -410,7 +410,10 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     const unsafe = { ...configuration, values };
     for (const operation of ["create", "update"]) {
       await assert.rejects(driver[operation](unsafe), (error) => {
-        assert.match(error.message, /Model credentials must use unresolved references/);
+        assert.match(
+          error.message,
+          /holds a credential value inline, where a reference is required/,
+        );
         assert.equal(error.message.includes(sentinel), false);
         return true;
       });

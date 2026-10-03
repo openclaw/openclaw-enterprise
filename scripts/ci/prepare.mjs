@@ -50,6 +50,12 @@ const fixtureLanes = new Set([
   "k3d-fixture-state",
   "k3d-fixture-plugins",
 ]);
+// Ordinary k3d lanes pin the K3s node image by digest so cluster creation
+// never depends on k3d's online release-channel lookup (update.k3s.io). Bump
+// it deliberately to a newer v1.35 patch; OPENCLAW_CI_K3S_IMAGE still
+// overrides it with another immutable reference.
+const defaultK3sImage =
+  "docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc";
 const nativeIAMBarrierFile = "tests/integration/postgres-native-iam-policy-barrier.test.mjs";
 const productionUpgradeImages = {
   OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
@@ -918,9 +924,9 @@ async function ensureK3dCluster(statePath, state) {
       `k3d-${cluster}-server-0`,
       ...(crossNodePluginStatus ? [`k3d-${cluster}-agent-0`] : []),
     ],
-    // An explicit digest bypasses k3d's online release-channel lookup. The
+    // A digest-pinned image bypasses k3d's online release-channel lookup. The
     // running API server must still satisfy the ordinary Kubernetes 1.35 gate.
-    ...(!openShell ? { nodeImage: process.env.OPENCLAW_CI_K3S_IMAGE || "+v1.35" } : {}),
+    ...(!openShell ? { nodeImage: process.env.OPENCLAW_CI_K3S_IMAGE || defaultK3sImage } : {}),
   });
   await writeState(statePath, state);
   if (openShell) {
@@ -2419,7 +2425,7 @@ async function main() {
   );
 }
 
-export { prepareFile, prepareLane };
+export { defaultK3sImage, prepareFile, prepareLane };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

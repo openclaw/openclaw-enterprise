@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { run, temporaryDirectory } from "./process.mjs";
@@ -10,90 +10,152 @@ import { appModule } from "./runtime.mjs";
 import { startCredentialServiceFixture, gatewayRequest } from "./service.mjs";
 import { runInFixtureContainer } from "./container.mjs";
 
+async function runningProcessesMentioning(marker) {
+  const running = [];
+  for (const entry of await readdir("/proc")) {
+    if (!/^\d+$/.test(entry)) {
+      continue;
+    }
+    try {
+      const commandLine = await readFile(`/proc/${entry}/cmdline`, "utf8");
+      if (
+        commandLine.includes(marker) &&
+        !/\) Z /.test(await readFile(`/proc/${entry}/stat`, "utf8"))
+      ) {
+        running.push(Number(entry));
+      }
+    } catch (error) {
+      // procfs may lose the task during lookup (ENOENT) or the read (ESRCH).
+      // With hidepid, other users' entries are unreadable (EACCES/EPERM); the
+      // owned command tree runs as this user, so its entries stay readable.
+      if (!["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error.code)) {
+        throw error;
+      }
+    }
+  }
+  return running;
+}
+
+// The published PID once it is complete and its process is live, else undefined.
+function liveDescendantPid(pidFile) {
+  try {
+    const value = readFileSync(pidFile, "utf8");
+    if (!/^[1-9]\d*\n$/.test(value)) {
+      return undefined;
+    }
+    const pid = Number(value);
+    return /\) [ZX] /.test(readFileSync(`/proc/${pid}/stat`, "utf8")) ? undefined : pid;
+  } catch (error) {
+    // Not published yet (ENOENT), or the process vanished during the read (ESRCH).
+    if (error.code === "ENOENT" || error.code === "ESRCH") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+// An owned descendant lives this long unless the command stops it. Settling in
+// time is proven by its expiry marker being absent, not by a wall-clock bound.
+const descendantLifetimeMs = 30000;
+
+// Blocks this thread until the descendant is live. The command's timers cannot
+// fire meanwhile, so its timeout or cancellation always lands on a started
+// descendant however slowly the two Node processes start.
+function holdUntilDescendantRuns(pidFile) {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = performance.now() + descendantLifetimeMs;
+  for (;;) {
+    const pid = liveDescendantPid(pidFile);
+    if (pid !== undefined) {
+      return pid;
+    }
+    if (performance.now() > deadline) {
+      throw new Error("descendant did not start");
+    }
+    Atomics.wait(pause, 0, 0, 10);
+  }
+}
+
+// A SIGKILLed process can still be listed until it is scheduled to exit, so poll
+// until the owned tree is gone. A leaked descendant stays until its expiry
+// writes the marker, which the caller rejects.
+async function ownedProcessesAfterExit(pidFile, naturalExitFile) {
+  const deadline = performance.now() + 2 * descendantLifetimeMs;
+  for (;;) {
+    const running = await runningProcessesMentioning(pidFile);
+    if (running.length === 0 || existsSync(naturalExitFile) || performance.now() > deadline) {
+      return running;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 export function registerCredentialFixtureRegressions() {
   for (const reason of ["timeout", "output overflow", "cancelled"]) {
     test(`owned command tree stops on ${reason} without leaking diagnostics`, async (t) => {
       const directory = await temporaryDirectory(t);
       const pidFile = join(directory, "descendant.pid");
       const naturalExitFile = join(directory, "natural-exit");
-      const descendant = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid) + '\\n');
-      ${reason === "output overflow" ? "process.stdout.write('sensitive-fixture-value'.repeat(150000));" : ""}
-      setTimeout(() => {
-        ${reason === "cancelled" ? `require('node:fs').writeFileSync(${JSON.stringify(naturalExitFile)}, 'expired');` : ""}
-      }, 1500);`;
+      const descendant = `const fs = require('node:fs');
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid) + '\\n');
+      setTimeout(() => fs.writeFileSync(${JSON.stringify(naturalExitFile)}, 'expired'), ${descendantLifetimeMs});
+      ${reason === "output overflow" ? "process.stdout.write('sensitive-fixture-value'.repeat(150000));" : ""}`;
       const launcher = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {stdio:'inherit'});`;
-      const controller = new AbortController();
-      let timer;
-      let cancelledAt;
-      let cancelledPid;
-      let readinessError;
-      if (reason === "cancelled") {
-        // A complete PID and live process separate cancellation from startup.
-        timer = setInterval(() => {
+      // Both carry the PID file path in their command lines. Never leave either
+      // running, even when an assertion fails.
+      t.after(async () => {
+        for (const pid of await runningProcessesMentioning(pidFile)) {
           try {
-            const value = readFileSync(pidFile, "utf8");
-            if (!/^[1-9]\d*\n$/.test(value)) {
-              return;
-            }
-            const pid = Number(value);
-            if (
-              !Number.isSafeInteger(pid) ||
-              /\) [ZX] /.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
-            ) {
-              return;
-            }
-            cancelledPid = pid;
-            clearInterval(timer);
-            cancelledAt = performance.now();
-            controller.abort("sensitive-fixture-value");
-          } catch (error) {
-            if (error.code !== "ENOENT") {
-              readinessError = error;
-              clearInterval(timer);
-              controller.abort("sensitive-fixture-value");
-            }
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // It exited after the scan.
           }
-        }, 10);
-      }
-      const start = performance.now();
-      try {
-        await assert.rejects(
-          run(process.execPath, ["-e", launcher], {
-            timeout: reason === "timeout" ? 250 : 5000,
-            signal: controller.signal,
-          }),
-          (error) =>
-            error.message.includes(reason) && !error.message.includes("sensitive-fixture-value"),
-        );
-        const settledAt = performance.now();
-        if (readinessError) {
-          throw readinessError;
         }
-        const pid = Number(await readFile(pidFile, "utf8"));
-        assert.ok(Number.isSafeInteger(pid) && pid > 0, "descendant PID must be valid");
-        // A killed orphan may await the container init's reap; a zombie cannot
-        // execute or retain pipes. No running descendant may survive completion.
-        let running = false;
+      });
+      const controller = new AbortController();
+      // Only the case under test may stop the command: its own timeout fires long
+      // after the descendant would expire, so a command that waits instead fails.
+      const settled = run(process.execPath, ["-e", launcher], {
+        timeout: reason === "timeout" ? 250 : 4 * descendantLifetimeMs,
+        signal: controller.signal,
+      });
+      let startedPid;
+      let readinessError;
+      if (reason !== "output overflow") {
+        // Overflow needs the event loop to read output; it follows the PID write.
         try {
-          running = !/\) Z /.test(await readFile(`/proc/${pid}/stat`, "utf8"));
+          startedPid = holdUntilDescendantRuns(pidFile);
         } catch (error) {
-          // procfs may lose the task during lookup (ENOENT) or the read (ESRCH).
-          if (error.code !== "ENOENT" && error.code !== "ESRCH") {
-            throw error;
-          }
+          readinessError = error;
         }
-        assert.equal(running, false, "owned descendant remains running");
-        if (reason === "cancelled") {
-          assert.equal(pid, cancelledPid, "cancellation must observe the owned descendant");
-          // Natural expiry cannot substitute for termination, even after delayed startup.
-          assert.equal(existsSync(naturalExitFile), false, "descendant exited naturally");
-        }
-        assert.ok(
-          settledAt - (reason === "cancelled" ? cancelledAt : start) < 1250,
-          "launcher descendants must not extend the command bound",
-        );
-      } finally {
-        clearInterval(timer);
+      }
+      if (reason === "cancelled") {
+        controller.abort("sensitive-fixture-value");
+      }
+      await assert.rejects(
+        settled,
+        (error) =>
+          error.message.includes(reason) && !error.message.includes("sensitive-fixture-value"),
+      );
+      if (readinessError) {
+        throw readinessError;
+      }
+      // A killed orphan may await the container init's reap; a zombie cannot
+      // execute or retain pipes. No running launcher or descendant may survive.
+      assert.deepEqual(
+        await ownedProcessesAfterExit(pidFile, naturalExitFile),
+        [],
+        "owned descendant remains running",
+      );
+      assert.equal(
+        existsSync(naturalExitFile),
+        false,
+        "owned descendant outlived the command (waited for or leaked)",
+      );
+      const pid = Number(await readFile(pidFile, "utf8"));
+      assert.ok(Number.isSafeInteger(pid) && pid > 0, "descendant PID must be valid");
+      if (reason !== "output overflow") {
+        assert.equal(pid, startedPid, `${reason} must observe the owned descendant`);
       }
     });
   }
@@ -220,19 +282,24 @@ export function registerCredentialFixtureRegressions() {
         auxiliaryPending: false,
       },
     };
+    const pending = { ...resolved, state: "CLOSED", cleanup: { ...resolved.cleanup, pending: 1 } };
     let response = { error: "unavailable" };
-    let calls = 0;
     let statusUnavailable = false;
+    let pendingStatusReads = 0;
+    let statusReads = 0;
     const server = createServer((request, reply) => {
       request.resume();
-      calls++;
-      reply
-        .writeHead(200, { "content-type": "application/json" })
-        .end(
-          JSON.stringify(
-            statusUnavailable && request.method === "GET" ? { error: "unavailable" } : response,
-          ),
-        );
+      let body = response;
+      if (request.method === "GET") {
+        statusReads++;
+        if (statusUnavailable) {
+          body = { error: "unavailable" };
+        } else if (pendingStatusReads > 0) {
+          pendingStatusReads--;
+          body = pending;
+        }
+      }
+      reply.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
     });
     await new Promise((resolve) => server.listen(socket, resolve));
     t.after(() => new Promise((resolve) => server.close(resolve)));
@@ -247,13 +314,21 @@ export function registerCredentialFixtureRegressions() {
         /local closure unconfirmed/,
       );
     }
-    response = { ...resolved, state: "CLOSED", cleanup: { ...resolved.cleanup, pending: 1 } };
-    calls = 0;
+    response = pending;
     await assert.rejects(
       closeAndDispose(callControl, socket, sessionId, { timeoutMs: 60, pollMs: 10 }),
       /local closure confirmed; disposal pending/,
     );
-    assert.ok(calls > 2, "pending cleanup must be polled within its deadline");
+    // Pending cleanup is polled until it resolves. Counting status reads, not the
+    // round trips that happen to fit in a short deadline, keeps this load-independent.
+    response = resolved;
+    pendingStatusReads = 2;
+    statusReads = 0;
+    assert.deepEqual(await closeAndDispose(callControl, socket, sessionId, { pollMs: 10 }), {
+      localClosure: "confirmed",
+      disposal: "confirmed",
+    });
+    assert.equal(statusReads, 3, "pending cleanup must be polled until it resolves");
     response = { ...resolved, cleanup: { ...resolved.cleanup, uncertain: 1 } };
     await assert.rejects(
       closeAndDispose(callControl, socket, sessionId, { timeoutMs: 30, pollMs: 10 }),

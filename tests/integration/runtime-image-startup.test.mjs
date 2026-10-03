@@ -2127,6 +2127,21 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
       `Expected ${expectedPhase} was not observed.\n${commandOutput(failure)}\n${commandOutput(logs)}`,
     );
   }
+  // The fixture fails on its own only when the wrapper outlives its deadline;
+  // otherwise it dies with the container.
+  assert.doesNotMatch(
+    commandOutput(failure),
+    /remained running after its child exited|did not reject the stale replacement peer/,
+  );
+  // Its `docker exec` can return before Docker has recorded the container's own
+  // exit, so wait for that record (bounded) before inspecting the state.
+  const exited = await runDocker(["wait", containerName], {
+    timeout: 30_000 * imageSmokeTimeoutMultiplier,
+  }).catch(async (error) => {
+    const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
+    assert.fail(`The Gateway container did not exit.\n${error.message}\n${commandOutput(logs)}`);
+  });
+  assert.equal(exited.stdout.trim(), "1");
   const inspect = await runDocker(["inspect", containerName, "--format", "{{json .State}}"]);
   const state = JSON.parse(inspect.stdout);
   assert.equal(state.Status, "exited");

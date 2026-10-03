@@ -28,6 +28,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -1266,7 +1267,10 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await save.count(), 0, "choose a starting point before editing the Agent draft");
   const apply = page.getByRole("button", { name: "Use Preset" });
   await apply.click();
-  await page.getByRole("alert").filter({ hasText: /name/ }).waitFor();
+  assert.equal(
+    await page.getByLabel("Name", { exact: true }).evaluate((input) => input.validity.valueMissing),
+    true,
+  );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   await page.getByLabel("Name", { exact: true }).fill("Existing Agent");
   await page.getByLabel("Execution", { exact: true }).fill("invalid");
@@ -1382,7 +1386,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page.getByText(/conflicts with the saved state/).waitFor();
+  await page
+    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Preset Agent");
@@ -1433,11 +1439,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Service account token Secret").waitFor();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
-  await page.waitForFunction(
-    (name) => globalThis.document.querySelector("#harness-auth-secret")?.value === name,
-    secret.name,
-  );
-  assert.equal(await page.getByLabel("Service account token Secret").inputValue(), secret.name);
+  await waitForInputValue(page.getByLabel("Service account token Secret"), secret.name);
   const patched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.data.id}`) &&
@@ -1545,7 +1547,9 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page.getByText(/conflicts with the saved state/).waitFor();
+  await page
+    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
+    .waitFor();
   assert.equal(await apiKey.inputValue(), "");
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
   await page.getByLabel("Agent name", { exact: true }).fill("Password Agent");
@@ -1583,6 +1587,52 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
         binding.resourceId === created.data.harnessAuth.source.id,
     ),
   );
+});
+
+test("Preset marks referenced variables without defaults as required before rendering", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-required-preset-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Required Preset variables", { ready: true });
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  // Defaulted and unreferenced variables cannot fail rendering, so they stay optional.
+  artifact.template.variables.marker = { type: "string", default: "initial" };
+  artifact.template.variables.unused = { type: "boolean" };
+  artifact.template.agent.initialWorkspaceFiles = { "USER.md": "marker {{ vars.marker }}" };
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Required Agent");
+  await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-required-key");
+  const model = page.getByLabel("Model", { exact: true });
+  const marker = page.getByLabel("Marker", { exact: true });
+  const unused = page.getByLabel("Unused", { exact: true });
+  await marker.fill("");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  // The browser points at the empty Model field instead of a raw template path.
+  assert.equal(await model.evaluate((input) => input.validity.valueMissing), true);
+  assert.equal(await marker.evaluate((input) => input.validity.valid), true);
+  assert.equal(await unused.evaluate((input) => input.validity.valid), true);
+  assert.equal(
+    await page.getByRole("group", { name: "Preset" }).getByRole("alert").textContent(),
+    "",
+  );
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  await model.fill("gpt-5.1");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Required Agent");
 });
 
 test("Preset with a prebound model Secret grants the created draft access", async (t) => {
@@ -1761,7 +1811,9 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page.getByText(/conflicts with the saved state/).waitFor();
+  await page
+    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
+    .waitFor();
   assert.equal(await token.inputValue(), "");
   await page.getByLabel("Agent name", { exact: true }).fill("Codex PAT Agent");
   const createdResponse = page.waitForResponse(
@@ -1777,6 +1829,67 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   assert.equal(secretWrites[0].body.value, "at-codex-pat-preset-token");
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
   assert.equal(created.harnessAuth.method, "codex_pat");
+});
+
+test("password Preset names the taken Secret when an earlier Agent left one with the same name", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const root = await mkdtemp(join(tmpdir(), "occ-secret-name-conflict-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  fixture.controller.registerDriver(configurationDriver);
+  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
+  // Deleting an Agent keeps its model Secret, which is named after the Agent.
+  await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
+  const artifact = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: artifact,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const apiKey = page.getByLabel("API key", { exact: true });
+  const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/secrets`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await conflict).status(), 409);
+  await page
+    .getByText(
+      'A Secret named "Recreated Agent" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.',
+    )
+    .waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  assert.equal(await apiKey.inputValue(), "replacement-model-key");
+  assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), false);
+  await page.getByLabel("Agent name", { exact: true }).fill("Recreated Agent 2");
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  const created = (await (await createdResponse).json()).data;
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(
+    secretWrites.map((write) => write.body.name),
+    ["Recreated Agent", "Recreated Agent 2"],
+  );
 });
 
 test("method-only codex_pat Preset requires credential entry in the create form", async (t) => {
@@ -1925,7 +2038,9 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   assert.equal(pathRequests(requests, "POST", catalogPath).length, 0);
   submitRelease.resolve();
   assert.equal((await conflict).status(), 409);
-  await page.getByText(/conflicts with the saved state/).waitFor();
+  await page
+    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
+    .waitFor();
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
   const prefetched = page.waitForResponse(
     (response) =>

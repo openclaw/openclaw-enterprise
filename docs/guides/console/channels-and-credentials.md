@@ -35,6 +35,10 @@ not edit `allowFrom`, and **No selected channels** describes the saved channel
 list; it does not by itself determine whether DMs work.
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
 
+In any Secret picker, typing a Secret's exact name selects it when you press
+Enter or leave the field, as choosing its suggestion does; other text restores
+the bound Secret.
+
 **Create Secret** stores the value immediately. Cancelling the channel drawer
 discards token selections but does not delete that Namespace Secret. The modal
 never reads an existing value. If the name already exists in this Namespace,

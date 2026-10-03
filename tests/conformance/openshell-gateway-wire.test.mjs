@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { createRequire } from "node:module";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -302,6 +304,29 @@ test("OpenShell client serializes v0.1.3-pre.1 credential providers, profiles, a
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client retries setup after a failed first connection", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-client-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const rootCertificatePath = join(directory, "ca.pem");
+  // Nothing listens here; once setup succeeds the call fails on the transport.
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: "https://127.0.0.1:1",
+    rootCertificatePath,
+    requestTimeoutMs: 1_000,
+  });
+  const signal = new AbortController().signal;
+  try {
+    await assert.rejects(client.health(signal), { code: "ENOENT" });
+    await writeFile(
+      rootCertificatePath,
+      "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n",
+    );
+    await assert.rejects(client.health(signal), { code: grpc.status.UNAVAILABLE });
+  } finally {
+    client.close();
   }
 });
 

@@ -156,7 +156,11 @@
       "specifier": "../preset-variables.mjs",
       "kind": "import",
       "typeOnly": false,
-      "bindings": ["value:renderPresetTemplate", "value:validatePresetTemplate"],
+      "bindings": [
+        "value:renderPresetTemplate",
+        "value:requiredPresetVariables",
+        "value:validatePresetTemplate"
+      ],
       "owner": "Console asset delivery",
       "reason": "This browser URL is served by the explicit Console asset map from the contracts package; it is not a file beside the consuming browser module.",
       "removeWhen": "Remove this exception when browser asset resolution is represented in the analyzer or the import moves to a statically resolved module."

@@ -1,5 +1,5 @@
 import { button, element } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { message, namespacePath, rejectionMessage } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }];
 const agentReadPermissions = [{ action: "read", resourceKind: "agent" }];
@@ -93,6 +93,8 @@ export function renderAgentAccess(context, agent) {
     catalogError: null,
     progress: [],
     error: null,
+    // Set once the API accepts a write in the current change.
+    saved: false,
   };
   section.append(
     element("h2", { id: "agent-access-title" }, "Share Agent"),
@@ -284,12 +286,16 @@ export function renderAgentAccess(context, agent) {
       return;
     }
     state.needsRefresh = true;
+    // A rejected write shows the API's sentence; once a write in this change was accepted,
+    // later failures keep the generic text.
     state.error =
       error.status === 403
         ? "Sharing policy requires Installation administration. Your other Agent controls remain available according to their own permissions."
         : sharing && (error.status === 404 || unavailableShareInput(error))
           ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
-          : message(error, mutation);
+          : mutation && !state.saved
+            ? rejectionMessage(error, mutation)
+            : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (error.requestId) {
       state.error += ` Request ID: ${error.requestId}`;
@@ -327,6 +333,12 @@ export function renderAgentAccess(context, agent) {
         render();
       }
     }
+  }
+
+  async function write(url, options) {
+    const result = await context.request(url, options);
+    state.saved = true;
+    return result;
   }
 
   async function ensureGrant(
@@ -369,7 +381,7 @@ export function renderAgentAccess(context, agent) {
     }
     let role = state.roles.find((candidate) => matchesRole(candidate, namespaceId, permissions));
     if (!role) {
-      role = await context.request(`${path}/roles`, {
+      role = await write(`${path}/roles`, {
         method: "POST",
         body: { name: label, permissions },
       });
@@ -387,7 +399,7 @@ export function renderAgentAccess(context, agent) {
     if (existing && selectedRuntimeRole === undefined) {
       return;
     }
-    const binding = await context.request(`${path}/access-bindings`, {
+    const binding = await write(`${path}/access-bindings`, {
       method: "POST",
       body: {
         subjectKind: "identity",
@@ -411,6 +423,7 @@ export function renderAgentAccess(context, agent) {
     state.pending = true;
     state.error = null;
     state.progress = [];
+    state.saved = false;
     let mutationStarted = false;
     render();
     try {
@@ -431,7 +444,7 @@ export function renderAgentAccess(context, agent) {
   }
 
   async function writeRuntimeRole(binding, selectedRole) {
-    const updated = await context.request(
+    const updated = await write(
       `${path}/access-bindings/${encodeURIComponent(binding.id)}/runtime-role`,
       { method: "PATCH", body: { runtimeRole: selectedRole } },
     );
@@ -454,7 +467,7 @@ export function renderAgentAccess(context, agent) {
 
   function removeBinding(binding) {
     return mutate(async () => {
-      await context.request(`${path}/access-bindings/${encodeURIComponent(binding.id)}`, {
+      await write(`${path}/access-bindings/${encodeURIComponent(binding.id)}`, {
         method: "DELETE",
         expectedStatus: 204,
       });

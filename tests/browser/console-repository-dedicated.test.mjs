@@ -3,24 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { chromium } from "playwright";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
-import { setSlackSelection } from "./console-agents-browser-helpers.mjs";
+import {
+  login,
+  newPage,
+  repositoryCheckbox,
+  setSlackSelection,
+} from "./console-agents-browser-helpers.mjs";
+import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
-
-async function openCreateSecretDialog(scope, label) {
-  await scope.getByLabel(label, { exact: true }).fill("Create a new Secret");
-  await scope.getByRole("option", { name: "Create new Secret...", exact: true }).click();
-}
-
-function repositoryCheckbox(page, name) {
-  return page
-    .locator("#repository-results .repository-result-row")
-    .filter({ has: page.getByText(name, { exact: true }) })
-    .getByRole("checkbox");
-}
 
 for (const issuesEnabled of [true, false]) {
   test(`one Dedicated Agent retains repository scope through Slack setup, credentials and deployment admission (issues ${issuesEnabled ? "on" : "off"})`, async (t) => {
@@ -46,30 +38,8 @@ for (const issuesEnabled of [true, false]) {
       },
     });
     assert.equal(preset.status, 201, JSON.stringify(preset));
-    const browser = await chromium.launch({
-      headless: true,
-      ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
-        ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
-        : {}),
-    });
-    let context;
-    let diagnostics;
-    fixture.registerCleanupBeforeAppClose(async () => {
-      try {
-        await diagnostics?.capture();
-        await context?.close();
-      } finally {
-        await browser.close();
-      }
-    });
-    context = await browser.newContext();
-    diagnostics = await watchBrowserContext(t, context);
-    const page = await context.newPage();
-    page.setDefaultTimeout(10_000);
-    await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Username").fill(fixture.credentials.email);
-    await page.getByLabel("Password").fill(fixture.credentials.password);
-    await page.getByRole("button", { name: "Login" }).click();
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByLabel("Preset template").selectOption(preset.data.id);
     await page.getByRole("button", { name: "Use Preset" }).click();
     await page.getByLabel("Agent name").fill("Repository teammate");

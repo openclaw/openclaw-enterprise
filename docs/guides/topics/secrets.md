@@ -39,5 +39,5 @@ change a running process's environment. Redeploy or restart each consumer and
 verify the new process. There is no value history or automatic rotation. If a
 credential is exposed, stop the affected workloads, revoke it at the upstream
 provider, store a replacement, and redeploy. OCC rejects deletion while a
-current Configuration, Agent draft, active revision, or pending deployment
-still references the Secret. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+current Configuration, credential source, Agent draft, active revision, or
+pending deployment still references the Secret. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
+import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -269,7 +270,10 @@ if (command === "k3d") {
   if (equals(args, ["version"])) finish("k3d version v5.8.3\n");
   if (equals(args.slice(0, 2), ["cluster", "create"]) && [13, 15, 16].includes(args.length)) {
     assert.match(args[2], /^openclaw-k8s-/);
-    assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || "+v1.35"]);
+    assert.deepEqual(args.slice(3, 5), ["--image", process.env.OPENCLAW_CI_K3S_IMAGE || ${JSON.stringify(defaultK3sImage)}]);
+    // A channel such as +v1.35 makes k3d query update.k3s.io on every cluster
+    // create; the forwarded node image must be a digest-pinned K3s 1.35 image.
+    assert.match(args[4], /:v1\.35\.\d+-k3s\d+@sha256:[a-f0-9]{64}$/);
     if (args.length >= 15) {
     assert.deepEqual(args.slice(5, 10), ["--servers", "1", "--agents", "1", "--volume"]);
     const storage = args[10].split(":");
@@ -495,7 +499,7 @@ for (const { scenario, error } of [
     }
 
     const cluster = state.resources.find((resource) => resource.kind === "k3d-cluster");
-    assert.equal(cluster.nodeImage, "+v1.35");
+    assert.equal(cluster.nodeImage, defaultK3sImage);
     assert.equal(cluster.kubernetesVersion, "v1.35.8+k3s1");
     const localImage = state.resources.find((resource) => resource.kind === "image-tag");
     const importedImage = state.resources.find((resource) => resource.kind === "k3d-image");
@@ -621,7 +625,7 @@ for (const { scenario, stage, error } of [
     const artifactText = await readFile(artifactPath, "utf8");
     const evidence = JSON.parse(artifactText);
     assert.equal(evidence.lane, "k3d-fixture-configuration");
-    assert.equal(evidence.nodeImage, "+v1.35");
+    assert.equal(evidence.nodeImage, defaultK3sImage);
     if (scenario === "cluster-create-failed") {
       // Container diagnostics remain available before a kubeconfig can be written.
       for (const field of ["nodes", "pods", "events"]) {

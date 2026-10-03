@@ -1218,6 +1218,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   });
 
   await verifyDeletedResourceAccessBindingContract(store, revision);
+  await verifyDuplicateNameContract(store);
 
   return {
     installation,
@@ -1234,6 +1235,111 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     lifecycleNamespace,
     deletedAt,
   };
+}
+
+// A duplicate caller-chosen name is a ResourceStateConflictError whose message names the
+// taken kind, alike in both adapters; a server-generated identity collision stays generic.
+async function verifyDuplicateNameContract(store) {
+  const createdAt = new Date().toISOString();
+  const namespace = {
+    id: identifier("ns"),
+    name: "Duplicate names " + randomUUID(),
+    status: "ready",
+    createdAt,
+  };
+  const secret = {
+    id: identifier("sec"),
+    namespaceId: namespace.id,
+    name: "Taken secret " + randomUUID(),
+    driverId: "secret-contract",
+    backendRef: {
+      namespaceName: "contract",
+      name: "duplicate-names",
+      key: "value",
+      uid: randomUUID(),
+    },
+    createdAt,
+  };
+  const presetFor = (name) => ({
+    id: identifier("pre"),
+    namespaceId: namespace.id,
+    name: name + " " + randomUUID(),
+    createdAt,
+    template: {
+      variables: {},
+      agent: { name: "Assistant", executionMode: "embedded" },
+      configuration: { values: {} },
+    },
+  });
+  const preset = presetFor("Taken preset");
+  const otherPreset = presetFor("Other preset");
+  const account = {
+    id: identifier("sa"),
+    namespaceId: namespace.id,
+    name: "Taken account " + randomUUID(),
+  };
+  const source = {
+    id: identifier("cs"),
+    namespaceId: namespace.id,
+    name: "Taken source " + randomUUID(),
+    type: "openai",
+    config: { base_url: "https://api.openai.com/v1" },
+    secrets: {},
+    driverId: "credential-gateway-contract",
+    state: "ready",
+    createdAt,
+  };
+
+  await store.transact(async (transaction) => {
+    await transaction.namespaces.createNamespace(namespace);
+    await transaction.secrets.createSecret(secret);
+    await transaction.presets.createPreset(preset);
+    await transaction.presets.createPreset(otherPreset);
+    await transaction.serviceAccounts.createServiceAccount(account);
+    await transaction.credentialSources.createCredentialSource(source);
+  });
+
+  const nameConflict = (message) => ({ name: "ResourceStateConflictError", message });
+  for (const [write, message] of [
+    [
+      (transaction) =>
+        transaction.namespaces.createNamespace({ ...namespace, id: identifier("ns") }),
+      "A Namespace with this name already exists or was deleted. Choose a different name.",
+    ],
+    [
+      (transaction) => transaction.secrets.createSecret({ ...secret, id: identifier("sec") }),
+      "A Secret with this name already exists in this Namespace. Choose a different name.",
+    ],
+    [
+      (transaction) => transaction.presets.createPreset({ ...preset, id: identifier("pre") }),
+      "A Preset with this name already exists in this Namespace. Choose a different name.",
+    ],
+    [
+      (transaction) =>
+        transaction.presets.updatePreset(namespace.id, otherPreset.id, { name: preset.name }),
+      "A Preset with this name already exists in this Namespace. Choose a different name.",
+    ],
+    [
+      (transaction) =>
+        transaction.serviceAccounts.createServiceAccount({ ...account, id: identifier("sa") }),
+      "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+    ],
+    [
+      (transaction) =>
+        transaction.credentialSources.createCredentialSource({ ...source, id: identifier("cs") }),
+      "A credential source with this name already exists in this Namespace. Choose a different name.",
+    ],
+  ]) {
+    await assert.rejects(store.transact(write), nameConflict(message));
+  }
+
+  // The server chose the identity, so its collision keeps the generic conflict.
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.secrets.createSecret({ ...secret, name: "Fresh secret " + randomUUID() }),
+    ),
+    (error) => error.name === "ResourceConflictError",
+  );
 }
 
 // Deleting a Configuration, Preset, Secret, credential source or ServiceAccount

@@ -293,10 +293,11 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   let lines = completeLines;
   const earliest = lines.find((line) => line.time !== null)?.time ?? null;
   // A full tail since a quiet view's previous read may have dropped its oldest lines.
+  // A byte-cut page counts as full: the Driver cuts after applying the tail.
   if (
     quiet !== undefined &&
     !replacedDuringRead &&
-    chunk.lines.length >= query.tailLines &&
+    (chunk.lines.length >= query.tailLines || chunk.truncated) &&
     earliest !== null
   ) {
     leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));

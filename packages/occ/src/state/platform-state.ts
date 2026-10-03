@@ -60,11 +60,16 @@ import {
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   AGENT_NAME_CONFLICT,
+  CREDENTIAL_SOURCE_NAME_CONFLICT,
   DependencyUnavailableError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
+  NAMESPACE_NAME_CONFLICT,
+  PRESET_NAME_CONFLICT,
   ResourceConflictError,
   ResourceStateConflictError,
+  SECRET_NAME_CONFLICT,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
 } from "../errors.ts";
 import {
@@ -1148,9 +1153,7 @@ function repositories(
           (existing) => existing.name === namespace.name,
         )
       ) {
-        throw new ResourceConflictError(
-          "A Namespace with this name already exists in the Installation.",
-        );
+        throw new ResourceStateConflictError(NAMESPACE_NAME_CONFLICT);
       }
       if (
         namespace.existingNamespace !== undefined &&
@@ -1297,14 +1300,16 @@ function repositories(
       if (namespace === undefined || !["provisioning", "ready"].includes(namespace.status)) {
         throw new ScopeViolationError("The Preset belongs to an unavailable Namespace.");
       }
+      if (Array.from(snapshot.presets.values()).some((existing) => existing.id === preset.id)) {
+        throw new ResourceConflictError("The server generated an existing Preset identity.");
+      }
       if (
         Array.from(snapshot.presets.values()).some(
           (existing) =>
-            existing.id === preset.id ||
-            (existing.namespaceId === preset.namespaceId && existing.name === preset.name),
+            existing.namespaceId === preset.namespaceId && existing.name === preset.name,
         )
       ) {
-        throw new ResourceConflictError("The Preset identity or Namespace name already exists.");
+        throw new ResourceStateConflictError(PRESET_NAME_CONFLICT);
       }
       const saved = immutableCopy(preset);
       snapshot.presets.set(agentKey(preset.namespaceId, preset.id), saved);
@@ -1325,7 +1330,7 @@ function repositories(
             existing.name === saved.name,
         )
       ) {
-        throw new ResourceConflictError("The Preset name already exists in this Namespace.");
+        throw new ResourceStateConflictError(PRESET_NAME_CONFLICT);
       }
       snapshot.presets.set(agentKey(namespaceId, presetId), saved);
       return immutableCopy(saved);
@@ -1492,7 +1497,7 @@ function repositories(
             existing.namespaceId === secret.namespaceId && existing.name === secret.name,
         )
       ) {
-        throw new ResourceConflictError("A Secret with this name already exists in the Namespace.");
+        throw new ResourceStateConflictError(SECRET_NAME_CONFLICT);
       }
       const saved = immutableCopy(secret);
       snapshot.secrets.set(key, saved);
@@ -1719,9 +1724,7 @@ function repositories(
             existing.namespaceId === source.namespaceId && existing.name === source.name,
         )
       ) {
-        throw new ResourceConflictError(
-          "A credential source with this name already exists in the Namespace.",
-        );
+        throw new ResourceStateConflictError(CREDENTIAL_SOURCE_NAME_CONFLICT);
       }
       const saved = immutableCopy(source);
       snapshot.credentialSources.set(key, saved);
@@ -1853,15 +1856,19 @@ function repositories(
       const key = agentKey(account.namespaceId, account.id);
       if (
         snapshot.serviceAccounts.has(key) ||
-        Array.from(snapshot.serviceAccounts.values()).some(
-          (existing) =>
-            existing.id === account.id ||
-            (existing.namespaceId === account.namespaceId && existing.name === account.name),
-        )
+        Array.from(snapshot.serviceAccounts.values()).some((existing) => existing.id === account.id)
       ) {
         throw new ResourceConflictError(
-          "A ServiceAccount with this identity or name already exists.",
+          "The server generated an existing ServiceAccount identity.",
         );
+      }
+      if (
+        Array.from(snapshot.serviceAccounts.values()).some(
+          (existing) =>
+            existing.namespaceId === account.namespaceId && existing.name === account.name,
+        )
+      ) {
+        throw new ResourceStateConflictError(SERVICE_ACCOUNT_NAME_CONFLICT);
       }
       const saved = immutableCopy(account);
       snapshot.serviceAccounts.set(key, saved);

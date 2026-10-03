@@ -267,6 +267,9 @@ function credentialReferenceField(binding, context = {}, onSelected) {
       hint: "This environment key is fixed for Slack Socket Mode.",
     },
     metadataLabel: `View ${binding.label.replace("Slack ", "")} Secret metadata`,
+    ...(context.creating
+      ? { stagedHint: "Secret selected. Apply channel settings, then Create Agent binds it." }
+      : {}),
     fieldClassName: "channel-field channel-reference",
     selectClassName: "channel-select",
   });

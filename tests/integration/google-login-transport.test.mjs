@@ -1,22 +1,25 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { createServer } from "node:http";
-import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { googleNonce } from "../../apps/controller/src/auth/google.ts";
 import { humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
+import {
+  callbackState,
+  cookiePairs,
+  createIdTokenSigner,
+  createLoginFixture,
+  expectDenied,
+  loginOrigin as origin,
+  loginSecret as secret,
+  redirectProviderFetch,
+  startProviderServer,
+  until,
+} from "../helpers/human-login-transport.mjs";
 
-const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-const { APIError, betterAuth } = await import(require.resolve("better-auth"));
-const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
-const origin = "https://console.example.test";
-const secret = "test-only-authentication-secret-with-at-least-32-characters";
 const clientId = "fixture-client.apps.googleusercontent.com";
 const clientSecret = "fixture-google-client-secret";
-const binding = "b".repeat(43);
-const callbackState = "s".repeat(43);
 const subject = "110169484474386276334";
 const accessToken = "ya29.fixture-google-access-token";
 const googleURLs = new Set([
@@ -29,16 +32,11 @@ function digest(value) {
 }
 const providerId = `google:${digest(clientId)}`;
 
-const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-const jwks = {
-  keys: [{ ...publicKey.export({ format: "jwk" }), kid: "fixture-kid", alg: "RS256", use: "sig" }],
-};
-
+const signer = createIdTokenSigner();
 const minted = [];
 function idToken(state = callbackState, overrides = {}) {
   const now = Math.floor(Date.now() / 1000);
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const input = `${encode({ alg: "RS256", kid: "fixture-kid", typ: "JWT" })}.${encode({
+  const token = signer.sign({
     iss: "https://accounts.google.com",
     aud: clientId,
     azp: clientId,
@@ -49,130 +47,17 @@ function idToken(state = callbackState, overrides = {}) {
     exp: now + 3600,
     nonce: googleNonce(secret, state),
     ...overrides,
-  })}`;
-  const token = `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
+  });
   minted.push(token);
   return token;
 }
 
-// The actual Better Auth handler and provider transport run here. State is a
-// boundary fixture; these cases make no PostgreSQL or session-commit claims.
-function loginFixture(overrides = {}, providers = {}) {
-  const subjects = [];
-  const denialReasons = [];
-  const errors = [];
-  const logs = [];
-  const attempts = [];
-  const state = {
-    createAttempt: async (attempt) => {
-      attempts.push(attempt);
-      const createdAt = new Date();
-      return { createdAt, expiresAt: new Date(createdAt.getTime() + 300_000) };
-    },
-    consumeAttempt: async (attempt) => {
-      attempts.push(attempt);
-      return { codeVerifier: "v".repeat(43), createdAt: new Date() };
-    },
-    snapshotExternal: async (snapshotProviderId, snapshotSubject) => {
-      subjects.push([snapshotProviderId, snapshotSubject]);
-    },
-    snapshotPassword: async () => undefined,
-    recordDenied: async (reason) => {
-      denialReasons.push(reason);
-    },
-    ...overrides,
-  };
-  const login = createHumanLogin(
+function loginFixture(state = {}, providers = {}) {
+  return createLoginFixture({
+    provider: "google",
+    providers: { google: { clientId, clientSecret, allowedDomains: [] }, ...providers },
     state,
-    {
-      recoveryUserId: "fixture-recovery",
-      google: { clientId, clientSecret, allowedDomains: [] },
-      ...providers,
-    },
-    origin,
-    // x-occ-client-ip below stands for an address resolved through a trusted proxy.
-    { trustedClientAddress: true },
-  );
-  const auth = betterAuth({
-    baseURL: origin,
-    secret,
-    database: login.database(
-      memoryAdapter({ user: [], session: [], account: [], verification: [] }),
-    ),
-    session: {
-      expiresIn: 8 * 60 * 60,
-      disableSessionRefresh: true,
-      cookieCache: { enabled: false },
-    },
-    plugins: [login.plugin],
-    rateLimit: { enabled: false },
-    logger: { level: "debug", log: (...values) => logs.push(values) },
-    onAPIError: {
-      onError(error) {
-        if (error instanceof APIError) {
-          throw error;
-        }
-        errors.push(error);
-        throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
-          message: "Authentication dependency unavailable.",
-        });
-      },
-    },
   });
-  const call = (path, init, ip = "10.0.0.1") =>
-    auth.handler(
-      new Request(`${origin}/api/auth${path}`, {
-        ...init,
-        headers: { ...init?.headers, "x-occ-client-ip": ip },
-      }),
-    );
-  return {
-    login,
-    attempts,
-    subjects,
-    denialReasons,
-    errors,
-    logs,
-    callback: (query = `state=${callbackState}&code=fixture-code`, ip = "10.0.0.1") =>
-      call(
-        `/oce/providers/google/callback?${query}`,
-        { headers: { cookie: `__Host-occ_login_attempt=${binding}` } },
-        ip,
-      ),
-    start: (ip = "10.0.0.1", provider = "google") =>
-      call(`/oce/providers/${provider}/start`, { method: "POST", headers: { origin } }, ip),
-    result: (attemptId, cookie, ip = "10.0.0.1") =>
-      call(
-        "/oce/providers/google/result",
-        {
-          method: "POST",
-          headers: { origin, cookie, "content-type": "application/json" },
-          body: JSON.stringify({ attemptId }),
-        },
-        ip,
-      ),
-  };
-}
-
-async function expectDenied(response) {
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { message: "Authentication was not accepted." });
-  assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
-}
-
-function cookiePairs(response) {
-  return response.headers
-    .getSetCookie()
-    .map((cookie) => cookie.split(";", 1)[0])
-    .join("; ");
-}
-
-async function until(predicate) {
-  const deadline = performance.now() + 2_000;
-  while (!predicate()) {
-    assert.ok(performance.now() < deadline, "Expected transport observation before deadline");
-    await delay(10);
-  }
 }
 
 test("Google sign-in configuration shares the recovery user with GitHub", () => {
@@ -227,25 +112,11 @@ test(
   { timeout: 60_000 },
   async (t) => {
     let serve;
-    const requests = [];
-    const server = createServer((request, response) => {
-      requests.push(request.url);
-      serve(request, response);
-    });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(async () => {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-    });
-    const providerOrigin = `http://127.0.0.1:${server.address().port}`;
-    const originalFetch = globalThis.fetch;
-    // Change only the fixed Google destinations. Real fetch, cancellation, stream reads,
-    // response parsing, and redirect handling remain production behavior.
-    t.mock.method(globalThis, "fetch", (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input);
-      assert.ok(googleURLs.has(url.href), `Unexpected provider request: ${url.href}`);
-      return originalFetch(new URL(url.pathname, providerOrigin), init);
-    });
+    const { requests, port } = await startProviderServer(t, (request, response) =>
+      serve(request, response),
+    );
+    const providerOrigin = `http://127.0.0.1:${port}`;
+    redirectProviderFetch(t, googleURLs, providerOrigin);
     let exchange;
     function provider(token = idToken()) {
       return async (request, response) => {
@@ -268,13 +139,18 @@ test(
         } else {
           assert.equal(request.url, "/oauth2/v3/certs");
           assert.equal(request.method, "GET");
-          response.end(JSON.stringify(jwks));
+          response.end(JSON.stringify(signer.jwks));
         }
       };
     }
     // Neither the client secret nor any provider token may reach logs or errors.
     function assertNoSecrets(login, ...bodies) {
-      const text = JSON.stringify([login.logs, login.errors.map(String), ...bodies]);
+      const text = JSON.stringify([
+        login.authLogs,
+        login.operationalLogs(),
+        login.errors.map(String),
+        ...bodies,
+      ]);
       for (const value of [clientSecret, accessToken, ...minted]) {
         assert.equal(text.includes(value), false, "a credential reached logs or errors");
       }
@@ -410,7 +286,7 @@ test(
       await expectDenied(await login.callback());
       assert.equal(exchange.get("code"), "fixture-code");
       assert.deepEqual(login.subjects, []);
-      assert.deepEqual(login.denialReasons, ["EXTERNAL_IDENTITY_REJECTED"]);
+      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "google"]]);
       // A token without any nonce is rejected the same way.
       serve = provider(idToken(callbackState, { nonce: undefined }));
       await expectDenied(await login.callback());
@@ -505,7 +381,7 @@ test(
       assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
-      assert.deepEqual(login.denialReasons, ["PROVIDER_UNAVAILABLE"]);
+      assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "google"]]);
     });
 
     await t.test("GitHub and Google share each external step's admission budget", async () => {

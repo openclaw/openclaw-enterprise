@@ -317,13 +317,13 @@ PostgreSQL-backed testing; the API-and-worker case rejects the ordinary
 authenticated Codex connection, or model turn; use the
 [real-runtime suite](#kubernetes-model-turns-and-secrets) for model-turn proof.
 
-CI keeps the project-pinned k3d 5.8.3 binary and passes `--image +v1.35` when it
-creates ordinary disposable clusters. k3d resolves the K3s `v1.35` release
-channel at cluster creation, so these lanes follow the current Kubernetes
-1.35.z patch rather than one immutable node image. Preparation rejects a server
-outside the 1.35 family. The CI `kubectl` client is pinned to 1.35.0. The
-separately prepared OpenShell lane retains its own pinned K3s and `kubectl`
-versions.
+CI keeps the project-pinned k3d 5.8.3 binary and passes a digest-pinned K3s
+1.35 node image (`defaultK3sImage` in `scripts/ci/prepare.mjs`) when it creates
+ordinary disposable clusters, so creation never depends on k3d's online
+release-channel lookup. Moving to a newer 1.35.z patch is a deliberate bump of
+that constant. Preparation rejects a server outside the 1.35 family. The CI
+`kubectl` client is pinned to 1.35.0. The separately prepared OpenShell lane
+retains its own pinned K3s and `kubectl` versions.
 
 ## Kubernetes real-runtime test environment
 

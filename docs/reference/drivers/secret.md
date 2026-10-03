@@ -78,9 +78,10 @@ On creation, the Driver writes the value and OCC stores the returned identity.
 OCC registers backend deletion for a known failed transaction; it does not do
 so when the commit outcome is unknown. Updates overwrite the backend value: OCC
 keeps no prior value for rollback, and success means stored, not delivered.
-Deletion is refused while a Configuration, credential source, active revision,
-or pending deployment still references the Secret. Otherwise OCC calls the Driver before
-removing its own record.
+Deletion is refused with `409` while a Configuration, credential source, Agent
+draft, active revision, or pending deployment still references the Secret; the
+message lists these kinds, not the specific resources. Otherwise OCC calls the
+Driver before removing its own record.
 
 For plugin discovery, OCC checks permissions and reads current Secret metadata,
 then calls `withValue` without holding a platform transaction over backend or

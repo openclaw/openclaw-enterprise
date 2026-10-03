@@ -935,24 +935,26 @@ export type ErrorResponse = Type.Static<typeof ErrorResponse>;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export type ErrorDetailCode = (typeof ERROR_DETAIL_CODES)[number];
 
-export const PresetVariableSchema = Type.Union([
-  Type.Object(
-    { type: Type.Literal("password"), description: Type.Optional(Type.String()) },
-    { additionalProperties: false },
-  ),
-  ...(["string", "number", "boolean"] as const).map((type) =>
-    Type.Object(
-      {
-        type: Type.Literal(type),
-        description: Type.Optional(Type.String()),
-        default: Type.Optional(
-          type === "string" ? Type.String() : type === "number" ? Type.Number() : Type.Boolean(),
-        ),
-      },
-      { additionalProperties: false },
+// One object shape, so a bad field gets one error at its own path rather than one per
+// variable kind. Preset admission checks that a default matches `type` and that password
+// variables have none, and names the variable when they do not.
+export const PresetVariableSchema = Type.Object(
+  {
+    type: Type.Union([
+      Type.Literal("string"),
+      Type.Literal("number"),
+      Type.Literal("boolean"),
+      Type.Literal("password"),
+    ]),
+    description: Type.Optional(Type.String()),
+    default: Type.Optional(
+      Type.Union([Type.String(), Type.Number(), Type.Boolean()], {
+        description: "A value of the declared type. Password variables take no default.",
+      }),
     ),
-  ),
-]);
+  },
+  { additionalProperties: false },
+);
 
 export const PresetTemplateSchema = Type.Object(
   {

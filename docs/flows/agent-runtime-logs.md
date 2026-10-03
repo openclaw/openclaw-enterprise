@@ -100,8 +100,8 @@ action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
 `previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. A cursor
 poll derives `sinceSeconds` from the cursor: from its newest delivered line, or,
-when the view has delivered nothing yet, from the previous read (a full tail then
-emits `window_exceeded`). OCC
+when the view has delivered nothing yet, from the previous read (a full or
+byte-cut tail then emits `window_exceeded`). OCC
 drops lines already delivered at the cursor time, emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of

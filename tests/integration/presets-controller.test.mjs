@@ -68,10 +68,17 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
     body: { name: "Shared name", template: {} },
   });
   assert.equal(duplicate.status, 409);
+  // The caller chose only the name, so the conflict says the name is taken here.
+  const presetNameConflict =
+    "A Preset with this name already exists in this Namespace. Choose a different name.";
+  assert.equal(duplicate.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(duplicate.body.error.message, presetNameConflict);
   const conflictingRename = await fixture.request("PATCH", `${collection(alpha.id)}/${hidden.id}`, {
     body: { name: "Shared name" },
   });
   assert.equal(conflictingRename.status, 409);
+  assert.equal(conflictingRename.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(conflictingRename.body.error.message, presetNameConflict);
 
   const limited = await fixture.createAccountWithPolicy("preset-reader", (principal) => {
     fixture.policy.roles.push({
@@ -368,6 +375,58 @@ test("Preset admission rejects malformed templates and credential leaks while pr
   assert.ok(presetMutations.length > 0);
   assert.ok(presetMutations.every((event) => !JSON.stringify(event).includes("secretId")));
   assert.ok(presetMutations.every((event) => !JSON.stringify(event).includes(secret.ref.id)));
+});
+
+test("Preset write errors name the template field and the shape it expects", async (t) => {
+  const fixture = await createFixture(t);
+  const namespace = await fixture.createNamespace("Preset errors", { ready: true });
+  const contract = "The request does not match the operation contract:";
+  // Each rejection names one field and what it accepts, so a CLI or API user can fix it directly.
+  const cases = [
+    [
+      { agent: { name: "{{ vars.missing }}" } },
+      "Preset agent.name: variable missing is undeclared; declare it under variables.",
+    ],
+    [
+      { variables: { model: { type: "string", default: 123 } } },
+      "Preset variables.model: default must match its declared type, string.",
+    ],
+    [
+      { variables: { key: { type: "password", default: "stored" } } },
+      "Preset variables.key: password variables cannot have stored defaults.",
+    ],
+    [
+      { variables: { model: { type: "strng" } } },
+      `${contract} body /template/variables/model/type has an unsupported value (expected one of "string", "number", "boolean", "password").`,
+      [{ path: "/template/variables/model/type", code: "INVALID_VALUE" }],
+    ],
+    // A number fails each string literal on both type and value; the accepted values are still named once.
+    [
+      { variables: { model: { type: 5 } } },
+      `${contract} body /template/variables/model/type has an unsupported value (expected one of "string", "number", "boolean", "password").`,
+      [{ path: "/template/variables/model/type", code: "INVALID_VALUE" }],
+    ],
+    [
+      { variables: { model: { type: "string", default: { nested: true } } } },
+      `${contract} body /template/variables/model/default has the wrong type (expected one of string, number, boolean).`,
+      [{ path: "/template/variables/model/default", code: "INVALID_TYPE" }],
+    ],
+    [
+      { variables: { model: { type: "number", extra: 1 } } },
+      `${contract} body /template/variables/model/extra is not an accepted field.`,
+      [{ path: "/template/variables/model/extra", code: "UNKNOWN_FIELD" }],
+    ],
+  ];
+  for (const [template, message, details] of cases) {
+    const rejected = await fixture.request("POST", collection(namespace.id), {
+      body: { name: "Rejected", template },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assert.equal(rejected.body.error.message, message);
+    assert.deepEqual(rejected.body.error.details, details);
+  }
+  assert.deepEqual((await fixture.request("GET", collection(namespace.id))).data, []);
 });
 
 test("method-only Preset authentication is a default, not an Agent credential", async (t) => {

@@ -107,7 +107,7 @@ test(
     await writeFile(
       fixture,
       `import test from 'node:test'; import assert from 'node:assert/strict';
-    test('owned failure',()=>{ const error=new assert.AssertionError({message:'must-not-be-retained'});
+    test('owned failure',()=>{ const error=new assert.AssertionError({message:'probe failed'});
     error.openclawCiDiagnostic={kind:'runtime-model-probe',reason:'outer-timeout',
     readyObserved:true,pluginReadyObserved:true,running:true,probeStage:'cleanup',probe:'READY',modelPhase:'ok',nativeSpawnPhaseObserved:true,failureObserved:false,
     capMs:110000,elapsedMs:120000,cpuWaitMs:null,loadClientsSubmitted:8,loadClientsStarted:7,loadClientsSettled:1,loadClientsRejected:1,

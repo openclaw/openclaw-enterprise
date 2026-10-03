@@ -323,13 +323,15 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		{"agent", "logs", "agt_1", "--source", "gateway", "--level", "unknown"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "-o", "yaml"},
 		{"agent", "runtime", "agt_1", "-o", "text"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--revision", "3"},
+		{"agent", "runtime", "agt_1", "--revision", "my-deploy"},
 	} {
 		stub := &runtimeLogStub{t: t, activeID: "rev_1"}
 		if _, _, err := runLogsCommand(t, context.Background(), stub, args...); err == nil {
 			t.Errorf("%v: expected an error", args)
 		}
-		if len(stub.queries) != 0 {
-			t.Errorf("%v: sent %d log requests", args, len(stub.queries))
+		if len(stub.paths) != 0 {
+			t.Errorf("%v: sent requests %v", args, stub.paths)
 		}
 	}
 	stub := &runtimeLogStub{t: t}

@@ -63,10 +63,13 @@ async function exercisePresets(store, reopened = store) {
     ),
   ]);
   assert.equal(contenders.filter((result) => result.status === "fulfilled").length, 1);
-  assert.equal(
-    contenders.find((result) => result.status === "rejected").reason.name,
-    "ResourceConflictError",
-  );
+  // A duplicate name names the taken kind; only server-chosen identity collisions stay generic.
+  const presetNameConflict = {
+    name: "ResourceStateConflictError",
+    message: "A Preset with this name already exists in this Namespace. Choose a different name.",
+  };
+  const { name, message } = contenders.find((result) => result.status === "rejected").reason;
+  assert.deepEqual({ name, message }, presetNameConflict);
   await store.transact((state) =>
     state.presets.createPreset({
       ...preset,
@@ -78,7 +81,7 @@ async function exercisePresets(store, reopened = store) {
     store.transact((state) =>
       state.presets.updatePreset(namespace.id, preset.id, { name: duplicate.name, template: {} }),
     ),
-    { name: "ResourceConflictError" },
+    presetNameConflict,
   );
   assert.deepEqual(
     await reopened.read((state) => state.presets.findPreset(namespace.id, preset.id)),

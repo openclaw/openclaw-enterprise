@@ -163,10 +163,12 @@ test("native pre-push uses the exact pinned binding and actual destination", asy
   permitted.client.pushRefAllowlist = ["refs/heads/agent/*"];
   const other = opened("other", "example/other");
   other.client.pushRefAllowlist = ["refs/heads/main"];
+  const unrestricted = opened("unrestricted", "example/open");
   const material = await createNativeClientMaterial(t, [
     { opened: restricted, repositoryRef: "restricted" },
     { opened: permitted, repositoryRef: "permitted" },
     { opened: other, repositoryRef: "other" },
+    { opened: unrestricted, repositoryRef: "unrestricted" },
   ]);
   const work = await temporaryDirectory(t);
   await run("/usr/bin/git", ["init", work]);
@@ -205,6 +207,25 @@ test("native pre-push uses the exact pinned binding and actual destination", asy
         namedDestination.replace("gateway-session@", "other@"),
       )
     ).code,
+    0,
+  );
+  // Git decodes URL usernames before asking the credential helper, so these
+  // gateway destinations still receive the bearer and must not skip the check.
+  for (const destination of [
+    namedDestination.replace("gateway-session@", "gateway%2Dsession@"),
+    namedDestination.replace("gateway-session@", "gateway-session:secret@"),
+  ]) {
+    const unparsed = await invoke({ OCE_REPOSITORY_REF: "restricted" }, destination);
+    assert.equal(unparsed.code, 1);
+    assert.equal(unparsed.stderr, "repository-pre-push-guard-failed\n");
+  }
+  // A repository without a policy keeps its pushes, even beside restricted ones.
+  const unrestrictedDestination = unrestricted.client.gitRemote.replace(
+    "https://",
+    "https://gateway%2Dsession@",
+  );
+  assert.equal(
+    (await invoke({ OCE_REPOSITORY_REF: "unrestricted" }, unrestrictedDestination)).code,
     0,
   );
   const selected = material.manifest.bindings.find(
@@ -272,6 +293,20 @@ test("push destination normalization retains exact repository and host boundarie
       ),
     /repository-not-admitted/,
   );
+  // Irregular gateway destinations fail closed; other hosts keep native behavior.
+  assert.equal(
+    selectGitPushDestination(manifest, "https://github.com/exa%6dple/project.git"),
+    undefined,
+  );
+  for (const destination of [
+    "https://credentials.example.test/exa%6dple/project.git",
+    "https://credentials.example.test//example/project.git",
+  ]) {
+    assert.throws(
+      () => selectGitPushDestination(manifest, destination),
+      /unsupported-push-destination/,
+    );
+  }
 });
 
 test("delegating an ordinary hook back to the managed dispatcher fails without recursion", async (t) => {
