@@ -71,6 +71,7 @@ recorded status is not proof of current implementation or release availability.
 | Initial Agent workspace files                               | —                                                           | [Plan / record](plans/34-agent-workspace-files-setup.md)                  |
 | Initial OCC Prometheus metrics                              | [Decision](rfcs/28-occ-prometheus-metrics.md)               | [Plan](plans/28-occ-prometheus-metrics-plan.md)                            |
 | Installation profiles: openclaw and codex                   | [Decision](rfcs/2026-09-28-installation-profiles-design/index.md) | —                                                                               |
+| Level floors for plain-text runtime log lines               | [Proposal](rfcs/0051-runtime-log-unknown-levels.md)         | —                                                                               |
 | Native OpenClaw plugin tool policies                        | [Decision](rfcs/35-native-plugin-tool-policy.md)            | —                                                                               |
 | OCC Gateway Administration and Command Proxy                | —                                                           | [Plan / record](plans/15-occ-gateway-access/index.md)                           |
 | Platform audit                                              | [Decision](rfcs/37-platform-audit/index.md)                       | —                                                                               |

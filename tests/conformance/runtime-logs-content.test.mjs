@@ -1444,3 +1444,23 @@ test("runtime log cursor preserves an observed BEGIN on uncertain initial and le
     }
   }
 });
+
+test("known node-host plain-text lines carry a level so a level floor can drop them", () => {
+  const stream = { source: "agent", pod: "agent-0", container: "agent" };
+  const { records } = sanitizeRuntimeLogChunk({
+    stream,
+    truncated: false,
+    lines: [
+      "node host gateway connect failed: connect ECONNREFUSED 10.0.0.1:18789",
+      "node host gateway closed (1006): ",
+      "node host gateway connected: wss://gateway.example.invalid/node",
+      "[node-host] advertised commands: dir.list, file.stat",
+      "node host gateway permanently rejected connection (proxy_attribution_required): x; exiting",
+      "some other plain line",
+    ].map((raw, index) => ({ time: lineTime(index + 1), raw })),
+  });
+  assert.deepEqual(
+    records.map(({ kind, level }) => `${kind} ${level}`),
+    ["text warn", "text warn", "text info", "text info", "text error", "text unknown"],
+  );
+});

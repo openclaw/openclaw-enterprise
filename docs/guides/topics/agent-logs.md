@@ -131,7 +131,10 @@ returning it:
   `debug`; below `logging.level: debug` the Harness drops them, readiness-probe
   connections and repeated remote-control retries (one per 10 minutes is kept).
 - **text**: plain lines up to 4 KiB, including lines that start with a bracketed
-  component tag such as `[node-host] advertised commands: ...`.
+  component tag such as `[node-host] advertised commands: ...`. Their level is
+  `unknown`, except the Harness node host's lines: `node host gateway` connect
+  failed, closed or reconnect paused are `warn`, a permanent rejection is
+  `error`, and connected or `[node-host]` lines are `info`.
 
 Other structured output, including Codex JSON-RPC protocol traffic, is
 **withheld**: the page shows a count, never content. Oversized lines, and
@@ -243,28 +246,24 @@ Each network or HTTP decision row shows
 - **engine** is the OpenShell component that decided, for example `opa`,
   `ssrf`, `mechanistic` or `nftables`.
 - **policy generation** is the policy version that decided. The pinned OpenShell
-  release does not send it with pushed decision lines, so it usually reads
-  `unknown`. Do not assume the current policy decided an older line.
+  release omits it from pushed decision lines, so it usually reads `unknown`. Do not assume the current policy decided an older line.
 
 ### Relating sandbox decisions to other sources
 
 OpenShell records no Agent turn, session or request ID with a decision. Each
 decision row therefore carries the label **Gateway lines: inferred (time
-window)**: Gateway or Harness lines near that time may be related, but nothing
-links them. The console never labels a join as exact, because no source shares
-an ID with the sandbox.
+window)**: Gateway or Harness lines near that time may be related, but no
+shared ID links them, so the console never labels a join as exact.
 
-The logs cannot tell you, and you should not infer:
+Do not infer from the logs:
 
 - which Agent turn, session, user or prompt caused a sandbox decision;
 - which policy generation decided a line whose generation reads `unknown`;
 - which credential OpenShell injected into an allowed request;
-- the order of two lines from different sources less than a few seconds apart:
-  the sandbox stamps its own lines, the cluster stamps container lines, and
-  their clocks can differ;
-- who made a request from its source IP address;
-- what the Harness printed inside a sandbox, what a deleted Pod or an older
-  restart printed, or which lines a sandbox dropped under load.
+- the order of lines from different sources a few seconds apart, because the
+  sandbox and the cluster stamp them with separate clocks;
+- who made a request, from its IP address;
+- what the Harness printed inside a sandbox, or which lines it dropped.
 
 ## Errors
 
