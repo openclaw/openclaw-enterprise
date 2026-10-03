@@ -38,6 +38,7 @@ recorded status is not proof of current implementation or release availability.
 | Workstream                                                  | RFC                                                         | Implementation plan or delivery record                                          |
 | ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | Agent access                                                | [Decision](rfcs/36-agent-access.md)                         | —                                                                               |
+| Agent containment policy | [Decision](rfcs/0057-agent-containment-policy.md) | [Plan](plans/0057-agent-containment-policy.md) |
 | Agent creation, channels, and revision inspection           | —                                                           | [Plan / record](plans/19-console-agent-management.md)                     |
 | Agent deletion and revision teardown                        | —                                                           | [Plan / record](plans/28-agent-deletion.md)                               |
 | Agent egress for 0.x                                        | [Decision](rfcs/40-agent-egress-0x/index.md)                      | —                                                                               |
