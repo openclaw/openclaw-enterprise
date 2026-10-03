@@ -44,6 +44,7 @@ recorded status is not proof of current implementation or release availability.
 | Agent native admin UI pilot                                 | —                                                           | [Plan / record](plans/31-agent-native-admin-ui.md)                        |
 | Agent plugin drivers                                        | —                                                           | [Plan / record](plans/16-plugin-driver.md)                                |
 | Agent presets                                               | —                                                           | [Plan / record](plans/33-agent-presets.md)                                |
+| Agent runtime status and log reads                          | [Decision](rfcs/0048-agent-runtime-logs.md)                 | —                                                                               |
 | Agent stop without revision mutation                        | —                                                           | [Plan / record](plans/29-agent-stop.md)                                   |
 | Agent workload tags                                         | [Decision](rfcs/21-agent-workload-tags.md)                  | —                                                                               |
 | Architecture and security audit                             | —                                                           | [Plan / record](plans/2026-09-01-architecture-security-audit/index.md)          |
