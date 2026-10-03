@@ -1,0 +1,108 @@
+name: Prepare Repository Credential Service OCI
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full main SHA, equal to the selected workflow revision
+        required: true
+        type: string
+      ci_run_id:
+        description: Successful main-push CI run for exactly source_sha
+        required: true
+        type: string
+      ci_attempt:
+        description: Exact successful attempt of ci_run_id
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  CI_RUN_ID: ${{ inputs.ci_run_id }}
+  CI_ATTEMPT: ${{ inputs.ci_attempt }}
+  NODE_VERSION: "24.16.0"
+
+concurrency:
+  group: repository-service-export-${{ inputs.source_sha }}-${{ inputs.ci_run_id }}-${{ inputs.ci_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate exact main source and CI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      source_tree: ${{ steps.source.outputs.source_tree }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Bind the checked-out source tree
+        id: source
+        run: echo "source_tree=$(git rev-parse --verify 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+      - name: Require trusted main source and successful same-source CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TREE: ${{ steps.source.outputs.source_tree }}
+        run: node scripts/ci/service-image-export.mjs preflight
+
+  prepare:
+    name: Test, export and clean repository credential service image
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    env:
+      SOURCE_TREE: ${{ needs.validate.outputs.source_tree }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: repository-credentials-container
+          profile: images
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: repository-service-export
+          export-service-image: "true"
+      - name: Upload preparation-only OCI archive for repository readers
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-service-oci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/repository-service-export
+          compression-level: 0
+          overwrite: false
+          if-no-files-found: error
+          retention-days: 1
+      - name: Record exact artifact identity and preparation-only audience
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_NAME: repository-service-oci-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          node scripts/ci/service-image-export.mjs artifact-receipt
+          "$RUNNER_TEMP/repository-service-export-receipt"
+          "$ARTIFACT_ID"
+          "$ARTIFACT_DIGEST"
+          "$ARTIFACT_NAME"
+      - name: Upload exact service archive artifact receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repository-service-oci-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/repository-service-export-receipt/artifact.json
+          overwrite: false
+          if-no-files-found: error
+          retention-days: 1

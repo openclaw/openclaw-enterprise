@@ -1,20 +1,20 @@
 ---
 created: 2026-09-04
 updated: 2026-10-01
-last_updated_session: authoring-run/0f81a0c3-327f-4389-ae2e-89431878a2d7
+last_updated_session: authoring-run/e7e06497-f2b7-4f1c-ab16-75ad3de69b1a
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-GitHub Actions selects coverage for each event and ends at `CI Required` and resource cleanup. Full CI runs fifteen noncredentialed test lanes, prepares disposable resources, and rejects missing or skipped required coverage. A verified documentation-only PR runs Suite Audit and documentation checks without product tests. Neither route establishes protected model or service integrations.
+GitHub Actions selects coverage for each event and ends at `CI Required` and resource cleanup. Full CI runs fifteen noncredentialed test lanes, prepares disposable resources, and rejects missing or skipped required coverage. A verified documentation-only PR runs Suite Audit and documentation checks without product tests. An independent manual route can rerun the repository credential container lane, export its tested service image, verify cleanup, and retain a one-day preparation artifact. None of these routes establishes protected model or service integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/full-integration.yml:jobs`: manual integration from main or an explicitly approved Kubernetes model branch, bound to the dispatched commit.
-- `scripts/ci/run-tests.mjs:main`: local or workflow `audit`, `run` and `aggregate` commands; the suite map is the coverage owner.
+- `.github/workflows/repository-service-export.yml:jobs`: manual, preparation-only service image export from an exact successful `main` CI source and attempt.
 
 ## Flow
 
@@ -41,6 +41,13 @@ graph TD
   P -->|approved| E["Protected test jobs"]
   P -->|missing protection| X["Failed check"]
   E --> T["Owned preparation, tests, cleanup and aggregation"]
+  Q["Manual service export dispatch"] --> V["Verify exact main source and CI attempt"]
+  V --> W["Run repository credential container lane"]
+  W -->|tests pass| O["Export tested config and ordered layers as OCI"]
+  W -->|failure| U["Ordinary owned cleanup; no OCI upload"]
+  O --> U
+  U -->|owned tags, state and inspection container absent| Z["Upload one-day preparation archive and identity receipt"]
+  U -->|unknown or remaining resource| Y["Fail closed; no OCI upload"]
 ```
 
 ## Execution Trace
@@ -119,7 +126,30 @@ The runner discovers active test files and verifies one lane assignment per file
 
 Required named cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
-### 4. Clean up and publish the bounded result
+### 4. Export one tested service image only on explicit preparation runs
+
+`.github/workflows/repository-service-export.yml:jobs`,
+`.github/actions/run-ci-lane/action.yml:runs`, and
+`scripts/ci/service-image-export.mjs:validateLaneIdentity`
+
+The manual route binds the workflow, event, requested source, checkout, current
+`main`, and a successful `CI Required` run and attempt. It has read-only
+repository and Actions permissions and bounded concurrency.
+
+The shared action defaults `export-service-image` to `"false"`; only explicit
+`"true"` for `repository-credentials-container` enables export. After tests
+pass, the exporter verifies the lane's three owned image tags, configuration,
+pinned base, `/app` closure, OCI descriptors, ordered layers and archive.
+Unsupported compression or unsafe topology fails the export.
+
+Cleanup runs unconditionally. Reconciliation requires the lane state, owned
+tags and inspection container to be absent, then revalidates the archive. Only
+success permits a one-day artifact and identity receipt. Any test, export,
+cleanup or readback failure prevents upload. The [CI testing guide](../testing/ci.md#github-actions)
+details the checks and limits; the artifact is preparation material, not a
+registry reference or installed or live qualification.
+
+### 5. Clean up and publish the bounded result
 
 `scripts/ci/cleanup.mjs:main` and `scripts/ci/run-tests.mjs:main`
 
@@ -150,6 +180,7 @@ Per-file cleanup releases its disposable database; job cleanup removes only stat
 
 - `node scripts/ci/run-tests.mjs audit` checks the actual checkout inventory against the suite map.
 - `node --test tests/integration/ci-runner.test.mjs` exercises the runner with real child Node processes and controlled pass/fail/skip cases.
+- `node --test tests/integration/service-image-export.test.mjs` exercises opt-in, source, ordered OCI layer identity, archive topology, value-free failure, structured workflow gating, and cleanup failure gates with synthetic OCI layouts and fake commands; it does not prove real skopeo compatibility, export a real image, or prove hosted execution.
 - Use the failing test's file, name and location in the sanitized result to reproduce its exact invocation with approved local prerequisites. Treat the named aggregate as its coverage boundary.
 - On local Docker Desktop or equivalent VM-backed Docker hosts, run one Kubernetes lane at a time when disk or network pressure has caused measured instability. GitHub Actions still runs the configured matrix; this local guidance is for reproducible operator runs.
 - Missing protected environments, tools, images or credentials are setup failures. Configure the approved resource; do not mark its required test skipped or replace it with a fixture.
@@ -167,6 +198,12 @@ Per-file cleanup releases its disposable database; job cleanup removes only stat
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 10:33: Reconcile CI impact reporting with service artifact preparation. (authoring-run/e7e06497-f2b7-4f1c-ab16-75ad3de69b1a - 6147743b58387eeeec0cf715717e15890afc8a29)
+
+- 2026-10-01 07:46: Bind archived layer payloads to ordered tested diff IDs, reject unsupported compression and unsafe archive topology, and keep rejection output value-free in the accompanying changes. (authoring-run/4b1fd6a0-325c-4f93-892c-94df8fb1f7b0 - 684764243655b81b4835328a84d4c9cf565a1230)
+
+- 2026-10-01 07:32: Describe the opt-in repository credential service image preparation, identity checks, cleanup readback, and restricted artifact handoff in the accompanying changes. (authoring-run/184eda00-e4b4-4887-9730-5feae93ce020 - 93502fd1987502a337fec6ab60b0acb26d920c57)
 
 - 2026-10-01 02:34: Document the advisory impact summary in the accompanying changes. (authoring-run/0f81a0c3-327f-4389-ae2e-89431878a2d7 - c61836797191a0924671eaaec074863fe2d80cfe)
 

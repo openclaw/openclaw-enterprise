@@ -70,6 +70,7 @@ export async function prepareRepositoryCredentials({
     ["--build-arg", `SERVICE_IMAGE=${service.tag}`, "--build-arg", `CLIENT_IMAGE=${client.tag}`],
   );
   const source = await execFile("git", ["rev-parse", "HEAD"]);
+  const sourceTree = await execFile("git", ["rev-parse", "HEAD^{tree}"]);
   await writeFile(
     receiptPath,
     `${JSON.stringify(
@@ -77,6 +78,7 @@ export async function prepareRepositoryCredentials({
         version: 1,
         lane: "repository-credentials-container",
         sourceCommit: source.stdout.trim(),
+        sourceTree: sourceTree.stdout.trim(),
         ghVersion,
         images: { service, client, qualification },
       },

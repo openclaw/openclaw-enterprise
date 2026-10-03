@@ -263,6 +263,9 @@
       "path": "tests/integration/ci-image-reconciliation.test.mjs"
     },
     {
+      "path": "tests/integration/service-image-export.test.mjs"
+    },
+    {
       "path": "tests/integration/ci-prepare.test.mjs"
     },
     {

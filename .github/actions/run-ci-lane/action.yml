@@ -13,12 +13,20 @@ inputs:
   artifact-prefix:
     description: Prefix for the uploaded result artifact.
     required: true
+  export-service-image:
+    description: Export the tested repository credential service image before cleanup.
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
     - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
       with:
         node-version: ${{ inputs.node-version }}
+    - name: Reject an invalid service image export request
+      if: inputs.export-service-image != 'false'
+      shell: bash
+      run: node scripts/ci/service-image-export.mjs gate "${{ inputs.lane }}" "${{ inputs.export-service-image }}"
     - id: pnpm-store
       uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@ee0cf16623068ff535cc20f4a1ce175c8c5b8d25
       with:
@@ -35,8 +43,8 @@ runs:
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
-    - name: Install registry transport for image publication test
-      if: inputs.lane == 'images-packaging'
+    - name: Install registry transport for image publication or service export
+      if: inputs.lane == 'images-packaging' || (inputs.lane == 'repository-credentials-container' && inputs.export-service-image == 'true')
       shell: bash
       run: |
         sudo apt-get update
@@ -141,10 +149,28 @@ runs:
         # fixture-only browser lane.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ inputs.lane == 'checks-browser' && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
       run: node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+    - name: Export the exact tested repository credential service image
+      if: success() && inputs.export-service-image == 'true'
+      shell: bash
+      env:
+        OPENCLAW_EXPORT_SERVICE_IMAGE: ${{ inputs.export-service-image }}
+      run: >-
+        node scripts/ci/service-image-export.mjs export
+        "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+        "$RUNNER_TEMP/state/repository-credentials-images.json"
+        "$RUNNER_TEMP/repository-service-export"
     - name: Cleanup lane
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Verify exact service export cleanup
+      if: always() && inputs.export-service-image == 'true'
+      shell: bash
+      run: >-
+        node scripts/ci/service-image-export.mjs reconcile
+        "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+        "$RUNNER_TEMP/state/repository-credentials-images.json"
+        "$RUNNER_TEMP/repository-service-export"
     - name: Export image cleanup reconciliation
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'

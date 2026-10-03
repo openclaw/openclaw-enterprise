@@ -62,7 +62,7 @@ database, image, and cleanup state. Files run sequentially within each lane. The
 The `repository-credentials-container` lane builds
 `.build/repository-credentials/{service,client}` with Dockerfiles under
 `deploy/runtime/repository-credentials/` and records source, `gh` version and
-three image IDs, selected through
+source tree plus three image IDs, selected through
 `REPOSITORY_CREDENTIALS_TEST_IMAGE`, `REPOSITORY_CREDENTIALS_SERVICE_IMAGE` and
 `REPOSITORY_CREDENTIALS_CLIENT_IMAGE`; its real Git/gh fixtures also receive
 `REPOSITORY_CREDENTIALS_NODE_IMAGE` and the extracted, version-checked
@@ -71,6 +71,19 @@ separates detached artifacts, the combined image, rendered Compose, running
 container isolation and authorized live proof. Preparation and suite ownership
 do not establish a result: inspect executed cases and skips at the tested
 commit, including whether a pull-request run tested a merge commit.
+
+The manual `repository-service-export` workflow reruns this lane only from the
+selected `main` workflow revision after verifying an exact successful
+same-source `main` CI run and attempt. Its explicit opt-in exports the tested
+service image as an OCI archive before ordinary lane cleanup. The workflow
+binds each archived gzip or plain layer payload to the tested config's ordered
+filesystem diff IDs and rejects unsupported compression or unsafe tar topology.
+It uploads the archive only after independent readback confirms the archive's
+descriptor chain and that the owned service, client, and qualification tags,
+lane state, and export inspection container are absent. The one-day artifact is
+available to repository readers; it is preparation evidence, not a registry
+reference, installed-lane input, or live qualification. Real skopeo compatibility
+and hosted execution remain separate qualification gates.
 
 Kubernetes fixture lanes load bridge netfilter and enable IPv4 bridge filtering
 before cluster creation so K3s enforces NetworkPolicies on bridged Pod traffic.
