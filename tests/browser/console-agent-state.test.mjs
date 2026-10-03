@@ -150,7 +150,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   );
   await login(page, fixture, url.pathname + url.search);
   assert.equal((await accessDenied).status(), 403);
-  assert.equal((await catalogUnavailable).status(), 409);
+  assert.equal((await catalogUnavailable).status(), 503);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
   await activity.getByText("Recorded status: running").waitFor();
