@@ -78,6 +78,7 @@ recorded status is not proof of current implementation or release availability.
 | Production interactive TUI                                  | —                                                           | [Plan / record](plans/16-production-tui-end-to-end.md)                    |
 | Provider and related Drivers                                | —                                                           | [Plan / record](plans/17-provider-driver-abstraction/index.md)                  |
 | Recover repository credential cleanup after broker loss     | [Decision](rfcs/39-repository-credential-recovery.md)       | —                                                                               |
+| Report a crash-looping runtime in the deployment record     | [Proposal](rfcs/0050-runtime-crash-loop-status.md)          | —                                                                               |
 | Repository credentials for ordinary Agents                  | [Decision](rfcs/31-repository-credentials/index.md)               | —                                                                               |
 | Repository selection and inherited access                   | —                                                           | [Plan / record](plans/37-repository-picker-and-access.md)                 |
 | SSH Compute Driver for raw hosts                            | —                                                           | [Plan / record](plans/21-ssh-compute-driver/index.md)                           |

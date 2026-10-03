@@ -10438,7 +10438,7 @@ test("retirement preserves active storage and node routing and deletes exact own
 // These fixtures substitute Kubernetes transport only. Preparation, ownership, private delivery,
 // redaction, readiness, and completed-payload retention run through the production driver.
 function workspaceSetupFixture(embedded, runtime = true, network = undefined, computeOptions = {}) {
-  const state = { ready: false, secretFailure: false, failedInitializer: false };
+  const state = { ready: false, secretFailure: false, failedInitializer: false, crashLoop: 0 };
   const driver = new KubernetesComputeDriver(
     routedOptions({
       ...(network === undefined ? {} : { network }),
@@ -10620,6 +10620,34 @@ function workspaceSetupFixture(embedded, runtime = true, network = undefined, co
                 namespace: target,
                 uid: `gateway-uid-${revisionId}`,
                 labels,
+              },
+            },
+          ],
+        };
+      }
+      if (state.crashLoop > 0 && labels["openclaw.dev/workload-role"] === "gateway") {
+        return {
+          items: [
+            {
+              apiVersion: "v1",
+              kind: "Pod",
+              metadata: { name: "crash-looping-gateway", namespace: target, labels },
+              status: {
+                containerStatuses: [
+                  {
+                    name: "gateway",
+                    restartCount: state.crashLoop,
+                    state: { waiting: { reason: "CrashLoopBackOff" } },
+                    lastState: {
+                      terminated: {
+                        exitCode: 1,
+                        reason: "Error",
+                        finishedAt: "2026-10-01T23:24:05Z",
+                        message: "private-content-must-not-escape",
+                      },
+                    },
+                  },
+                ],
               },
             },
           ],
@@ -11286,6 +11314,24 @@ for (const embedded of [true, false]) {
     assert.deepEqual(JSON.parse(Buffer.from(secret.data["setup.json"], "base64")), fixture.setup);
   });
 }
+
+test("Kubernetes embedded Gateway crash loop reports fixed evidence after three restarts", async () => {
+  const fixture = workspaceSetupFixture(true);
+  fixture.state.crashLoop = 2;
+  const early = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
+  assert.equal(early.ready, false);
+  assert.equal(early.runtimeFailure, undefined);
+  fixture.state.crashLoop = 4;
+  const looping = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
+  assert.equal(looping.ready, false);
+  assert.deepEqual(looping.runtimeFailure, {
+    component: "gateway",
+    check: "container",
+    code: "CONTAINER_CRASH_LOOP",
+    checkedAt: "2026-10-01T23:24:05Z",
+  });
+  assert.equal(JSON.stringify(looping).includes("private-content-must-not-escape"), false);
+});
 
 for (const method of ["api_key", "codex_pat"]) {
   test(`dedicated ${method} preparation places Gateway state and credentials in its owned control-plane target`, async () => {
