@@ -56,6 +56,7 @@ recorded status is not proof of current implementation or release availability.
 | Contributor recognition                                     | —                                                           | [Plan](plans/0042-contributor-recognition.md)                                      |
 | Control-plane Gateway placement execution plan              | —                                                           | [Plan / record](plans/36-control-plane-gateways-plan.md)                  |
 | Credential Gateway Driver for Sandbox-injected credentials  | [Decision](rfcs/39-sandbox-credential-injection.md)         | —                                                                               |
+| Dedicated Codex Gateway isolation                           | [Decision](rfcs/0046-codex-gateway-isolation.md)            | —                                                                               |
 | Dedicated Harness RWO workspace execution plan              | —                                                           | [Plan / record](plans/38-harness-rwo-workspace-plan.md)                   |
 | Default production observability                            | [Decision](rfcs/36-production-observability.md)             | [Plan](plans/36-production-observability/index.md)                          |
 | Deployment Simplification                                   | —                                                           | [Plan / record](plans/18-deployment-simplification/index.md)                    |
