@@ -57,6 +57,7 @@ recorded status is not proof of current implementation or release availability.
 | Control-plane Gateway placement execution plan              | —                                                           | [Plan / record](plans/36-control-plane-gateways-plan.md)                  |
 | Credential Gateway Driver for Sandbox-injected credentials  | [Decision](rfcs/39-sandbox-credential-injection.md)         | —                                                                               |
 | Dedicated Harness RWO workspace execution plan              | —                                                           | [Plan / record](plans/38-harness-rwo-workspace-plan.md)                   |
+| Dedicated redeploy checks before predecessor stop           | [Decision](rfcs/0058-dedicated-redeploy-handover.md)        | —                                                                               |
 | Default production observability                            | [Decision](rfcs/36-production-observability.md)             | [Plan](plans/36-production-observability/index.md)                          |
 | Deployment Simplification                                   | —                                                           | [Plan / record](plans/18-deployment-simplification/index.md)                    |
 | Development end-to-end guide                                | —                                                           | [Plan / record](plans/15-development-end-to-end-guide.md)                 |
