@@ -44,6 +44,18 @@
     },
     {
       "rule": "domain-to-implementation",
+      "from": "packages/occ/src/iam-policy-cleanup.ts",
+      "to": "packages/occ/src/state/platform-state.ts",
+      "specifier": "./state/platform-state.ts",
+      "kind": "import",
+      "typeOnly": true,
+      "bindings": ["type:PlatformReadView", "type:PlatformUnitOfWork"],
+      "owner": "Repository ports and mutation composition",
+      "reason": "IAM policy cleanup retains the OCC service's type-only dependency on aggregate repository contracts currently owned by the persistence module.",
+      "removeWhen": "Move the aggregate repository contracts into neutral ports and update this type-only import."
+    },
+    {
+      "rule": "domain-to-implementation",
       "from": "packages/occ/src/index.ts",
       "to": "packages/occ/src/state/platform-state.ts",
       "specifier": "./state/platform-state.ts",
