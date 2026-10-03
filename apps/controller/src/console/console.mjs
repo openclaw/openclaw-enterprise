@@ -999,7 +999,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         }
         return result;
       } catch (error) {
-        viewState.reusable = false;
+        // Expected errors in optional panels do not discard the page; its other reads still recheck access.
+        if (
+          (options.method ?? "GET") !== "GET" ||
+          !options.optionalReadErrors?.includes(error.status)
+        ) {
+          viewState.reusable = false;
+        }
         throw error;
       } finally {
         viewState.pending -= 1;

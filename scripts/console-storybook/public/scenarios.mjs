@@ -3748,8 +3748,13 @@ export const scenarios = {
     name: "Denied and hidden",
     path: revision,
     deployed: true,
-    nativeAdmin: "denied",
-    description: "Denied native-admin access hides the whole panel.",
+    rules: [{ suffix: "/native-admin", method: "GET", status: 403 }],
+    description:
+      "A person without an OpenClaw assignment can retain their Agent page while access is denied.",
+    steps: [
+      "Confirm the OpenClaw card is hidden.",
+      "Open Namespaces, then use Back. The cached Agent page returns with OpenClaw still hidden.",
+    ],
   },
   workspaceNavigation: {
     group: "Components/Workspace",

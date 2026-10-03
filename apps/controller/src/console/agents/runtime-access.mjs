@@ -74,7 +74,7 @@ export function renderRuntimeAccess(context, path) {
     status.textContent = "Checking access…";
     updateControls();
     try {
-      current = await context.request(statusPath);
+      current = await context.request(statusPath, { optionalReadErrors: [403] });
       if (!context.isCurrent()) {
         return;
       }

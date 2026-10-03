@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-10-02"
-last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
+updated: "2026-10-03"
+last_updated_session: "authoring-run/59d7541c-66d2-414c-8139-174fca84fe33"
 ---
 
 # Console Agent sharing and removal
@@ -52,7 +52,7 @@ the person lacks Installation administration: the policy endpoints require it an
 the API audits each denial. The panel loads `/agents/:agentId/runtime-roles` and the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 sharing panel and leaves the other panels usable; a current `401` retains global
-session expiry.
+session expiry. A role-catalog `403`, `409` or `503` clears role choices and retains removal. These handled optional reads preserve the cached Agent page; Back still revalidates its successful reads and page admission.
 
 ### 2. Serialize Role and binding writes
 
@@ -105,6 +105,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 09:11: Preserve cached Agent pages when the deployed role catalog is unavailable. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - b6f9185159f14399905bf495b3cdef3ce2d14e30)
 
 - 2026-10-02 11:55: Trace configured role selection, atomic assignment changes, read grants on reused assignments and removal when the role catalog is unavailable. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 
