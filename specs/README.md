@@ -77,6 +77,7 @@ recorded status is not proof of current implementation or release availability.
 | Recover repository credential cleanup after broker loss     | [Decision](rfcs/39-repository-credential-recovery.md)       | —                                                                               |
 | Repository credentials for ordinary Agents                  | [Decision](rfcs/31-repository-credentials/index.md)               | —                                                                               |
 | Repository selection and inherited access                   | —                                                           | [Plan / record](plans/37-repository-picker-and-access.md)                 |
+| Scope cuts to reduce complexity                             | [Decision](rfcs/0053-scope-cuts.md)                         | —                                                                               |
 | SSH Compute Driver for raw hosts                            | —                                                           | [Plan / record](plans/21-ssh-compute-driver/index.md)                           |
 | Storage split: shared interface and integration             | —                                                           | [Plan / record](plans/30-storage-split-integration.md)                    |
 | Two-cluster dedicated Gateway execution plan                | —                                                           | [Plan / record](plans/37-two-cluster-gateway-execution-plan.md)           |
