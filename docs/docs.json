@@ -930,7 +930,8 @@
               "testing/repository-credentials",
               "testing/repository-credentials-artifacts",
               "testing/repository-credentials-platform",
-              "flows/agent-presets"
+              "flows/agent-presets",
+              "flows/event-operation-plan"
             ]
           }
         ]

@@ -46,6 +46,9 @@
       "path": "tests/conformance/docker-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/event-operation-plan.test.mjs"
+    },
+    {
       "path": "tests/conformance/grafana-overview-dashboard.test.mjs"
     },
     {
