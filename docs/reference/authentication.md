@@ -244,9 +244,11 @@ Creation issues no session.
 
 The only Installation Role is the built-in Installation administrator
 (`role_admin_<uuid>`). The API cannot create other Installation Roles, and the
-Namespace policy API does not list this one. Omit `roleId` for everyone except
-another Installation administrator, then grant Namespace access with the
-returned `principalId`; see [Add a person](../guides/topics/iam.md#add-a-person).
+Namespace policy API does not list this one. The account binds it to the exact
+Installation, so only its Installation `administer` and `read` apply: account
+and service key administration, not Namespace or Agent access (bootstrap's
+binding is unscoped). Otherwise omit `roleId`, then grant Namespace access with
+the returned `principalId`; see [Add a person](../guides/topics/iam.md#add-a-person).
 A representative provisioning body is:
 
 ```json

@@ -84,6 +84,7 @@ A new account starts with no access. As a human Installation administrator:
 Add actions such as `update` or `deploy` to the Role for more access; see
 [Authorization](../../reference/authorization.md) for actions and scope. A
 binding refuses a Role with `create` Permissions or none for its target's kind,
-because those grants could never apply. Pass the
-Installation administrator `roleId` at creation only for someone who
-administers the whole Installation.
+because those grants could never apply. The
+Installation administrator `roleId` at creation grants account and service key
+administration only. It gives no Namespace or Agent access; grant that with
+Namespace bindings as above.

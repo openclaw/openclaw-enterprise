@@ -37,6 +37,7 @@ recorded status is not proof of current implementation or release availability.
 
 | Workstream                                                  | RFC                                                         | Implementation plan or delivery record                                          |
 | ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Additional Installation administrators                      | [Proposal](rfcs/0052-additional-installation-administrators.md) | —                                                                               |
 | Agent access                                                | [Decision](rfcs/36-agent-access.md)                         | —                                                                               |
 | Agent creation, channels, and revision inspection           | —                                                           | [Plan / record](plans/19-console-agent-management.md)                     |
 | Agent deletion and revision teardown                        | —                                                           | [Plan / record](plans/28-agent-deletion.md)                               |
