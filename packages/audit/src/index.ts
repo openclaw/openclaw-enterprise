@@ -315,3 +315,6 @@ export async function recordBootstrap(
 ): Promise<AuditEvent> {
   return new AuditRecorder(sink).recordBootstrap(input);
 }
+
+export { projectPlatformAuditRow } from "./platform-audit.ts";
+export type { PlatformAuditRawRow } from "./platform-audit.ts";
