@@ -3064,6 +3064,16 @@ function probeCodexAuthentication(timeout) {
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
       "-c", "check_for_update_on_startup=false",
+      // The authentication probe ignores user config, so carry the admitted
+      // compatible endpoint explicitly and use its HTTPS Responses transport.
+      ...(pluginRuntime?.manifest.openaiBaseUrl === undefined ? [] : [
+        "-c", 'model_provider="openai-compatible"',
+        "-c", 'model_providers.openai-compatible.name="OpenAI-compatible"',
+        "-c", "model_providers.openai-compatible.base_url=" + JSON.stringify(pluginRuntime.manifest.openaiBaseUrl),
+        "-c", 'model_providers.openai-compatible.wire_api="responses"',
+        "-c", "model_providers.openai-compatible.requires_openai_auth=true",
+        "-c", "model_providers.openai-compatible.supports_websockets=false",
+      ]),
       ...(loginMode === "chatgpt_service_account" ? [
         "-c", "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
       ] : []),

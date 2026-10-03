@@ -486,6 +486,25 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[apps\._default\]\nenabled = false/m);
 });
 
+test("compute pins the credential source endpoint in dedicated Codex configuration", () => {
+  const baseUrl = "https://models.example.test/api/v1";
+  const runtime = pluginRuntimeSpecForRevision(revision(), undefined, baseUrl);
+  const data = pluginRuntimeConfigMapData(runtime);
+
+  // Provider selection must remain a root setting; built-in provider IDs are reserved.
+  assert.match(
+    data[PLUGIN_RUNTIME_CODEX_CONFIG],
+    /^model_provider = "openai-compatible"\n\n\[features\]/,
+  );
+  assert.equal(JSON.parse(data[PLUGIN_RUNTIME_MANIFEST]).openaiBaseUrl, baseUrl);
+  assert.match(
+    data[PLUGIN_RUNTIME_CODEX_CONFIG],
+    /\[model_providers\.openai-compatible\][\s\S]*base_url = "https:\/\/models\.example\.test\/api\/v1"[\s\S]*requires_openai_auth = true\nsupports_websockets = false/,
+  );
+  const environment = JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]);
+  assert.equal(environment.codexConfigurationToml, data[PLUGIN_RUNTIME_CODEX_CONFIG]);
+});
+
 test("plugin-free revisions apply explicit Slack approvers for configured Slack and keep unrelated approvals", () => {
   const rawSlackApprovers = [
     { channel: "slack", id: "U456" },

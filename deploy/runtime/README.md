@@ -34,6 +34,12 @@ after enrollment cannot reconnect. The patch lets that path decode an expired
 code and hands the expiry to the node host. The node host then reconnects with
 the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
+The build also applies `openclaw-codex-native-model-ids.patch`. When a selected
+model ID is explicitly registered under `models.providers.codex`, the adapter
+preserves the complete ID and Codex's native provider selection. This prevents
+vendor namespaces such as `z-ai/` from becoming app-server provider overrides.
+Unregistered provider-qualified overrides retain upstream parsing. Remove this
+bridge when the pinned upstream adapter provides the same behavior.
 The source archive and patch hashes identify the resulting custom build.
 
 The selected commit does not support dedicated native OpenClaw. That Harness
@@ -55,7 +61,7 @@ both entrypoints against this image and fails when the image disagrees with it.
 
 The source's package version is `2026.9.6`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, both bridge patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
+hash, all three bridge patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
 normalization. The final stage copies the assembled

@@ -275,6 +275,22 @@ OCC_TEST_SKILL_SOURCE_LIFECYCLE=1 node --env-file="$TEST_ENV_FILE" --test \
 Verifies source replacement, denied writes preserving bytes/lockfiles, and recovery
 through OCC redeploy. No conversation turn; unsupported runtime images fail.
 
+### Namespaced Codex models
+
+Use a runtime rebuilt with `openclaw-codex-native-model-ids.patch` and explicitly
+register the full native ID under `models.providers.codex`. The bridge preserves
+registered IDs such as `z-ai/glm-5.3-flash` and keeps native Codex provider
+selection. Unregistered provider-qualified overrides retain upstream parsing.
+
+The real dedicated k3d run with OpenRouter `z-ai/glm-5.3-flash` and the reviewed
+Codex seccomp profile passed the model/tool turn, native sandbox file read/write,
+attachment continuation, Memory search, Skill execution, and workspace/Gateway
+state persistence across restart and revision. The full case currently fails its
+later Pod-continuity assertion: two Codex rollouts contain the session marker
+where the test expects one. Credential-recovery and legacy-binding checks were
+not reached. See the [Codex sandbox guide](../guides/deploy/codex-sandbox.md)
+for local profile preparation and proof requirements.
+
 ### Transcript persistence
 
 Both Harness topologies require SQLite transcripts. Persistence cases query
@@ -357,6 +373,7 @@ Codex custom tools.
 | `OCC_TEST_DATABASE_URL`                     | Migrated disposable loopback database named `openclaw_k8s_*`; the ordinary development database fails.                                                                                                     |
 | `OPENAI_API_KEY`                            | Existing authorized provider credential for real embedded and dedicated model turns.                                                                                                                       |
 | `OCC_TEST_OPENAI_MODEL`                     | Authorized provider model; defaults to `gpt-6-astra`.                                                                                                                                                      |
+| `OCC_TEST_CODEX_OPENAI_BASE_URL`            | Optional HTTPS Responses endpoint for dedicated Codex API-key tests; applied through `runtime.codexOpenaiBaseUrl`. Keep the native Codex provider at its fail-closed loopback URL.                         |
 
 The separate [`harness-topology-k3d-routing-real.test.mjs`](../../tests/integration/harness-topology-k3d-routing-real.test.mjs) requires
 `OCC_TEST_GATEWAY_ROUTING_REAL=1` and the same runtime prerequisites. It also

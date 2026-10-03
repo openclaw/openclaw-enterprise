@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-30
-last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
+updated: 2026-10-02
+last_updated_session: authoring-run/55ad5612-91e1-42ca-aedd-1862f79f7f31
 ---
 
 # Container publication flow
@@ -93,9 +93,11 @@ so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive,
 uses its stock Codex 0.158.0 dependency/lockfile selection, and applies the temporary
-OpenClaw read-only-paths compatibility patch and the `connect --ephemeral`
-expired-setup patch. The build verifies both patch hashes and records them in
-runtime provenance. The OpenClaw bridge forwards the bound
+OpenClaw read-only-paths, `connect --ephemeral` expired-setup, and native Codex
+model-ID compatibility patches. The model-ID bridge preserves vendor namespaces
+explicitly registered in `models.providers.codex`, leaving native provider
+selection with Codex. The build verifies all three patch hashes and records them
+in runtime provenance. The OpenClaw bridge forwards the bound
 Agent's stock network settings without modifying the Codex binary. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
@@ -237,6 +239,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-02 12:14: Package and record the native Codex model-ID bridge alongside the existing verified runtime patches. (authoring-run/55ad5612-91e1-42ca-aedd-1862f79f7f31 - abf5647076ea98d87d24dceb1bcaad542c398294)
 
 - 2026-09-30 11:18: Change publication and recovery policy to public source with public GHCR packages; no-push preparation remains allowed only with literal `PUBLISH=false`. (authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584 - 76e9de599a1c5b1319af4f9003f86ecbf53aa9ec)
 

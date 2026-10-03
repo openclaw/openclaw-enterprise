@@ -174,6 +174,17 @@ in one AgentRevision Sandbox. Stopping a hosted session releases its slot; saved
 history does not consume capacity. OpenClaw does not yet retire idle paired-node
 workers, so size the limit against the Agent workload's CPU and memory limits.
 
+For dedicated Codex Agents using `harnessAuth.method: api_key`, optional
+`runtime.codexOpenaiBaseUrl` selects an HTTPS OpenAI-compatible Responses API
+endpoint for the Installation. Its path must end in `/v1`; `/api/v1` is supported.
+Credentials, wildcards, query strings, and fragments are rejected. When omitted,
+Codex uses its default OpenAI endpoint. A bound OpenShell credential source takes
+precedence. OAuth, account login modes, and OpenClaw Harnesses do not use this option.
+The model key still comes from the Agent's Harness authentication binding and
+is projected only into its Codex Pod. Custom endpoints use HTTPS Responses
+streaming; the Gateway's native Codex provider remains bound to its authenticated
+app server with the fail-closed HTTP endpoint. See [Harness execution](../harness-execution.md).
+
 ### Authentication
 
 Choose exactly one Kubernetes authentication mode:

@@ -486,7 +486,7 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
   test(`actual OCC admission accepts a same-Harness OpenAI Codex ${scope} selection`, async () => {
     const { bindHarnessAuth, controller, namespace } = await fixture();
     const selection = {
-      primary: "openai/gpt-4.1",
+      primary: scope === "provider-policy-fallback" ? "openai/vendor/model" : "openai/gpt-4.1",
       fallbacks: ["openai/gpt-4.1-mini", "openai/gpt-4.1-nano"],
     };
     const values = {

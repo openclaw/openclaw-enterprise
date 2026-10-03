@@ -1,0 +1,127 @@
+--- a/extensions/codex/src/app-server/thread-model-selection.ts
++++ b/extensions/codex/src/app-server/thread-model-selection.ts
+@@ -76,12 +76,23 @@
+     model: string;
+     homeScope?: CodexAppServerHomeScope;
+     modelProvider?: string | null;
++    provider?: string;
+   },
+ ): { model: string; modelProvider?: string } {
+   const model = params.model.trim();
+   const modelProvider = params.modelProvider?.trim();
+   if (modelProvider) {
+     return { model, modelProvider };
++  }
++  if (
++    params.provider?.trim().toLowerCase() === "codex" &&
++    params.config?.models?.providers?.codex?.models?.some(
++      (entry) => entry.id === model || entry.id === `codex/${model}`,
++    )
++  ) {
++    // Explicit native catalog IDs belong to Codex's selected provider. A slash
++    // inside such an ID is a vendor namespace, not a provider override.
++    return { model };
+   }
+   // Codex app-server expects provider-qualified refs as separate fields. Keep
+   // explicit providers intact so provider-owned slashy model ids are not split.
+--- a/extensions/codex/src/app-server/turn-params.ts
++++ b/extensions/codex/src/app-server/turn-params.ts
+@@ -105,6 +105,7 @@
+   const modelSelection = options.preserveNativeTurnSettings
+     ? undefined
+     : resolveCodexAppServerRequestModelSelection({
++        provider: params.provider,
+         homeScope: options.appServer.start.homeScope,
+         model: options.model ?? params.modelId,
+         modelProvider: options.modelProvider,
+--- /dev/null
++++ b/extensions/codex/src/app-server/thread-model-selection.native-models.test.ts
+@@ -0,0 +1,88 @@
++import { describe, expect, it } from "vitest";
++import {
++  resolveCodexAppServerThreadModelSelection,
++  resolveCodexAppServerRequestModelSelection,
++} from "./thread-model-selection.js";
++
++const model = "z-ai/glm-5.3-flash";
++const config = {
++  models: {
++    providers: {
++      codex: {
++        baseUrl: "http://127.0.0.1:9",
++        api: "openai-responses" as const,
++        models: [
++          {
++            id: model,
++            name: "GLM 5.3 Flash",
++            reasoning: false,
++            input: ["text" as const],
++            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++            contextWindow: 32000,
++            maxTokens: 4096,
++          },
++        ],
++      },
++    },
++  },
++};
++
++describe("explicit native Codex model IDs", () => {
++  it("preserves a registered vendor namespace and native provider selection", () => {
++    expect(
++      resolveCodexAppServerThreadModelSelection({
++        provider: "codex",
++        model,
++        config,
++      }),
++    ).toEqual({ model });
++  });
++
++  it("preserves the registered ID when request builders resolve the model again", () => {
++    expect(
++      resolveCodexAppServerRequestModelSelection({
++        provider: "codex",
++        model,
++        config,
++      }),
++    ).toEqual({ model });
++  });
++
++  it("accepts a provider-prefixed catalog entry admitted by OCE", () => {
++    const prefixed = structuredClone(config);
++    prefixed.models.providers.codex.models[0]!.id = `codex/${model}`;
++    expect(
++      resolveCodexAppServerThreadModelSelection({
++        provider: "codex",
++        model,
++        config: prefixed,
++      }),
++    ).toEqual({ model });
++  });
++
++  it("retains the provider binding when resuming that exact native model", () => {
++    expect(
++      resolveCodexAppServerThreadModelSelection({
++        provider: "codex",
++        model,
++        config,
++        binding: {
++          threadId: "thread-1",
++          model,
++          modelProvider: "openai-compatible",
++        },
++      }),
++    ).toEqual({ model, modelProvider: "openai-compatible" });
++  });
++
++  it("still resolves an unregistered provider-qualified override", () => {
++    expect(
++      resolveCodexAppServerThreadModelSelection({
++        provider: "codex",
++        model,
++        requestModel: "lmstudio/other/model",
++        config,
++      }),
++    ).toEqual({ model: "other/model", modelProvider: "lmstudio" });
++  });
++});

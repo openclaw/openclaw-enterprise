@@ -870,6 +870,10 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
+  if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+    configuration.drivers.compute.configuration.runtime.codexOpenaiBaseUrl =
+      process.env.OCC_TEST_CODEX_OPENAI_BASE_URL;
+  }
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
   configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";

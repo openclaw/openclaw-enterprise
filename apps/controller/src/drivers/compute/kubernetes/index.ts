@@ -355,6 +355,7 @@ export interface KubernetesComputeDriverOptions {
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
     readonly codexSeccompProfile?: string;
+    readonly codexOpenaiBaseUrl?: string;
     readonly channels?: {
       readonly proxyUrl: string;
       readonly managedProxy?: KubernetesWorkloadPeer & {
@@ -1359,7 +1360,10 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
   }
 }
 
-function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument): object {
+function nativeRuntimeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  credentialSource: boolean,
+): object {
   const models = harnessModels(configuration);
   const configuredAgentIds = Object.keys(asRecord(asRecord(configuration.agents)?.entries) ?? {});
   const agentIds = configuredAgentIds.length === 0 ? ["main"] : configuredAgentIds;
@@ -1426,13 +1430,15 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
     }
     if (
       endpoint.protocol !== "https:" ||
-      endpoint.hostname !== "api.openai.com" ||
-      endpoint.port !== "" ||
+      (!credentialSource && endpoint.hostname !== "api.openai.com") ||
+      (!credentialSource && endpoint.port !== "") ||
       endpoint.username !== "" ||
       endpoint.password !== "" ||
       endpoint.search !== "" ||
       endpoint.hash !== "" ||
-      endpoint.pathname.replace(/\/$/u, "") !== "/v1"
+      (credentialSource
+        ? !endpoint.pathname.replace(/\/$/u, "").endsWith("/v1") || endpoint.pathname.includes("*")
+        : endpoint.pathname.replace(/\/$/u, "") !== "/v1")
     ) {
       throw new ConfigurationFailure(
         `Dedicated OpenClaw requires the approved OpenAI API endpoint for ${reference}.`,
@@ -1509,7 +1515,12 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
     );
   }
   return {
-    configuration: JSON.stringify(nativeRuntimeConfiguration(revision.configuration)),
+    configuration: JSON.stringify(
+      nativeRuntimeConfiguration(
+        revision.configuration,
+        revision.harnessAuth.method === "credential_source",
+      ),
+    ),
   };
 }
 
@@ -1697,6 +1708,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           nodeSelector: { type: "object", additionalProperties: { type: "string" } },
           gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
           codexSeccompProfile: { type: "string", minLength: 1 },
+          codexOpenaiBaseUrl: { type: "string", minLength: 1 },
           channels: {
             type: "object",
             required: ["proxyUrl"],
@@ -1940,6 +1952,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new ConfigurationFailure(
           "Native OpenClaw session capacity must be an integer between 1 and 1024.",
         );
+      }
+      if (options.runtime.codexOpenaiBaseUrl !== undefined) {
+        let endpoint: URL;
+        try {
+          endpoint = new URL(options.runtime.codexOpenaiBaseUrl);
+        } catch {
+          throw new ConfigurationFailure("Codex model endpoint must be an HTTPS API URL.");
+        }
+        if (
+          endpoint.protocol !== "https:" ||
+          endpoint.username !== "" ||
+          endpoint.password !== "" ||
+          endpoint.search !== "" ||
+          endpoint.hash !== "" ||
+          !endpoint.pathname.replace(/\/$/u, "").endsWith("/v1") ||
+          endpoint.pathname.includes("*")
+        ) {
+          throw new ConfigurationFailure(
+            "Codex model endpoint requires HTTPS and a path ending in /v1 without credentials, wildcards, query, or fragment.",
+          );
+        }
       }
       if (options.runtime.codexSeccompProfile !== undefined) {
         validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
@@ -2291,7 +2324,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration);
+      nativeRuntimeConfiguration(configuration, auth.method === "credential_source");
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -3642,6 +3675,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      harnessAuth.credentialSource?.config.base_url,
     );
     const hasEnabledPluginSelections =
       pluginRuntime !== undefined &&
@@ -4318,6 +4352,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           repositoryConsumer,
           repositoryMaterial,
         ),
+        harnessAuth.credentialSource?.config.base_url,
       );
       if (
         currentRevisionId !== revision.id ||
@@ -4421,6 +4456,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
+      harnessAuth.credentialSource?.config.base_url,
     );
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
     const configuration = this.gatewayConfiguration(
@@ -9237,10 +9273,23 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private pluginRuntimeSnapshot(
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+    openaiBaseUrl?: string,
   ): PluginRuntimeSnapshot | undefined {
+    if (
+      openaiBaseUrl === undefined &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.harnessAuth?.method === "api_key"
+    ) {
+      openaiBaseUrl = this.options.runtime?.codexOpenaiBaseUrl?.replace(/\/$/u, "");
+    }
     let runtime: PluginRuntimeSpec | undefined;
     try {
-      runtime = pluginRuntimeSpecForRevision(revision, repositoryBrokerNetworkPolicy);
+      runtime = pluginRuntimeSpecForRevision(
+        revision,
+        repositoryBrokerNetworkPolicy,
+        openaiBaseUrl,
+      );
     } catch (error) {
       throw new ConfigurationFailure(
         error instanceof Error

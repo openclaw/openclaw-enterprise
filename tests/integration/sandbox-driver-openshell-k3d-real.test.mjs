@@ -55,6 +55,7 @@ const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).r
   /^(?:openai|codex)\//,
   "",
 );
+const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
   [
@@ -69,6 +70,7 @@ const selected =
     openShellHelmPath,
     openShellHelmChart,
     openShellWorkspaceHelmChart,
+    openShellModelBaseUrl,
   ].some(Boolean);
 const requiresOpenShellK3d = {
   skip: selected
@@ -314,9 +316,12 @@ function nativeCodexConfiguration(gatewayAuth) {
   return configuration;
 }
 
-function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
+function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = [], modelBaseUrl) {
   const configuration = createHarnessConfiguration("openclaw", providerModel);
   configuration.models.providers.openai.models[0].input = ["text", "image"];
+  if (modelBaseUrl !== undefined) {
+    configuration.models.providers.openai.baseUrl = modelBaseUrl;
+  }
   configuration.secrets = {
     providers: {
       model: {
@@ -2254,6 +2259,7 @@ async function prepareProductionInstallation(
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
     type: "openai",
+    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
     secrets: { api_key: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
@@ -2276,6 +2282,7 @@ async function prepareProductionInstallation(
             controllerPort === undefined
               ? []
               : [`http://127.0.0.1:${demoControlUiPort}`, `http://localhost:${demoControlUiPort}`],
+            openShellModelBaseUrl,
           )
         : nativeCodexConfiguration(workspaceGateway.nativeOptions.gatewayAuth),
   });
@@ -3119,8 +3126,22 @@ test(
         }
         return;
       }
+      // The Pod-loopback model proof is independent of the exposed service route.
       process.stderr.write(
-        "OpenShell integration: checking create-time service exposure authentication boundary.\n",
+        "OpenShell integration: starting authenticated real in-Sandbox model turn.\n",
+      );
+      const nonce = `OCC-OPENSHELL-${randomUUID()}`;
+      const modelTurn = await requestCodexTurnFromOpenShellHarnessPod({
+        namespace: topology.placement,
+        harnessPod: topology.harnessPod.metadata.name,
+        providerModel,
+        appServerTokenPath: `${credentialMountPath}/app-server-token`,
+        prompt: `Reply with exactly ${nonce}.`,
+      });
+      assert.match(modelTurn.assistant, new RegExp(nonce));
+      assert.equal(JSON.stringify(modelTurn).includes(process.env.OPENAI_API_KEY), false);
+      process.stderr.write(
+        "OpenShell integration: real in-Sandbox model turn passed; checking create-time service exposure authentication boundary.\n",
       );
       assert.match(topology.harnessServiceUrl, /^https?:\/\//);
       // The Driver omits authorization_mode, so OpenShell defaults to STRIP before proxying. An
@@ -3147,20 +3168,7 @@ test(
         });
       }
       process.stderr.write(
-        "OpenShell integration: create-time route reached protected Harness; starting authenticated real in-Sandbox model turn.\n",
-      );
-      const nonce = `OCC-OPENSHELL-${randomUUID()}`;
-      const modelTurn = await requestCodexTurnFromOpenShellHarnessPod({
-        namespace: topology.placement,
-        harnessPod: topology.harnessPod.metadata.name,
-        providerModel,
-        appServerTokenPath: `${credentialMountPath}/app-server-token`,
-        prompt: `Reply with exactly ${nonce}.`,
-      });
-      assert.match(modelTurn.assistant, new RegExp(nonce));
-      assert.equal(JSON.stringify(modelTurn).includes(process.env.OPENAI_API_KEY), false);
-      process.stderr.write(
-        "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
+        "OpenShell integration: create-time route reached protected Harness; testing actual filesystem and network enforcement.\n",
       );
       await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
       process.stderr.write(

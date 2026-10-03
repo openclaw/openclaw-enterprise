@@ -99,12 +99,15 @@ test(
     );
     assert.deepEqual(harnessIdentity.audience, ["openclaw-enterprise"]);
     const agentService = await resource("service", topology.agentServiceName, topology.placement);
+    // The Service must select the Agent's ordinary network profile as well as
+    // its exact revision, so provider-fenced workloads cannot become endpoints.
     assert.deepEqual(agentService.spec.selector, {
       "app.kubernetes.io/name": `${topology.agentServiceName}-rev-${hash(topology.revision.id)}`,
       "openclaw.dev/namespace": topology.agent.namespaceId,
       "openclaw.dev/agent": topology.agent.id,
       "openclaw.dev/revision": topology.revision.id,
       "openclaw.dev/workload-role": "agent",
+      "openclaw.dev/network-profile": "broad-egress-v1",
     });
     const codexVersion = (
       await kubectl(

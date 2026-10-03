@@ -58,6 +58,11 @@ RUN echo '705b21a67f344de66a5468a07b35f6fec01635331d99cb85d9254c56bccc0c7d  /tmp
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
 RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
+# TODO: Remove this bridge patch when OpenClaw preserves explicitly registered
+# native Codex model IDs containing vendor namespaces.
+COPY deploy/runtime/openclaw-codex-native-model-ids.patch /tmp/openclaw-codex-native-model-ids.patch
+RUN echo '018fba127fc2c7e8f7b9d78a4e6ed6780083039e63601e147182628daae970a3  /tmp/openclaw-codex-native-model-ids.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-native-model-ids.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 

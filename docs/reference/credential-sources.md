@@ -8,8 +8,8 @@ Harness never receives the real credential. An Agent uses a source through
 
 Credential sources require a selected Credential Gateway. The only
 implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md),
-which supports one source type, `openai`, for dedicated Codex model
-authentication. OpenShell is not a supported production Agent path; see its
+which supports one source type, `openai`, for dedicated Codex and native
+OpenClaw model authentication. OpenShell is not a supported production Agent path; see its
 [remaining blockers](drivers/openshell-sandbox.md#current-upstream-preconditions).
 
 ## Register a source
@@ -44,7 +44,11 @@ The request fields are:
 - `name`: required; unique within the Namespace.
 - `type`: required; a type from the gateway catalog. Unknown types fail with
   `404` before any gateway call.
-- `config`: optional nonsecret strings keyed by catalog field name.
+- `config`: optional nonsecret strings keyed by catalog field name. For the
+  OpenShell `openai` type, `base_url` selects an HTTPS OpenAI-compatible `/v1`
+  endpoint and defaults to `https://api.openai.com/v1`. Codex requires the
+  OpenAI Responses API. The endpoint is immutable source configuration; register
+  a new source to change it.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace.
 

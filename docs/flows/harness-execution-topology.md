@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-09-30
-last_updated_session: authoring-run/1373b7f3-e273-466a-b9da-bb197bdb469e
+updated: 2026-10-02
+last_updated_session: authoring-run/55ad5612-91e1-42ca-aedd-1862f79f7f31
 ---
 
 # Harness Execution Topology Flow
@@ -64,6 +64,9 @@ configuration defaults to embedded OpenClaw. Missing ambiguous/plugin runtime po
 routes, unsupported IDs, and harness/mode mismatches fail closed. OCC validates each primary
 and fallback model through the same resolver; fallbacks must keep the
 primary provider and Harness. It preserves their order in the native configuration.
+`packages/occ/src/configured-harness.ts:resolveConfiguredHarnessId` separates
+the provider at the first slash and retains the complete model ID when matching
+provider catalog entries, including IDs such as `z-ai/glm-5.3-flash`.
 The admitted revision immutably
 captures its native configuration, approved harness identity/version, explicit mode, Compute
 selection, and Agent ServicePrincipal. Production admits approved
@@ -186,6 +189,26 @@ preparation pass, or preparing or activating that predecessor, drops the record.
 Old reconciliation and maintenance cannot restart a predecessor after a newer
 exclusive revision is admitted. Both PVCs survive this downtime window; a failed
 candidate is recovered by retry or a new revision, not automatic rollback.
+For dedicated Codex API-key authentication, Kubernetes Compute selects the
+bound credential source's endpoint first, then its optional
+`runtime.codexOpenaiBaseUrl`. `pluginRuntimeSnapshot` in
+`apps/controller/src/drivers/compute/kubernetes/index.ts` passes that endpoint to
+`pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`.
+The generated Codex config and manifest select HTTPS Responses streaming for an
+explicit compatible endpoint. `probeCodexAuthentication` in
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts` carries
+that endpoint through CLI overrides because its probe ignores user configuration.
+Account login modes and other Harnesses retain their existing endpoints; model
+credentials remain exclusively in the Harness Pod.
+The runtime image applies
+`deploy/runtime/openclaw-codex-native-model-ids.patch` before building the Codex
+plugin (`deploy/runtime/Dockerfile`). Its shared request model resolver treats
+IDs registered under `models.providers.codex` as native models, preserving their
+vendor namespace and the existing thread's provider binding. Unregistered
+provider-qualified overrides keep upstream parsing. The image records the bridge
+hash through `scripts/build-runtime-assets.mjs`; both Gateway and Harness must
+use verified rebuilt images for the real model-turn proof.
+
 Dedicated Codex and dedicated OpenClaw must complete a bounded native
 authentication/model probe before their Harness becomes ready. The candidate
 Gateway repair in step 2 changes no unrelated Gateway and never activates a
@@ -313,6 +336,12 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-02 12:08: Preserve explicitly registered native Codex model IDs in the packaged adapter, retaining provider bindings and unregistered overrides. (authoring-run/55ad5612-91e1-42ca-aedd-1862f79f7f31 - 11654415254d56bf557fd3ca80a0a19d2553794d)
+
+- 2026-10-02 11:10: Added Kubernetes Compute endpoint selection for Secret-backed dedicated Codex and explicit compatible endpoint transport in its startup probe. (authoring-run/2b990280-4bdf-49ca-a8de-8eeac03e591a - e01d397fab33d7eac89193c67b4d94b78d987c1a)
+
+- 2026-10-02 09:53: Preserved namespaced model IDs when matching provider catalog entries during admission. (authoring-run/2b990280-4bdf-49ca-a8de-8eeac03e591a - f3b21c0ba82a3cfb8bc652b44198cb78b37d360e)
 
 - 2026-10-02 14:00: End node pairing and ack waits early for claimable Work. (r7-d221)
 

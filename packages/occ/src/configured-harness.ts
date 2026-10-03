@@ -78,7 +78,7 @@ function providerModelEntry(
   }
   const matches = configured.filter((candidate) => {
     const value = asRecord(candidate);
-    return value?.id === model || value?.id === model.split("/", 2)[1];
+    return value?.id === model || value?.id === model.slice(model.indexOf("/") + 1);
   });
   if (matches.length > 1) {
     throw new ConfigurationHarnessError("The selected provider model Harness policy is ambiguous.");
@@ -152,7 +152,8 @@ export function resolveConfiguredHarnessId(
         return !candidates.some(
           (candidate) =>
             candidate.model.split("/", 2)[0] === providerId &&
-            (model === candidate.model || model === candidate.model.split("/", 2)[1]),
+            (model === candidate.model ||
+              model === candidate.model.slice(candidate.model.indexOf("/") + 1)),
         );
       })
     ) {

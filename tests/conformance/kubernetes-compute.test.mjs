@@ -3961,6 +3961,32 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   }
 });
 
+test("the canonical Kubernetes runtime validates the dedicated Codex model endpoint", () => {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  for (const codexOpenaiBaseUrl of [
+    "https://models.example.test/v1",
+    "https://models.example.test/api/v1/",
+  ]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(options({ runtime: { ...runtime, codexOpenaiBaseUrl } })),
+    );
+  }
+  for (const codexOpenaiBaseUrl of [
+    "not-a-url",
+    "http://models.example.test/v1",
+    "https://user:password@models.example.test/v1",
+    "https://models.example.test/v2",
+    "https://models.example.test/*/v1",
+    "https://models.example.test/v1?key=fixture",
+    "https://models.example.test/v1#fragment",
+  ]) {
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexOpenaiBaseUrl } })),
+      /Codex model endpoint/,
+    );
+  }
+});
+
 test("the canonical Kubernetes runtime validates native OpenClaw session capacity", () => {
   const runtime = {
     transportSecretPrefix: "transport",
@@ -8045,6 +8071,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
         async provisionHarness() {},
         async cleanup() {},
       },
+      credentialGatewayDriver: { id: "credential-gateway-openshell" },
     },
   );
   const dedicatedNativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
@@ -8092,6 +8119,38 @@ test("revision lifecycle rejects another driver or missing identity before clust
         },
       ),
     /approved OpenAI API endpoint/,
+  );
+  const compatibleEndpointConfiguration = {
+    ...dedicatedNativeConfiguration,
+    models: {
+      providers: {
+        openai: {
+          ...dedicatedNativeConfiguration.models.providers.openai,
+          baseUrl: "https://models.example.test/api/v1",
+        },
+      },
+    },
+  };
+  assert.doesNotThrow(() =>
+    production.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      {
+        method: "credential_source",
+        sourceId: "cs_00000000-0000-4000-8000-000000000016",
+        credentialGatewayId: "credential-gateway-openshell",
+        sourceType: "openai",
+        loginMode: "api_key",
+      },
+      compatibleEndpointConfiguration,
+      undefined,
+      {
+        type: "openai",
+        config: [],
+        secrets: [],
+        rotation: "none",
+        harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+      },
+    ),
   );
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
   const serviceAccount = {

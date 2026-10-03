@@ -48,6 +48,7 @@ export type PluginRuntimeSpec =
       readonly selections: PluginDesiredState;
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
       readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+      readonly openaiBaseUrl?: string;
     };
 
 function validateDriverMatchesRuntime(
@@ -82,6 +83,7 @@ function validateDriverMatchesRuntime(
 function pluginFreeRuntimeForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  openaiBaseUrl?: string,
 ): PluginRuntimeSpec | undefined {
   if (!validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin approvers are invalid.");
@@ -93,6 +95,7 @@ function pluginFreeRuntimeForRevision(
       ...(revision.pluginApprovers === undefined
         ? {}
         : { pluginApprovers: revision.pluginApprovers }),
+      ...(openaiBaseUrl === undefined ? {} : { openaiBaseUrl }),
       ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
     };
   }
@@ -112,10 +115,11 @@ function pluginFreeRuntimeForRevision(
 export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  openaiBaseUrl?: string,
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
   if (state === undefined) {
-    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy);
+    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy, openaiBaseUrl);
   }
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
@@ -132,6 +136,7 @@ export function pluginRuntimeSpecForRevision(
           kind: "codex",
           selections: state.plugins,
           pluginApprovers: revision.pluginApprovers,
+          ...(openaiBaseUrl === undefined ? {} : { openaiBaseUrl }),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
         }
       : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
@@ -143,9 +148,13 @@ function codexConfigurationToml(runtime: PluginRuntimeSpec): string | undefined 
   if (runtime.kind !== "codex") {
     return undefined;
   }
-  return Object.keys(runtime.selections).length === 0
-    ? CODEX_NO_PLUGIN_CONFIG_TOML
-    : CODEX_SELECTED_PLUGIN_CONFIG_TOML;
+  const pluginConfiguration =
+    Object.keys(runtime.selections).length === 0
+      ? CODEX_NO_PLUGIN_CONFIG_TOML
+      : CODEX_SELECTED_PLUGIN_CONFIG_TOML;
+  return runtime.openaiBaseUrl === undefined
+    ? pluginConfiguration
+    : `model_provider = "openai-compatible"\n\n${pluginConfiguration}\n[model_providers.openai-compatible]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(runtime.openaiBaseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`;
 }
 
 export function pluginRuntimeConfigMapData(
@@ -177,6 +186,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
   return {
     kind: runtime.kind,
     selections: runtime.selections,
+    ...(runtime.kind === "codex" && runtime.openaiBaseUrl !== undefined
+      ? { openaiBaseUrl: runtime.openaiBaseUrl }
+      : {}),
     ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
     ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined
       ? { repositoryBrokerNetworkPolicy: runtime.repositoryBrokerNetworkPolicy }

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-09-30
-last_updated_session: authoring-run/b158c89c-3010-42ae-95b4-350b05de7441
+updated: 2026-10-02
+last_updated_session: authoring-run/2b990280-4bdf-49ca-a8de-8eeac03e591a
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -176,6 +176,17 @@ no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
 attachments, one provider name per source, go into
 `requirements.credentialAttachments`. Compute passes those requirements and the
 immutable revision to OpenShell instead of creating the Deployment itself.
+The OpenShell credential gateway derives an endpoint-specific provider profile
+from the source's immutable `config.base_url`, defaulting to OpenAI `/v1`. For
+custom services, the base path may include a prefix such as `/api/v1`; the profile
+binds credentials to that complete base path followed by `/**`. Wildcard base
+paths are rejected. For dedicated native OpenClaw, `attachForRevision` verifies each selected OpenAI
+model resolves to that exact endpoint; a mismatch or missing model metadata
+fails preparation. For Codex, Compute passes the source endpoint into the
+plugin-runtime snapshot. In
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`,
+a root `model_provider` selection names an OpenAI-compatible provider table
+with the endpoint and HTTPS Responses transport.
 
 ### 3. Validate and serialize the Sandbox
 
@@ -294,8 +305,9 @@ Kubernetes Compute delete the Kubernetes namespace.
   workload token in revision-specific PVC subpaths, never the model key. The
   test asserts that Harness processes hold only the OpenShell placeholder. The provider-owned
   Sandbox exposes its app-server port at create time. The test observes the
-  protected app server's authentication rejection because the Driver omits the service authorization mode and OpenShell defaults to `STRIP`,
-  then runs the real model and tool checks from inside the Pod. This mode proves
+  protected app server's authentication rejection because the Driver omits the service authorization mode and OpenShell defaults to `STRIP`.
+  The independent real model turn runs through authenticated Pod loopback before
+  that exposed-route check; tool checks follow it. This mode proves
   v0.1.3-pre.1 containment, the Compute-created node route, Helm NetworkPolicy
   enforcement, exposed-route reachability, and lifecycle behavior. It does not
   prove native workload projection or an authenticated model turn through the
@@ -322,7 +334,13 @@ Kubernetes Compute delete the Kubernetes namespace.
 
 ## Changelog
 
+- 2026-10-02 11:10: Selected a named compatible Codex provider because the pinned runtime reserves built-in provider tables. (authoring-run/2b990280-4bdf-49ca-a8de-8eeac03e591a - e01d397fab33d7eac89193c67b4d94b78d987c1a)
+
+- 2026-10-02 09:53: Allowed endpoint path prefixes such as OpenRouter's /api/v1 while rejecting wildcard base paths. (authoring-run/2b990280-4bdf-49ca-a8de-8eeac03e591a - f3b21c0ba82a3cfb8bc652b44198cb78b37d360e)
+
+- 2026-10-02 09:20: Fixed Codex endpoint serialization to keep the setting at the TOML root. (authoring-run/2b990280-4bdf-49ca-a8de-8eeac03e591a - c29752bb5971065ed7a87478a285bed4017d0143)
 - 2026-09-30 21:14: Updated the OpenShell source, images, charts, and wire fixture to v0.1.3-pre.1 while preserving the default service authorization and fail-closed projection boundaries. (authoring-run/b158c89c-3010-42ae-95b4-350b05de7441 - 37bbee705ea3808ad000413dd54bdcc718980179)
+- 2026-10-01 23:33: Added source-bound OpenAI-compatible `/v1` endpoints, Codex endpoint serialization, and native OpenClaw endpoint matching. (authoring-run/6a3e4258-d9a9-4adc-8d55-b29ceac63f60 - 4af0d1bd0481ea360fe36d87a38981e8e8a169a3)
 
 - 2026-09-30 09:49: Documented Gateway call cancellation and uncertain remote effects. (authoring-run/f1c1bde3-0893-42d4-89ed-3251c885a893 - 90899dc55ab79d0244533b7dcde657fecf35bb08)
 

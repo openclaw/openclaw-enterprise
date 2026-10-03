@@ -46,12 +46,20 @@ session history.
 
 ## Native runtime selection
 
-The selected native model uses a `provider/model` name. Its supported
+The selected native model uses a `provider/model` name. The first slash separates
+the provider; the complete remaining model ID may contain slashes, as in
+`codex/z-ai/glm-5.3-flash`. Provider catalog IDs may use that complete model ID
+or the full provider-prefixed name. Its supported
 `agentRuntime.id` is `openclaw` or `codex`; OCC considers model-specific,
 Agent-entry, and provider policy. Conflicting explicit policies are rejected,
 rather than silently selecting one. All configured Agent entries must resolve
 to the same primary model and Harness.
 
+For dedicated Codex, explicitly register the complete native ID under
+`models.providers.codex`. The packaged adapter preserves registered vendor
+namespaces and lets Codex retain its native provider selection. Existing images
+must be rebuilt to include this bridge; see
+[namespaced-model verification](../testing/kubernetes.md#namespaced-codex-models).
 Without any model candidate the current resolver selects OpenClaw. For an
 unambiguous built-in provider without custom provider or plugin routing, absent
 runtime policy also selects OpenClaw. The `openai` and `codex` providers,
@@ -151,9 +159,13 @@ and external tools, and uses read-only filesystem policy without approval grants
 a tool event cannot satisfy its success check. The Codex probe runs with a minimal
 environment that keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
 `SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Dedicated Codex
-reaches its model over Responses WebSocket by default (embedded OpenClaw uses
-HTTP streaming), so an egress proxy or firewall in front of the model host must
-allow the WebSocket upgrade. Probes never log native output. Dedicated Codex retries a confirmed
+reaches its default endpoint over Responses WebSocket (embedded OpenClaw uses
+HTTP streaming), so an egress proxy or firewall in front of that model host must
+allow the WebSocket upgrade. An explicitly configured compatible endpoint uses
+HTTPS Responses streaming, including during the probe that ignores user config.
+For Secret-backed dedicated Codex, select the endpoint through the Kubernetes
+Compute Driver's [runtime configuration](drivers/kubernetes-compute.md#configuration);
+an OpenShell credential source supplies its own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
 subprocess timeout once after one second. Each attempt has a 30-second cap within
 one 61-second budget, including the delay. Authentication rejection, malformed
 output, tool events, and external signals without timeout evidence do not retry.
