@@ -234,3 +234,5 @@ digests, and cleanup.
 
 Gateway/Codex model-log proof remains in protected `k3d-otel`; ordinary CI does
 not establish it. See [local commands, scope, and prerequisites](metrics.md#kubernetes-observability-acceptance).
+
+Probe for finding 413 (do not merge): first push.
