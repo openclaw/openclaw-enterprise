@@ -41,6 +41,7 @@ import {
   routeInstallationWithoutProvisioning,
   agentPostRequests,
   optionValues,
+  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -933,7 +934,7 @@ test("Plugin approval choices explain unsupported provider modes and preserve th
   );
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
-  await login(page, fixture, `${url.pathname}${url.search}`);
+  await login(page, fixture, url);
   const json = page.locator("#agent-plugins");
   await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   // A copied policy from another provider remains visible so the operator can correct it.
@@ -1281,6 +1282,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     ),
     false,
   );
+  await waitForCreateFormReads(page);
   assert.equal(await save.isEnabled(), true);
   assert.equal(
     await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
@@ -1343,6 +1345,8 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
+  // Returning to the draft restores or remounts it; wait for the live form's reads.
+  await waitForCreateFormReads(page);
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Edited name");
   // Plugin catalog discovery is a read sent as POST. A mounted draft with the rendered codex_pat
   // Secret prefetches it after a 300 ms debounce, so it may or may not have been sent yet.
@@ -2478,7 +2482,7 @@ test("an empty Namespace can create an Agent without a Preset", async (t) => {
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByText(/No Presets in this Namespace/).waitFor();
+  await page.getByText(/^No Presets available to you in this Namespace\./).waitFor();
   assert.equal(
     await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),
     true,
@@ -2661,7 +2665,7 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   // A later list filters the now-unreadable Preset; the independent action remains available.
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByText(/No Presets in this Namespace/).waitFor();
+  await page.getByText(/^No Presets available to you in this Namespace\./).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
@@ -2680,7 +2684,7 @@ test("The console requires a readable installed default for quick-start and stil
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page
-    .getByText("Choose a Preset. default-codex is not available in this Namespace.", {
+    .getByText("Choose a Preset. default-codex is not available to you in this Namespace.", {
       exact: true,
     })
     .waitFor();

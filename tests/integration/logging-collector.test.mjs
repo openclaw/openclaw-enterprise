@@ -372,6 +372,15 @@ test(
           status: 503,
           ...payload,
         }),
+        JSON.stringify({
+          event: "authentication.provider-unavailable-warning",
+          severity: "WARN",
+          provider: "google",
+          providerId: `google:providerkey${fixture.suffix}`,
+          step: "token",
+          cause: "client_rejected",
+          ...payload,
+        }),
       ],
       [],
       ["com.docker.compose.service=controller"],
@@ -387,9 +396,9 @@ test(
       "{invalid json",
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
-    await waitFor(async () => (await records()).length >= 7);
+    await waitFor(async () => (await records()).length >= 8);
     const initial = await records();
-    assert.equal(initial.length, 7, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 8, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
@@ -409,6 +418,7 @@ test(
     }
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
+      "occ-api",
       "occ-api",
       "occ-api",
       "occ-api",
@@ -464,6 +474,13 @@ test(
         "occ.sign_in.step": "profile",
         "occ.sign_in.cause": "http_status",
         "occ.sign_in.status": "503",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
+        "occ.sign_in.provider": "google",
+        "occ.sign_in.step": "token",
+        "occ.sign_in.cause": "client_rejected",
       },
       {
         "event.name": "authentication.provider-unavailable-warning",

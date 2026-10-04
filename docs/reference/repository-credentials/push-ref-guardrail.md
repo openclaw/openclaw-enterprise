@@ -40,9 +40,19 @@ Repository initialization works before the initial `HEAD` exists.
 Standalone sessions with this policy require the emitted client from
 `pnpm credentials:build`.
 
+## Gateway enforcement for the development token authority
+
+With the [development token authority](development-token.md), the same allowlist
+is also enforced by the gateway. It reads the receive-pack commands before any
+byte goes upstream and refuses the whole push with HTTP 400 when one ref fails,
+so `--no-verify` or a replaced `core.hooksPath` changes nothing. The client hook
+still gives the first, friendlier refusal. No admitted REST route writes refs,
+and GraphQL mutations are refused for this authority, so the allowlist bounds
+every ref write. GitHub App grants keep the hook-only behavior described below.
+
 ## Limits
 
-This is a convenience guardrail, **not a security boundary**. Native hook/config
+For GitHub App grants, this is a convenience guardrail, **not a security boundary**. Native hook/config
 overrides, bypassing hooks, alternate clients, direct REST/GraphQL writes and
 merges are outside it. A custom `core.hooksPath` replaces the managed directory;
 custom hooks must explicitly chain the image dispatcher to retain the check.

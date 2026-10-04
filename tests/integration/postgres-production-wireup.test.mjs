@@ -390,12 +390,14 @@ test(
       assert.equal(privileges.rows[0].can_create_schema, false);
 
       const apiLog = memoryLog();
+      const startupPhases = [];
       app = await composeProduction({
         mode: "production",
         host: "127.0.0.1",
         databaseUrl,
         authSecret,
         authBaseURL,
+        onStartupPhase: (phase, durationMs) => startupPhases.push({ phase, durationMs }),
         // Leftover pilot settings must not change authentication when the feature is disabled.
         nativeAdmin: {
           enabled: false,
@@ -429,6 +431,12 @@ test(
         ],
         "production API composition must emit the Compute warning and continue startup",
       );
+      // The API's `listening` line reports these, so an operator can see which phase was slow.
+      assert.deepEqual(
+        startupPhases.map(({ phase }) => phase),
+        ["database", "authentication", "identity", "computePreflight", "controller", "routes"],
+      );
+      assert.ok(startupPhases.every(({ durationMs }) => Number.isSafeInteger(durationMs)));
       endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
 
       await assert.rejects(

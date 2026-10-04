@@ -53,6 +53,7 @@ both entrypoints against this image and fails when the image disagrees with it.
 | OpenClaw source commit                       | `6f91eda9c72d6b4c2640cb76b5a753e64089f6f2`                                                                   |
 | Source archive SHA-256                       | `8e0f0332bbdb798834148895d57c19e6b622dbb3b5eac39801c14c316ad93d0c`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.158.0`                                                                                                    |
+| Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                    |
 
 The source's package version is `2026.9.7`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
@@ -97,6 +98,11 @@ installing packages at gateway startup. Slack credentials remain operator-owned
 runtime Secrets; do not put them in the image.
 
 Keep the source commit and archive checksum together when updating OpenClaw.
+The `matrix-sdk-crypto` stage fetches the Matrix crypto library with the retrying,
+checksum-verifying download helper, and both installs read it from a loopback server
+instead of GitHub. When an OpenClaw update changes the locked
+`@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
+both SHA-256 values. Until then the install fails with a "no pinned file" message.
 Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/6f91eda9c72d6b4c2640cb76b5a753e64089f6f2/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.

@@ -12,7 +12,9 @@ import {
   nativeValues,
   newPage,
   settlePageRequests,
+  trackSettledFetches,
   waitForCondition,
+  waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 
 // The console runs against the production controller app, IAM, cursor signing and
@@ -69,7 +71,7 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
 
   const card = page.locator(".runtime-pod");
   await card.getByRole("heading", { name: "Gateway" }).waitFor();
@@ -131,7 +133,7 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
   computeDriver.state.lines = [line(1, "gateway ready")];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
 
   const card = page.locator(".runtime-pod");
   const earlier = card.getByRole("list", { name: "Earlier warning Events" });
@@ -159,7 +161,7 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("first view line").waitFor();
 
@@ -230,7 +232,7 @@ test("level chips and the text filter narrow only the loaded window; download sa
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("Gateway ready").waitFor();
   await page
@@ -330,7 +332,7 @@ test("an operator without administer sees status but no log text and is never re
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, operator.credentials);
+  await login(page, fixture, url, operator.credentials);
 
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page
@@ -380,7 +382,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, reader.credentials);
+  await login(page, fixture, url, reader.credentials);
 
   // Runtime status needs operate; log text needs only read_logs, so the tab still reads it.
   await page
@@ -434,7 +436,7 @@ test("the Logs tab explains cluster RBAC, unsupported Drivers and unavailable re
   computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page
     .getByText(/Ask your platform operator to enable agentRuntimeLogs in the Helm chart/)
     .waitFor();
@@ -531,7 +533,7 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
 
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await page.locator("#runtime-log-source").selectOption("sandbox");
   await pane
@@ -590,7 +592,7 @@ test("a Gateway view points at an unready Harness Pod instead of reading as a ne
   computeDriver.state.harnessLines = [line(2, "Harness model authentication probe failed.")];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page.locator("#runtime-log-source").selectOption("gateway");
   await page
     .getByRole("log", { name: "Runtime log output" })
@@ -628,7 +630,7 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
   ];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page
     .locator(".runtime-pod")
     .getByText(`agent-${revisionId.slice(4, 12)}-old`)
@@ -673,7 +675,7 @@ test("a reader without operate learns what log text needs and is asked for statu
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, reader.credentials);
+  await login(page, fixture, url, reader.credentials);
 
   await page
     .getByText(
@@ -717,7 +719,7 @@ test("a status denial for one operator does not carry over to the next sign-in o
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, reader.credentials);
+  await login(page, fixture, url, reader.credentials);
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
 
   // Sign out and in as the administrator without reloading the page.
@@ -751,6 +753,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   }));
   computeDriver.state.lines = [...earlier, line(1, "before leaving")];
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   // A recorded deployment result keeps the Agent view cacheable for Back.
   await page.route(
@@ -775,7 +778,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   );
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("before leaving").waitFor();
   await page.getByRole("button", { name: "Follow" }).click();
@@ -799,6 +802,12 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   // Both timers fire while the view is cached and stop.
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
+  // The heading shows before the Namespaces page has checked access. Advancing the clock past
+  // the console's 15 s request timeout while a session or Namespace read is pending fails it
+  // ("Session unavailable" or "Namespace access unavailable") and drops every cached view, so
+  // let the page finish its reads first.
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForIdleFetches(page);
   await page.clock.runFor(25_000);
   const statusBeforeBack = statusReads();
   computeDriver.state.lines = [...computeDriver.state.lines, line(9, "after back")];

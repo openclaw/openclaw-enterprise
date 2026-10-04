@@ -28,7 +28,7 @@ function owner(factory, clock, profile, id, captured = () => {}, observeDispatch
   let sequence = 0;
   const custody = {
     assertAttempt(attempt, action) {
-      assert.ok(attempts.has(attempt));
+      assert.ok(attempts.has(attempt), "unknown-attempt");
       assert.equal(attempt.action, action);
     },
     capture(attempt, bytes, observation) {
@@ -181,7 +181,7 @@ test("Git normalization preserves raw endpoint and profile denial before acquisi
   t.after(() => key.close());
   const factory = createGitHubDriverFactory({
     configuration: githubConfigurationData(),
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -270,7 +270,7 @@ test("literal .git repository names normalize against the admitted identity", as
   const clock = createControlledClock();
   const factory = createGitHubDriverFactory({
     configuration: githubConfigurationData({ repository: "Fixture/Repository.git" }),
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -341,7 +341,9 @@ test("provider transport pins destination and exact issuance scope before receiv
     { name: "origin with path", origin: `${fixture.origin}/path` },
   ]) {
     await t.test(`refuses ${name}`, () => {
-      assert.throws(() => createProviderTransport(origin, fixture.tls.ca, clock, scope));
+      assert.throws(() => createProviderTransport(origin, fixture.tls.ca, clock, scope), {
+        message: "invalid-provider-origin",
+      });
     });
   }
   for (const { name, installationId } of [
@@ -351,23 +353,36 @@ test("provider transport pins destination and exact issuance scope before receiv
     { name: "query", installationId: "41?x=1" },
   ]) {
     await t.test(`refuses installation ${name}`, () => {
-      assert.throws(() =>
-        createProviderTransport(fixture.origin, fixture.tls.ca, clock, {
-          ...scope,
-          installationId,
-        }),
+      assert.throws(
+        () =>
+          createProviderTransport(fixture.origin, fixture.tls.ca, clock, {
+            ...scope,
+            installationId,
+          }),
+        { message: "invalid-provider-scope" },
       );
     });
   }
-  for (const { name, changes } of [
-    { name: "unsafe repository integer", changes: { repositoryId: "9007199254740992" } },
-    { name: "numeric repository ID", changes: { repositoryId: 73 } },
-    { name: "numeric installation ID", changes: { installationId: 41 } },
-    { name: "prototype profile", changes: { profile: "__proto__" } },
+  const invalidScope = { message: "invalid-provider-scope" };
+  for (const { name, changes, refusal } of [
+    {
+      name: "unsafe repository integer",
+      changes: { repositoryId: "9007199254740992" },
+      refusal: invalidScope,
+    },
+    { name: "numeric repository ID", changes: { repositoryId: 73 }, refusal: invalidScope },
+    { name: "numeric installation ID", changes: { installationId: 41 }, refusal: invalidScope },
+    {
+      name: "prototype profile",
+      changes: { profile: "__proto__" },
+      refusal: { message: "unsupported-profile" },
+    },
   ]) {
     await t.test(`refuses ${name}`, () => {
-      assert.throws(() =>
-        createProviderTransport(fixture.origin, fixture.tls.ca, clock, { ...scope, ...changes }),
+      assert.throws(
+        () =>
+          createProviderTransport(fixture.origin, fixture.tls.ca, clock, { ...scope, ...changes }),
+        refusal,
       );
     });
   }
@@ -451,7 +466,7 @@ test("real HTTPS issuance preserves exact profiles after hour 13 and revokes wit
       configVersion: "v1",
       repository: "Fixture/Repository",
     }),
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -460,11 +475,17 @@ test("real HTTPS issuance preserves exact profiles after hour 13 and revokes wit
   const first = owner(factory, clock, "git-write", "one");
   const second = owner(factory, clock, "git-full", "two");
   const originalAttempt = first.attempt("acquire");
-  await assert.rejects(first.driver.acquire({ ...originalAttempt }, undefined, 360000));
+  // Custody refuses a copied attempt; the Driver refuses replaying an admitted one.
+  await assert.rejects(first.driver.acquire({ ...originalAttempt }, undefined, 360000), {
+    message: "unknown-attempt",
+  });
   const a = await first.driver.acquire(originalAttempt, undefined, 360000);
   assert.equal(a.kind, "acquired");
   await assert.rejects(first.driver.settle({ ...a }), /foreign-outcome/);
   await first.driver.settle(a);
+  await assert.rejects(first.driver.acquire(originalAttempt, undefined, 360000), {
+    message: "foreign-attempt",
+  });
   const finished = await first.driver.finalize(first.attempt("finalize"));
   assert.equal(finished.kind, "finalized");
   await first.driver.settle(finished);
@@ -631,7 +652,7 @@ test("refused and cancelled observations remain independently captured and token
     configuration: githubConfigurationData({
       providerInstanceId: "fixture-instance",
     }),
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -710,7 +731,7 @@ test("token issue failures before a connection are definite; after one they stay
   const factoryFor = (origin) =>
     createGitHubDriverFactory({
       configuration: githubConfigurationData({ providerInstanceId: "fixture-instance" }),
-      key,
+      authority: key,
       clock,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,
@@ -780,7 +801,7 @@ test("retirement uncertainty retains real custody after non-204 replies and lost
       t.after(() => key.close());
       const factory = createGitHubDriverFactory({
         configuration: githubConfigurationData({ providerInstanceId: "fixture-instance" }),
-        key,
+        authority: key,
         clock,
         gatewayOrigin: config.gateway.publicOrigin,
         limits: config.limits,

@@ -13,7 +13,8 @@ The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
-trust; starters supply no token. Do not expose the gateway publicly.
+trust; starters supply no token and reference only the generated
+`OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
 **Open native admin UI** requires [native admin setup](../../guides/deploy/native-admin.md):
 trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
 are insufficient. Presets and edited Configuration JSON retain their settings.

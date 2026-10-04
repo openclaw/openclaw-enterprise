@@ -5,7 +5,12 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { ResourceConflictError, ScopeViolationError } from "../../packages/occ/src/index.ts";
+import {
+  ResourceConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -154,6 +159,7 @@ async function createFixture(t, options = {}) {
     configurationDriver: createTestConfigurationDriver({ id: "runtime-credential-configuration" }),
     secretDriver: createTestSecretDriver({ id: "runtime-credential-secret" }),
     resolveHarness: resolveApprovedHarness,
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
@@ -760,6 +766,84 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   assert.deepEqual(auditRecovered.data, {
     transportConfigured: true,
   });
+});
+
+test("a cluster denial of runtime credentials names the missing RoleBinding and logs the cause", async (t) => {
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "info",
+    destination: {
+      write(chunk) {
+        lines.push(
+          ...String(chunk)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        );
+        return true;
+      },
+    },
+  });
+  // The data-plane tenant-api RoleBinding is missing (D396).
+  const fixture = await createFixture(t, {
+    logger,
+    computeDriver: createRuntimeCredentialComputeDriver({
+      statusError: new RuntimeCredentialsForbiddenByClusterError({
+        verb: "get",
+        resource: "secrets",
+        kubernetesNamespace: "oce-90018df17b2b259",
+        plane: "execution",
+        status: 403,
+      }),
+    }),
+  });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const expected = {
+    code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+    message:
+      "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+  };
+
+  const status = await fixture.request("GET", `${agentPath}/runtime-credentials`);
+  assert.equal(status.status, 503, JSON.stringify(status.body));
+  assert.deepEqual({ code: status.body.error.code, message: status.body.error.message }, expected);
+  // The first deployment checks runtime credentials before admitting a revision.
+  const deployed = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 503, JSON.stringify(deployed.body));
+  assert.deepEqual(
+    { code: deployed.body.error.code, message: deployed.body.error.message },
+    expected,
+  );
+
+  const warnings = lines.filter(
+    (line) => line.event === "agent_runtime_credentials.cluster_denied",
+  );
+  assert.equal(warnings.length, 2, JSON.stringify(lines));
+  for (const [warning, response] of [
+    [warnings[0], status],
+    [warnings[1], deployed],
+  ]) {
+    assert.equal(warning.severity, "WARN");
+    assert.equal(warning.requestId, response.body.meta.requestId);
+    assert.deepEqual(
+      {
+        verb: warning.verb,
+        resource: warning.resource,
+        kubernetesNamespace: warning.kubernetesNamespace,
+        plane: warning.plane,
+        kubernetesStatus: warning.kubernetesStatus,
+      },
+      {
+        verb: "get",
+        resource: "secrets",
+        kubernetesNamespace: "oce-90018df17b2b259",
+        plane: "execution",
+        kubernetesStatus: 403,
+      },
+    );
+  }
 });
 
 for (const DriverError of [ResourceConflictError, ScopeViolationError]) {

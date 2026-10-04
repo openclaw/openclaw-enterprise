@@ -78,6 +78,12 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       if (specifier === "openclaw/plugin-sdk/gateway-runtime") {
         return {
           isGatewayTransportError: (error) => error === gatewayUnavailable,
+          // OpenClaw's predicate for a request or connect refusal the Gateway answered.
+          isGatewayClientRequestError: (error) =>
+            error instanceof Error &&
+            error.name === "GatewayClientRequestError" &&
+            typeof error.gatewayCode === "string" &&
+            typeof error.retryable === "boolean",
           async callGatewayFromCli(method, rpcOptions, params, extra) {
             calls.push({ method, params });
             const value = await options.gatewayCall?.(method, extra.signal);

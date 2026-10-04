@@ -203,7 +203,11 @@ Other Harnesses are replaced, restarting their Gateway.
   through the public Gateway SDK, not a CLI process; each query has an
   eight-second deadline and cancels its connection on timeout, and later polls
   can retry. Acknowledging the binding still requires an active plugin in the
-  newly loaded registry. Otherwise the ID is set at Gateway start; losing it fails.
+  newly loaded registry. A Gateway that refuses that SDK connection's own
+  credentials (a fixed auth refusal such as `AUTH_UNAUTHORIZED`, not rate
+  limiting or pairing) reports `GATEWAY_UNAUTHORIZED` at once, and activation
+  fails with `AGENT_GATEWAY_UNAUTHORIZED`.
+  Otherwise the ID is set at Gateway start; losing it fails.
 - The Gateway's own `/home/node/workspace` stays empty. It withholds from Codex
   OpenClaw tools that act on it or run commands in the Gateway Pod
   (`ls`, `read`, `write`, `edit`, `apply_patch`, `exec`, `process`,
@@ -340,6 +344,8 @@ replays it. The native client closes in the operation's cleanup path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-04 00:40: Fail activation at once when the Gateway refuses its own SDK connection as unauthorized. (f351-gateway-unauthorized)
 
 - 2026-10-01 15:11: Query Gateway workspace binding state through bounded SDK calls. (authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c - 521549df)
 

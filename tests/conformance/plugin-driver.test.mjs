@@ -219,13 +219,24 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
     approvers: [first.id],
     plugins: { diffs: { approvers: [second.id], tools: { diffs: { approvers: [] } } } },
   });
-  assert.throws(() =>
-    validatePolicies("openclaw", occSelection({ toolDefaults: { approvers: [] } })),
+  assert.throws(
+    () => validatePolicies("openclaw", occSelection({ toolDefaults: { approvers: [] } })),
+    { message: "Plugin tool defaults contains unsupported policy fields." },
   );
-  assert.throws(() =>
-    validatePolicies("openclaw", {}, [{ channel: "slack", id: "team:X123:user:Y456" }]),
-  );
-  assert.throws(() => validatePolicies("openclaw", {}, [{ channel: "slack", id: "C123" }]));
+  // Each input breaks one approver rule; Slack approvers are user IDs, never channels.
+  const approver = (id) => ({ channel: "slack", id });
+  for (const [approvers, message] of [
+    [[approver("team:X123:user:Y456")], "Plugin approver must identify a Slack user."],
+    [[approver("C123")], "Plugin approver must identify a Slack user."],
+    [approver("U123"), "Plugin approvers must be a bounded list."],
+    [
+      Array.from({ length: 65 }, (_, index) => approver(`U${index}`)),
+      "Plugin approvers must be a bounded list.",
+    ],
+    [[approver("U123"), approver("U123")], "Plugin approvers must be unique."],
+  ]) {
+    assert.throws(() => validatePolicies("openclaw", {}, approvers), { message });
+  }
 });
 
 test("Codex Plugin Driver admits only Agent-wide approvers; OpenClaw keeps plugin and tool overrides", () => {
@@ -291,18 +302,62 @@ test("Plugin Drivers refuse two selection keys for the same native plugin", () =
 });
 
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {
-  for (const selection of [
-    occSelection({ toolDefaults: { approval: "all_actions" } }),
-    occSelection({ toolDefaults: { approval: "write_actions" } }),
-    occSelection({ toolDefaults: { reviewer: "auto" } }),
-    occSelection({ tools: { unknown: { enabled: false } } }),
-    occSelection({ tools: { diffs: { approval: "all_actions" } } }),
-    occSelection({ tools: { diffs: { approval: "write_actions" } } }),
-    occSelection({ approvalMode: "never" }),
-    { "occ-plugin:unknown": { enabled: true } },
+  // Each selection breaks exactly one admission rule, named by its message.
+  for (const [selection, message] of [
+    [
+      occSelection({ toolDefaults: { approval: "all_actions" } }),
+      "OpenClaw plugin all_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ toolDefaults: { approval: "write_actions" } }),
+      "OpenClaw plugin write_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ toolDefaults: { reviewer: "auto" } }),
+      "This runtime does not support toolDefaults.reviewer; omit it to inherit.",
+    ],
+    [
+      occSelection({ tools: { unknown: { enabled: false } } }),
+      "Unknown OpenClaw plugin tool selection.",
+    ],
+    [
+      occSelection({ tools: { diffs: { approval: "all_actions" } } }),
+      "OpenClaw plugin all_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ tools: { diffs: { approval: "write_actions" } } }),
+      "OpenClaw plugin write_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ approvalMode: "never" }),
+      "Plugin selection contains unsupported policy fields.",
+    ],
+    [{ "occ-plugin:unknown": { enabled: true } }, "Unknown OpenClaw plugin selection."],
+    [null, "Plugin selections must be an object."],
+    [{ "occ-plugin:diffs": true }, "Plugin selection must be an object."],
+    [{ "occ-plugin:diffs": {} }, "Plugin enabled must be a boolean."],
+    [occSelection({ tools: [] }), "Plugin tool policies must be an object."],
+    [occSelection({ tools: { diffs: { enabled: "yes" } } }), "Tool enabled must be a boolean."],
+    [
+      occSelection({ tools: { diffs: { approval: "sometimes" } } }),
+      "Tool approval policy is unsupported.",
+    ],
+    [
+      occSelection({ tools: { diffs: { reviewer: "human" } } }),
+      "Per-tool reviewer selection is unsupported; omit tools[id].reviewer.",
+    ],
+    [
+      occSelection({ driverPolicy: { any: true } }),
+      "OpenClaw driver policy contains unsupported policy fields.",
+    ],
   ]) {
-    assert.throws(() => openClawRuntimeArtifact(selection));
+    assert.throws(() => openClawRuntimeArtifact(selection), { message });
   }
+  // Admission refuses an unknown plugin on its own; translation repeats the check with the
+  // same message, so only a direct admission call shows the admission check exists.
+  assert.throws(() => validatePolicies("openclaw", { "occ-plugin:unknown": { enabled: true } }), {
+    message: "Unknown OpenClaw plugin selection.",
+  });
 });
 
 test("OpenClaw tool enablement overrides tool defaults without enabling a disabled plugin", () => {
@@ -376,8 +431,10 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
     }
   }
   assert.deepEqual(await driver.listCatalog(context("dedicated")), page.plugins);
-  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }));
-  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }));
+  // The curated catalog is a single page with fixed IDs; anything else is an invalid response.
+  const invalidResponse = { name: "PluginDiscoveryError", reason: "invalid_response" };
+  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), invalidResponse);
+  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), invalidResponse);
   assert.deepEqual(requests, []);
 });
 
@@ -820,15 +877,30 @@ test("Codex destructive defaults project to native config and the hosted-app bri
       /bypasses category/,
     );
   }
-  for (const driverPolicy of [
-    { unknown: true },
-    { destructiveEnabled: "false" },
-    { approvalsReviewer: "user" },
+  for (const [driverPolicy, message] of [
+    [{ unknown: true }, "Codex driver policy contains unsupported policy fields."],
+    [{ destructiveEnabled: "false" }, "Codex destructiveEnabled must be a boolean."],
+    [{ approvalsReviewer: "user" }, "Codex driver policy contains unsupported policy fields."],
   ]) {
-    assert.throws(() =>
-      validatePolicies("codex", codexSelection(linearPluginId, { driverPolicy })),
+    assert.throws(
+      () => validatePolicies("codex", codexSelection(linearPluginId, { driverPolicy })),
+      { message },
     );
   }
+  // Codex accepts toolDefaults.reviewer, so only the value check can refuse this one.
+  assert.throws(
+    () =>
+      validatePolicies(
+        "codex",
+        codexSelection(linearPluginId, { toolDefaults: { reviewer: "robot" } }),
+      ),
+    { message: "Tool reviewer must be human or auto." },
+  );
+  // Codex selections must name a plugin from the curated remote marketplace.
+  assert.throws(
+    () => validatePolicies("codex", codexSelection("codex-plugin:linear@openai-internal-testing")),
+    { message: "Codex plugin ID must identify the curated remote marketplace." },
+  );
 });
 
 test("Codex startup translation admits a selected plugin with native skills", () => {

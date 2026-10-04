@@ -66,22 +66,23 @@ drivers:
       # Requests reserve capacity; limits bound both workload roles.
       # Limits let tenant runtimes burst to four cores; the 100m requests set
       # the scheduling reservation. Quote whole cores: cpu: "4", not cpu: 4.
-      # See [Images and resources](../../../docs/reference/drivers/kubernetes-compute.md#images-and-resources).
+      # Memory requests cover measured use between turns; limits cover peaks.
+      # See [Installation profiles](../../../docs/guides/deploy/installation-profiles.md).
       resources:
         gateway:
           requests:
             cpu: 100m
-            memory: 1280Mi
+            memory: 1792Mi
           limits:
             cpu: "4"
             memory: 3Gi
         agent:
           requests:
             cpu: 100m
-            memory: 128Mi
+            memory: 768Mi
           limits:
             cpu: "4"
-            memory: 2Gi
+            memory: 6Gi
         # Each tenant namespace receives a Pod quota and default container bounds.
         # See [Namespace isolation](../../../docs/reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
         namespace:

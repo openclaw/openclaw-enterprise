@@ -1164,7 +1164,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         mountedAgent = agent;
         viewState.agent = agent;
         viewState.reusable &&= agent?.status !== "deleting";
-        markMountedRoute(current);
+        // A tab switch while the detail was loading already moved the URL (and the mounted
+        // route) in place; keying the view by the URL it was opened with would retain it
+        // under the wrong tab.
+        markMountedRoute(route());
       }
       return;
     }

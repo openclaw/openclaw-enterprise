@@ -174,7 +174,8 @@ for them.
 
 Kubernetes combines grants from every matching policy, so stale or additional
 allow policies can bypass this restriction. Inspect installed policies and
-verify allowed and denied connections with NetworkPolicy enforcement.
+[check allowed and denied connections](../../../guides/operate/network-isolation.md)
+with NetworkPolicy enforcement.
 
 ## Private Agent gateway routes
 

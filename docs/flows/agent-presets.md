@@ -128,7 +128,7 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets, then reads the selected resource once with
+lists only readable Presets (the list requires Namespace read), then reads the selected resource once with
 `revalidate: false`: the snapshot becomes a local draft, not an ongoing page
 dependency. The
 **Start with default Preset** button uses the listed `default-codex` ID through

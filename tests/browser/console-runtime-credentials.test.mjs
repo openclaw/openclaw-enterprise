@@ -105,6 +105,29 @@ test("draft Agent offers deployment without a generated-credential step", async 
   assert.equal(await deploy.isEnabled(), true);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
 
+  // A missing tenant RoleBinding refuses the credential check before admission (D396).
+  const deployUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  await page.route(deployUrl, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+          message: "The cluster denied OCC access needed for this Agent's runtime credentials.",
+        },
+        meta: { requestId: `req_${randomUUID()}` },
+      }),
+    }),
+  );
+  await deploy.click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
+    .waitFor();
+  await deploy.and(page.locator(":enabled")).waitFor();
+  await page.unroute(deployUrl);
+
   const deployResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&

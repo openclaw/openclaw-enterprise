@@ -32,7 +32,9 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get storageclasses
 ```
 
 Check that the node list shows both roles and that the expected StorageClasses
-exist. Allow capacity for all running Agents. Dedicated Codex also needs a node
+exist. Allow node memory for all running Agents: with the profile defaults each
+embedded OpenClaw Agent requests 1792 MiB and each dedicated Codex Agent 2560
+MiB ([sizing](installation-profiles.md)). Dedicated Codex also needs a node
 syscall policy compatible with its command sandbox; review the
 [Compute requirements](../../reference/drivers/kubernetes-compute.md#requirements)
 before selecting node images.

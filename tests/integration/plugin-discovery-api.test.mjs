@@ -723,6 +723,71 @@ test("Unsupported discovery still authorizes the exact selected Secret before ca
   }
 });
 
+test("Selected Secret discovery rechecks Secret authority after the backend read", async (t) => {
+  const fixture = await createFixture(t);
+  const secret = await fixture.createSecret(fixture.namespace.id, "revoked-pat", accessToken);
+  const account = await fixture.createAccountWithPolicy("discovery-revoked", (principal) => {
+    fixture.policy.roles.push({
+      id: "revoked-discovery-agent-create",
+      namespaceId: fixture.namespace.id,
+      permissions: [{ action: "create", resourceKind: "agent" }],
+    });
+    fixture.policy.bindings.push({
+      id: "revoked-discovery-agent-create-binding",
+      namespaceId: fixture.namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "revoked-discovery-agent-create",
+    });
+    fixture.policy.roles.push({
+      id: "revoked-discovery-secret-operator",
+      namespaceId: fixture.namespace.id,
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    fixture.policy.bindings.push({
+      id: "revoked-discovery-secret-binding",
+      namespaceId: fixture.namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "revoked-discovery-secret-operator",
+      resourceKind: "secret",
+      resourceId: secret.id,
+    });
+  });
+  const session = await fixture.signIn(account.credentials);
+  const withValue = fixture.secretDriver.withValue.bind(fixture.secretDriver);
+  let secretReads = 0;
+  fixture.secretDriver.withValue = (source, use) =>
+    withValue(source, (value) => {
+      secretReads++;
+      // Revoke the caller's Secret grant after the backend yields the value, before the
+      // stored credential is sent to the external catalog.
+      const index = fixture.policy.bindings.findIndex(
+        (binding) => binding.id === "revoked-discovery-secret-binding",
+      );
+      if (index !== -1) {
+        fixture.policy.bindings.splice(index, 1);
+      }
+      return use(value);
+    });
+
+  for (const [suffix, extra] of [
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
+  ]) {
+    const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      session,
+      body: { secretRef: secret.ref, ...extra },
+    });
+    // The first request reads the value and is then refused; the second is refused before it.
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+  }
+  assert.equal(secretReads, 1);
+  assert.deepEqual(fixture.calls, []);
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(accessToken), false);
+});
+
 test("Plugin discovery uses an authorized same-Namespace Secret for catalog and details", async (t) => {
   const fixture = await createFixture(t);
   const stored = await fixture.request("POST", `/namespaces/${fixture.namespace.id}/secrets`, {

@@ -40,6 +40,13 @@ const safeRepositoryPlatformSetupStages = new Set([
   "controller-restart",
 ]);
 
+const safeCredentialServiceFailures = new Set([
+  "gateway-listener",
+  "child-exited",
+  "child-deadline",
+  "other",
+]);
+
 const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
@@ -438,6 +445,11 @@ function failureDiagnostic(error) {
             stage === "relay-readiness" ? relayPodDiagnostic(diagnostic.relayPod) : undefined,
           relayNode:
             stage === "relay-readiness" ? relayNodeDiagnostic(diagnostic.relayNode) : undefined,
+          credentialService:
+            stage === "credential-service-startup" &&
+            safeCredentialServiceFailures.has(diagnostic.credentialService)
+              ? diagnostic.credentialService
+              : undefined,
         }
       : undefined;
   }

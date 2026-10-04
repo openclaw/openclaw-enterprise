@@ -168,7 +168,7 @@ A page never silently skips output; it labels each gap:
 | Row                 | Meaning                                                            |
 | ------------------- | ------------------------------------------------------------------ |
 | Container restarted | The Pod or container instance changed since the last page.         |
-| Lines skipped       | New output exceeded one page between polls.                        |
+| Lines skipped       | New output exceeded one page between polls, or a line over 1 MiB.  |
 | View resumed        | The cursor was older than one hour; reading restarted at the tail. |
 | Page limit reached  | The page hit its byte limit; later lines were not read.            |
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
@@ -176,9 +176,9 @@ A page never silently skips output; it labels each gap:
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
 line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
-10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). The rate limit
-and operator switch run before
-[authorization](../../reference/security.md#console-and-api-runtime-log-reads).
+10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
+after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
+so a caller without the grants always gets `403`.
 
 Kubernetes keeps only each container's current and previous instance, nothing
 from deleted Pods; for

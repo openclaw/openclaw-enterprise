@@ -504,6 +504,29 @@ export class SshComputeDriver implements ComputeDriver {
     await this.revisionOperation("retire-revision", revision);
   }
 
+  // Agent deletion calls this after retiring every revision. Retirement keeps the Agent
+  // directory, port, unit file and runtime account; only Agent deletion releases them.
+  async deleteAgentRuntimeCredentials(binding: ComputeAgentBinding): Promise<void> {
+    this.lifecycleStarted = true;
+    const { namespace, agent } = binding;
+    const host = this.host(namespace);
+    identity(agent.id, "Agent ID");
+    identity(agent.servicePrincipalId, "Agent ServicePrincipal ID");
+    if (agent.namespaceId !== namespace.id) {
+      throw new OwnershipFailure("Agent Namespace ownership differs.");
+    }
+    await this.execute(host, {
+      operation: "delete-agent",
+      namespace,
+      revision: {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        servicePrincipalId: agent.servicePrincipalId,
+      },
+    });
+    this.agents.delete(agent.id);
+  }
+
   // Keep workload restrictions separate from the ownership checks used during teardown.
   private validateWorkloadRevision(
     revision: AgentRevision,

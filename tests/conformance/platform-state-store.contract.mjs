@@ -23,6 +23,21 @@ function event(installation, namespace, agent, action) {
   };
 }
 
+// Both stores raise the same error class for these refusals but word them differently. The
+// memory store names the refusing check. PostgreSQL either enforces it with a constraint or
+// trigger whose violation databaseError maps to one generic message without a cause, or refuses
+// it in a broader application check (controller work shape, revision harness authentication).
+// Neither store raises the other's message, so this accepts exactly the two refusals.
+function storeRefusal(name, memoryMessage, postgresMessage) {
+  return (error) =>
+    error.name === name && (error.message === memoryMessage || error.message === postgresMessage);
+}
+const postgresOwnershipViolation = "The resource violates its exact platform ownership or state.";
+const postgresIdentityConflict = "A platform resource with this identity or name already exists.";
+// PostgreSQL refuses a wrong Agent lifecycle target in its one controller work shape check.
+const postgresWorkTargetShape =
+  "Controller work requires one exact Namespace, Agent, or revision target shape.";
+
 export async function verifyPlatformStateStoreContract(store, options = {}) {
   const installation = options.installation ?? {
     id: identifier("ins"),
@@ -138,6 +153,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         actorId: audit.actorId,
       }),
     ),
+    storeRefusal(
+      "ScopeViolationError",
+      "Agent work does not match its exact lifecycle target.",
+      postgresWorkTargetShape,
+    ),
     "Agent work without a lifecycle target must not enqueue reconciliation",
   );
 
@@ -151,6 +171,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         actorId: audit.actorId,
         target: "ready",
       }),
+    ),
+    storeRefusal(
+      "ScopeViolationError",
+      "Agent work does not match its exact lifecycle target.",
+      postgresWorkTargetShape,
     ),
     "an Agent cannot be driven to a Namespace lifecycle target",
   );
@@ -168,6 +193,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         target: "deleted",
       }),
     ),
+    { name: "ScopeViolationError", message: "Agent work must name its exact Agent." },
     "teardown work naming its Namespace instead of its Agent must be refused",
   );
 
@@ -201,6 +227,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         servicePrincipalId: providerAgent.servicePrincipalId,
       }),
     ),
+    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
     "AgentRevision Backend snapshots must match the owning Agent.",
   );
   await store.read(async (state) => {
@@ -228,6 +255,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         name: `Duplicate principal ${randomUUID()}`,
       }),
     ),
+    storeRefusal(
+      "ResourceConflictError",
+      "An Agent service principal already belongs to another Agent.",
+      postgresIdentityConflict,
+    ),
     "An Agent service principal cannot be shared with another Agent.",
   );
 
@@ -243,6 +275,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           servicePrincipalId: identifier("service-agent"),
         }),
       ),
+      storeRefusal(
+        "ScopeViolationError",
+        "The Agent execution mode is invalid.",
+        postgresOwnershipViolation,
+      ),
       `unsupported Agent execution mode ${String(executionMode)}`,
     );
   }
@@ -256,6 +293,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         servicePrincipalId: identifier("service-agent"),
       }),
     ),
+    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
     "An AgentRevision cannot claim another service principal.",
   );
 
@@ -344,6 +382,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   await assert.rejects(
     store.transact((transaction) =>
       transaction.agents.updateConfiguration(namespace.id, agent.id, configuration.id, "remote"),
+    ),
+    storeRefusal(
+      "ScopeViolationError",
+      "The Agent execution mode is invalid.",
+      postgresOwnershipViolation,
     ),
     "Existing Agent placement must reject unsupported execution modes.",
   );
@@ -485,6 +528,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     store.transact((transaction) =>
       transaction.configurations.deleteConfiguration(namespace.id, configuration.id),
     ),
+    storeRefusal(
+      "ScopeViolationError",
+      "The Configuration is referenced by an Agent.",
+      postgresOwnershipViolation,
+    ),
     "A Configuration referenced by an Agent cannot be deleted.",
   );
 
@@ -570,6 +618,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         id: identifier("ns"),
         name: `Duplicate existing namespace ${randomUUID()}`,
       }),
+    ),
+    storeRefusal(
+      "ResourceConflictError",
+      "The existing Kubernetes namespace is already assigned to a Namespace.",
+      postgresIdentityConflict,
     ),
     "An existing Kubernetes namespace cannot be assigned to multiple live platform Namespaces.",
   );
@@ -674,6 +727,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         name: `Invalid existing namespace ${randomUUID()}`,
         existingNamespace: "Invalid.Namespace",
       }),
+    ),
+    storeRefusal(
+      "ScopeViolationError",
+      "The existing Kubernetes namespace name is invalid.",
+      postgresOwnershipViolation,
     ),
     "An existing Kubernetes namespace must be a valid lowercase DNS label.",
   );
@@ -832,6 +890,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           },
         }),
       ),
+      storeRefusal(
+        "ScopeViolationError",
+        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+        "The AgentRevision harness authentication is invalid or legacy.",
+      ),
       "Admitted revisions reject unsupported credentials and unsafe Secret keys.",
     );
   }
@@ -867,6 +930,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     store.transact((transaction) =>
       transaction.serviceAccounts.createServiceAccount({ ...account, id: identifier("sa") }),
     ),
+    {
+      name: "ResourceStateConflictError",
+      message:
+        "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+    },
     "ServiceAccount names must be unique within their Namespace.",
   );
 
@@ -907,6 +975,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
       }),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The Agent harness authentication references an unavailable ServiceAccount.",
+    },
     "An Agent cannot associate a ServiceAccount from another Namespace.",
   );
   await assert.rejects(
@@ -916,12 +988,20 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         serviceAccountId: account.id,
       }),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The Agent harness authentication references an unavailable ServiceAccount.",
+    },
     "An existing Agent cannot associate a ServiceAccount from another Namespace.",
   );
   await assert.rejects(
     store.transact((transaction) =>
       transaction.serviceAccounts.deleteServiceAccount(accountNamespace.id, account.id),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The ServiceAccount is referenced by active platform state.",
+    },
     "An Agent-bound ServiceAccount cannot be deleted.",
   );
 
@@ -1013,6 +1093,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     store.transact((transaction) =>
       transaction.serviceAccounts.deleteServiceAccount(accountNamespace.id, account.id),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The ServiceAccount is referenced by active platform state.",
+    },
     "An active revision must protect its account even without pending work or draft references.",
   );
   await store.transact(async (transaction) => {
@@ -1073,6 +1157,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         accountOnlyNamespace.id,
         new Date(Date.now() + 1).toISOString(),
       ),
+    ),
+    storeRefusal(
+      "ScopeViolationError",
+      "A nonempty Namespace cannot be tombstoned.",
+      postgresOwnershipViolation,
     ),
     "A Namespace containing only a ServiceAccount cannot be tombstoned.",
   );
@@ -1171,6 +1260,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
         "active",
       ),
     ),
+    storeRefusal(
+      "ScopeViolationError",
+      "The Agent lifecycle transition is invalid.",
+      postgresOwnershipViolation,
+    ),
     "A deleting Agent cannot return to active.",
   );
 
@@ -1224,6 +1318,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     store.transact((transaction) =>
       transaction.operations.append({ ...teardownOperation, resourceId: identifier("agt") }),
     ),
+    { name: "ScopeViolationError", message: "Agent work does not match its exact owner." },
     "teardown work for an absent Agent must be refused",
   );
 
@@ -1628,6 +1723,11 @@ async function verifyCredentialSourceContract(
     store.transact((transaction) =>
       transaction.credentialSources.createCredentialSource({ ...source, id: identifier("cs") }),
     ),
+    {
+      name: "ResourceStateConflictError",
+      message:
+        "A credential source with this name already exists in this Namespace. Choose a different name.",
+    },
     "Credential source names must be unique within their Namespace.",
   );
   await assert.rejects(
@@ -1640,6 +1740,11 @@ async function verifyCredentialSourceContract(
           api_key: { kind: "secret", namespaceId: sourceNamespace.id, id: harnessSecret.id },
         },
       }),
+    ),
+    storeRefusal(
+      "ScopeViolationError",
+      "The credential source references an unavailable Secret.",
+      postgresOwnershipViolation,
     ),
     "A credential source cannot use a Secret owned by another Namespace.",
   );
@@ -1722,6 +1827,7 @@ async function verifyCredentialSourceContract(
     store.transact((transaction) =>
       transaction.secrets.deleteSecret(sourceNamespace.id, sourceSecret.id),
     ),
+    { name: "ScopeViolationError", message: "The Secret is referenced by active platform state." },
     "A Secret used by a credential source cannot be deleted.",
   );
 
@@ -1752,6 +1858,10 @@ async function verifyCredentialSourceContract(
     store.transact((transaction) =>
       transaction.credentialSources.deleteCredentialSource(sourceNamespace.id, source.id),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The credential source is referenced by active platform state.",
+    },
     "An active revision's credential source cannot be deleted.",
   );
   await store.transact(async (transaction) => {
@@ -1912,6 +2022,7 @@ async function verifyCredentialSourceContract(
         other_key: replacementRef,
       }),
     ),
+    { name: "ScopeViolationError", message: "Credential source Secret fields cannot change." },
     "A credential source update cannot change its Secret fields.",
   );
   // Restore the original reference so later cases keep their Secret dependency.
@@ -1948,6 +2059,10 @@ async function verifyCredentialSourceContract(
         { method: "credential_source", sourceId: namesakeSource.id },
       ),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The Agent harness authentication references an unavailable credential source.",
+    },
     "A deleting credential source cannot be newly bound.",
   );
   await store.transact(async (transaction) => {

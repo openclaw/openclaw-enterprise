@@ -796,6 +796,7 @@ export const ERROR_CODES = Object.freeze([
   "RUNTIME_LOGS_UNAVAILABLE",
   "RUNTIME_LOGS_AUDIT_UNAVAILABLE",
   "RUNTIME_LOGS_TIMEOUT",
+  "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
 ] as const);
 
 export const ErrorDetail = Type.Object(
@@ -872,6 +873,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_LOGS_UNAVAILABLE"),
           Type.Literal("RUNTIME_LOGS_AUDIT_UNAVAILABLE"),
           Type.Literal("RUNTIME_LOGS_TIMEOUT"),
+          Type.Literal("RUNTIME_CREDENTIALS_CLUSTER_RBAC"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),

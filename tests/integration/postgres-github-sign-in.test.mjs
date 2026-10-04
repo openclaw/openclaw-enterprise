@@ -158,7 +158,9 @@ test(
     const before = await state.loadNativeIAMState(installation.id);
 
     // Exercise the real listener shutdown with a request already admitted by
-    // Fastify. The hook controls timing only; app.close owns stop and drain.
+    // Fastify. The hook controls timing only; app.close owns stop and drain. The
+    // drained response closes its keep-alive socket, so close() does not then wait
+    // for the client's idle timeout (about 70 s against Fastify's 72 s keep-alive).
     const drainingRequest = fetch(`${origin}/api/auth/session?maintenance-drain`, {
       headers: { cookie: legacyCookie },
     });

@@ -125,9 +125,10 @@ async function exchangeGithubSubject(
   code: string,
   codeVerifier: string,
   redirectURI: string,
+  deadlineMs = 10_000,
 ): Promise<ProviderExchange> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   timer.unref();
   try {
     const request = await authorizationCodeRequest({
@@ -206,7 +207,11 @@ export function googleProviderId(config: Pick<GoogleLoginConfiguration, "clientI
   return `google:${digest(config.clientId)}`;
 }
 
-function githubProvider(config: ProviderClient, baseURL: string): ExternalProvider {
+function githubProvider(
+  config: ProviderClient,
+  baseURL: string,
+  deadlineMs: number | undefined,
+): ExternalProvider {
   const providerId = githubProviderId(config);
   const callbackURL = new URL("/api/auth/providers/github/callback", baseURL).href;
   const provider = github({
@@ -221,11 +226,15 @@ function githubProvider(config: ProviderClient, baseURL: string): ExternalProvid
     authorizationURL: (_secret, state, codeVerifier) =>
       provider.createAuthorizationURL({ state, codeVerifier, redirectURI: callbackURL }),
     exchange: (_secret, code, codeVerifier) =>
-      exchangeGithubSubject(config, code, codeVerifier, callbackURL),
+      exchangeGithubSubject(config, code, codeVerifier, callbackURL, deadlineMs),
   };
 }
 
-function googleProvider(config: GoogleLoginConfiguration, baseURL: string): ExternalProvider {
+function googleProvider(
+  config: GoogleLoginConfiguration,
+  baseURL: string,
+  deadlineMs: number | undefined,
+): ExternalProvider {
   const providerId = googleProviderId(config);
   const callbackURL = new URL("/api/auth/providers/google/callback", baseURL).href;
   return {
@@ -236,11 +245,22 @@ function googleProvider(config: GoogleLoginConfiguration, baseURL: string): Exte
     authorizationURL: (secret, state, codeVerifier) =>
       googleAuthorizationURL(config, state, codeVerifier, callbackURL, googleNonce(secret, state)),
     exchange: (secret, code, codeVerifier, state) =>
-      exchangeGoogleSubject(config, code, codeVerifier, callbackURL, googleNonce(secret, state)),
+      exchangeGoogleSubject(
+        config,
+        code,
+        codeVerifier,
+        callbackURL,
+        googleNonce(secret, state),
+        deadlineMs,
+      ),
   };
 }
 
-function oidcProvider(config: OidcLoginConfiguration, baseURL: string): ExternalProvider {
+function oidcProvider(
+  config: OidcLoginConfiguration,
+  baseURL: string,
+  deadlineMs: number | undefined,
+): ExternalProvider {
   const providerId = oidcProviderId(config);
   const callbackURL = new URL("/api/auth/providers/oidc/callback", baseURL).href;
   return {
@@ -250,7 +270,14 @@ function oidcProvider(config: OidcLoginConfiguration, baseURL: string): External
     authorizationURL: (secret, state, codeVerifier) =>
       oidcAuthorizationURL(config, state, codeVerifier, callbackURL, oidcNonce(secret, state)),
     exchange: (secret, code, codeVerifier, state) =>
-      exchangeOidcSubject(config, code, codeVerifier, callbackURL, oidcNonce(secret, state)),
+      exchangeOidcSubject(
+        config,
+        code,
+        codeVerifier,
+        callbackURL,
+        oidcNonce(secret, state),
+        deadlineMs,
+      ),
   };
 }
 
@@ -271,6 +298,16 @@ export interface HumanLoginAdmissionOptions {
    * carries only the provider instance and a bounded cause, never codes, tokens or users.
    */
   readonly onOperationalEvent?: (event: Readonly<Record<string, unknown>>) => void;
+  /**
+   * One deadline for each provider exchange's requests and body reads (default 10 s). The
+   * server leaves it unset; tests shorten it so stalled-provider cases do not wait 10 s.
+   */
+  readonly providerDeadlineMs?: number;
+  /**
+   * Counts one callback refused before it matched a pending attempt. Such a callback is
+   * unauthenticated, so it writes no audit event.
+   */
+  readonly onUnmatchedCallback?: (provider: ExternalProviderName) => void;
 }
 
 export function createHumanLogin(
@@ -282,12 +319,24 @@ export function createHumanLogin(
   if (config.github === undefined && config.google === undefined && config.oidc === undefined) {
     throw new Error("Guarded human sign-in requires a configured external sign-in provider.");
   }
+  const { providerDeadlineMs } = admission;
+  if (
+    providerDeadlineMs !== undefined &&
+    (!Number.isSafeInteger(providerDeadlineMs) || providerDeadlineMs < 1)
+  ) {
+    throw new Error("The external sign-in provider deadline must be a positive integer.");
+  }
   const proofScope = new AsyncLocalStorage<{ proof?: HumanAuthenticationProof }>();
   const githubLogin =
-    config.github === undefined ? undefined : githubProvider(config.github, baseURL);
+    config.github === undefined
+      ? undefined
+      : githubProvider(config.github, baseURL, providerDeadlineMs);
   const googleLogin =
-    config.google === undefined ? undefined : googleProvider(config.google, baseURL);
-  const oidcLogin = config.oidc === undefined ? undefined : oidcProvider(config.oidc, baseURL);
+    config.google === undefined
+      ? undefined
+      : googleProvider(config.google, baseURL, providerDeadlineMs);
+  const oidcLogin =
+    config.oidc === undefined ? undefined : oidcProvider(config.oidc, baseURL, providerDeadlineMs);
   const secure = new URL(baseURL).protocol === "https:";
   const bindingCookie = secure ? "__Host-occ_login_attempt" : "occ_login_attempt";
   const receiptCookie = secure ? "__Host-occ_login_receipt" : "occ_login_receipt";
@@ -344,12 +393,23 @@ export function createHumanLogin(
     }
   }
 
-  // Callback denials say whether the attempt, the provider, or the identity failed.
+  // Denials of a matched attempt say whether the provider or the identity failed.
   async function rejectExternal(
     provider: ExternalProviderName,
-    reason: "INVALID_ATTEMPT" | "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE",
+    reason: "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE",
   ): Promise<never> {
     await state.recordDenied(reason, provider);
+    throw rejected();
+  }
+
+  // A malformed, unknown, replayed or expired attempt proves nothing about its sender, who
+  // can mint state and cookie values freely, so it is counted and not audited.
+  function refuseUnmatched(provider: ExternalProviderName): never {
+    try {
+      admission.onUnmatchedCallback?.(provider);
+    } catch {
+      // Counting never changes the sign-in outcome.
+    }
     throw rejected();
   }
 
@@ -547,7 +607,7 @@ export function createHumanLogin(
                 (!error && (!code || code.length > authorizationCodeLimit)) ||
                 (error && (error.length > 200 || code))
               ) {
-                return rejectExternal(name, "INVALID_ATTEMPT");
+                return refuseUnmatched(name);
               }
               const attempt = await state.consumeAttempt({
                 stateHash: digest(stateValue),
@@ -556,7 +616,7 @@ export function createHumanLogin(
                 callbackURL: provider.callbackURL,
               });
               if (!attempt) {
-                return rejectExternal(name, "INVALID_ATTEMPT");
+                return refuseUnmatched(name);
               }
               if (error) {
                 // RFC 6749 section 4.1.2.1: the provider reports its own failure.

@@ -105,6 +105,28 @@ export function createTokenAuthority({
     });
     return { token, expires, permissions };
   }
+  // A preloaded personal or OAuth token: GitHub never issued it to the service,
+  // it does not expire on the fixture clock, and it carries its owner's access.
+  function acceptStatic(token) {
+    const index = tokens.size + 1;
+    tokens.set(token, {
+      index,
+      expires: Infinity,
+      revoked: false,
+      uses: 0,
+      attempts: 0,
+      static: true,
+      permissions: {
+        metadata: "read",
+        contents: "write",
+        pull_requests: "write",
+        issues: "write",
+        checks: "read",
+        statuses: "read",
+      },
+    });
+    return index;
+  }
   function revoke(authorization) {
     const token = tokens.get(tokenFrom(authorization));
     assert.ok(token, "retirement uses an owned provider token");
@@ -113,6 +135,7 @@ export function createTokenAuthority({
   return {
     issue,
     authorize,
+    acceptStatic,
     revoke,
     issuesOfTokens,
     authenticationAttempts,

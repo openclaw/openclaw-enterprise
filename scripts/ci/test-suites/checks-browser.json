@@ -34,6 +34,9 @@
       "path": "tests/browser/console-agent-channels.test.mjs"
     },
     {
+      "path": "tests/browser/console-create-agent-provisioning-400.test.mjs"
+    },
+    {
       "path": "tests/browser/console-repository-dedicated.test.mjs"
     },
     {

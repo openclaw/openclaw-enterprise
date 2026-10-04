@@ -168,7 +168,7 @@ test("GitHub factory snapshots a registry-selected write grant through session a
   const factory = createGitHubDriverFactory({
     configuration,
     binding: selection,
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -312,30 +312,34 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
     /invalid-repository-registry/,
   );
   const registry = validateGitHubRepositoryRegistry(registryInput());
-  for (const [name, request] of Object.entries({
-    "default write profile outside Namespace policy": {
-      namespaceId: "namespace-b",
-      repositoryRef: "application",
-    },
-    "unknown repository reference": { namespaceId: "namespace-a", repositoryRef: "missing" },
-    "Namespace without a policy": {
-      namespaceId: "namespace-c",
-      repositoryRef: "application",
-      profile: "git-read",
-    },
-    "unsupported selected profile": {
-      namespaceId: "namespace-a",
-      repositoryRef: "application",
-      profile: "app-full",
-    },
-    "explicit null profile": {
-      namespaceId: "namespace-a",
-      repositoryRef: "application",
-      profile: null,
-    },
+  // A well-formed request outside the registry's policy is not authorized; a malformed
+  // profile is refused by the registry's profile validation before any policy lookup.
+  const notAuthorized = /repository-binding-not-authorized/;
+  const invalidProfile = /invalid-repository-registry/;
+  for (const [name, [request, expected]] of Object.entries({
+    "default write profile outside Namespace policy": [
+      { namespaceId: "namespace-b", repositoryRef: "application" },
+      notAuthorized,
+    ],
+    "unknown repository reference": [
+      { namespaceId: "namespace-a", repositoryRef: "missing" },
+      notAuthorized,
+    ],
+    "Namespace without a policy": [
+      { namespaceId: "namespace-c", repositoryRef: "application", profile: "git-read" },
+      notAuthorized,
+    ],
+    "unsupported selected profile": [
+      { namespaceId: "namespace-a", repositoryRef: "application", profile: "app-full" },
+      invalidProfile,
+    ],
+    "explicit null profile": [
+      { namespaceId: "namespace-a", repositoryRef: "application", profile: null },
+      invalidProfile,
+    ],
   })) {
     await t.test(name, () => {
-      assert.throws(() => resolveGitHubRepositoryBinding(registry, request));
+      assert.throws(() => resolveGitHubRepositoryBinding(registry, request), expected);
     });
   }
 });

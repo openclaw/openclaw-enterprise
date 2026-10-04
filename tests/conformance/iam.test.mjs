@@ -1445,3 +1445,80 @@ test("identity access coverage requires every target grant at the same or a broa
   assert.equal(await covers("broad-admin", "unknown"), false);
   assert.equal(await covers("broad-admin", undefined), false);
 });
+
+test("identity access coverage counts Agent administer for a delegated read_logs grant", async () => {
+  const principal = (id) => ({ kind: "principal", id, issuer: "https://idp.example", subject: id });
+  const agentPermission = (action) => ({ action, resourceKind: "agent" });
+  const bind = (id, subjectId, roleId, scope = {}) => ({
+    id,
+    subjectKind: "identity",
+    subjectId,
+    roleId,
+    ...scope,
+  });
+  const agentA = { namespaceId: "tenant-a", resourceKind: "agent", resourceId: "agent-a" };
+  const policy = {
+    identities: [
+      principal("installation-admin"),
+      principal("tenant-a-admin"),
+      principal("tenant-b-admin"),
+      principal("agent-reader"),
+      principal("log-reader"),
+      principal("log-reader-without-read"),
+    ],
+    groups: [],
+    memberships: [],
+    roles: [
+      // The built-in administrator Role grants Agent administer, which already admits log
+      // reads, and deliberately not read_logs.
+      {
+        id: "admin",
+        permissions: [
+          { action: "administer", resourceKind: "installation" },
+          agentPermission("read"),
+          agentPermission("administer"),
+        ],
+      },
+      {
+        id: "tenant-a-admin",
+        namespaceId: "tenant-a",
+        permissions: [agentPermission("read"), agentPermission("administer")],
+      },
+      {
+        id: "tenant-b-admin",
+        namespaceId: "tenant-b",
+        permissions: [agentPermission("read"), agentPermission("administer")],
+      },
+      { id: "agent-reader", namespaceId: "tenant-a", permissions: [agentPermission("read")] },
+      {
+        id: "log-reader",
+        namespaceId: "tenant-a",
+        permissions: [agentPermission("read"), agentPermission("read_logs")],
+      },
+      { id: "logs-only", namespaceId: "tenant-a", permissions: [agentPermission("read_logs")] },
+    ],
+    bindings: [
+      bind("b1", "installation-admin", "admin"),
+      bind("b2", "tenant-a-admin", "tenant-a-admin", { namespaceId: "tenant-a" }),
+      bind("b3", "tenant-b-admin", "tenant-b-admin", { namespaceId: "tenant-b" }),
+      bind("b4", "agent-reader", "agent-reader", agentA),
+      bind("b5", "log-reader", "log-reader", agentA),
+      bind("b6", "log-reader-without-read", "logs-only", agentA),
+    ],
+    restrictions: [],
+  };
+  const driver = new NativeIAMDriver({ loadNativeIAMState: async () => policy });
+  const covers = (principalId, targetIdentityId) =>
+    driver.coversIdentityAccess({ principalId, targetIdentityId });
+
+  // An administrator can manage (disable, revoke) a person given the delegated log grant.
+  assert.equal(await covers("installation-admin", "log-reader"), true);
+  assert.equal(await covers("installation-admin", "log-reader-without-read"), true);
+  assert.equal(await covers("tenant-a-admin", "log-reader"), true);
+  // Administer counts only at the same or a broader scope.
+  assert.equal(await covers("tenant-b-admin", "log-reader"), false);
+  // Without administer, Agent read alone covers neither read_logs nor administer.
+  assert.equal(await covers("agent-reader", "log-reader"), false);
+  // read_logs does not stand in for administer the other way round.
+  assert.equal(await covers("log-reader", "tenant-a-admin"), false);
+});

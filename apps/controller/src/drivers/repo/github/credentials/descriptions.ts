@@ -195,7 +195,7 @@ export function createGitHubRepositoryDescriptions(options: DescriptionOptions) 
     const entry = cache.get(repository.repositoryRef)!;
     const abort = new AbortController();
     const factory = createGitHubDriverFactory({
-      key: options.key,
+      authority: options.key,
       metadataOnly: true,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,

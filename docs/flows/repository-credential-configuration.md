@@ -1,6 +1,6 @@
 ---
 created: 2026-09-18
-updated: "2026-09-27"
+updated: "2026-10-04"
 last_updated_session: "cody/01a0e42f-3192-76d1-89b6-4bec0cb00e64"
 ---
 
@@ -121,16 +121,21 @@ validated selection determines the factory after protected reads load the App
 key, certificate and TLS key. Registry policy remains bounded to its installation,
 repository and Namespace/profile grants. The GitHub key owner accepts the
 configured RSA signing key; TLS context creation validates
-the certificate and private-key pair. The frozen result owns the selected
-factory and TLS buffers. Failure closes any constructed owner and clears loaded
+the certificate and private-key pair. A `github-token` backend instead requires
+the `developmentAuthority` option (the `--development-authority` process flag)
+and an eight-hour session cap; it reads the token file with the same protected
+reader, strips one trailing newline, and constructs a
+`GitHubStaticTokenOwner` without reading any App key. The frozen result owns the
+selected factory and TLS buffers and names its `authority`
+(`github-token-development` with a `tokenClass` for the token kind). Failure closes any constructed owner and clears loaded
 buffers before returning `invalid-configuration`.
 
 ### 4. Close validation material or hand it to service startup
 
 `apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration`
 
-The check returns the gateway origin, configured profiles, and maximum session
-duration. Its `finally` block closes the material owner, and the CLI prints only
+The check returns the gateway origin, configured profiles, maximum session
+duration, authority and, for the token kind, its token class. Its `finally` block closes the material owner, and the CLI prints only
 the safe summary. It creates no session, listener, or provider request.
 The Kubernetes check similarly closes the loaded owner before reporting success;
 it also rejects a shutdown grace beyond the Pod's allowed service cleanup window.
@@ -164,6 +169,8 @@ startup validation, not live GitHub behavior or platform integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-04 08:00: Add the development-only GitHub token authority branch, its process flag, and the authority summary. (gh-token-impl - github-token-authority)
 
 - 2026-09-27 12:14: Record the server-side apply strategy ownership path for broker-enabled worker Recreate upgrades. (cody/01a0e42f-3192-76d1-89b6-4bec0cb00e64 - 181b0472f9a5)
 

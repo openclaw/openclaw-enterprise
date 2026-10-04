@@ -236,8 +236,13 @@ test(
           .map(({ providerId, subject }) => [providerId, subject]),
         [[oidcProviderId, memberSubject]],
       );
-      // A subject attached elsewhere is refused for another account.
-      assert.equal((await attach(both.id, memberSubject)).statusCode, 404);
+      // A subject attached elsewhere is refused for another account, as a named conflict.
+      const taken = await attach(both.id, memberSubject);
+      assert.equal(taken.statusCode, 409, taken.body);
+      assert.deepEqual(taken.json().error, {
+        code: "RESOURCE_CONFLICT",
+        message: "The external identity is already assigned.",
+      });
 
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();

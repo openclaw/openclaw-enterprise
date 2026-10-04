@@ -99,6 +99,14 @@ type errorEnvelope struct {
 	} `json:"error"`
 }
 
+// WithContext returns a client sharing transport and credentials whose requests
+// use ctx. The original client remains unchanged.
+func (client *Client) WithContext(ctx context.Context) *Client {
+	clone := *client
+	clone.ctx = ctx
+	return &clone
+}
+
 // New validates the client configuration and prepares authenticated transport.
 func New(config Config) (*Client, error) {
 	baseURL, err := parseOrigin(config.URL)

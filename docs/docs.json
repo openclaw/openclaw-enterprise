@@ -409,7 +409,11 @@
                 ]
               }
             ],
-            "hidden": ["guides/repository-credentials/standalone-service"]
+            "hidden": [
+              "guides/repository-credentials/standalone-service",
+              "guides/repository-credentials/development-token",
+              "reference/repository-credentials/development-token"
+            ]
           },
           {
             "tab": "Operate",
@@ -445,6 +449,10 @@
                   {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-baseline",
+                    "label": "Upgrade Baseline"
                   },
                   {
                     "page": "guides/deploy/production-upgrade",
@@ -511,6 +519,10 @@
                   {
                     "page": "guides/operate/model-verification",
                     "label": "Model Response Verification"
+                  },
+                  {
+                    "page": "guides/operate/network-isolation",
+                    "label": "Network Isolation Check"
                   },
                   {
                     "page": "guides/deploy/native-admin",

@@ -1534,7 +1534,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         ![400, 403, 404, 409, 429].includes(error.status);
       // The API refuses to retry a job whose Namespace or Agent lifecycle changed, that was
       // cancelled or handed off, or whose Secret was deleted; that job can never finish. A
-      // refusal that names its reason (the deleted Secret) is shown as sent.
+      // refusal that names its reason is shown as sent; a race in the store can still
+      // answer with the generic conflict text, which keeps the fixed sentence.
       const retryRefused = retrying && error.status === 409;
       const retryRefusal =
         error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT

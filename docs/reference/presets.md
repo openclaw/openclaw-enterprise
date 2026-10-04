@@ -55,12 +55,12 @@ Configuration to inspect actual settings. Presets contain OpenClaw configuration
 including the Codex plugin's app-server options; none supplies a standalone
 Codex `config.toml` or a reasoning-effort override.
 
-| Preset / file                                                           | Agent and credential                                                            | OpenClaw gateway and tools                                                                                          | Codex app-server policy                                                                               |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| [`default-codex`](../../deploy/presets/default-codex.json)              | Dedicated; choose name, model, and API key or service account token in the form | Local/LAN; Control UI enabled for loopback origins; Chat Completions enabled; browser/web/elevated settings omitted | Guardian WebSocket; `on-request`; `read-only`; reviewer and network proxy omitted                     |
-| [**Standard Codex**](../../deploy/presets/standard-codex.json)          | Dedicated; name/model variables and masked API key                              | Standard gateway/tool policy below; cached Codex search                                                             | Guardian WebSocket; `on-request`; `workspace-write`; reviewer `user`; limited workspace network proxy |
-| [**Standard OpenClaw**](../../deploy/presets/standard-openclaw.json)    | Embedded; name/model variables and masked API key                               | Standard gateway/tool policy; web search enabled without the Codex override                                         | None: native OpenClaw, no Codex plugin                                                                |
-| [`SWE Agent` / `swe-preset.json`](../../deploy/presets/swe-preset.json) | Dedicated; name/model variables; model defaults to `gpt-6-astra`; `codex_pat`   | Standard Codex settings plus Slack and workspace instructions                                                       | Same as Standard Codex, except `approvalPolicy: never`                                                |
+| Preset / file                                                           | Agent and credential                                                            | OpenClaw gateway and tools                                                                                                                                 | Codex app-server policy                                                                               |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [`default-codex`](../../deploy/presets/default-codex.json)              | Dedicated; choose name, model, and API key or service account token in the form | Local/LAN; Control UI enabled for loopback origins; Chat Completions enabled; `OPENCLAW_GATEWAY_PASSWORD` reference; browser/web/elevated settings omitted | Guardian WebSocket; `on-request`; `read-only`; reviewer and network proxy omitted                     |
+| [**Standard Codex**](../../deploy/presets/standard-codex.json)          | Dedicated; name/model variables and masked API key                              | Standard gateway/tool policy below; cached Codex search                                                                                                    | Guardian WebSocket; `on-request`; `workspace-write`; reviewer `user`; limited workspace network proxy |
+| [**Standard OpenClaw**](../../deploy/presets/standard-openclaw.json)    | Embedded; name/model variables and masked API key                               | Standard gateway/tool policy; web search enabled without the Codex override                                                                                | None: native OpenClaw, no Codex plugin                                                                |
+| [`SWE Agent` / `swe-preset.json`](../../deploy/presets/swe-preset.json) | Dedicated; name/model variables; model defaults to `gpt-6-astra`; `codex_pat`   | Standard Codex settings plus Slack and workspace instructions                                                                                              | Same as Standard Codex, except `approvalPolicy: never`                                                |
 
 ### Plain console default
 
@@ -276,13 +276,13 @@ The collection path is `/namespaces/:namespaceId/presets`; an exact Preset adds
 `/:presetId`. Use the [generated API reference](api.md#presets) for full schemas
 and response envelopes.
 
-| Request                                            | Result                  | Required permission                          |
-| -------------------------------------------------- | ----------------------- | -------------------------------------------- |
-| `POST` collection with `{name, template}`          | `201`, created Preset   | `preset:create` on the Namespace collection. |
-| `GET` collection                                   | `200`, readable Presets | `preset:read` checked on each candidate.     |
-| `GET` exact Preset                                 | `200`, Preset           | `preset:read` on that Preset.                |
-| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset   | `preset:update` on that Preset.              |
-| `DELETE` exact Preset                              | `204`                   | `preset:delete` on that Preset.              |
+| Request                                            | Result                  | Required permission                                             |
+| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------- |
+| `POST` collection with `{name, template}`          | `201`, created Preset   | `preset:create` on the Namespace collection.                    |
+| `GET` collection                                   | `200`, readable Presets | Namespace `read`, then `preset:read` checked on each candidate. |
+| `GET` exact Preset                                 | `200`, Preset           | `preset:read` on that Preset.                                   |
+| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset   | `preset:update` on that Preset.                                 |
+| `DELETE` exact Preset                              | `204`                   | `preset:delete` on that Preset.                                 |
 
 An included `template` replaces the whole template, including variable
 definitions; omitted fields stay unchanged. Writes check the template structure,

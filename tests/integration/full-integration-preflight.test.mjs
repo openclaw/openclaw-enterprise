@@ -49,8 +49,14 @@ test("full integration preflight selects only manual workflow lanes", async () =
     selectLane({ eventName: "workflow_dispatch", inputLane: "provider-account" }),
     "provider-account",
   );
-  assert.throws(() => selectLane({ eventName: "push", inputLane: "all" }));
-  assert.throws(() => selectLane({ eventName: "pull_request", inputLane: "provider-account" }));
+  assert.throws(
+    () => selectLane({ eventName: "push", inputLane: "all" }),
+    /^Error: Unsupported full integration event: push$/,
+  );
+  assert.throws(
+    () => selectLane({ eventName: "pull_request", inputLane: "provider-account" }),
+    /^Error: Unsupported full integration event: pull_request$/,
+  );
   assert.doesNotThrow(() => assertSourceRef("refs/heads/main"));
   assert.throws(() => assertSourceRef("refs/pull/1/merge"), /must run from main/);
   assert.deepEqual(requiredEnvironmentsForLane("provider-account"), [

@@ -27,7 +27,8 @@ export type ProviderFailureCause =
   | "http_status"
   | "oversized_response"
   | "malformed_response"
-  | "provider_error";
+  | "provider_error"
+  | "client_rejected";
 
 /** The bounded, loggable detail of a provider outage. */
 export interface ProviderFailure {
@@ -39,8 +40,9 @@ export interface ProviderFailure {
   readonly code?: string;
 }
 
-// The provider gave no well-formed answer: transport failure, deadline, redirect,
-// 429 or 5xx status, or an oversized or malformed body. Audited apart from rejection.
+// The provider gave no well-formed answer (transport failure, deadline, redirect,
+// 429 or 5xx status, an oversized or malformed body) or refused this Installation's OAuth
+// client. Audited apart from rejection.
 export class ProviderUnavailableError extends Error {
   readonly failure: ProviderFailure;
   constructor(failure: ProviderFailure = { cause: "network" }) {
@@ -150,7 +152,8 @@ declare const pinnedEndpoint: unique symbol;
 export type PinnedEndpoint = string & { readonly [pinnedEndpoint]: true };
 
 // A provider's fixed requests share a deadline, including streaming body reads.
-// Only a well-formed 4xx answer is a rejection; every other failure is unavailability.
+// A well-formed 4xx answer is a rejection unless it refuses this client; every other failure
+// is unavailability.
 export async function providerJSON(
   endpoint: ProviderEndpoint | PinnedEndpoint,
   init: RequestInit,
@@ -177,22 +180,67 @@ export async function providerJSON(
   }
 }
 
+// Token errors that refuse this Installation's OAuth client rather than the person: RFC 6749
+// section 5.2's invalid_client, unauthorized_client and unsupported_grant_type (the controller
+// always sends authorization_code), and GitHub's own codes for a wrong client secret or callback
+// registration (GitHub answers them with HTTP 200). Every sign-in fails until the operator fixes
+// the client configuration, so they are logged, not rejected.
+const refusedClientErrors = new Set([
+  "invalid_client",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "incorrect_client_credentials",
+  "redirect_uri_mismatch",
+]);
+
+function refusesClient(step: ProviderStep, data: Record<string, unknown>): boolean {
+  return step === "token" && typeof data.error === "string" && refusedClientErrors.has(data.error);
+}
+
 async function readProviderJSON(
   response: Response,
   signal: AbortSignal,
   step: ProviderStep,
 ): Promise<Record<string, unknown>> {
-  if (!response.ok || !response.body) {
-    await response.body?.cancel();
-    throw response.status === 429 || response.status >= 500 || response.ok
-      ? new ProviderUnavailableError(
-          response.ok
-            ? { step, cause: "malformed_response" }
-            : { step, cause: "http_status", status: response.status },
-        )
+  if (response.ok && response.body) {
+    const data = await readBoundedJSON(response, response.body, signal, step);
+    if (refusesClient(step, data)) {
+      throw new ProviderUnavailableError({ step, cause: "client_rejected" });
+    }
+    return data;
+  }
+  if (step === "token" && (response.status === 400 || response.status === 401) && response.body) {
+    // A token error body is read only to tell a refused client from a refused code.
+    let data: Record<string, unknown>;
+    try {
+      data = await readBoundedJSON(response, response.body, signal, step);
+    } catch (error) {
+      if (signal.aborted) {
+        throw error;
+      }
+      throw rejected();
+    }
+    throw refusesClient(step, data)
+      ? new ProviderUnavailableError({ step, cause: "client_rejected" })
       : rejected();
   }
-  const reader = response.body.getReader();
+  await response.body?.cancel();
+  throw response.status === 429 || response.status >= 500 || response.ok
+    ? new ProviderUnavailableError(
+        response.ok
+          ? { step, cause: "malformed_response" }
+          : { step, cause: "http_status", status: response.status },
+      )
+    : rejected();
+}
+
+async function readBoundedJSON(
+  response: Response,
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  step: ProviderStep,
+): Promise<Record<string, unknown>> {
+  const reader = body.getReader();
   try {
     if (Number(response.headers.get("content-length")) > providerResponseLimit) {
       await reader.cancel();

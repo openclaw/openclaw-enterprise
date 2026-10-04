@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +15,7 @@ import { createInstallationDriverConfiguration } from "./installation-driver-con
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { stopProcess } from "./stop-process.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
@@ -431,21 +431,6 @@ export function poolWithOneBackendBindingReadFault(pool) {
     query: (text, values) => pool.query(text, values),
     end: () => pool.end(),
   };
-}
-
-export async function stopProcess(child) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  const exited = once(child, "exit");
-  child.kill("SIGTERM");
-  const force = setTimeout(() => child.kill("SIGKILL"), 2_000);
-  force.unref();
-  try {
-    await exited;
-  } finally {
-    clearTimeout(force);
-  }
 }
 
 export async function startBackendlessDevelopmentServer(context, options) {

@@ -21,7 +21,9 @@ leaves work waiting, such as a deployment whose runtime is still starting, is
 recorded only when its result differs from the work item's previous one, so a
 deployment that waits for minutes writes one waiting event, not one per check.
 Authorization denials and lifecycle events such as revision activation are
-always recorded.
+always recorded. An external sign-in callback that matches no pending attempt is
+not: anyone can send one, so the API counts it in a
+[metric](../../reference/metrics.md#application-families) instead.
 
 Reading an Agent's container output is the exception among reads. Each
 [runtime log view](agent-logs.md) records one `openclaw.agents.runtime_logs.view`

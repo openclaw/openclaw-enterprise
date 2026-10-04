@@ -128,7 +128,7 @@ func hostUpstreamResolver(read func(string) ([]byte, error)) string {
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) != 2 || fields[0] != "nameserver" {
+			if len(fields) < 2 || fields[0] != "nameserver" {
 				continue
 			}
 			address, err := netip.ParseAddr(fields[1])

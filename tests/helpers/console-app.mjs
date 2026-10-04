@@ -590,6 +590,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
+    iamDriver,
     rawRequest,
     request,
     signIn,

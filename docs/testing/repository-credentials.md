@@ -14,7 +14,7 @@ expected values and observable assertions explicit in each scenario. Share setup
 by its production owner; fixtures do not establish production authority.
 
 The [fixture ownership checks](../../tests/conformance/repository-credentials-fixture-ownership.test.mjs)
-run in `test:conformance` and the CI `checks-baseline` lane. Run them directly
+run in `test:conformance` and the CI `checks-baseline-*` lanes. Run them directly
 with Node.js 24; they need no Docker daemon or provider credentials:
 
 ```sh

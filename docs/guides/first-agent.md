@@ -10,6 +10,8 @@ after the command exits.
 - Complete [Local setup](quickstart.md) and leave the installation running.
 - Start Local setup without the OpenShell Sandbox Driver, using
   `OCC_DEVELOPMENT_SANDBOX_DRIVER=none`.
+- Leave about 1.75 GiB of cluster memory free: the Agent's Gateway Pod
+  requests `1792Mi` ([sizing](deploy/installation-profiles.md)).
 - Use the same checkout and development state directory. If you set
   `OCC_DEVELOPMENT_STATE_DIRECTORY` during setup, use the same value here.
 - Have an OpenAI API key that can use [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra), the default model. To use a

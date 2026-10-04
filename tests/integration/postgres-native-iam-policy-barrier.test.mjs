@@ -102,7 +102,7 @@ test("xid8 comparison preserves the tuple transaction ID across epochs", () => {
   assert.notEqual(epochOneXid8, tupleXmin);
   assert.equal(tupleTransactionId(epochOneXid8), tupleXmin);
   assert.equal(tupleTransactionId("8589934591"), "4294967295");
-  assert.throws(() => tupleTransactionId("not-an-xid"));
+  assert.throws(() => tupleTransactionId("not-an-xid"), SyntaxError);
 });
 
 test("native IAM barrier fixture rejects unsafe connection targets before connecting", () => {

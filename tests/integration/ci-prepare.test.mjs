@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
+import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 
@@ -1427,6 +1428,7 @@ test("codex seccomp preparation publishes a reviewed Docker profile for native s
         const localhostProfile =
           manifest?.spec?.containers?.[0]?.securityContext?.seccompProfile?.localhostProfile;
         if (localhostProfile?.includes("missing-")) {
+          const missingProfilePath = `/var/lib/kubelet/seccomp/${localhostProfile}`;
           return {
             stdout: JSON.stringify({
               metadata: { name },
@@ -1437,7 +1439,7 @@ test("codex seccomp preparation publishes a reviewed Docker profile for native s
                     state: {
                       waiting: {
                         reason: "CreateContainerError",
-                        message: "seccomp profile is not found",
+                        message: `failed to create containerd container: cannot load seccomp profile ${JSON.stringify(missingProfilePath)}: open ${missingProfilePath}: no such file or directory`,
                       },
                     },
                   },
@@ -1551,36 +1553,48 @@ test("prepareLane fails closed instead of overwriting an existing CI state file"
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
 });
 
-test("prepareLane preserves an explicit logging Collector Node image over its default", async (t) => {
-  const root = await fixture(t);
-  const statePath = join(root, "logging-state.json");
-  const githubEnv = join(root, "github.env");
-  const customNodeImage =
-    "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  const collectorImage = loadYaml(
-    await readFile(join(repositoryRoot, "compose.logging.yaml"), "utf8"),
-  ).services.collector.image;
-  // Images are absent until pulled; the first pull of each hits a rate limit.
-  const dockerPath = join(root, "docker");
-  await writeFile(
-    dockerPath,
-    `#!${process.execPath}
+test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
+  for (const failure of ["transient", "missing-manifest"]) {
+    await t.test(failure, async (t) => {
+      const root = await fixture(t);
+      const statePath = join(root, "logging-state.json");
+      const githubEnv = join(root, "github.env");
+      const customNodeImage =
+        "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const collectorImage = loadYaml(
+        await readFile(join(repositoryRoot, "compose.logging.yaml"), "utf8"),
+      ).services.collector.image;
+      // Images are absent until pulled; a registry 503 must retry, while a
+      // missing Prometheus manifest must stop preparation before publishing env.
+      // Two images are prepared concurrently, so the fake counts each image's
+      // pulls in its own file: reading the shared call log while the other
+      // image's process creates or appends to it can return an empty or torn line.
+      const dockerPath = join(root, "docker");
+      await writeFile(
+        dockerPath,
+        `#!${process.execPath}
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+const { createHash } = require("node:crypto");
 const log = ${JSON.stringify(join(root, "docker.jsonl"))};
 const args = process.argv.slice(2);
-const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\\n").map(JSON.parse) : [];
 appendFileSync(log, JSON.stringify(args) + "\\n");
 const image = args.at(-1);
-const pulls = calls.filter((call) => call[0] === "pull" && call[1] === image).length;
+const pullLog = log + "." + createHash("sha256").update(image).digest("hex") + ".pulls";
+const pulls = existsSync(pullLog) ? readFileSync(pullLog, "utf8").length : 0;
 if (args[0] === "pull") {
-  if (pulls === 0) {
-    process.stderr.write("Error response from daemon: toomanyrequests: rate limit\\n");
+  appendFileSync(pullLog, "p");
+  if (process.env.CI_METRICS_PULL_FAILURE === "missing-manifest" && image === ${JSON.stringify(metricsMonitoringImages.prometheus)}) {
+    process.stderr.write("Error response from daemon: manifest unknown\\n");
+    process.exit(1);
+  }
+  if (process.env.CI_METRICS_PULL_FAILURE === "transient" && pulls === 0) {
+    process.stderr.write("Error response from daemon: HTTP 503 Service Unavailable\\n");
     process.exit(1);
   }
   process.exit(0);
 }
 if (args[0] === "image" && args[1] === "inspect") {
-  if (pulls < 2) {
+  if (pulls < (process.env.CI_METRICS_PULL_FAILURE === "transient" ? 2 : 1)) {
     process.stderr.write("Error response from daemon: No such image: " + image + "\\n");
     process.exit(1);
   }
@@ -1590,36 +1604,53 @@ if (args[0] === "image" && args[1] === "inspect") {
 process.stderr.write("unexpected docker " + args.join(" ") + "\\n");
 process.exit(2);
 `,
-    { mode: 0o700 },
-  );
+        { mode: 0o700 },
+      );
 
-  const result = runPrepare(
-    ["--lane", "logging-collector", "--state", statePath, "--github-env", githubEnv],
-    {
-      OCC_DOCKER_BIN: dockerPath,
-      OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
-    },
-  );
+      const result = runPrepare(
+        ["--lane", "logging-collector", "--state", statePath, "--github-env", githubEnv],
+        {
+          OCC_DOCKER_BIN: dockerPath,
+          OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
+          CI_METRICS_PULL_FAILURE: failure,
+        },
+      );
 
-  assert.equal(result.status, 0, result.stderr);
-  const exported = await readFile(githubEnv, "utf8");
-  assert.match(exported, /OCC_TEST_LOGGING_COLLECTOR=1/);
-  assert.match(exported, new RegExp(`OCC_TEST_LOGGING_NODE_IMAGE=${customNodeImage}`));
-  // Both pinned images are pulled before the tests run, the rate limit retried.
-  const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line))
-    .filter((args) => args[0] === "pull")
-    .map((args) => args[1]);
-  assert.deepEqual(
-    pulls.toSorted(),
-    [collectorImage, collectorImage, customNodeImage, customNodeImage].toSorted(),
-  );
-  assert.match(
-    result.stderr,
-    /Transient image pull failure \(Error response from daemon: toomanyrequests/,
-  );
+      const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((args) => args[0] === "pull")
+        .map((args) => args[1]);
+      if (failure === "missing-manifest") {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /manifest unknown/);
+        assert.doesNotMatch(result.stderr, /Transient image pull failure/);
+        assert.equal(
+          pulls.filter((image) => image === metricsMonitoringImages.prometheus).length,
+          1,
+        );
+        await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
+        return;
+      }
+      assert.equal(result.status, 0, result.stderr);
+      const exported = await readFile(githubEnv, "utf8");
+      assert.match(exported, /OCC_TEST_LOGGING_COLLECTOR=1/);
+      assert.match(exported, new RegExp(`OCC_TEST_LOGGING_NODE_IMAGE=${customNodeImage}`));
+      // Every container image is prepared before the tests run; the real
+      // pullImage classifier and retry loop handle the injected registry failure.
+      assert.deepEqual(
+        pulls.toSorted(),
+        [collectorImage, customNodeImage, ...Object.values(metricsMonitoringImages)]
+          .flatMap((image) => [image, image])
+          .toSorted(),
+      );
+      assert.match(
+        result.stderr,
+        /Transient image pull failure \(Error response from daemon: HTTP 503/,
+      );
+    });
+  }
 });
 
 test("images packaging lane prepares Codex seccomp before native runtime smoke tests", () => {

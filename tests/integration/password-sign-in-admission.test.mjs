@@ -498,17 +498,20 @@ test("a spent key with fresh companions cannot churn a request budget out of the
   await limiter.admit(["victim"], async () => undefined);
   await limiter.admit(["spent"], async () => undefined);
   let ran = 0;
+  const limited = { name: "APIError", status: "TOO_MANY_REQUESTS", message: "Try again later." };
   for (let index = 0; index < 4200; index += 1) {
     await assert.rejects(
       limiter.admit([`fresh-${index}`, "spent"], async () => {
         ran += 1;
       }),
+      limited,
     );
   }
   await assert.rejects(
     limiter.admit(["victim"], async () => {
       ran += 1;
     }),
+    limited,
   );
   assert.equal(ran, 0);
 });

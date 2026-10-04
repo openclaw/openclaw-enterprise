@@ -84,6 +84,11 @@ export function deploymentProgressForWork(
       message =
         "The Kubernetes API was unavailable. The controller will retry until the deployment deadline.";
       break;
+    case "SANDBOX_ADMISSION_LIMIT_REACHED":
+      code = attempt.code;
+      message =
+        "The Sandbox gateway refuses new requests from the controller until its request admissions free up. The controller will retry until the deployment deadline.";
+      break;
     case "ACTIVE_REVISION_CHANGED":
       code = attempt.code;
       message = "The selected version changed. The controller will reconcile again.";
@@ -501,12 +506,16 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment ended because the Agent was stopped.";
     case "AGENT_GATEWAY_UNAVAILABLE":
       return "The Agent Gateway was still not reachable through its route at the deployment deadline.";
+    case "AGENT_GATEWAY_UNAUTHORIZED":
+      return "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.";
     case "KUBERNETES_API_UNAVAILABLE":
       return "The Kubernetes API was still unavailable at the deployment deadline.";
     case "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED":
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
+    case "SANDBOX_ADMISSION_LIMIT_REACHED":
+      return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
     default:
       return "Deployment reconciliation failed.";
   }

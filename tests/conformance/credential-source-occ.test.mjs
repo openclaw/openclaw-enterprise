@@ -785,7 +785,11 @@ test("deletion is refused while referenced, retried while the gateway fails, and
     controller.deleteCredentialSource(administrator, namespace.id, source.id),
     ResourceConflictError,
   );
-  await assert.rejects(controller.deleteSecret(administrator, namespace.id, secret.id));
+  await assert.rejects(
+    controller.deleteSecret(administrator, namespace.id, secret.id),
+    (error) =>
+      error instanceof ResourceConflictError && /still references the Secret/.test(error.message),
+  );
   await controller.updateAgent(administrator, {
     namespaceId: namespace.id,
     agentId: agent.id,

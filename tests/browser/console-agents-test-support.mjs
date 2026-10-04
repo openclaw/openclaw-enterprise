@@ -67,6 +67,23 @@ export async function openAdvancedSettings(page) {
   }
 }
 
+// Create Agent stays disabled while the form reads Installation capabilities and repository
+// choices. Waits until the live form has both; a retained preview of an earlier form is inert
+// and shows that form's settled reads. A capability retry keeps the failure text until it ends.
+export async function waitForCreateFormReads(page) {
+  await page.waitForFunction(() => {
+    const form = globalThis.document.querySelector("#create-agent-form");
+    return (
+      form !== null &&
+      form.closest("[inert]") === null &&
+      form.querySelector('.repository-options[aria-busy="false"]') !== null &&
+      ![...form.querySelectorAll('[role="status"]')].some(
+        (node) => node.textContent === "Checking installation capabilities…",
+      )
+    );
+  });
+}
+
 export async function expectNativeAdminHidden(page) {
   assert.equal(
     await page.getByRole("heading", { name: "OpenClaw", exact: true }).isVisible(),

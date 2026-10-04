@@ -1850,6 +1850,12 @@ test(
         assert.ok(!container.volumeMounts.some(({ name }) => name === "internal-admission"));
         assert.deepEqual(container.livenessProbe.httpGet, { path: "/healthz", port: "http" });
         assert.deepEqual(container.readinessProbe.httpGet, { path: "/readyz", port: "http" });
+        // A slow boot must not trip liveness: the startup probe holds liveness off for 2 min.
+        assert.deepEqual(container.startupProbe, {
+          httpGet: { path: "/healthz", port: "http" },
+          periodSeconds: 5,
+          failureThreshold: 24,
+        });
       } else {
         const readinessMount = container.volumeMounts.find(
           ({ name }) => name === "worker-readiness",

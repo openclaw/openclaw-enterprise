@@ -19,6 +19,23 @@ export function hasControlCharacter(value: string): boolean {
   return false;
 }
 
+/** Git's branch refname rules (check-ref-format) for one concrete `refs/heads/` ref. */
+export function isWellFormedBranchRef(ref: string): boolean {
+  return (
+    ref.startsWith("refs/heads/") &&
+    ref.length > "refs/heads/".length &&
+    !hasControlCharacter(ref) &&
+    !ref.includes(" ") &&
+    !/[~^:?*[\\]/.test(ref) &&
+    !ref.includes("..") &&
+    !ref.includes("@{") &&
+    !ref.endsWith(".") &&
+    ref
+      .split("/")
+      .every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"))
+  );
+}
+
 /** Canonical nonsecret native-push policy. Git refs remain case-sensitive. */
 export function normalizePushRefAllowlist(value: unknown): readonly string[] {
   if (!Array.isArray(value)) {
@@ -29,17 +46,7 @@ export function normalizePushRefAllowlist(value: unknown): readonly string[] {
       throw new Error("invalid-push-ref-allowlist");
     }
     const ref = entry.endsWith("/*") ? entry.slice(0, -1) + "branch" : entry;
-    if (
-      !ref.startsWith("refs/heads/") ||
-      ref.length === "refs/heads/".length ||
-      hasControlCharacter(ref) ||
-      ref.includes(" ") ||
-      /[~^:?*[\\]/.test(ref) ||
-      ref.includes("..") ||
-      ref.includes("@{") ||
-      ref.endsWith(".") ||
-      ref.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".lock"))
-    ) {
+    if (!isWellFormedBranchRef(ref)) {
       throw new Error("invalid-push-ref-allowlist");
     }
     return entry;

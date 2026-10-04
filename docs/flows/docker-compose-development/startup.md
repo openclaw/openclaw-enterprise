@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-02
-last_updated_session: authoring-run/20771b6e-d59b-4737-8a63-cb33c420218e
+updated: 2026-10-04
+last_updated_session: authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76
 ---
 
 # Compose development startup
@@ -125,7 +125,7 @@ attempts, and failure recovery.
 ### 4. The API admits only local development traffic
 
 `apps/controller/src/server.mjs:start`,
-`apps/controller/src/composition/development-postgres.ts:createDevelopmentConfigurationDriver`,
+`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`,
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver`
 
 The API starts in `NODE_ENV=development`, binds inside the Compose network, and
@@ -186,7 +186,9 @@ Compose service with Docker-compatible engine access.
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
-without changing host DNS;
+without changing host DNS.
+Linux Docker's automatic host resolver selection ignores trailing nameserver
+fields, matching glibc parsing.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
 refused node DNS. Kubernetes-only startup imports matching OCE images into the
 cluster.
@@ -302,7 +304,7 @@ Compute, Configuration, and Secret Drivers with native IAM; without OpenShell,
 it adds both bundled Presets and the Codex Plugin Driver after the shared Codex
 sandbox check. Its runtime section sets the transport Secret prefix and gateway
 storage class that the current Compute Driver schema accepts, and memory limits
-of 3 GiB per gateway and 2 GiB per Harness.
+of 3 GiB per gateway and 6 GiB per Harness.
 
 When Compose mode also selects OpenShell, startup installs the pinned Agent
 Sandbox controller and OpenShell Gateway in k3d before starting the API and
@@ -322,6 +324,9 @@ Installation with `occclient`. Its ID must match the bootstrap response before
 the final key file is written exclusively. With OpenShell, startup waits for the
 bootstrap Kubernetes Namespace and for OCC to report it ready, proving the
 Sandbox Driver created or adopted its operator-mode Workspace.
+Namespace readiness and repository discovery bind each OCC request to the
+polling deadline and caller cancellation via `occclient.Client.WithContext`.
+The original client remains available for later startup operations.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to
 `k3d cluster create --timeout`, so a node that never becomes ready fails startup
@@ -359,6 +364,8 @@ external key if a later OpenShell readiness step fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-04 01:12: Pointed the API startup step at the existing composition function. (authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76 - 7a8a64046ac8ef3e7b5a4ed46b1d4cef9f1573f3)
 
 - 2026-10-02 11:01: Polled CRD status instead of `kubectl wait`. (authoring-run/20771b6e-d59b-4737-8a63-cb33c420218e - 67302dd99e03d28053dbb72ba2569418f6aca1d0)
 

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -16,19 +12,12 @@ import {
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
 const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
-
-async function fixture(t, configuration) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-sandbox-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
-  const path = join(directory, "installation.yaml");
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  return path;
-}
 
 function sandboxInstallation() {
   const configuration = installation();
@@ -164,11 +153,35 @@ function namespaceContext(name = "oce-123456789012345") {
   };
 }
 
+function codexRequirements(revision, environment = []) {
+  return {
+    loginMode: "api_key",
+    image: "codex-runtime@sha256:synthetic",
+    command: ["codex"],
+    serviceAccountName: "agent-codex",
+    serviceAccountToken: {
+      audience: "openclaw-enterprise",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw-enterprise",
+      path: "token",
+      readOnly: true,
+    },
+    workspaceMounts: [
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "workspace",
+        mountPath: "/home/node/workspace",
+        readOnly: false,
+      },
+    ],
+    credentialAttachments: [],
+    environment: [{ name: "APP_SERVER_PORT", value: "8080" }, ...environment],
+    labels: { "openclaw.dev/revision": revision.id },
+  };
+}
+
 test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
-  const createdDriver = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, sandboxInstallation()) },
-  });
+  const createdDriver = await loadInstallationFile(t, sandboxInstallation());
 
   assert.equal(createdDriver.installation.drivers.sandbox.id, "openshell-sandbox");
   assert.equal(createdDriver.installation.drivers.sandbox.implementation, "openshell");
@@ -192,10 +205,7 @@ test("startup composes both OpenShell members from one Backend", async (t) => {
   // An explicit hard_requirement composes like the omitted default above.
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.policy.landlockCompatibility = "hard_requirement";
-  const createdDriver = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-  });
+  const createdDriver = await loadInstallationFile(t, configuration);
 
   assert.ok(createdDriver.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
   assert.equal(createdDriver.credentialGatewayDriver.id, "openshell-credentials");
@@ -210,20 +220,14 @@ test("startup rejects an OpenShell Backend whose members are not both selected",
   const missingGateway = sandboxInstallation();
   delete missingGateway.drivers.credential_gateway;
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, missingGateway) },
-    }),
+    loadInstallationFile(t, missingGateway),
     /drivers\.credential_gateway must match the selected drivers\.credential_gateway\.id/,
   );
 
   const foreignSandbox = sandboxInstallation();
   foreignSandbox.backend[0].drivers.sandbox = "another-sandbox";
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, foreignSandbox) },
-    }),
+    loadInstallationFile(t, foreignSandbox),
     /drivers\.sandbox must match the selected bundled OpenShell drivers\.sandbox\.id/,
   );
 
@@ -231,20 +235,13 @@ test("startup rejects an OpenShell Backend whose members are not both selected",
   const legacyEndpoint = sandboxInstallation();
   legacyEndpoint.drivers.sandbox.configuration.gateway.endpoint = "http://127.0.0.1:1";
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, legacyEndpoint) },
-    }),
+    loadInstallationFile(t, legacyEndpoint),
     /OpenShell gateway option endpoint belongs to the openshell Backend/,
   );
 });
 
 test("startup requires protected OpenShell transport or an explicit NetworkPolicy boundary", async (t) => {
-  const load = async (configuration) =>
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    });
+  const load = (configuration) => loadInstallationFile(t, configuration);
   // Credential registration sends resolved values, so plain or unauthenticated transport
   // must be declared rather than accepted by default.
   const undeclared = sandboxInstallation();
@@ -430,35 +427,11 @@ test("OpenShell adopts its revision's existing Sandbox instead of re-sending Cre
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: driver.id,
   };
-  const requirements = (environment) => ({
-    loginMode: "api_key",
-    image: "codex-runtime@sha256:synthetic",
-    command: ["codex"],
-    serviceAccountName: "agent-codex",
-    serviceAccountToken: {
-      audience: "openclaw-enterprise",
-      expirationSeconds: 900,
-      mountPath: "/var/run/secrets/openclaw-enterprise",
-      path: "token",
-      readOnly: true,
-    },
-    workspaceMounts: [
-      {
-        claimName: "harness-workspace-codex",
-        subPath: "workspace",
-        mountPath: "/home/node/workspace",
-        readOnly: false,
-      },
-    ],
-    credentialAttachments: [],
-    environment: [{ name: "APP_SERVER_PORT", value: "8080" }, ...environment],
-    labels: { "openclaw.dev/revision": revision.id },
-  });
   const provision = (environment = [], target = revision) =>
     driver.provisionHarness({
       ...context,
       revision: target,
-      requirements: requirements(environment),
+      requirements: codexRequirements(revision, environment),
     });
 
   const first = await provision();
@@ -601,30 +574,7 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
     target.provisionHarness({
       ...context,
       revision,
-      requirements: {
-        loginMode: "api_key",
-        image: "codex-runtime@sha256:synthetic",
-        command: ["codex"],
-        serviceAccountName: "agent-codex",
-        serviceAccountToken: {
-          audience: "openclaw-enterprise",
-          expirationSeconds: 900,
-          mountPath: "/var/run/secrets/openclaw-enterprise",
-          path: "token",
-          readOnly: true,
-        },
-        workspaceMounts: [
-          {
-            claimName: "harness-workspace-codex",
-            subPath: "workspace",
-            mountPath: "/home/node/workspace",
-            readOnly: false,
-          },
-        ],
-        credentialAttachments: [],
-        environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
-        labels: { "openclaw.dev/revision": revision.id },
-      },
+      requirements: codexRequirements(revision),
     });
   const trace = () => {
     const seen = calls.map(([call, id]) => (id === undefined ? call : `${call}:${id}`));
@@ -759,36 +709,12 @@ test("OpenShell rejects Secret-backed Harness environment as a permanent revisio
     driver.provisionHarness({
       ...context,
       revision: { ...revision, harness },
-      requirements: {
-        loginMode: "api_key",
-        image: "codex-runtime@sha256:synthetic",
-        command: ["codex"],
-        serviceAccountName: "agent-codex",
-        serviceAccountToken: {
-          audience: "openclaw-enterprise",
-          expirationSeconds: 900,
-          mountPath: "/var/run/secrets/openclaw-enterprise",
-          path: "token",
-          readOnly: true,
+      requirements: codexRequirements(revision, [
+        {
+          name: "APP_SERVER_TOKEN",
+          valueFrom: { secretKeyRef: { name: "agent-codex-token", key: "token" } },
         },
-        workspaceMounts: [
-          {
-            claimName: "harness-workspace-codex",
-            subPath: "workspace",
-            mountPath: "/home/node/workspace",
-            readOnly: false,
-          },
-        ],
-        credentialAttachments: [],
-        environment: [
-          { name: "APP_SERVER_PORT", value: "8080" },
-          {
-            name: "APP_SERVER_TOKEN",
-            valueFrom: { secretKeyRef: { name: "agent-codex-token", key: "token" } },
-          },
-        ],
-        labels: { "openclaw.dev/revision": revision.id },
-      },
+      ]),
     });
 
   await assert.rejects(provision(revision.harness), (error) => {
@@ -932,19 +858,21 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.unsupported = true;
   let invokedFactory = false;
+  const options = {
+    createSandboxDriver() {
+      invokedFactory = true;
+      throw new Error("An injected factory must not bypass provider configuration validation.");
+    },
+  };
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      createSandboxDriver() {
-        invokedFactory = true;
-        throw new Error("An injected factory must not bypass provider configuration validation.");
-      },
-    }),
+    loadInstallationFile(t, configuration, options),
     /drivers\.sandbox\.configuration does not match its Driver configuration schema/,
   );
   assert.equal(invokedFactory, false);
+  // Control: the same factory is reached once the configuration is valid.
+  await assert.rejects(loadInstallationFile(t, sandboxInstallation(), options), /injected factory/);
+  assert.equal(invokedFactory, true);
 });
 
 test("startup rejects OpenShell network values outside the v0.1 protocol enums", async (t) => {
@@ -953,10 +881,7 @@ test("startup rejects OpenShell network values outside the v0.1 protocol enums",
     "inspect";
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/,
   );
 });
@@ -967,10 +892,7 @@ test("startup refuses OpenShell filesystem modes that can weaken containment", a
     configuration.drivers.sandbox.configuration.policy.landlockCompatibility = mode;
 
     await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
+      loadInstallationFile(t, configuration),
       /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/,
     );
   }
@@ -981,10 +903,7 @@ test("startup rejects OpenShell network policies without binary identities", asy
   configuration.drivers.sandbox.configuration.policy.networkPolicies[0].binaries = [];
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell network policy model-egress requires at least one binary path/,
   );
 });
@@ -1000,13 +919,7 @@ test("startup rejects inherited OpenShell network enum property names", async (t
     const configuration = sandboxInstallation();
     configuration.drivers.sandbox.configuration.policy.networkPolicies[0].endpoints[0][field] =
       value;
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      expected,
-    );
+    await assert.rejects(loadInstallationFile(t, configuration), expected);
   }
 });
 
@@ -1016,10 +929,7 @@ test("startup rejects the deprecated OpenShell passthrough spelling", async (t) 
     "passthrough";
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/,
   );
 });
@@ -1029,10 +939,7 @@ test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", as
   configuration.drivers.sandbox.configuration.kubernetes.serviceAccount.mode = "driverConfig";
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell serviceAccount mode must be gatewayConfigured/,
   );
 });
@@ -1046,10 +953,7 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
   };
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell gateway readiness timeout must be a positive safe integer/,
   );
 });

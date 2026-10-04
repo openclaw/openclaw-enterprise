@@ -257,6 +257,14 @@ function configuration() {
 }
 
 async function start() {
+  // Time since process start: Node bootstrap and loading the module graph before start().
+  const phasesMs = { modules: Math.round(performance.now()) };
+  let phaseStartedAt = performance.now();
+  const phaseCompleted = (phase) => {
+    const now = performance.now();
+    phasesMs[phase] = Math.round(now - phaseStartedAt);
+    phaseStartedAt = now;
+  };
   const settings = configuration();
   const metricsSettings = metricsConfiguration(process.env, settings.mode, settings.port);
   const metrics = metricsSettings === undefined ? undefined : createOccMetrics("api");
@@ -331,6 +339,7 @@ async function start() {
   if (settings.mode === "development" && settings.databaseUrl === undefined) {
     throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
   }
+  phaseCompleted("configuration");
   let app;
   if (settings.mode === "production") {
     if (drivers === undefined) {
@@ -341,7 +350,11 @@ async function start() {
       drivers,
       logger,
       ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
+      onStartupPhase: (phase, durationMs) => {
+        phasesMs[phase] = durationMs;
+      },
     });
+    phaseStartedAt = performance.now();
   } else {
     const { composePostgresDevelopment } = await import("./composition/development-postgres.ts");
     app = await composePostgresDevelopment(
@@ -349,6 +362,7 @@ async function start() {
       drivers,
       serviceAccountDriverFactory,
     );
+    phaseCompleted("composition");
   }
 
   let closing = false;
@@ -356,16 +370,29 @@ async function start() {
   app.addHook("onClose", async () => {
     await metricsListener?.close();
   });
-  async function shutdown() {
+  async function shutdown(signal) {
     if (closing) {
       return;
     }
     closing = true;
+    // Otherwise nothing marks the start or end of the drain: only the Pod's exit code would
+    // tell a completed drain from one the termination grace cut off.
+    const startedAt = performance.now();
+    emitOccLogEvent(logger, { event: "shutdown.started", signal });
     try {
       await app.close();
       process.exitCode = 0;
+      emitOccLogEvent(logger, {
+        event: "shutdown.completed",
+        durationMs: performance.now() - startedAt,
+      });
     } catch {
       process.exitCode = 1;
+      emitOccLogEvent(logger, {
+        event: "shutdown.failed",
+        code: "SHUTDOWN_FAILED",
+        durationMs: performance.now() - startedAt,
+      });
     }
   }
 
@@ -373,15 +400,26 @@ async function start() {
   process.once("SIGINT", shutdown);
 
   try {
+    // Fastify compiles route validators and response serializers here.
+    await app.ready();
+    phaseCompleted("ready");
     if (metrics !== undefined) {
       metricsListener = await startMetricsListener(metrics, metricsSettings);
     }
     await app.listen({ host: settings.host, port: settings.port });
+    phaseCompleted("listen");
   } catch (error) {
     await app.close();
     throw error;
   }
-  logger.info({ event: "listening", host: settings.host, port: settings.port });
+  // One line tells an operator how long the boot took and which phase dominated.
+  logger.info({
+    event: "listening",
+    host: settings.host,
+    port: settings.port,
+    startupMs: Math.round(performance.now()),
+    phasesMs,
+  });
 }
 
 try {

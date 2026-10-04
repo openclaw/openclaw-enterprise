@@ -377,6 +377,14 @@ spec:
             httpGet:
               path: /healthz
               port: http
+          # Liveness starts only once the API answers, so a slow boot (module loading,
+          # database, Kubernetes preflight) gets 2 min before the kubelet restarts it.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
           {{- else }}
           readinessProbe:
             exec:

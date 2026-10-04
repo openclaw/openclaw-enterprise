@@ -159,6 +159,18 @@ function revisionWork(namespaceId, idempotencyKey, agentId, revisionId, availabl
   };
 }
 
+// Repository cleanup authority is decided in SQL: a claim that may not register or abandon
+// cleanup is refused with these exact scope violations.
+const cleanupNotOwned = {
+  name: "ScopeViolationError",
+  message: "The current work does not own this repository cleanup.",
+};
+const cleanupNotAbandonable = {
+  name: "ScopeViolationError",
+  message:
+    "Cleanup cannot be abandoned, and maintenance continuation requires a current active revision.",
+};
+
 async function claimExpected(queue, idempotencyKey) {
   for (let index = 0; index < 200; index += 1) {
     const claim = await queue.claim();
@@ -1207,7 +1219,12 @@ test(
         availableAt: new Date(0),
       });
       const source = await claimExpected(queue, sourceKey);
-      await assert.rejects(queue.enqueueRepositoryCleanup(source, sibling));
+      await assert.rejects(queue.enqueueRepositoryCleanup(source, sibling), cleanupNotOwned);
+      if (index === 0) {
+        // A revision admitted after this stop Work was created cannot inherit its cleanup.
+        const later = await createRepositoryRevision(pool, namespaceId, agents[0], ["closing"], 2);
+        await assert.rejects(queue.enqueueRepositoryCleanup(source, later), cleanupNotOwned);
+      }
       await assert.rejects(
         queue.enqueueRepositoryCleanup({ ...source, claimToken: randomUUID() }, owner),
         WorkClaimLostError,
@@ -1239,7 +1256,9 @@ test(
 
     // Retry preserves the same durable obligation and claim ownership.
     const cleanup = await claimExpected(queue, firstCleanup.idempotencyKey);
-    await assert.rejects(queue.fail(cleanup, { code: "CANNOT_ABANDON" }));
+    // Cleanup work cannot register more cleanup, even for the revision it cleans.
+    await assert.rejects(queue.enqueueRepositoryCleanup(cleanup, owner), cleanupNotOwned);
+    await assert.rejects(queue.fail(cleanup, { code: "CANNOT_ABANDON" }), cleanupNotAbandonable);
     await queue.defer(cleanup, { code: "REPOSITORY_CLEANUP_PENDING" });
     await assert.rejects(queue.complete(cleanup), WorkClaimLostError);
     assert.equal((await readQueueRow(pool, firstCleanup.idempotencyKey)).state, "queued");
@@ -1468,13 +1487,14 @@ test(
   requiresPostgres,
   async (context) => {
     const { pool, queue, PostgresWorkQueue } = await dependencies(context);
-    const { namespaceId, agents } = await createResources(pool, 2);
+    const { namespaceId, agents } = await createResources(pool);
     const owner = await createRepositoryRevision(pool, namespaceId, agents[0]);
-    const sibling = await createRepositoryRevision(pool, namespaceId, agents[1]);
+    const successor = await createRepositoryRevision(pool, namespaceId, agents[0], ["open"], 2);
     const sourceKey = `queue-cleanup-rollback:${randomUUID()}`;
     await queue.enqueue(revisionWork(namespaceId, sourceKey, agents[0], owner.revisionId));
     const claim = await claimExpected(queue, sourceKey);
     const before = await readRepositoryAttempts(pool, owner.revisionId);
+    const successorBefore = await readRepositoryAttempts(pool, successor.revisionId);
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -1496,14 +1516,21 @@ test(
     const cleanupKey = repositoryCleanupKey(owner.revisionId, sourceKey, "terminal-runtime");
     assert.equal(await readQueueRow(pool, cleanupKey), undefined);
     await insertRawQueueWork(pool, {
-      ...revisionWork(namespaceId, cleanupKey, agents[1], sibling.revisionId),
+      // Same Agent, another revision: the key collides and only the revision differs.
+      ...revisionWork(namespaceId, cleanupKey, agents[0], successor.revisionId),
       actorId: "principal-conflicting-cleanup",
     });
-    await assert.rejects(queue.fail(claim, { code: "COLLIDING_CLEANUP" }));
+    // The colliding owner turns the cleanup upsert's attempt count negative, so the
+    // attempt-count constraint aborts the whole failure transition.
+    await assert.rejects(queue.fail(claim, { code: "COLLIDING_CLEANUP" }), {
+      code: "23514",
+      constraint: "controller_work_attempt_count_valid",
+    });
     const source = await readQueueRow(pool, sourceKey);
     assert.equal(source.state, "claimed");
     assert.equal(source.claim_token, claim.claimToken);
     assert.deepEqual(await readRepositoryAttempts(pool, owner.revisionId), before);
+    assert.deepEqual(await readRepositoryAttempts(pool, successor.revisionId), successorBefore);
     assert.equal(
       (
         await pool.query("SELECT id FROM occ.audit_events WHERE resource_id = $1", [
@@ -1542,7 +1569,7 @@ for (const purpose of ["sessions", "terminal-runtime"]) {
       for (let index = 0; index < 8; index += 1) {
         const claim = await claimExpected(queue, cleanupKey);
         assert.ok(claim.attemptCount <= 2, "cleanup attempts must saturate without integer growth");
-        await assert.rejects(queue.fail(claim, { code: "CANNOT_ABANDON" }));
+        await assert.rejects(queue.fail(claim, { code: "CANNOT_ABANDON" }), cleanupNotAbandonable);
         assert.equal((await readQueueRow(pool, cleanupKey)).state, "claimed");
         if (index % 2 === 0) {
           await queue.retry(claim, { code: "CLEANUP_UNAVAILABLE" });
@@ -1649,7 +1676,10 @@ for (const purpose of ["sessions", "terminal-runtime"]) {
         );
         await assert.rejects(
           queue.enqueue(input),
-          undefined,
+          {
+            name: "ScopeViolationError",
+            message: "Repository cleanup work requires an owned cleanup transfer.",
+          },
           `normal enqueue must reserve ${scenario.name}`,
         );
         await insertRawQueueWork(pool, input, 2);
@@ -1718,9 +1748,10 @@ for (const transition of ["fail", "retry", "expired claim", "exhausted queued"])
       });
       // A revision admitted after this Work was created cannot inherit its cleanup authority.
       const later = await createRepositoryRevision(pool, namespaceId, agents[0], ["closing"], 2);
+      // The sibling Agent is being deleted too, so only Agent identity refuses its cleanup.
       await pool.query(
-        "UPDATE occ.agents SET desired_runtime_state = 'stopped', status = 'deleting' WHERE id = $1",
-        [agents[0]],
+        "UPDATE occ.agents SET desired_runtime_state = 'stopped', status = 'deleting' WHERE id = ANY($1)",
+        [agents],
       );
       const before = await readRepositoryAttempts(pool, owner.revisionId);
       const siblingBefore = await readRepositoryAttempts(pool, sibling.revisionId);
@@ -1738,8 +1769,8 @@ for (const transition of ["fail", "retry", "expired claim", "exhausted queued"])
           queue.enqueueRepositoryCleanup({ ...claim, claimToken: randomUUID() }, owner),
           WorkClaimLostError,
         );
-        await assert.rejects(queue.enqueueRepositoryCleanup(claim, sibling));
-        await assert.rejects(queue.enqueueRepositoryCleanup(claim, later));
+        await assert.rejects(queue.enqueueRepositoryCleanup(claim, sibling), cleanupNotOwned);
+        await assert.rejects(queue.enqueueRepositoryCleanup(claim, later), cleanupNotOwned);
         // Teardown fails before finalization; unresolved sessions no longer
         // prevent successful finalization from deleting this Agent.
         if (transition === "expired claim") {
@@ -1969,10 +2000,19 @@ test(
       queue.enqueueRepositoryCleanup({ ...claim, claimToken: randomUUID() }, previous),
       WorkClaimLostError,
     );
-    await assert.rejects(queue.enqueueRepositoryCleanup(claim, later));
-    await assert.rejects(queue.enqueueRepositoryCleanup(claim, unrelated));
+    await assert.rejects(queue.enqueueRepositoryCleanup(claim, later), cleanupNotOwned);
+    await assert.rejects(queue.enqueueRepositoryCleanup(claim, unrelated), cleanupNotOwned);
+    await assert.rejects(
+      queue.enqueueRepositoryCleanup(claim, { ...previous, revisionId: `${previous.revisionId}0` }),
+      { name: "ScopeViolationError", message: "Repository cleanup requires an exact revision ID." },
+    );
+    await assert.rejects(queue.enqueueRepositoryCleanup(claim, previous, "all"), {
+      name: "ScopeViolationError",
+      message: "Repository cleanup requires a supported purpose.",
+    });
     await assert.rejects(
       queue.enqueueRepositoryCleanup(claim, { ...previous, namespaceId: `ns_${randomUUID()}` }),
+      cleanupNotOwned,
     );
     const registered = await queue.enqueueRepositoryCleanup(
       { ...claim, actorId: "principal-forged-caller" },
@@ -1993,7 +2033,10 @@ test(
       unrelated,
       { ...current, namespaceId: `ns_${randomUUID()}` },
     ]) {
-      await assert.rejects(queue.enqueueRepositoryCleanup(claim, forbidden, "terminal-runtime"));
+      await assert.rejects(
+        queue.enqueueRepositoryCleanup(claim, forbidden, "terminal-runtime"),
+        cleanupNotOwned,
+      );
     }
     await assert.rejects(
       queue.enqueueRepositoryCleanup(
@@ -2029,6 +2072,20 @@ test(
     await queue.complete(claim);
     await completeCleanupWork(queue, previous.revisionId, sourceKey);
     await completeCleanupWork(queue, current.revisionId, sourceKey, "terminal-runtime");
+    // Credential withdrawal names the active revision but owns no repository cleanup. It is
+    // claimable only once the Agent's other claimed work is settled.
+    await pool.query(
+      "UPDATE occ.agents SET active_revision_id = $2, desired_runtime_state = 'running' WHERE id = $1",
+      [agents[0], current.revisionId],
+    );
+    const withdrawalKey = `agent_revision:${current.revisionId}:reconcile:credentials_withdrawn:${randomUUID()}`;
+    await queue.enqueue({
+      ...revisionWork(namespaceId, withdrawalKey, agents[0], current.revisionId),
+      agentTarget: "credentials_withdrawn",
+    });
+    const withdrawal = await claimExpected(queue, withdrawalKey);
+    await assert.rejects(queue.enqueueRepositoryCleanup(withdrawal, previous), cleanupNotOwned);
+    await queue.complete(withdrawal);
     await assert.rejects(queue.enqueueRepositoryCleanup(claim, previous), WorkClaimLostError);
     await assert.rejects(
       queue.enqueueRepositoryCleanup(claim, current, "terminal-runtime"),
@@ -2053,8 +2110,11 @@ test(
     const namespaceKey = `queue-provision-registration:${randomUUID()}`;
     await queue.enqueue(namespaceWork(namespaceId, namespaceKey));
     const namespaceClaim = await claimExpected(queue, namespaceKey);
-    await assert.rejects(queue.enqueueRepositoryCleanup(namespaceClaim, owner));
-    await assert.rejects(queue.enqueueRepositoryCleanup(namespaceClaim, owner, "terminal-runtime"));
+    await assert.rejects(queue.enqueueRepositoryCleanup(namespaceClaim, owner), cleanupNotOwned);
+    await assert.rejects(
+      queue.enqueueRepositoryCleanup(namespaceClaim, owner, "terminal-runtime"),
+      cleanupNotOwned,
+    );
     await queue.complete(namespaceClaim);
   },
 );
@@ -2092,6 +2152,10 @@ test(
         transactionQueue.enqueue(
           revisionWork(namespaceId, successorKey, agents[0], owner.revisionId),
         ),
+        {
+          name: "ResourceConflictError",
+          message: "The controller work idempotency key already belongs to another owner or actor.",
+        },
       );
       await client.query("ROLLBACK");
       assert.equal((await readQueueRow(pool, sourceKey)).state, "claimed");
@@ -2238,8 +2302,17 @@ for (const invalid of [
         ]);
       }
       const before = await readRepositoryAttempts(pool, owner.revisionId);
+      // Malformed or non-continuation keys fail the key check before any SQL runs; the
+      // rest reach SQL, which finds no current active revision for the claim.
       await assert.rejects(
         queue.fail(claim, { code: "INVALID_CONTINUATION" }, { continuingRevision: true }),
+        ["leading zero", "suffix", "cleanup"].includes(invalid)
+          ? {
+              name: "ScopeViolationError",
+              message:
+                "Only an active revision's deployment or maintenance can continue after failure.",
+            }
+          : cleanupNotAbandonable,
       );
       assert.equal((await readQueueRow(pool, sourceKey)).state, "claimed");
       assert.deepEqual(await readRepositoryAttempts(pool, owner.revisionId), before);

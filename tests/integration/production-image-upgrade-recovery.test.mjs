@@ -150,6 +150,10 @@ if (tool === 'helm') {
 }
 `;
 
+// The fixture tools exit 9 only for a fault armed with failNext, so an interrupted
+// run must stop at that fault and not at an earlier refusal.
+const injectedFault = { code: 9 };
+
 const shippedCollectorConfig = (key) => readFile(join(repository, "deploy/logging", key));
 
 // The bundled Collector's operator-created config Secret, as created from
@@ -389,7 +393,7 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
 test("resume reads an accepted Secret write before Helm and preserves its other data", async (t) => {
   const f = await fixture(t);
   await f.failNext("lost-secret-response");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   const interrupted = await f.state();
   assert.match(
     Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
@@ -414,7 +418,7 @@ test("resume reads an accepted Secret write before Helm and preserves its other 
 test("resume recognizes a committed Helm release without rerunning its migration", async (t) => {
   const f = await fixture(t);
   await f.failNext("lost-helm-response");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   await f.run("--resume");
   assert.equal((await f.events()).filter((event) => event === "migration").length, 1);
 });
@@ -422,7 +426,7 @@ test("resume recognizes a committed Helm release without rerunning its migration
 test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
   const f = await fixture(t);
   await f.failNext("fail-scale-worker");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   assert.equal((await f.state()).api, 0);
   assert.equal((await f.state()).worker, 1);
   assert.deepEqual(await f.events(), ["scale-api"]);
@@ -433,7 +437,7 @@ test("an interrupted quiescence never starts migration while the worker still ru
 test("failed Helm migration keeps old writers stopped and requires checked history and a terminal Job", async (t) => {
   const f = await fixture(t);
   await f.failNext("fail-migration");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   assert.equal((await f.state()).api, 0);
   assert.equal((await f.state()).worker, 0);
   await assert.rejects(f.run("--resume"), /migration --check/);
@@ -482,7 +486,7 @@ test("resume reads back and stops on an unknown Agent deployment instead of retr
 test("resume refuses a pending Helm release or unrelated Secret changes", async (t) => {
   const f = await fixture(t);
   await f.failNext("lost-secret-response");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   const state = await f.state();
   state.helmStatus = "pending-upgrade";
   await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
@@ -497,7 +501,7 @@ test("resume refuses a pending Helm release or unrelated Secret changes", async 
 test("resume rejects malformed protected inputs before another mutation", async (t) => {
   const f = await fixture(t);
   await f.failNext("lost-secret-response");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   await writeFile(join(f.directory, "values.json"), "");
   await assert.rejects(f.run("--resume"), /protected Helm values changed/);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 0);
@@ -512,7 +516,7 @@ test("reviewed settings survive an interrupted controller upgrade without losing
   });
   // The Secret write succeeds, but its client loses the response before Helm.
   await f.failNext("lost-secret-response");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   const interrupted = await f.state();
   const liveInstallation = JSON.parse(
     Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
@@ -568,7 +572,7 @@ test("stale baseline image fields stop before any writes", async (t) => {
 test("resume refuses altered reviewed candidates before another mutation", async (t) => {
   const f = await fixture(t, { candidates: true });
   await f.failNext("lost-secret-response");
-  await assert.rejects(f.run());
+  await assert.rejects(f.run(), injectedFault);
   const path = join(f.directory, "candidate-values.json");
   const candidate = JSON.parse(await readFile(path, "utf8"));
   candidate.api.channelDirectoryProxyUrl = "http://198.51.100.26:3128";
@@ -582,7 +586,7 @@ test("resume refuses changed prepared candidate and fleet evidence before anothe
     await t.test(name, async (subtest) => {
       const f = await fixture(subtest);
       await f.failNext("fail-scale-worker");
-      await assert.rejects(f.run());
+      await assert.rejects(f.run(), injectedFault);
       const events = await f.events();
       // An interrupted release must use the frozen candidate and Agent inventory.
       await writeFile(join(f.evidence, name), "{}\n");

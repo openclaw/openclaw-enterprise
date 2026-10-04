@@ -165,10 +165,11 @@ modify the default kubeconfig or current kubectl context.
 
 For separate stacks, select distinct state directories, cluster names, bridge
 subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
-changing the API port alone leaves PostgreSQL on port 55432. Each generated
-Harness workload has a 2 GiB memory limit, and each Agent Gateway requests 1280
-MiB with a 3 GiB limit; size the local engine VM for OCC plus the Agents you
-run. Keep each stack's resources under the helper's lifecycle until cleanup.
+changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
+requests 1792 MiB with a 3 GiB limit, and each dedicated Codex Harness requests
+768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 2.5 GiB; size
+the local engine VM for OCC plus the Agents you run
+([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
 ## Require both proxies before enabling Slack
 
@@ -194,7 +195,11 @@ Apply the edits to the existing release as shown below. Use the chart
 source matching the installed controller, retain its image references and other
 protected inputs, and plan a maintenance window if Agents are running. Confirm
 the release and namespace; the values below are launcher defaults. The checksum
-rolls the API and worker even when only the Installation document changed.
+rolls the API and worker even when only the Installation document changed. After
+an [in-place image upgrade](local-k3d-image-upgrade.md#apply-installation-changes),
+`helm-values.json` still names the bring-up images: make both edits in that
+page's recovered `INSTALLATION` and `VALUES` and apply them with
+[apply other Installation changes](production-upgrade.md#apply-other-installation-changes) instead.
 
 ```bash
 set -euo pipefail
@@ -215,14 +220,15 @@ values.controlPlane ??= {};
 values.controlPlane.installationChecksum = createHash('sha256')
   .update(readFileSync(join(root, 'installation.yaml'))).digest('hex');
 writeFileSync(path, JSON.stringify(values, null, 2) + '\n');
+const document = readFileSync(join(root, 'installation.yaml')).toString('base64');
+writeFileSync(join(root, 'installation-secret-patch.json'),
+  JSON.stringify({ data: { 'installation.yaml': document } }));
 NODE
 
 kubectl --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --context "$OCC_SLACK_CONTEXT" \
-  -n "$OCC_SLACK_NAMESPACE" create secret generic occ-installation-startup \
-  --from-file=installation.yaml="$OCC_SLACK_STATE/installation.yaml" \
-  --dry-run=client -o yaml | \
-  kubectl --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --context "$OCC_SLACK_CONTEXT" \
-    -n "$OCC_SLACK_NAMESPACE" apply -f -
+  -n "$OCC_SLACK_NAMESPACE" patch secret occ-installation-startup \
+  --type merge --patch-file "$OCC_SLACK_STATE/installation-secret-patch.json"
+rm "$OCC_SLACK_STATE/installation-secret-patch.json"
 
 helm upgrade "$OCC_SLACK_RELEASE" deploy/helm/openclaw-enterprise \
   --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --kube-context "$OCC_SLACK_CONTEXT" \

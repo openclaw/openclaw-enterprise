@@ -81,7 +81,7 @@ Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Dis
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getUsableActiveAgentRevision`
 
-The handler validates the human session and exact Agent `use` before calling `resolveNativeAdminAvailability`; only then can it return `disabled`. Enabled access requires a public origin and native admin domain. `controller.getUsableActiveAgentRevision` authorizes `use`, loads the Agent, and selects its active revision and newest successor. A stopped Agent without `activeRevisionId` raises `ResourceConflictError`, producing only `status: "stopped"`, including before first deployment. `DependencyUnavailableError` instead produces `unavailable`, such as while a running Agent awaits activation. The panel reports the active revision independently of the viewed snapshot. Authorization denial returns `403` with the human IAM denial audit.
+The handler verifies the human session and exact Agent `use` before resolving availability; `disabled` still requires authorized Agent existence. Enabled access requires a public origin and native domain. `getUsableActiveAgentRevision` selects the active revision and newest successor. A stopped Agent without an active revision raises `ResourceStateConflictError` and returns only `status: "stopped"`, including before first deployment. `NoActiveAgentRevisionError` returns `unavailable` while a desired-running Agent awaits activation. Other dependency failures, including IAM or State outages, return `503`. The panel reports the active revision independently of the viewed snapshot. Authorization denial returns `403` with the human IAM denial audit.
 
 A newer successor on a Compute Driver requiring stopped predecessors also produces `unavailable`: the worker removes the old workload before starting its replacement. A failed replacement leaves the old revision recorded as active without a serving workload. Both status and proxy admission check this boundary.
 
@@ -187,7 +187,7 @@ The init container cannot write through the gateway's later mount path.
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to invalid native admin enablement, missing public origin, invalid Agent domain, invalid shared cookie parent domain, invalid Better Auth cookie scope, or insufficient auth secret material.
 - `disabled` means the Installation has not enabled the feature.
 - `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
-- `unavailable` means active revision selection failed or an exclusive Compute Driver is replacing the active workload. Check Deployment activity, including failed replacements, then refresh access.
+- `unavailable` means a desired-running Agent has no active revision or an exclusive Compute Driver is replacing the active workload. Check Deployment activity, including failed replacements, then refresh access. Other dependency outages return `503`.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests should not contain native-admin exchange, bootstrap, callback, launch-code, state, verifier, or Agent-specific session-cookie traffic.
@@ -195,8 +195,8 @@ The init container cannot write through the gateway's later mount path.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
 - `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
-- Browser tests cover panel visibility, warning copy, available status, and opening the returned URL. Integration proof should cover shared-cookie admission, denied service API keys, unknown host denial, proxied asset loads, WebSocket reconnect, the 25-second authorization lease, revision-change closure and reconnect, and a reversible native admin edit on a disposable Agent.
-- This source trace does not establish live runtime proof.
+- Browser tests cover panel visibility, warning copy, available status, and opening the returned URL. Integration proof should cover shared-cookie admission, denied service API keys, unknown host denial, proxied asset loads, WebSocket reconnect, authorization lease renewal (the PostgreSQL suite shortens the 25-second interval), revision-change closure and reconnect, and a reversible native admin edit on a disposable Agent.
+- The flow is source-backed only here. Live runtime proof remains separate.
 
 ## Related docs
 
@@ -211,6 +211,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-04 07:30: Only a missing active revision reports `unavailable`; IAM and other dependency outages return `503`, and close or refuse proxied requests as `dependency_failure`. (bh11-native-status)
 
 - 2026-10-03 08:54: Preserve access refresh, visible read failures, service-key feedback and cached pages after optional access denial. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - b6f9185159f14399905bf495b3cdef3ce2d14e30)
 

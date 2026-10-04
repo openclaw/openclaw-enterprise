@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
+import { createModelProbeCertificates } from "../../tests/helpers/runtime-model-probe-certificates.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
@@ -183,64 +184,7 @@ async function pushedDigest(tag) {
 async function createModelCertificates(directory) {
   await mkdir(directory, { recursive: true });
   const file = (name) => join(directory, name);
-  await run("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "2",
-    "-subj",
-    "/CN=oce-first-agent-smoke-ca",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    file("ca-key.pem"),
-    "-out",
-    file("ca.pem"),
-  ]);
-  await run("openssl", [
-    "req",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-subj",
-    "/CN=api.openai.com",
-    "-keyout",
-    file("key.pem"),
-    "-out",
-    file("leaf.csr"),
-  ]);
-  await writeFile(
-    file("leaf.ext"),
-    [
-      "subjectAltName=DNS:api.openai.com",
-      "basicConstraints=critical,CA:FALSE",
-      "extendedKeyUsage=serverAuth",
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      "",
-    ].join("\n"),
-  );
-  await run("openssl", [
-    "x509",
-    "-req",
-    "-in",
-    file("leaf.csr"),
-    "-CA",
-    file("ca.pem"),
-    "-CAkey",
-    file("ca-key.pem"),
-    "-CAcreateserial",
-    "-days",
-    "2",
-    "-extfile",
-    file("leaf.ext"),
-    "-out",
-    file("cert.pem"),
-  ]);
+  await createModelProbeCertificates({ directory, caName: "oce-first-agent-smoke-ca", run });
   await copyFile(
     join(root, "tests/fixtures/runtime-model-probe-endpoint.mjs"),
     file("endpoint.mjs"),

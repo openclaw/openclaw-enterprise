@@ -96,9 +96,11 @@ func TestDevelopmentInstallationAdmitsTheStatusProxySource(t *testing.T) {
 	}
 }
 
-func TestDevelopmentInstallationGivesGatewaysRoomForCodexChat(t *testing.T) {
-	// A dedicated Codex Gateway serving native admin chat peaked at 1.9 GiB and
-	// was OOM-killed at a 2Gi limit on its first coding turn (D200).
+func TestDevelopmentInstallationSizesAgentsFromMeasuredUse(t *testing.T) {
+	// Requests cover measured use between turns and limits cover measured peaks:
+	// a dedicated Codex Gateway was OOM-killed at 2Gi (D200), and a Codex Harness
+	// running lint, tsc and tests together was OOM-killed at 2Gi and reached a
+	// 4Gi limit.
 	state := &developmentState{Cluster: "occ-dev-test", SandboxDriver: "none", DeploymentMode: "k3d", PlatformNamespace: "oce-system", directory: t.TempDir()}
 	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "10.42.0.1/32"); err != nil {
 		t.Fatal(err)
@@ -130,10 +132,13 @@ func TestDevelopmentInstallationGivesGatewaysRoomForCodexChat(t *testing.T) {
 	if got := resources.Gateway.Limits["memory"]; got != "3Gi" {
 		t.Fatalf("Gateway memory limit = %q, want 3Gi", got)
 	}
-	if got := resources.Gateway.Requests["memory"]; got != "1280Mi" {
-		t.Fatalf("Gateway memory request = %q, want 1280Mi", got)
+	if got := resources.Gateway.Requests["memory"]; got != "1792Mi" {
+		t.Fatalf("Gateway memory request = %q, want 1792Mi", got)
 	}
-	if got := resources.Agent.Limits["memory"]; got != "2Gi" {
-		t.Fatalf("Harness memory limit = %q, want 2Gi", got)
+	if got := resources.Agent.Limits["memory"]; got != "6Gi" {
+		t.Fatalf("Harness memory limit = %q, want 6Gi", got)
+	}
+	if got := resources.Agent.Requests["memory"]; got != "768Mi" {
+		t.Fatalf("Harness memory request = %q, want 768Mi", got)
 	}
 }

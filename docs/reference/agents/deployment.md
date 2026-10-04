@@ -142,7 +142,9 @@ refused with its capability error even when the Agent principal also lacks a
 grant. When only the Agent principal's grant is missing, the `403` names that
 `servicePrincipalId`, the action, and the exact Secret or credential source,
 for example `The Agent service principal <id> is not authorized to operate
-secret <id>`. Denials of your own permissions stay generic.
+secret <id>`. Its audit event records your own request with reason code
+`AGENT_PRINCIPAL_NOT_AUTHORIZED` and names that principal, action, resource and
+IAM evidence in its details. Denials of your own permissions stay generic.
 
 ### Pending deployment progress
 
@@ -159,15 +161,26 @@ outcome: the revision stays pending until it is ready, a held runtime failure
 ends it, or the convergence deadline passes. The worker rechecks an unready
 revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
+A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
+apply its workspace node, so activation fails at once with
+`AGENT_GATEWAY_UNAUTHORIZED`. Check that the Agent's Configuration sets
+`gateway.auth.password` to `OPENCLAW_GATEWAY_PASSWORD` (**Enable gateway password
+access**) and deploy again; the gateway log's `runtime.workspace_node` line names
+OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
+
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
 through its route yet (for example, the route answers 404 until the gateway
 proxy has the new route, or 503 until it has the ready Pod), and
 `KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
 connect, or got 429 or 5xx. Both codes apply during preparation and
-activation alike. The worker retries on the same cadence without
-spending its `OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the
-convergence deadline fails the deployment with its own code.
+activation alike. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
+refuses new requests from the controller because it holds OpenShell's limit of
+durable request admissions; see the
+[OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
+The worker retries on the same cadence without spending its
+`OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the convergence
+deadline fails the deployment with its own code.
 
 ### Model check failure cause
 

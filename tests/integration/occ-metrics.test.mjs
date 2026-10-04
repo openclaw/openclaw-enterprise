@@ -56,20 +56,43 @@ test("API metrics follow real authenticated routes and keep replica registries i
 
 test("metrics settings reject exposed development binds and disabled stray settings", () => {
   assert.equal(metricsConfiguration({}, "development"), undefined);
-  for (const environment of [
-    { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "0.0.0.0", OCC_METRICS_PORT: "9464" },
-    { OCC_METRICS_ENABLED: "false", OCC_METRICS_PORT: "9464" },
-    { OCC_METRICS_ENABLED: "yes" },
-    { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "127.0.0.1", OCC_METRICS_PORT: "0" },
+  for (const [environment, refusal] of [
+    [
+      { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "0.0.0.0", OCC_METRICS_PORT: "9464" },
+      /Development metrics require loopback/,
+    ],
+    [
+      { OCC_METRICS_ENABLED: "false", OCC_METRICS_PORT: "9464" },
+      /Disabled metrics cannot have host or port settings/,
+    ],
+    [{ OCC_METRICS_ENABLED: "yes" }, /OCC_METRICS_ENABLED must be true or false/],
+    [
+      { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "127.0.0.1", OCC_METRICS_PORT: "0" },
+      /OCC_METRICS_PORT must be a distinct valid TCP port/,
+    ],
+    [
+      { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "localhost", OCC_METRICS_PORT: "9464" },
+      /OCC_METRICS_HOST must be an explicit IP address/,
+    ],
   ]) {
-    assert.throws(() => metricsConfiguration(environment, "development"));
+    assert.throws(() => metricsConfiguration(environment, "development"), refusal);
   }
-  for (const host of ["::", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "127.0.0.2"]) {
-    assert.throws(() =>
+  assert.throws(
+    () =>
       metricsConfiguration(
-        { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: host, OCC_METRICS_PORT: "9464" },
-        "production",
+        { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "127.0.0.1", OCC_METRICS_PORT: "9464" },
+        "test",
       ),
+    /Metrics require development or production mode/,
+  );
+  for (const host of ["::", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "127.0.0.2"]) {
+    assert.throws(
+      () =>
+        metricsConfiguration(
+          { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: host, OCC_METRICS_PORT: "9464" },
+          "production",
+        ),
+      /Production metrics require an explicit Pod interface address/,
     );
   }
 });

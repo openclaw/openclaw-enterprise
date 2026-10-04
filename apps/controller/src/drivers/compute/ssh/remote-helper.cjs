@@ -857,6 +857,21 @@ async function activate(input, agentDir, agent, current) {
   return {};
 }
 
+// Validate the current pointer and every revision snapshot before deleting an Agent tree.
+function verifySnapshots(input, agentDir) {
+  currentSnapshot(input, agentDir);
+  for (const revision of fs.readdirSync(join(agentDir, "revisions"))) {
+    const marker = readJson(join(agentDir, "revisions", revision, "revision.json"));
+    if (
+      typeof marker.revisionId !== "string" ||
+      revision !== hash(marker.revisionId).slice(0, 12)
+    ) {
+      throw new OwnershipFailure("Invalid revision ownership marker.");
+    }
+    snapshot(input, agentDir, marker.revisionId);
+  }
+}
+
 async function removeNamespace(input, nsDir) {
   const agentsDir = join(nsDir, "agents");
   directory(agentsDir);
@@ -876,17 +891,7 @@ async function removeNamespace(input, nsDir) {
     const scoped = { ...input, revision: agent };
     verifyAgent(scoped, agentDir);
     await verifyRuntimeIdentity(scoped, agent);
-    currentSnapshot(scoped, agentDir);
-    for (const revision of fs.readdirSync(join(agentDir, "revisions"))) {
-      const marker = readJson(join(agentDir, "revisions", revision, "revision.json"));
-      if (
-        typeof marker.revisionId !== "string" ||
-        revision !== hash(marker.revisionId).slice(0, 12)
-      ) {
-        throw new OwnershipFailure("Invalid revision ownership marker.");
-      }
-      snapshot(scoped, agentDir, marker.revisionId);
-    }
+    verifySnapshots(scoped, agentDir);
     agents.push(agent);
   }
   for (const agent of agents) {
@@ -903,6 +908,40 @@ async function removeNamespace(input, nsDir) {
   return {};
 }
 
+// Agent deletion owns the durable host state that revision retirement keeps: the
+// Agent directory with its port marker, the unit file, and the runtime account.
+async function removeAgent(input, nsDir) {
+  const agentDir = join(nsDir, "agents", hash(input.revision.agentId).slice(0, 12));
+  if (inspect(nsDir) !== undefined) {
+    directory(join(nsDir, "agents"));
+  }
+  if (inspect(agentDir) === undefined) {
+    // A retry after the tree was removed only needs the remaining account.
+    const markerPath = accountMarker(input);
+    if (inspect(markerPath) !== undefined) {
+      const marker = readJson(markerPath);
+      if (marker.runtimeUser !== accountName(input)) {
+        throw new OwnershipFailure("Runtime account marker is invalid.");
+      }
+      await removeRuntimeIdentity(input, marker);
+    }
+    return {};
+  }
+  const agent = verifyAgent(input, agentDir);
+  await verifyRuntimeIdentity(input, agent);
+  verifySnapshots(input, agentDir);
+  if (verifyUnit(input, agent) !== undefined) {
+    const unit = unitName(agent.agentId);
+    await systemctl("stop", unit);
+    await systemctl("disable", unit);
+    fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
+  }
+  await systemctl("daemon-reload");
+  fs.rmSync(agentDir, { recursive: true });
+  await removeRuntimeIdentity(input, agent);
+  return {};
+}
+
 async function run(input) {
   if (input.operation === "probe") {
     await probe(input.runtime);
@@ -914,6 +953,12 @@ async function run(input) {
     if (input.operation === "delete-namespace" && inspect(nsDir) === undefined) {
       await removeNamespaceRuntimeIdentities(input, []);
       return {};
+    }
+    if (input.operation === "delete-agent") {
+      if (inspect(nsDir) !== undefined) {
+        verifyNamespace(input);
+      }
+      return await removeAgent(input, nsDir);
     }
     if (input.operation === "ensure-namespace") {
       directory(join(input.runtime.root, "namespaces"), true);

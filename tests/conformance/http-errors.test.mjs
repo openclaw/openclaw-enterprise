@@ -31,6 +31,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
   SecretBindingValidationError,
@@ -623,6 +624,22 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message: "A required platform dependency is unavailable.",
+    },
+  ],
+  [
+    "a cluster RBAC denial of runtime credentials names the fix, not the namespace",
+    new RuntimeCredentialsForbiddenByClusterError({
+      verb: "get",
+      resource: "secrets",
+      kubernetesNamespace: INTERNAL,
+      plane: "execution",
+      status: 403,
+    }),
+    {
+      status: 503,
+      code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+      message:
+        "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
     },
   ],
   [

@@ -65,6 +65,7 @@ const ALLOWED_FIELDS = new Set([
   "revisionId",
   "route",
   "sandboxDriverId",
+  "signal",
   "skippedUserCount",
   "skippedUserIds",
   "skippedUserIdsTruncated",

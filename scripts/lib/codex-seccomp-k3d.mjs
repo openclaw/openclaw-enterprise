@@ -320,8 +320,12 @@ async function waitForPodReady(selection, namespace, name, options) {
   );
 }
 
-async function waitForMissingProfileFailure(selection, namespace, name, options) {
-  return waitFor(
+async function waitForMissingProfileFailure(selection, namespace, name, missingProfile, options) {
+  const profilePath = posix.join(kubeletSeccompRoot, missingProfile);
+  // containerd's WithProfile read error, optionally wrapped by CreateContainer.
+  // Match the complete diagnostic: mentioning seccomp or another profile is not proof.
+  const missingMessage = `cannot load seccomp profile ${JSON.stringify(profilePath)}: open ${profilePath}: no such file or directory`;
+  const pod = await waitFor(
     `Pod ${namespace}/${name} to fail closed on a missing localhost seccomp profile`,
     async () => {
       const pod = await kubectlJson(
@@ -331,12 +335,14 @@ async function waitForMissingProfileFailure(selection, namespace, name, options)
       );
       const status = pod.status?.containerStatuses?.find((entry) => entry.name === "probe");
       if (status?.containerID) {
-        throw new Error("Missing localhost seccomp profile unexpectedly started a container.");
+        // End polling before rejecting: waitFor retries thrown read failures.
+        return pod;
       }
       const waiting = status?.state?.waiting;
       if (
         waiting?.reason === "CreateContainerError" &&
-        /seccomp|profile/i.test(waiting.message ?? "")
+        (waiting.message === missingMessage ||
+          waiting.message === `failed to create containerd container: ${missingMessage}`)
       ) {
         return pod;
       }
@@ -344,6 +350,11 @@ async function waitForMissingProfileFailure(selection, namespace, name, options)
     },
     options.timeoutMs,
   );
+  const status = pod.status?.containerStatuses?.find((entry) => entry.name === "probe");
+  if (status?.containerID) {
+    throw new Error("Missing localhost seccomp profile unexpectedly started a container.");
+  }
+  return pod;
 }
 
 async function runtimeDefaultProfileForNode(selection, namespace, nodeName, image, options) {
@@ -466,7 +477,7 @@ async function verifyMissingProfileFailsClosed(
     }),
     options,
   );
-  await waitForMissingProfileFailure(selection, namespace, podName, options);
+  await waitForMissingProfileFailure(selection, namespace, podName, missingProfile, options);
 }
 
 async function withProbeCleanup(

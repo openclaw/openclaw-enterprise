@@ -271,12 +271,12 @@ to assign alert recipients and response procedures alongside these collection ch
 - Keep runtime native OTLP export disabled and preserve Collector filtering.
   Local container logs and remotely exported records have different privacy
   boundaries; restrict access to both.
-- Keep exporter traffic within the approved `/32` and port, with DNS and
-  Kubernetes API access configured by the chart. Use an approved fixed proxy
-  when your backend cannot be represented by that egress policy. NetworkPolicies
-  are additive: the current shared dependency policy also permits Collector
-  traffic to the configured database destination; the dedicated Collector
-  policy does not remove that access.
+- Keep exporter traffic within the approved `/32` or in-cluster selector and
+  port, with DNS and Kubernetes API access configured by the chart. Use an
+  approved fixed proxy when your backend cannot be represented by that egress
+  policy. NetworkPolicies are additive, but no chart policy grants the
+  Collector database access; the shared dependency policy selects only the
+  API, worker and initialization Pods.
 - Alert on failed exports, refused records, queue saturation, and Collector
   restarts. Verify retention and access controls in your selected backend.
 - Treat delivery as best-effort. Docker keeps exporter queues in the

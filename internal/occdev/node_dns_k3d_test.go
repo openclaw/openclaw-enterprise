@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,5 +265,35 @@ func TestCheckDevelopmentNodeDNSNamesTheAutomaticResolver(t *testing.T) {
 	err = r.checkDevelopmentNodeDNS(context.Background(), &developmentState{Cluster: "occ-dev-test"})
 	if err == nil || strings.Contains(err.Error(), "=k3d refused") || !strings.Contains(err.Error(), "OCC_DEVELOPMENT_K3D_DNS_RESOLVER=10.0.0.2") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareDevelopmentResolverPreservesNameserversWithTrailingComments(t *testing.T) {
+	for _, source := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
+		for _, comment := range []string{"# upstream DNS", "; upstream DNS"} {
+			t.Run(source+comment, func(t *testing.T) {
+				files := map[string]string{source: "nameserver 10.0.0.2 " + comment + "\n"}
+				if source != "/etc/resolv.conf" {
+					files["/etc/resolv.conf"] = "nameserver 127.0.0.53\n"
+				}
+				hostResolverFiles(t, "linux", files)
+				state := &developmentState{directory: t.TempDir()}
+				r := &runner{engine: "docker", env: map[string]string{}, opts: Options{Out: io.Discard}}
+				args, err := r.prepareDevelopmentResolver(state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(filepath.Join(state.directory, "node-resolv.conf"))
+				if err != nil {
+					t.Fatalf("host upstream was not selected: %v; args=%v", err, args)
+				}
+				if string(data) != "nameserver 10.0.0.2\n" {
+					t.Fatalf("unexpected node resolver: %q", data)
+				}
+				if len(args) != 2 || r.env["K3D_FIX_DNS"] != "false" {
+					t.Fatalf("explicit resolver mount missing: %v", args)
+				}
+			})
+		}
 	}
 }

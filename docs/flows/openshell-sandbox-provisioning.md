@@ -96,14 +96,16 @@ endpoint, the Sandbox, and a Credential Gateway whose `binaries` list holds the
 native Codex executable. The Sandbox policy has no model-egress rule; the
 credential source's provider profile supplies it.
 
-The environment selects Kubernetes Compute and OpenShell. `scripts/dev-up`
-validates that combination and delegates lifecycle ownership to `occ dev up`.
-The control plane defaults to Compose; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`
-selects the Kubernetes-only profile. Both verify the `v0.1.3-pre.1` source archive
-before packaging its Gateway and Workspace charts, and import the matching
-digest-pinned Gateway, Sandbox, and supervisor images. The launcher supplies v0.1.3-pre.1's separate
-image registry, repository, and digest values for each component and omits the
-NetworkPolicy acknowledgement removed from that chart.
+`scripts/dev-up` validates Kubernetes Compute with OpenShell and delegates to
+`occ dev up`. Compose is the default control plane;
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
+Both verify the `v0.1.3-pre.1` source archive, package its Gateway and Workspace
+charts, and import digest-pinned Gateway, Sandbox, and supervisor images using
+separate registry, repository, and digest values. The removed NetworkPolicy
+acknowledgement is omitted.
+Before tool discovery or state creation, Kubernetes-only `upK3d` rejects equal
+development and Kubernetes API host ports, with or without OpenShell. Without a
+Sandbox Driver, it also rejects browser-port collisions.
 The CLI records the exact engine endpoint, cluster,
 platform Namespace, API port, and key destination before creating resources.
 The Kubernetes-only mode creates k3d without a Compose network, imports the OCE controller, Agent
@@ -226,9 +228,14 @@ spends at most one new ID. The Sandbox name is unique per Workspace, so these
 attempts never yield two Sandboxes. Unresolved IDs never expire. Once the controller
 identity holds 1000 unresolved or unexpired admission records, OpenShell rejects
 every new `request_id` with `RESOURCE_EXHAUSTED`, so repeated server-side create
-failures count against that quota. Codex requests one unnamed exposure for
-`APP_SERVER_PORT` and requires its `service_urls` entry. Native OpenClaw connects
-outbound, so it requests no exposure and rejects any returned URL. The Driver
+failures count against that quota. Completed records free up after 24 hours.
+`unary` maps that exact refusal to `OpenShellAdmissionLimitError`, a
+`TransientDependencyError` (`SANDBOX_ADMISSION_LIMIT_REACHED`): revision
+provisioning waits for it until the convergence deadline without spending
+attempts; Namespace work retries it as usual. Codex requests one unnamed
+exposure for `APP_SERVER_PORT` and requires its `service_urls` entry. Native
+OpenClaw connects outbound, so it requests no exposure and rejects any returned
+URL. The Driver
 calls `getSandbox` first and creates only an absent Sandbox; it adopts an
 existing or `ALREADY_EXISTS` Sandbox only when its annotations name this
 revision, it is not deleting or stopped, and, for Codex, `getServiceUrl` finds

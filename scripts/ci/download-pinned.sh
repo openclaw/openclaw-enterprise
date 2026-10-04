@@ -7,9 +7,12 @@
 # failures are retried the same way everywhere. A transient failure is a
 # connection, TLS, timeout or truncated-transfer error, or HTTP 408, 429 or
 # 5xx. Other failures (HTTP 404, a bad URL, a write error) fail on the first
-# attempt. Retries stop after five attempts, or when the next retry would
-# start more than 120 seconds after the first attempt began (elapsed time
-# plus the backoff delay). The budget does not cut a running attempt short:
+# attempt. Retries back off 2, 4, 8, 16, then 20 seconds, and stop after
+# eight attempts, or when the next retry would start more than 120 seconds
+# after the first attempt began (elapsed time plus the backoff delay). GitHub
+# release assets have answered 503 for over 30 seconds while other requests
+# succeeded, so retries continue for about 90 seconds rather than ending at 30.
+# The budget does not cut a running attempt short:
 # each attempt may take up to 300 seconds (curl --max-time), so a download
 # gives up within about seven minutes.
 # The checksum is checked once, on the final file, and a mismatch is never
@@ -24,7 +27,8 @@ fi
 url="$1"
 destination="$2"
 expected_sha256="$3"
-max_attempts=5
+max_attempts=8
+max_delay_seconds=20
 retry_budget_seconds=120
 
 if ! command -v curl >/dev/null 2>&1; then
@@ -64,7 +68,7 @@ while :; do
   echo "Transient download failure (curl exit ${status}, HTTP ${http_code:-none}); retrying in ${delay}s (attempt $((attempt + 1))/${max_attempts}): ${url}" >&2
   sleep "${delay}"
   attempt=$((attempt + 1))
-  delay=$((delay * 2))
+  delay=$((delay * 2 > max_delay_seconds ? max_delay_seconds : delay * 2))
 done
 
 if command -v sha256sum >/dev/null 2>&1; then

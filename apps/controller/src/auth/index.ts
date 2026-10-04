@@ -39,6 +39,7 @@ import {
   type GitHubLoginConfiguration,
   PASSWORD_DENIAL_AUDIT_UNAVAILABLE,
 } from "./github.ts";
+import type { ExternalProviderName } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
@@ -250,6 +251,8 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly passwordSignIn?: "recovery-only";
   /** Receives nonfatal startup conditions as structured log events. */
   readonly onWarning?: (event: { readonly event: string; readonly message: string }) => void;
+  /** Counts an external sign-in callback that matched no pending attempt (not audited). */
+  readonly onUnmatchedCallback?: (provider: ExternalProviderName) => void;
 }
 
 export interface AuthenticatedAccount {
@@ -1738,6 +1741,7 @@ export async function createPostgresControllerAuth(
     oidc,
     passwordSignIn,
     onWarning,
+    onUnmatchedCallback,
     ...controllerOptions
   } = options;
   // Sessions from an external provider instance outside this set (removed, or a changed
@@ -1807,6 +1811,7 @@ export async function createPostgresControllerAuth(
           ...(controllerOptions.onOperationalEvent === undefined
             ? {}
             : { onOperationalEvent: controllerOptions.onOperationalEvent }),
+          ...(onUnmatchedCallback === undefined ? {} : { onUnmatchedCallback }),
         },
       );
   const auth = createControllerAuth({

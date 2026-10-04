@@ -1,7 +1,8 @@
 {
   "version": 1,
   "lanes": {
-    "checks-baseline": "./test-suites/checks-baseline.json",
+    "checks-baseline-1": "./test-suites/checks-baseline-1.json",
+    "checks-baseline-2": "./test-suites/checks-baseline-2.json",
     "checks-browser": "./test-suites/checks-browser.json",
     "postgres": "./test-suites/postgres.json",
     "postgres-application": "./test-suites/postgres-application.json",
@@ -37,7 +38,8 @@
   },
   "groups": {
     "ci": [
-      "checks-baseline",
+      "checks-baseline-1",
+      "checks-baseline-2",
       "checks-browser",
       "postgres",
       "postgres-application",
@@ -54,7 +56,8 @@
       "k3d-observability"
     ],
     "full": [
-      "checks-baseline",
+      "checks-baseline-1",
+      "checks-baseline-2",
       "checks-browser",
       "postgres",
       "postgres-application",

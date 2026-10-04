@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 const matrixLanes = [
+  "checks-baseline-1",
+  "checks-baseline-2",
   "checks-browser",
   "postgres",
   "postgres-application",
@@ -41,7 +43,6 @@ function main(args) {
     impact: "success",
     audit: "success",
     "docs-checks": mode === "docs" ? "success" : "skipped",
-    "checks-baseline": mode === "docs" ? "skipped" : "success",
     "pr-safe": mode === "docs" ? "skipped" : "success",
     "runtime-image-fixture": mode === "docs" ? "skipped" : "success",
   };
@@ -64,7 +65,6 @@ function main(args) {
   const expanded = {
     impact: state("impact"),
     audit: state("audit"),
-    "checks-baseline": state("checks-baseline"),
   };
   if (mode === "full") {
     expanded["runtime-image-fixture"] = state("runtime-image-fixture");

@@ -90,8 +90,7 @@ SELECT 'effective-table-acl',c.relname,to_jsonb(ARRAY(SELECT p FROM unnest(
   ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
   WHERE has_table_privilege('occ_app',c.oid,p) ORDER BY p))
 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-WHERE n.nspname=$1 AND c.relkind IN ('r','p','v','m','f')
-ORDER BY kind,name`;
+WHERE n.nspname=$1 AND c.relkind IN ('r','p','v','m','f')`;
 
 export async function migrationCatalog(client, schema = "occ") {
   const previous = await client.query("SHOW search_path");
@@ -106,8 +105,7 @@ export async function migrationCatalog(client, schema = "occ") {
       CROSS JOIN LATERAL pg_catalog.pg_identify_object(d.classid,d.objid,d.objsubid) i
       WHERE d.refclassid='pg_catalog.pg_namespace'::regclass AND n.nspname=$1
         AND d.classid NOT IN ('pg_catalog.pg_class'::regclass,'pg_catalog.pg_proc'::regclass,
-          'pg_catalog.pg_type'::regclass,'pg_catalog.pg_constraint'::regclass)
-      ORDER BY i.identity`,
+          'pg_catalog.pg_type'::regclass,'pg_catalog.pg_constraint'::regclass)`,
       [schema],
     );
     rows.push(...otherObjects.rows);
@@ -145,8 +143,7 @@ export async function migrationCatalog(client, schema = "occ") {
             FROM pg_catalog.aclexplode(d.defaclacl) x), '[]'::jsonb) AS value
         FROM pg_catalog.pg_default_acl d
         LEFT JOIN pg_catalog.pg_namespace n ON n.oid=d.defaclnamespace
-        WHERE (d.defaclrole=current_user::regrole AND d.defaclnamespace=0) OR n.nspname=$1
-        ORDER BY name`,
+        WHERE (d.defaclrole=current_user::regrole AND d.defaclnamespace=0) OR n.nspname=$1`,
         [schema],
       );
       rows.push(...defaults.rows);

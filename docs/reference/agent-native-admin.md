@@ -4,6 +4,12 @@ Agent OpenClaw access lets an explicitly assigned person open a deployed Gateway
 
 The feature is disabled by default. When enabled, the console shows **OpenClaw** on the Agent detail tabs only for callers with exact Agent `use` permission and a direct person/Agent `runtimeRole` assignment. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
 
+## Who can open it
+
+Native admin UI is the only Agent chat surface in the console, and it is for exact Agent `administer` holders with a human session (see [Authorization and availability](#authorization-and-availability)). Other people message the Agent through a channel its Configuration sets up, such as [Slack](../guides/integrations/slack.md), or ask someone who can edit that Configuration to let them in. An operator with cluster access can check a real response with [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
+
+Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
+
 ## Requirements
 
 - `agentNativeAdmin.enabled: true` in Helm, which sets `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` on the API.
@@ -28,10 +34,10 @@ The response reports:
 | `disabled`    | The Installation has not enabled native admin UI access.                                                       |
 | `stopped`     | The Agent is not in desired running state.                                                                     |
 | `unsupported` | The selected Compute Driver, active revision, or native configuration does not support native admin UI access. |
-| `unavailable` | OCC cannot resolve the active Agent revision while checking availability.                                      |
+| `unavailable` | No revision is serving yet: the Agent has no active revision, or a newer revision is replacing it.             |
 | `available`   | The caller may open the returned `url` for the current active revision.                                        |
 
-A stopped Agent with no active revision returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its active revision. A stopped Agent with a selectable active revision still includes its target fields. If a desired-running Agent has no active revision, OCC returns `unavailable` in the success envelope so the console can show a retryable dependency state. Malformed requests, denied IAM access, missing sessions, and failures outside that availability branch use the normal protected-route error envelope.
+A stopped Agent with no active revision returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its active revision. A stopped Agent with a selectable active revision still includes its target fields. If a desired-running Agent has no active revision, OCC returns `unavailable` in the success envelope so the console can show a retryable state. A dependency outage, the IAM Driver included, returns `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, denied IAM access and missing sessions also use the normal protected-route error envelope.
 
 ## Agent host identity
 
@@ -87,7 +93,7 @@ device state, plugins, or other persistent gateway data.
 
 - Helm rendering fails when `agentNativeAdmin.enabled` is true without `gatewayRouting.enabled`.
 - Startup fails with `AGENT_NATIVE_ADMIN_INVALID` when enablement, Agent domain, shared cookie domain, public origin, Better Auth cookie scope, or cookie-secret requirements are invalid.
-- Availability returns `stopped` for a stopped Agent with no active revision; `unavailable` means OCC could not resolve the active revision or a dependency during selection. Gateway routing, unsupported native configuration, or a selected Compute Driver without a qualified human-access descriptor returns `unsupported` after OCC has an active revision and derived Agent origin.
+- Availability returns `stopped` for a stopped Agent with no active revision; `unavailable` means a desired-running Agent has no active revision yet or a newer revision is replacing it. Dependency outages return `503`. Gateway routing, unsupported native configuration, or a selected Compute Driver without a qualified human-access descriptor or clean endpoint returns `unsupported` after OCC has an active revision and derived Agent origin.
 - The console hides the panel for disabled and denied states, shows operator-readable stopped, unsupported, or unavailable messages, and opens the returned `url` in a new tab when available.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.
 - Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `websocket.connect` with `connectionId` and `websocket.close` with the same `connectionId` plus `closeReason`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, set `closeReason` to distinguish lifecycle, revocation, dependency, client, upstream, and shutdown paths, and are destroyed during API `preClose`.

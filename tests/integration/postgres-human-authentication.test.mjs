@@ -296,7 +296,11 @@ test(
       // The unguarded composition is what a pre-activation image runs: plain
       // Better Auth sessions over the same database, with no binding rows.
       const before = await sessionCount(person.id);
-      await assert.rejects(auth.auth.api.signInEmail({ body: { email: person.email, password } }));
+      // The session insert reaches the database fence, which Drizzle wraps.
+      await assert.rejects(
+        auth.auth.api.signInEmail({ body: { email: person.email, password } }),
+        (error) => fenceMessage.test(error.cause?.message),
+      );
       assert.equal(await sessionCount(person.id), before);
     });
 
@@ -344,6 +348,10 @@ test(
             installation.id,
             issuer,
           ).provisionPasswordAccount(failing, failingSeed),
+          {
+            name: "DependencyUnavailableError",
+            message: "The platform persistence repository is unavailable.",
+          },
         );
         assert.deepEqual(await rowCounts(failing.id, failingSeed.principal.id), {
           users: 0,

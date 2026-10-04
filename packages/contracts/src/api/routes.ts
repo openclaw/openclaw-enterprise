@@ -283,7 +283,7 @@ export const occApiRoutes = [
     action: "openclaw.presets.list",
     iamAction: "read",
     resourceKind: "preset",
-    authorizationTarget: "preset_candidates",
+    authorizationTarget: "namespace_and_preset_candidates",
     summary: "List readable Presets in one Namespace",
     tags: ["Presets"],
     schema: {

@@ -906,6 +906,97 @@ test("exact Namespace ownership prevents cross-tenant access and resource traver
   }
 });
 
+test("a caller without a grant gets the same audited denial whether or not the target exists", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  await createNamespace(fixture, "Tenant A");
+  const namespace = await createNamespace(fixture, "Tenant B");
+  const agent = await createAgent(fixture, namespace, "Agent B");
+  const missingNamespaceId = "ns_9e5b1c7a-5d2f-4c1e-8a3b-0f6d2e7c9a41";
+  const missingAgentId = "agt_4b8e2d1f-7a3c-4e9b-9c5d-2a1f8e6b3d70";
+  const child = (prefix) => `${prefix}_6c2a9f1e-3b7d-4a8c-b5e1-9d4f2a7c8e03`;
+  const reader = fixture.tenantAReader;
+  const readerApp = fixture.createApp(reader);
+
+  // The reader holds no grant in Tenant B. Every target below must answer the same audited
+  // 403 whether the Namespace or Agent exists, so a refusal never reveals which ids are real.
+  const namespaceRoutes = [
+    ["GET", "agents/repository-options"],
+    ["GET", `agents/provision/${child("work")}`],
+    ["POST", `agents/provision/${child("work")}/retry`],
+    ["GET", "presets"],
+    ["POST", "agents", { name: "probe", configurationId: agent.configurationId }],
+    ["POST", "configurations", { kind: "agent", values: {} }],
+    ["PATCH", `configurations/${child("cfg")}`, { values: {} }],
+    ["DELETE", `configurations/${child("cfg")}`],
+    ["POST", "secrets", { name: "probe", value: "probe-value" }],
+    ["PATCH", `secrets/${child("sec")}`, { value: "probe-value" }],
+    ["DELETE", `secrets/${child("sec")}`],
+    ["POST", "credential-sources", { name: "probe", type: "openai" }],
+    ["PATCH", `credential-sources/${child("cs")}`, {}],
+    ["DELETE", `credential-sources/${child("cs")}`],
+    ["POST", "presets", { name: "probe", template: {} }],
+    ["PATCH", `presets/${child("pre")}`, { name: "probe" }],
+    ["DELETE", `presets/${child("pre")}`],
+    ["POST", "service-accounts", { name: "probe" }],
+    ["POST", `service-accounts/${child("sa")}/credentials`, {}],
+    [
+      "PATCH",
+      `service-accounts/${child("sa")}/credential`,
+      { kind: "api_key", secretRef: { name: "probe", key: "probe" } },
+    ],
+    ["DELETE", `service-accounts/${child("sa")}`],
+    ["DELETE", ""],
+  ];
+  const agentRoutes = [
+    ["GET", ""],
+    ["GET", `revisions/${missingRevisionId}`],
+    ["GET", `deployments/${missingRevisionId}`],
+    ["GET", "repository-options"],
+    ["PATCH", "", { configurationId: agent.configurationId }],
+    ["POST", "deploy"],
+    ["POST", "stop"],
+    ["POST", `credential-sources/${child("cs")}/withdraw`],
+    ["DELETE", ""],
+  ];
+  const probes = [
+    ...namespaceRoutes.flatMap(([method, suffix, body]) =>
+      [namespace.id, missingNamespaceId].map((namespaceId) => ({
+        method,
+        body,
+        pathname: `/namespaces/${namespaceId}${suffix ? `/${suffix}` : ""}`,
+      })),
+    ),
+    ...agentRoutes.flatMap(([method, suffix, body]) =>
+      [
+        [namespace.id, agent.id],
+        [namespace.id, missingAgentId],
+        [missingNamespaceId, missingAgentId],
+      ].map(([namespaceId, agentId]) => ({
+        method,
+        body,
+        pathname: `/namespaces/${namespaceId}/agents/${agentId}${suffix ? `/${suffix}` : ""}`,
+      })),
+    ),
+  ];
+
+  const leaks = [];
+  for (const { method, pathname, body } of probes) {
+    const auditCount = fixture.auditSink.events.length;
+    const result = await request(readerApp, pathname, {
+      method,
+      ...(body === undefined ? {} : { body }),
+    });
+    const denials = fixture.auditSink.events
+      .slice(auditCount)
+      .filter((event) => event.kind === "authorization_denial" && event.actorId === reader.id);
+    if (result.response.status !== 403 || denials.length !== 1) {
+      leaks.push(`${method} ${pathname}: ${result.response.status}, ${denials.length} denials`);
+    }
+  }
+  assert.deepEqual(leaks, []);
+});
+
 test("Namespace deletion authorizes the exact target and rejects nonempty resources", async () => {
   const fixture = await createFixture();
   await bootstrap(fixture);
@@ -1626,19 +1717,52 @@ test("runtime log reads are rate limited per principal and Agent with Retry-Afte
   assert.equal(limited.body.error.code, "RUNTIME_LOGS_RATE_LIMITED");
   assert.match(limited.headers.get("retry-after") ?? "", /^[1-9][0-9]*$/);
 
-  // The limiter runs before authorization (documented): an unauthorized principal can
-  // only spend its own bucket, never another principal's, and never reaches the Driver.
+  // Authorization runs before the limiter: an unauthorized principal past the burst is
+  // still refused with 403 and audited every time, takes no token and never reaches the
+  // Driver. (A limiter answering first would hide denials behind unaudited 429s.)
   const outsider = await fixture.createPrincipal("runtime-outsider", target, []);
   fixture.computeDriver.calls.length = 0;
+  const deniedBefore = fixture.auditSink.events.filter(
+    (event) => event.kind === "authorization_denial" && event.actorId === outsider.principal.id,
+  ).length;
   const statuses = [];
   for (let attempt = 0; attempt < 12; attempt += 1) {
-    statuses.push(
-      (await fixture.request("GET", target.runtimePath, { session: outsider.session })).status,
-    );
+    for (const path of [target.runtimePath, target.logsPath()]) {
+      statuses.push((await fixture.request("GET", path, { session: outsider.session })).status);
+    }
   }
-  assert.ok(statuses.includes(403));
-  assert.equal(statuses.at(-1), 429);
+  assert.deepEqual(new Set(statuses), new Set([403]));
+  assert.equal(
+    fixture.auditSink.events.filter(
+      (event) => event.kind === "authorization_denial" && event.actorId === outsider.principal.id,
+    ).length - deniedBefore,
+    statuses.length,
+  );
   assert.equal(fixture.computeDriver.calls.length, 0);
+  // The denials took no token: once granted, the same principal still has its full burst.
+  for (const grant of operateGrants) {
+    const id = `runtime-outsider-${grant.resourceKind}-${grant.action}`;
+    fixture.policy.roles.push({
+      id,
+      namespaceId: target.namespace.id,
+      permissions: [{ action: grant.action, resourceKind: grant.resourceKind }],
+    });
+    fixture.policy.bindings.push({
+      id,
+      namespaceId: target.namespace.id,
+      subjectKind: "identity",
+      subjectId: outsider.principal.id,
+      roleId: id,
+      resourceKind: grant.resourceKind,
+      resourceId: grant.resourceKind === "agent_revision" ? target.revisionId : target.agent.id,
+    });
+  }
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const granted = await fixture.request("GET", target.runtimePath, {
+      session: outsider.session,
+    });
+    assert.equal(granted.status, 200, granted.text);
+  }
   const operator = await fixture.createPrincipal("runtime-limit-operator", target, operateGrants);
   const unaffected = await fixture.request("GET", target.runtimePath, {
     session: operator.session,

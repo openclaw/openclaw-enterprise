@@ -90,8 +90,8 @@ Driver before removing its own record.
 For plugin discovery, OCC checks permissions and reads current Secret metadata,
 then calls `withValue` without holding a platform transaction over backend or
 provider I/O. The callback passes the value to the selected PluginDriver and
-does not persist it. Saved-Agent discovery rechecks grants and the binding
-inside the callback before that PluginDriver call. A Driver without this optional
+does not persist it. Discovery rechecks the caller's grants inside the callback
+before that PluginDriver call; saved-Agent discovery also rechecks the binding. A Driver without this optional
 capability cannot serve Secret-backed discovery. Each request reads the current
 backend value; a concurrent rotation can take effect after an in-flight request
 has already read the prior value. See

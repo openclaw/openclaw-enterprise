@@ -23,7 +23,6 @@ import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startControlResponseRelay } from "../fixtures/repository-credentials/control-relay.mjs";
 import { startRepositoryPlatformWorker } from "./repository-credentials-platform-worker.mjs";
 import { startRepositoryPlatformService } from "./repository-credentials-platform-service.mjs";
-import { availablePort } from "./available-port.mjs";
 
 export const repositoryPlatformSelected =
   process.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM === "1";
@@ -268,6 +267,26 @@ async function captureRelayNodeDiagnostic(execute, selection) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+const credentialServiceFailures = new Map([
+  ["credential gateway listener unavailable", "gateway-listener"],
+  ["credential child unavailable", "child-exited"],
+  ["credential child deadline exceeded", "child-deadline"],
+]);
+
+// Names which credential service startup step failed, from the fixture's own fixed messages.
+// A startup failure whose cleanup also failed is an AggregateError: errors[0] is the
+// startup failure and cause is the cleanup failure, so errors[0] is checked first.
+function credentialServiceFailure(error) {
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    const reason = credentialServiceFailures.get(current.message);
+    if (reason) {
+      return reason;
+    }
+    current = current.errors?.[0] ?? current.cause;
+  }
+  return "other";
 }
 
 export async function createRepositoryPlatformFixture(context) {
@@ -579,13 +598,19 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
   diagnostic.stage = "credential-service-startup";
   const gatewayHost = `repository-credentials.${system}.svc.cluster.local`;
   const tls = await gatewayTls(directory, gatewayHost, execute);
-  const gatewayPort = await availablePort({ host: "0.0.0.0" });
-  const credentialsFixture = await startRepositoryPlatformService(scope, {
-    namespaceId: namespace.id,
-    signal: context.signal,
-    tls,
-    gateway: { publicOrigin: `https://${gatewayHost}`, listen: `0.0.0.0:${gatewayPort}` },
-  });
+  let credentialsFixture;
+  try {
+    credentialsFixture = await startRepositoryPlatformService(scope, {
+      namespaceId: namespace.id,
+      signal: context.signal,
+      tls,
+      gateway: { publicOrigin: `https://${gatewayHost}`, host: "0.0.0.0" },
+    });
+  } catch (error) {
+    diagnostic.credentialService = credentialServiceFailure(error);
+    throw error;
+  }
+  const { gatewayPort } = credentialsFixture;
   diagnostic.stage = "control-relay-startup";
   const control = await startControlResponseRelay(scope, {
     directory: dirname(credentialsFixture.config.gateway.controlSocket),

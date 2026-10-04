@@ -17,10 +17,10 @@ import {
   requiresPostgresAndKubernetesConfiguration,
   startKubernetesController,
   startKubernetesWorker,
-  stopController,
   updateConfiguration,
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 
 test(
   "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
@@ -86,7 +86,7 @@ test(
 
     // The live worker can still produce unrelated lifecycle audit rows, such as
     // bootstrap Namespace convergence, so stop it before measuring this request.
-    await stopController(worker.child);
+    await stopProcess(worker.child);
 
     const auditBeforeUnauthenticatedRequest = await pool.query(
       "SELECT count(*)::integer AS count FROM occ.audit_events",
@@ -104,7 +104,7 @@ test(
       "unauthenticated requests have no attributable actor and cannot write audit rows",
     );
 
-    await stopController(first.child);
+    await stopProcess(first.child);
     const restarted = await startKubernetesController(context);
 
     const reloadedInstallation = await request(restarted, "GET", "/installation");
@@ -610,7 +610,7 @@ test(
       ],
     );
 
-    await stopController(api.child);
+    await stopProcess(api.child);
     api = await startKubernetesController(context);
     const afterRestart = await request(
       api,

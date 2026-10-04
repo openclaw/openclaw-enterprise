@@ -47,6 +47,7 @@ import {
   agentPostRequests,
   optionValues,
   createRepositoryLaunchFixture,
+  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -483,6 +484,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   releaseOptions();
   await page.getByText(/No approved repositories are available/).waitFor();
+  await waitForCreateFormReads(page);
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
 
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
@@ -623,6 +625,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     await setupGuide.getAttribute("href"),
     "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
   );
+  await waitForCreateFormReads(unavailablePage);
   assert.equal(
     await unavailablePage.getByRole("button", { name: "Create Agent" }).isEnabled(),
     true,
@@ -662,6 +665,8 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
   await deniedPage.getByText(/Repository choices are denied/).waitFor();
+  // The disabled state must reflect both reads' outcome, not a read still pending.
+  await waitForCreateFormReads(deniedPage);
   assert.equal(await deniedPage.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   await deniedPage.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
   assert.equal(configurationPostRequests(deniedRequests, deniedNamespace.id).length, 0);
@@ -2287,7 +2292,8 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const jobUrl = (work) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
   // Each job fails transiently, then the API refuses its retry: first with the generic
-  // conflict text, which names no reason, then naming the Secret that was deleted.
+  // conflict text (a store race; controller refusals name a reason), then naming the
+  // Secret that was deleted.
   const refusals = [
     "The requested platform resource already exists.",
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
@@ -3586,9 +3592,13 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     );
-    // Starters leave gateway authentication to the selected Compute Driver while
-    // preserving the separate credentials for dedicated Codex execution.
-    assert.equal(Object.hasOwn(configuration.data.values.gateway, "auth"), false);
+    // Starters leave the gateway authentication mode to the selected Compute Driver
+    // (no mode or token, #314) and reference only its generated password, which the
+    // in-Pod gateway CLI needs (D381), while preserving the separate credentials for
+    // dedicated Codex execution.
+    assert.deepEqual(configuration.data.values.gateway.auth, {
+      password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
+    });
     assert.deepEqual(configuration.data.values.gateway.controlUi, STARTER_CONTROL_UI);
     if (harness === "codex") {
       assert.equal(

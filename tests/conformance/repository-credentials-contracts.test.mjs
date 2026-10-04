@@ -381,15 +381,30 @@ test("response policy rewrites admitted machine links without changing human con
   assert.equal(body.url, "https://credentials.example/repos/fixture/repository/issues/comments/1");
   assert.equal(body.body, link);
   assert.equal(body.user.url, "https://api.github.com/users/person");
-  assert.throws(() => plan.responsePolicy.headers(302, { location: link }));
-  assert.throws(() =>
-    plan.responsePolicy.headers(200, { link: '<https://other.example/steal>; rel="next"' }),
+  const unsafe = { message: "unsafe-upstream-url" };
+  assert.throws(() => plan.responsePolicy.headers(302, { location: link }), {
+    message: "upstream-redirect",
+  });
+  // Each link breaks one guard: foreign origin, unadmitted route, then total length.
+  const foreign = link.replace("https://api.github.com/", "https://other.example/");
+  assert.throws(
+    () => plan.responsePolicy.headers(200, { link: `<${foreign}>; rel="next"` }),
+    unsafe,
   );
-  assert.throws(() =>
-    plan.responsePolicy.headers(200, {
-      link: '<https://api.github.com/repos/fixture/repository/labels/bug>; rel="next"',
-    }),
+  assert.throws(
+    () =>
+      plan.responsePolicy.headers(200, {
+        link: '<https://api.github.com/repos/fixture/repository/labels/bug>; rel="next"',
+      }),
+    unsafe,
   );
+  const long = Array.from({ length: 100 }, () => `<${link}>; rel="next"`).join(", ");
+  assert.ok(long.length > 8192);
+  assert.throws(() => plan.responsePolicy.headers(200, { link: long }), unsafe);
+  // Git responses never carry pagination links, even admitted ones.
+  const git = bound.plan(head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack"));
+  assert.equal(git.kind, undefined);
+  assert.throws(() => git.responsePolicy.headers(200, { link: `<${link}>; rel="next"` }), unsafe);
 });
 
 test("response policy rejects 304 without a redirect location", async (t) => {

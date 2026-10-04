@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +10,7 @@ import playwright from "playwright";
 
 import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const { chromium } = playwright;
@@ -45,15 +45,8 @@ test("docs preview filters the ComputeDriver matrix in a browser", async (t) => 
       await browser?.close();
     } finally {
       try {
-        if (child && child.exitCode === null && child.signalCode === null) {
-          const exited = once(child, "exit");
-          const killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
-          child.kill("SIGTERM");
-          try {
-            await exited;
-          } finally {
-            clearTimeout(killTimer);
-          }
+        if (child) {
+          await stopProcess(child, { graceMs: 5_000 });
         }
       } finally {
         await rm(fixture, { recursive: true, force: true });

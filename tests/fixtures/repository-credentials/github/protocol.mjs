@@ -165,6 +165,7 @@ export function createGitHubProtocol({
     comments: resources.comments,
     errors,
     authorize: authority.authorize,
+    acceptStatic: authority.acceptStatic,
     tokenState: authority.tokenState,
     setRevokeStatus(status) {
       revokeStatus = status;

@@ -64,29 +64,29 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'checks-baseline' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
         cache: true
     - name: Run workspace boundary check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm check:workspace
     - name: Run lint check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm lint
     - name: Run format check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm format:check
     - name: Run OpenAPI check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm openapi:check
     - name: Run docs check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm docs:install && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
@@ -94,13 +94,18 @@ runs:
       shell: bash
       run: pnpm docs:install
     - name: Run typecheck
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm typecheck
     - name: Check Go CLI
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm cli:check && pnpm cli:test
+    - name: Build workspace output
+      # Part 1 builds it in its typecheck step; some tests read apps/controller/dist.
+      if: inputs.lane == 'checks-baseline-2'
+      shell: bash
+      run: pnpm build
     - name: Build Go CLI for OpenShell development proof
       if: inputs.lane == 'openshell'
       shell: bash
@@ -135,12 +140,25 @@ runs:
     - name: Run lane
       shell: bash
       env:
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (inputs.lane == 'checks-baseline' || inputs.lane == 'checks-browser') && '300000' || inputs.lane == 'k3d-model' && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'checks-browser') && '300000' || inputs.lane == 'k3d-model' && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lane.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ inputs.lane == 'checks-browser' && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
-      run: node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+      run: |
+        if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
+          # Hosted runners have been lost mid-lane (suspected memory pressure); a
+          # lost runner skips every later step, so the sampler also logs live.
+          bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+        fi
+        node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+    - name: Show last memory samples
+      if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
+      continue-on-error: true
+      shell: bash
+      run: tail -n 120 "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" || true
     - name: Cleanup lane
       if: always()
       shell: bash
@@ -176,6 +194,15 @@ runs:
         name: diagnostics-${{ inputs.artifact-prefix }}-${{ inputs.lane }}
         path: ${{ runner.temp }}/state/${{ inputs.lane }}.json.diagnostics.json
         overwrite: true
+        if-no-files-found: ignore
+        retention-days: 7
+    - name: Upload memory samples
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always() && inputs.lane == 'k3d-fixture-configuration'
+      continue-on-error: true
+      with:
+        name: memory-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/memory/${{ inputs.lane }}.log
         if-no-files-found: ignore
         retention-days: 7
     - name: Upload browser failure diagnostics

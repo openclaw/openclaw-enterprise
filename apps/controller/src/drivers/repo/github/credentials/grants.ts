@@ -1,22 +1,52 @@
 import type { AuthorityIdentity, ResolvedGrant } from "../../credentials/backend-contracts.ts";
 import { createHash } from "node:crypto";
 import { githubCapabilityPolicy, permissionsForProfile } from "./profiles.ts";
-import type { GitHubConfiguration, GitHubFactoryOptions } from "./types.ts";
+import type { GitHubTokenSource } from "./token-source.ts";
+import type { GitHubConfiguration, GitHubFactoryOptions, GitHubTokenProfile } from "./types.ts";
 import { sameAuthority } from "./driver/state.ts";
 
 type GrantDependencies = Readonly<{
   config: GitHubConfiguration;
   gatewayOrigin: string;
+  source: GitHubTokenSource;
   metadataOnly?: true;
   selectedBinding?: GitHubFactoryOptions["binding"];
 }>;
 
+function grantIdentity(
+  source: GitHubTokenSource,
+  configVersion: string,
+  profile: GitHubTokenProfile,
+) {
+  // App grant JSON is unchanged; registry grants and recorded bindings depend on it.
+  if (source.kind === "github-app") {
+    return {
+      configVersion,
+      profile,
+      permissions: permissionsForProfile(profile),
+      capabilityPolicy: githubCapabilityPolicy,
+    };
+  }
+  // A static token's permission map is a REST write-route allowlist, not provider-verified
+  // permissions. The authority and push policy keep token grants disjoint from App grants.
+  return {
+    configVersion,
+    profile,
+    routePermissions: permissionsForProfile(profile),
+    capabilityPolicy: source.capabilityPolicy(profile),
+    pushRefAllowlist: source.pushRefAllowlist,
+    authority: source.kind,
+  };
+}
+
 export function createGrantResolver({
   config,
   gatewayOrigin,
+  source,
   metadataOnly,
   selectedBinding,
 }: GrantDependencies) {
+  const pushRefAllowlist = selectedBinding?.pushRefAllowlist ?? source.pushRefAllowlist;
   function resolve(profile: string): ResolvedGrant {
     if (
       profile !== "git-read" &&
@@ -39,14 +69,7 @@ export function createGrantResolver({
           providerInstanceId: config.providerInstanceId,
           repositoryId: config.repositoryId,
           grantId: `sha256:${createHash("sha256")
-            .update(
-              JSON.stringify({
-                configVersion: config.configVersion,
-                profile,
-                permissions: permissionsForProfile(profile),
-                capabilityPolicy: githubCapabilityPolicy,
-              }),
-            )
+            .update(JSON.stringify(grantIdentity(source, config.configVersion, profile)))
             .digest("hex")}`,
         }),
       client: Object.freeze({
@@ -56,9 +79,7 @@ export function createGrantResolver({
         canonicalApiHost: "github.com",
         apiHost: new URL(gatewayOrigin).hostname,
         repository: config.repository,
-        ...(selectedBinding?.pushRefAllowlist === undefined
-          ? {}
-          : { pushRefAllowlist: selectedBinding.pushRefAllowlist }),
+        ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
       }),
     });
   }

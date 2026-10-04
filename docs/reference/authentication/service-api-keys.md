@@ -185,8 +185,9 @@ export key values, password hashes, sessions, or full table dumps.
 `POST /api/auth/service-keys` requires current IAM `administer` on the singleton
 Installation, even for a Namespace key. A key carries every grant of its
 principal, so the caller must also already hold each of that principal's grants
-at the same or a broader scope; otherwise issuance returns `403`. An
-administrator bound only to the exact Installation cannot issue a key for the
+at the same or a broader scope; otherwise issuance returns `403`. Agent
+`administer` counts for a delegated Agent `read_logs` grant, since both admit log
+reads. An administrator bound only to the exact Installation cannot issue a key for the
 unscoped bootstrap service administrator or for a Namespace principal. The body names an existing
 `servicePrincipalId`, its exact `namespaceId` when scoped, and a nonblank `name`
 of 1–32 characters. Optional `expiresIn` is an integer from 86,400 to

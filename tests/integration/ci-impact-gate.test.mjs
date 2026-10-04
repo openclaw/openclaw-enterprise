@@ -7,7 +7,8 @@ import test from "node:test";
 
 const gate = resolve("scripts/ci/impact-gate.mjs");
 const allLanes = [
-  "checks-baseline",
+  "checks-baseline-1",
+  "checks-baseline-2",
   "checks-browser",
   "postgres",
   "postgres-application",
@@ -29,7 +30,6 @@ function needsFor(mode) {
     impact: { result: "success", outputs: { mode } },
     audit: { result: "success", outputs: {} },
     "docs-checks": { result: mode === "docs" ? "success" : "skipped", outputs: {} },
-    "checks-baseline": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
     "pr-safe": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
     "runtime-image-fixture": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
   };

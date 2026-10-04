@@ -20,7 +20,8 @@ The [shared interface](../../../packages/contracts/src/index.ts) requires two
 methods. Optional `coversIdentityAccess(request)` takes a `principalId` and
 `targetIdentityId` and returns `true` only when the principal already holds
 every grant of the target at the same or a broader scope. OCC requires it before
-issuing a service key; a Driver without it cannot issue service keys.
+issuing or revoking a service key and before changing a human account; a Driver
+without it cannot issue or revoke service keys.
 
 | Method                  | Contract                                                                                                                                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

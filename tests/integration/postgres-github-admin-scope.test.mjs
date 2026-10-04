@@ -112,6 +112,28 @@ test(
     assert.equal(revoked.statusCode, 403, revoked.body);
     assert.notEqual(await currentSession(app, adminHeaders.cookie), null, "admin stays signed in");
 
+    // Each refusal is audited against the account it targeted, with the coverage reason, so an
+    // investigator can tell a blocked takeover of this account from any other denial.
+    const coverageDenials = async (actions) =>
+      (await state.transact((unit) => unit.audit.list())).filter(
+        (event) => event.kind === "authorization_denial" && actions.includes(event.action),
+      );
+    const assertCoverageDenials = (events, count) => {
+      assert.equal(events.length, count);
+      for (const denied of events) {
+        assert.equal(denied.outcome, "denied");
+        assert.equal(denied.resource.kind, "installation");
+        assert.equal(denied.reasonCode, "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED");
+        assert.match(denied.decisionReason, /every grant of the target account's Principal/);
+        assert.equal(denied.details.userId, admin.id);
+        assert.equal(denied.details.principalId, target.principalId);
+      }
+    };
+    assertCoverageDenials(
+      await coverageDenials(["openclaw.auth.accounts.github", "openclaw.auth.accounts.revoke"]),
+      2,
+    );
+
     const limitedAccount = await readAccount(app, limitedHeaders, limited.id);
     assert.deepEqual(await readAccount(app, adminHeaders, admin.id), target);
 
@@ -142,6 +164,8 @@ test(
     assert.equal(taken.statusCode, 403, taken.body);
     assert.equal(taken.json().error.code, "FORBIDDEN");
     assert.equal(await recoveryHolder(), admin.id);
+    // A refused move is audited against the current holder, whose grants were not covered.
+    assertCoverageDenials(await coverageDenials(["openclaw.auth.recovery.replace"]), 1);
     const disabled = await post(adminHeaders, `/api/auth/accounts/${limited.id}/disable`, {
       expectedVersion: (await readAccount(app, adminHeaders, limited.id)).version,
     });

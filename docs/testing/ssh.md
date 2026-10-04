@@ -19,7 +19,7 @@ account isolation on the selected disposable host.
 
 ## SSH raw hosts
 
-The `checks-baseline` CI lane runs SSH conformance and startup coverage. The
+The `checks-baseline-*` CI lanes run SSH conformance and startup coverage. The
 `ssh-host` lane selects the real-host test with required operator-provided SSH
 settings. It is not part of the `ci` or `full` groups because those jobs do not
 provision an SSH host.

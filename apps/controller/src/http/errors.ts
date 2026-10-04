@@ -26,6 +26,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
   SecretBindingValidationError,
@@ -408,6 +409,13 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];
     return failure(mapped.status, error.code, mapped.message);
+  }
+  if (error instanceof RuntimeCredentialsForbiddenByClusterError) {
+    return failure(
+      503,
+      "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+      "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+    );
   }
   if (error instanceof ChannelCredentialError) {
     const messages = {

@@ -194,9 +194,11 @@ before State lookup; unfinished legacy sign-ins must restart. Wrong-provider ref
 neither consume nor clear the receipt. Matching attempt and current cookie session
 permit one exchange per process-local ledger: record consumption until expiry,
 clear the receipt; return the session key without issuing or extending sessions. Password sign-in returns
-it. Callback denials are audited as
-`INVALID_ATTEMPT` (malformed, unbound, replayed, or expired),
-[`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
+it. A malformed, unbound, replayed, or expired callback is refused by
+`refuseUnmatched`, which writes no audit event and increments
+[`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
+Denials after `consumeAttempt` matches are audited as
+[`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 or `EXTERNAL_IDENTITY_REJECTED`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
 

@@ -15,6 +15,7 @@ import {
   newPage,
   settledFetches,
   trackSettledFetches,
+  waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -453,6 +454,14 @@ async function releaseHeldRoute(page, pattern, hold) {
   await page.unroute(pattern);
 }
 
+// The console retains a view for Back and in-app returns only if it finished its reads before
+// the reader left; otherwise the return rebuilds it. Wait for this before leaving a view whose
+// DOM a test later expects to be reused. The page must run trackSettledFetches().
+async function waitForSettledView(page) {
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  await waitForIdleFetches(page);
+}
+
 async function expectRetainedPreview(page, visibleText) {
   if (visibleText) {
     await page.getByText(visibleText, { exact: true }).waitFor();
@@ -469,15 +478,18 @@ test("console keeps loaded route families visible while return reads refresh", a
   await fixture.createNamespace("A second Namespace", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Retained route Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
 
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  await waitForSettledView(page);
   const originalAgentRow = await page
     .getByRole("link", { name: "Retained route Agent", exact: true })
     .elementHandle();
 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForSettledView(page);
   const originalNamespaceList = await page
     .getByRole("list", { name: "Namespaces", exact: true })
     .elementHandle();
@@ -500,6 +512,7 @@ test("console keeps loaded route families visible while return reads refresh", a
 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForSettledView(page);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const namespacesPattern = "**/namespaces";
@@ -568,6 +581,8 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
   assert.equal((await deniedNativeStatus).status(), 403);
   await page.locator(".native-admin-access").waitFor({ state: "hidden" });
+  await waitForSettledView(page);
+  const originalNativePanel = await page.locator(".native-admin-access").elementHandle();
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const detailPattern = "**/namespaces/" + namespace.id + "/agents/" + agent.id;
@@ -586,6 +601,11 @@ test("console keeps loaded route families visible while return reads refresh", a
     await page.locator(".native-admin-access").isHidden(),
     true,
     "Denied OpenClaw access remains hidden after route admission",
+  );
+  assert.equal(
+    await originalNativePanel.evaluate((node) => node.isConnected),
+    true,
+    "an unchanged denied OpenClaw panel stays in the retained view",
   );
   assert.equal(nativeStatusReads, 1, "return navigation does not repeat the audited denial");
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
@@ -611,6 +631,51 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.unroute(sessionPattern);
   await page.getByLabel("Preset template").waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+});
+
+test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Early tab", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Early tab Agent");
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+  await page.getByText("Early tab Agent", { exact: true }).waitFor();
+
+  // Hold the detail's Configuration read so the first tab is still loading when the reader
+  // switches tabs; the switch updates the URL in place.
+  const configurationPattern =
+    "**/namespaces/" + namespace.id + "/configurations/" + agent.configurationId;
+  const configurationHold = await holdRoute(t, page, configurationPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => configurationHold.release());
+  await page.getByRole("link", { name: "Early tab Agent", exact: true }).click();
+  await configurationHold.waitForRelease();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  const workspaceNotice = page.getByText(
+    "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+    { exact: true },
+  );
+  await workspaceNotice.waitFor();
+  await releaseHeldRoute(page, configurationPattern, configurationHold);
+  await waitForSettledView(page);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+  const notice = await workspaceNotice.elementHandle();
+
+  // The view is retained under the URL it shows, so Back reuses it instead of rebuilding it.
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  await page.goBack();
+  await workspaceNotice.waitFor();
+  await waitForSettledView(page);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+  assert.equal(
+    await notice.evaluate((node) => node.isConnected),
+    true,
+    "Back restores the retained workspace tab",
+  );
 });
 
 test("Refresh and focus restoration retain rows until fresh data arrives", async (t) => {
@@ -649,6 +714,7 @@ test("console retained views clear after session expiry and exact Agent denial",
   const namespace = await fixture.createNamespace("Retained invalidation", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Denied retained Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
 
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
@@ -672,6 +738,8 @@ test("console retained views clear after session expiry and exact Agent denial",
   fixture.memoryDatabase.session.length = 0;
   await login(page, fixture, "/console/agents/" + agent.id + "?namespace=" + namespace.id);
   await page.getByRole("heading", { name: "Denied retained Agent", exact: true }).waitFor();
+  // The heading shows before the detail finishes loading; leaving earlier keeps no preview.
+  await waitForSettledView(page);
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   fixture.policy.restrictions.push({

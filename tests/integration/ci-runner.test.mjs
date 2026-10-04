@@ -1011,6 +1011,22 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "allowlisted credential service startup reason",
+          diagnostic: {
+            kind: "repository-platform-setup",
+            stage: "credential-service-startup",
+            credentialService: "gateway-listener",
+          },
+        },
+        {
+          name: "rejects unsafe credential service startup reason",
+          diagnostic: {
+            kind: "repository-platform-setup",
+            stage: "credential-service-startup",
+            credentialService: `${secret}-reason`,
+          },
+        },
+        {
           name: "rejects unsafe repository platform setup stage",
           diagnostic: { kind: "repository-platform-setup", stage: `${secret}-stage` },
         },
@@ -1212,6 +1228,22 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     kind: "repository-platform-setup",
     stage: "relay-readiness",
   });
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "allowlisted credential service startup reason",
+    ).error.diagnostic,
+    {
+      kind: "repository-platform-setup",
+      stage: "credential-service-startup",
+      credentialService: "gateway-listener",
+    },
+  );
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "rejects unsafe credential service startup reason",
+    ).error.diagnostic,
+    { kind: "repository-platform-setup", stage: "credential-service-startup" },
+  );
   for (const { name, stage = "relay-readiness", expected } of relayPodCases) {
     const relayFailure = summary.files[0].tests.find((entry) => entry.name === name);
     assert.equal(relayFailure.status, "failed");

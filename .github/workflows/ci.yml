@@ -178,23 +178,6 @@ jobs:
       - name: Check and build documentation
         run: pnpm docs:install && pnpm docs:check && pnpm docs:build
 
-  checks-baseline:
-    name: Checks and Conformance
-    needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/run-ci-lane
-        with:
-          lane: checks-baseline
-          profile: baseline
-          node-version: ${{ env.NODE_VERSION }}
-          artifact-prefix: ci-results
-
   pr-safe:
     name: ${{ matrix.title }}
     needs: impact
@@ -206,6 +189,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The baseline tests are split in two, balanced by measured file
+          # durations; only part 1 runs the lint, format, docs and type checks.
+          - lane: checks-baseline-1
+            title: Checks and Conformance 1
+            profile: baseline
+            timeout: 25
+          - lane: checks-baseline-2
+            title: Checks and Conformance 2
+            profile: baseline
+            timeout: 25
           - lane: checks-browser
             title: Console Browser
             profile: baseline
@@ -358,7 +351,6 @@ jobs:
       - impact
       - audit
       - docs-checks
-      - checks-baseline
       - pr-safe
       - runtime-image-fixture
     if: always()

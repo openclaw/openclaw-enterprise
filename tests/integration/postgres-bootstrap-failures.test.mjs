@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -177,18 +178,6 @@ async function rowCounts() {
   });
 }
 
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function privateOutputDirectory(prefix) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   await chmod(directory, 0o700);
@@ -347,7 +336,7 @@ for (const sharedOutput of [false, true]) {
       assert.notEqual(winnerIndex, -1);
       const loserIndex = winnerIndex === 0 ? 1 : 0;
       const loserCreatedServiceKey =
-        !sharedOutput && (await exists(environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE));
+        !sharedOutput && existsSync(environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE);
       if (sharedOutput) {
         assert.ok([1, 2].includes(counts.service_keys));
         assert.ok([1, 2].includes(counts.users));
@@ -356,8 +345,8 @@ for (const sharedOutput of [false, true]) {
         assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
       }
       const outputEnvironment = sharedOutput ? environments[0] : environments[winnerIndex];
-      assert.equal(await exists(outputEnvironment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-      assert.equal(await exists(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+      assert.equal(existsSync(outputEnvironment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
+      assert.equal(existsSync(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
       const output = JSON.parse(
         await readFile(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
       );
@@ -369,9 +358,9 @@ for (const sharedOutput of [false, true]) {
         if (index === winnerIndex || sharedOutput) {
           continue;
         }
-        assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), loserCreatedServiceKey);
+        assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), loserCreatedServiceKey);
         assert.equal(
-          await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE),
+          existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE),
           loserCreatedServiceKey,
         );
       }
@@ -428,7 +417,7 @@ test(
     const winnerOutputDigest = sha256(winnerOutputBytes);
     const winnerOutput = JSON.parse(winnerOutputBytes);
     assert.ok(rejectedEvent.attempt, rejected[0].stderr);
-    const loserCreatedServiceKey = await exists(
+    const loserCreatedServiceKey = existsSync(
       environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE,
     );
 
@@ -608,8 +597,8 @@ test(
     assert.equal(failure.attempt.passwordFile, environment.OCC_BOOTSTRAP_PASSWORD_FILE);
     assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
 
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
     const serviceKeyOutput = JSON.parse(
       await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
     );
@@ -659,8 +648,8 @@ test(
     assert.doesNotMatch(result.stderr, /^occ_/m);
     assert.equal(failure.attempt.passwordFile, environment.OCC_BOOTSTRAP_PASSWORD_FILE);
     assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
     const serviceKeyOutput = JSON.parse(
       await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
     );
@@ -714,7 +703,7 @@ test(
     assert.equal(failure.code, "COMMIT_OUTCOME_UNKNOWN");
     assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
 
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
     const serviceKeyOutput = JSON.parse(
       await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
     );

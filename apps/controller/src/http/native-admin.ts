@@ -8,6 +8,7 @@ import type {
   OccApiRoute,
 } from "@openclaw-enterprise/contracts";
 import {
+  NoActiveAgentRevisionError,
   ResourceConflictError,
   type AuthorizationDeniedError,
   type OpenClawController,
@@ -61,6 +62,7 @@ interface NativeAdminOptions {
   readonly auth: ControllerAuth;
   readonly nativeAdmin: NativeAdminAccessConfig | undefined;
   readonly nativeAdminGatewayApiKey: (() => Promise<string>) | undefined;
+  readonly webSocketLeaseIntervalMs: number | undefined;
   readonly auditSink: AuditSink;
 }
 
@@ -535,11 +537,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         input.agentId,
       );
     } catch (error) {
-      // This administering lookup conflicts only when the authorized Agent is stopped without an active revision.
+      // This lookup conflicts only when the authorized Agent is stopped without an active revision.
       if (error instanceof ResourceConflictError) {
         return { status: "stopped" };
       }
-      if (isDependencyUnavailable(error)) {
+      // A running Agent still activating its first revision is a state the console shows.
+      // Every other dependency failure, an IAM outage included, reaches the error handler.
+      if (error instanceof NoActiveAgentRevisionError) {
         return { status: "unavailable" };
       }
       throw error;
@@ -796,6 +800,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         runtimeHeaders: resolved.runtimeHeaders,
       };
     } catch (error) {
+      // A dependency outage (IAM or State) is not a denial, though its error class extends
+      // AuthorizationDeniedError: close or refuse it as a dependency failure.
+      if (isDependencyUnavailable(error)) {
+        return nativeAdminProxyDenial("dependency_failure");
+      }
       if (isAuthorizationDenied(error)) {
         return nativeAdminProxyDenial("authorization_denied", {
           actorId: currentActor,
@@ -890,6 +899,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       head,
       context,
       connectionId,
+      ...(options.webSocketLeaseIntervalMs === undefined
+        ? {}
+        : { leaseIntervalMs: options.webSocketLeaseIntervalMs }),
       lease: async () => {
         const renewed = await boundedNativeAdminAdmission(
           nativeAdminProxyContext(request, hostname, admission.revisionId),

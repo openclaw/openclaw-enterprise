@@ -65,8 +65,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: checks-baseline
-            title: Checks and Conformance
+          - lane: checks-baseline-1
+            title: Checks and Conformance 1
+            profile: baseline
+            timeout: 25
+          - lane: checks-baseline-2
+            title: Checks and Conformance 2
             profile: baseline
             timeout: 25
           - lane: checks-browser
@@ -460,7 +464,7 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline", "checks-browser", "postgres", "postgres-application", "postgres-auth", "images-packaging", "images-model-probes", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "postgres", "postgres-application", "postgres-auth", "images-packaging", "images-model-probes", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

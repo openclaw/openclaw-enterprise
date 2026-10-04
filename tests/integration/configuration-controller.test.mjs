@@ -192,6 +192,39 @@ function createOpenClawConfiguration() {
   };
 }
 
+async function configureAgentHarnessSecret(context, namespace, agent, configurationId, secretName) {
+  const harnessSecret = await context.controller.createSecret(context.principal.id, {
+    namespaceId: namespace.id,
+    name: secretName,
+    value: "synthetic-configuration-key",
+  });
+  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
+    namespaceId: namespace.id,
+    agentId: agent.body.data.id,
+    configurationId,
+    harnessAuth: { method: "api_key", source: harnessSecret.ref },
+  });
+  context.identities.push({
+    kind: "service_principal",
+    id: admittedAgent.servicePrincipalId,
+    namespaceId: namespace.id,
+    agentId: admittedAgent.id,
+  });
+  context.roles.push({
+    id: "model-consumer",
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  context.bindings.push({
+    id: "model-consumer",
+    subjectKind: "identity",
+    subjectId: admittedAgent.servicePrincipalId,
+    roleId: "model-consumer",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    resourceId: harnessSecret.id,
+  });
+}
+
 test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, exact scope, and audit", async () => {
   const configurationDriver = createConfigurationBackend();
   const context = await fixture({ configurationDriver });
@@ -554,36 +587,13 @@ for (const runtimeLogging of [undefined, "driver"]) {
     await context.controller.transact((state) =>
       state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
     );
-    const harnessSecret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name: "configuration-model-key",
-      value: "synthetic-configuration-key",
-    });
-    const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-      namespaceId: namespace.id,
-      agentId: agent.body.data.id,
+    await configureAgentHarnessSecret(
+      context,
+      namespace,
+      agent,
       configurationId,
-      harnessAuth: { method: "api_key", source: harnessSecret.ref },
-    });
-    context.identities.push({
-      kind: "service_principal",
-      id: admittedAgent.servicePrincipalId,
-      namespaceId: namespace.id,
-      agentId: admittedAgent.id,
-    });
-    context.roles.push({
-      id: "model-consumer",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    context.bindings.push({
-      id: "model-consumer",
-      subjectKind: "identity",
-      subjectId: admittedAgent.servicePrincipalId,
-      roleId: "model-consumer",
-      namespaceId: namespace.id,
-      resourceKind: "secret",
-      resourceId: harnessSecret.id,
-    });
+      "configuration-model-key",
+    );
     const deployed = await request(
       context.app,
       "POST",
@@ -670,36 +680,13 @@ test("Deploy rejects Configuration content that selects no supported Harness run
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
-  const harnessSecret = await context.controller.createSecret(context.principal.id, {
-    namespaceId: namespace.id,
-    name: "runtime-less-model-key",
-    value: "synthetic-configuration-key",
-  });
-  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-    namespaceId: namespace.id,
-    agentId: agent.body.data.id,
+  await configureAgentHarnessSecret(
+    context,
+    namespace,
+    agent,
     configurationId,
-    harnessAuth: { method: "api_key", source: harnessSecret.ref },
-  });
-  context.identities.push({
-    kind: "service_principal",
-    id: admittedAgent.servicePrincipalId,
-    namespaceId: namespace.id,
-    agentId: admittedAgent.id,
-  });
-  context.roles.push({
-    id: "model-consumer",
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  context.bindings.push({
-    id: "model-consumer",
-    subjectKind: "identity",
-    subjectId: admittedAgent.servicePrincipalId,
-    roleId: "model-consumer",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: harnessSecret.id,
-  });
+    "runtime-less-model-key",
+  );
 
   const deployed = await request(
     context.app,

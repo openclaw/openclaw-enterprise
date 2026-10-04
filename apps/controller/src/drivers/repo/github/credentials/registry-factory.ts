@@ -19,6 +19,10 @@ const identityKey = (binding: RepositoryCredentialGrantIdentity) =>
 export function createGitHubRegistryDriverFactory(
   options: RegistryFactoryOptions,
 ): GitHubDriverFactory {
+  // The registry is the production path; only a GitHub App authority may back it.
+  if (options.authority?.kind !== "github-app") {
+    throw new Error("invalid-configuration");
+  }
   const registry = validateGitHubRepositoryRegistry(options.registry);
   const grants = new Map<
     string,
@@ -58,7 +62,7 @@ export function createGitHubRegistryDriverFactory(
     let factory = factories.get(key);
     if (!factory) {
       factory = createGitHubDriverFactory({
-        key: options.key,
+        authority: options.authority,
         gatewayOrigin: options.gatewayOrigin,
         limits: options.limits,
         clock: options.clock,

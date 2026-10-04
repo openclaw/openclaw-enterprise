@@ -42,6 +42,7 @@ import {
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createModelProbeCertificates } from "../helpers/runtime-model-probe-certificates.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 import { codexOpenClawConfiguration } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
@@ -2287,7 +2288,15 @@ try {
       "-e",
       deniedReadProbe,
     ]);
-    await assert.rejects(runRepositoryMaterialInitProbe(deniedMaterialVolumeName, descriptor));
+    // The init runs, cannot read a source owned by another uid, and exits 1 with its one
+    // redacted failure; Docker's own failures exit 125. The command line embeds the same
+    // text, so match the child's stderr rather than the error message.
+    await assert.rejects(
+      runRepositoryMaterialInitProbe(deniedMaterialVolumeName, descriptor),
+      (error) =>
+        error.code === 1 &&
+        /^Repository credential material initialization failed\.$/m.test(error.stderr),
+    );
     await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
@@ -2716,8 +2725,10 @@ const timeout = setTimeout(() => {
     );
     assert.equal(unadmitted.git.trace.length, 0, "unadmitted requests must not reach the upstream");
     assert.equal(await guarded.git.ref(`refs/heads/${workspaceBranch}`), proof.commit);
-    await assert.rejects(guarded.git.ref("refs/heads/disallowed"));
-    await assert.rejects(readOnly.git.ref("refs/heads/denied"));
+    // `git rev-parse` exits 128 in the upstream bare repository: the refused pushes created no ref.
+    assert.match(await readOnly.git.ref("refs/heads/main"), /^[0-9a-f]{40,64}$/);
+    await assert.rejects(guarded.git.ref("refs/heads/disallowed"), /command failed \(exit 128\)/);
+    await assert.rejects(readOnly.git.ref("refs/heads/denied"), /command failed \(exit 128\)/);
     assert.equal(
       readOnly.git.trace.some(({ path }) => path.endsWith("/git-receive-pack")),
       false,
@@ -2860,64 +2871,11 @@ async function createStartupProbeMaterial(t, readinessProgram) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = (name) => join(directory, name);
   // Codex rejects a self-signed end-entity certificate, so sign a leaf.
-  await execute("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "2",
-    "-subj",
-    "/CN=oce-runtime-startup-probe-ca",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    file("ca-key.pem"),
-    "-out",
-    file("ca.pem"),
-  ]);
-  await execute("openssl", [
-    "req",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-subj",
-    "/CN=api.openai.com",
-    "-keyout",
-    file("key.pem"),
-    "-out",
-    file("leaf.csr"),
-  ]);
-  await writeFile(
-    file("leaf.ext"),
-    [
-      "subjectAltName=DNS:api.openai.com",
-      "basicConstraints=critical,CA:FALSE",
-      "extendedKeyUsage=serverAuth",
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      "",
-    ].join("\n"),
-  );
-  await execute("openssl", [
-    "x509",
-    "-req",
-    "-in",
-    file("leaf.csr"),
-    "-CA",
-    file("ca.pem"),
-    "-CAkey",
-    file("ca-key.pem"),
-    "-CAcreateserial",
-    "-days",
-    "2",
-    "-extfile",
-    file("leaf.ext"),
-    "-out",
-    file("cert.pem"),
-  ]);
+  await createModelProbeCertificates({
+    directory,
+    caName: "oce-runtime-startup-probe-ca",
+    run: execute,
+  });
   await rm(file("ca-key.pem"));
   // Only the provider host resolves, to the sidecar; every other name fails at once.
   await writeFile(file("hosts"), "127.0.0.1 localhost\n127.0.0.1 api.openai.com\n");

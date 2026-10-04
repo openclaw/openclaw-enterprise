@@ -424,6 +424,8 @@ export function proxyNativeAdminWebSocket(options: {
   readonly context: NativeAdminProxyContext;
   readonly connectionId: string;
   readonly lease: () => Promise<NativeAdminWebSocketCloseReason | undefined>;
+  /** Defaults to 25 s; only tests shorten it. */
+  readonly leaseIntervalMs?: number;
   readonly onConnect: () => Promise<void>;
   readonly onClose: (cause: NativeAdminWebSocketCloseCause) => void;
 }): void {
@@ -488,7 +490,7 @@ export function proxyNativeAdminWebSocket(options: {
         close(reason);
       }
     });
-  }, WS_LEASE_INTERVAL_MS);
+  }, options.leaseIntervalMs ?? WS_LEASE_INTERVAL_MS);
   leaseTimer.unref();
 
   upstreamRequest.once("upgrade", (response, upgradedSocket, upstreamHead) => {

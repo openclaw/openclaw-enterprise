@@ -14,6 +14,7 @@ import {
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createModelProbeCertificates } from "../helpers/runtime-model-probe-certificates.mjs";
 import {
   GATEWAY_READINESS_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
@@ -81,64 +82,11 @@ async function createProbeMaterial(t, configuration) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = (name) => join(directory, name);
   // Sign a leaf with a private CA, as a provider certificate would be.
-  await execute("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "2",
-    "-subj",
-    "/CN=oce-runtime-model-probe-ca",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    file("ca-key.pem"),
-    "-out",
-    file("ca.pem"),
-  ]);
-  await execute("openssl", [
-    "req",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-subj",
-    "/CN=api.openai.com",
-    "-keyout",
-    file("key.pem"),
-    "-out",
-    file("leaf.csr"),
-  ]);
-  await writeFile(
-    file("leaf.ext"),
-    [
-      "subjectAltName=DNS:api.openai.com",
-      "basicConstraints=critical,CA:FALSE",
-      "extendedKeyUsage=serverAuth",
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      "",
-    ].join("\n"),
-  );
-  await execute("openssl", [
-    "x509",
-    "-req",
-    "-in",
-    file("leaf.csr"),
-    "-CA",
-    file("ca.pem"),
-    "-CAkey",
-    file("ca-key.pem"),
-    "-CAcreateserial",
-    "-days",
-    "2",
-    "-extfile",
-    file("leaf.ext"),
-    "-out",
-    file("cert.pem"),
-  ]);
+  await createModelProbeCertificates({
+    directory,
+    caName: "oce-runtime-model-probe-ca",
+    run: execute,
+  });
   await rm(file("ca-key.pem"));
   // Only the provider host resolves, to the sidecar; every other name fails at once.
   await writeFile(file("hosts"), "127.0.0.1 localhost\n127.0.0.1 api.openai.com\n");

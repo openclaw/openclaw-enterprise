@@ -110,18 +110,43 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
     KubernetesConfigurationDriver.validateConfiguration({ authentication: { mode: "inCluster" } }),
   );
 
-  for (const invalid of [
-    undefined,
-    {},
-    { authentication: { mode: "ambient" } },
-    { authentication: { mode: "inCluster", context: "unexpected" } },
-    { authentication: { mode: "kubeconfig", kubeconfigPath: "relative", context: "tenant" } },
-    { authentication: { mode: "kubeconfig", kubeconfigPath: "/tmp/config", context: "" } },
-    { authentication: { mode: "inCluster" }, token: "not-allowed" },
-    { authentication: { mode: "inCluster" }, clients: {} },
+  const injected = /Injected clients and unknown Kubernetes configuration options/;
+  for (const [invalid, refusal] of [
+    [undefined, /Kubernetes configuration options are required/],
+    [{}, /Explicit Kubernetes authentication is required/],
+    [{ authentication: { mode: "ambient" } }, /explicit Kubernetes authentication mode/],
+    [
+      { authentication: { mode: "inCluster", context: "unexpected" } },
+      /In-cluster authentication does not accept additional options/,
+    ],
+    [
+      {
+        authentication: {
+          mode: "kubeconfig",
+          kubeconfigPath: "/tmp/config",
+          context: "tenant",
+          token: "x",
+        },
+      },
+      /Unknown kubeconfig authentication options are forbidden/,
+    ],
+    [
+      { authentication: { mode: "kubeconfig", kubeconfigPath: "", context: "tenant" } },
+      /Dedicated kubeconfig path must be a nonempty string/,
+    ],
+    [
+      { authentication: { mode: "kubeconfig", kubeconfigPath: "relative", context: "tenant" } },
+      /Dedicated kubeconfig path must be absolute/,
+    ],
+    [
+      { authentication: { mode: "kubeconfig", kubeconfigPath: "/tmp/config", context: "" } },
+      /Explicit Kubernetes context must be a nonempty string/,
+    ],
+    [{ authentication: { mode: "inCluster" }, token: "not-allowed" }, injected],
+    [{ authentication: { mode: "inCluster" }, clients: {} }, injected],
   ]) {
-    assert.throws(() => KubernetesConfigurationDriver.validateConfiguration(invalid));
-    assert.throws(() => new KubernetesConfigurationDriver(invalid));
+    assert.throws(() => KubernetesConfigurationDriver.validateConfiguration(invalid), refusal);
+    assert.throws(() => new KubernetesConfigurationDriver(invalid), refusal);
   }
 
   // Inherited client injection must not evade the closed own-property schema.
