@@ -1769,3 +1769,11 @@ export {
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
 } from "./workspace-defaults.mjs";
+
+export {
+  PLATFORM_AUDIT_LIMITS,
+  parsePlatformAuditEventV1,
+  parsePlatformAuditPageV1,
+  encodePlatformAuditPageV1,
+} from "./platform-audit.ts";
+export type { PlatformAuditEventV1, PlatformAuditPageV1 } from "./platform-audit.ts";

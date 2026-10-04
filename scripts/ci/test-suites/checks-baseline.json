@@ -97,6 +97,9 @@
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
     },
     {
+      "path": "tests/conformance/platform-audit.test.mjs"
+    },
+    {
       "path": "tests/conformance/platform-state-memory.test.mjs"
     },
     {

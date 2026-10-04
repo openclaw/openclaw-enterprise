@@ -910,6 +910,7 @@
               "flows/container-publication",
               "flows/cli-publication",
               "flows/github-actions-testing/preparation",
+              "testing/platform-audit",
               "testing/postgresql",
               "testing/images",
               "testing/docker",
