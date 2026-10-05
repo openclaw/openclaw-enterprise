@@ -10427,7 +10427,9 @@ test("retirement preserves active storage and node routing and deletes exact own
         body,
       ) {
         deletions.push([spec.kind, { spec, body }]);
-        if (spec.metadata.name === `${gatewayName}-people`) peopleResources.delete(spec.kind);
+        if (spec.metadata.name === `${gatewayName}-people`) {
+          peopleResources.delete(spec.kind);
+        }
       },
     },
   });

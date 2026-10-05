@@ -63,7 +63,11 @@ requires a true flag and no failure.
 Methods without a return value must reject if they cannot complete. The revision
 context is optional in TypeScript; the worker supplies it after authorization.
 
-[Runtime access](../agent-native-admin.md) defines `listAgentRuntimeRoles`/`getAgentRuntimeAccess`.
+### Human runtime access
+
+A Driver that offers OpenClaw browser access must implement both `listAgentRuntimeRoles(revision)` and `getAgentRuntimeAccess(revision, principalId, runtimeRole)`. `getGatewayEndpoint` alone supplies no human admission authority. These methods remain optional for Drivers that provide other Agent workflows.
+
+The catalog lists assignable roles for the active revision. Admission returns a private endpoint and server-owned headers qualified for the exact person and role, or an unavailable reason. Unknown assignments and unsupported transport must fail closed; OCC never substitutes a service endpoint for a missing descriptor. Kubernetes currently implements this contract, including the explicit built-in administrator assignment. Docker and SSH do not offer this browser feature through endpoint discovery alone. See [Runtime access](../agent-native-admin.md) for authorization and configuration requirements.
 
 ### Optional additions
 
@@ -93,9 +97,9 @@ its active revision. The method does not check readiness, authorize the caller,
 grant backend route permissions, or save a URL in Agent Configuration. Connection
 errors are dependency failures.
 
-Workspace-file access and the opt-in
-[Agent native admin UI](../agent-native-admin.md#agent-host-identity) use this
-endpoint; without it, native admin access is unavailable. Kubernetes implements
+Workspace-file access uses this endpoint. The opt-in
+[Agent native admin UI](../agent-native-admin.md#agent-host-identity) uses
+`getAgentRuntimeAccess`, which may resolve its endpoint through this method. Kubernetes implements
 [private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
 
 ### Optional initial runtime credential provisioning

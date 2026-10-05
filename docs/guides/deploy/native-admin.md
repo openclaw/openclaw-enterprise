@@ -154,7 +154,7 @@ its matching identity fields and opt-in settings in the saved Configuration.
 
 ## Configure each Agent
 
-Configure each Agent after the API feature and wildcard route are enabled. First deploy `gateway.roles` and assign your existing Principal ID through **Share Agent**. Without that assignment, the status endpoint returns `403`, including for Installation administrators. Kubernetes adds the trusted role headers and reserved service role; retain canonical native role definitions in OCE. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
+Configure each Agent after the API feature and wildcard route are enabled. Deploy the Agent, then assign your existing Principal ID through **Share Agent**. Kubernetes offers `platform-administrator` for full native access without defining named roles. To use restricted roles and individual native profiles, configure and deploy `gateway.roles` first, then select a configured role. Without that assignment, the status endpoint returns `403`, including for Installation administrators. For configured roles, Kubernetes adds the trusted role headers and reserved service and administrator policies; retain canonical native role definitions in OCE. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
 
 ```text
 https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
@@ -168,7 +168,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. The `roles` block below is optional when only using `platform-administrator`; keep the UI origin and device auto-approval settings. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {

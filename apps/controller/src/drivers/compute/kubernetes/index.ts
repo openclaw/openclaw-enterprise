@@ -7,7 +7,6 @@ import {
 } from "@openclaw-enterprise/utils";
 import { randomBytes, X509Certificate } from "node:crypto";
 import {
-  configuredRuntimeRoles,
   agentRuntimeRoles,
   humanRuntimeAccess,
   managedRuntimeRoles,

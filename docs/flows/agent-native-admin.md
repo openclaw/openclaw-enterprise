@@ -50,7 +50,9 @@ graph TD
   R -->|yes| T["Resolve current active revision and supported native config"]
   T --> U["OCC strips browser credentials and proxies HTTP to private gateway"]
   T -->|WebSocket with exact Origin| V["OCC proxies 101 upgrade with revision lease"]
-  V --> AB["Native Gateway verifies assignment and commits profile role"]
+  V --> AD{"Gateway has configured roles?"}
+  AD -->|yes| AB["Native Gateway verifies assignment and commits profile role"]
+  AD -->|no, explicit administrator| AC
   AB --> AC["Native policy authorizes subsequent commands"]
   U -->|HTML preview with sandbox routing enabled| W["Browser loads public shell from separate preview origin"]
   W --> Z["Envoy sandbox listener routes to Agent sandbox port"]
@@ -101,36 +103,17 @@ Native-host admission resolves the irreversible hash against existing platform s
 
 `apps/controller/src/auth/index.ts:createControllerAuth`
 
-When native admin is enabled, startup passes `nativeAdmin.sharedCookieDomain` to
-Better Auth as `OCC_AUTH_COOKIE_DOMAIN`, and Better Auth emits the ordinary OCE
-session cookie at that configured shared cookie parent domain. The controller
-validates that the console host and Agent host suffix fit that parent on
-DNS-label boundaries and rejects public suffixes, malformed domains, or values
-outside the parent. It does not infer a broader parent domain from the console
-or Agent hostname. When native admin is disabled, leftover shared-cookie-domain
-configuration is ignored and the console keeps the legacy host-only
-`openclaw_occ` cookie prefix and scope.
+Startup passes `nativeAdmin.sharedCookieDomain` to Better Auth as `OCC_AUTH_COOKIE_DOMAIN`. The session cookie uses that explicit parent; startup rejects public suffixes, malformed domains and hosts outside its DNS-label boundary. Disabled native access keeps the host-only `openclaw_occ` cookie and ignores leftover shared-domain configuration.
 
-A domain-scoped session cookie cannot use a host-only `__Host-` prefix. The controller keeps one canonical cookie name and scope so the browser does not choose between duplicate host-only and domain cookies during migration.
+Shared-domain cookies cannot use a `__Host-` prefix. One canonical cookie name and scope avoids ambiguous session selection.
 
 ### 6. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook calls `interceptNativeAdminHttp` before normal OCC route
-handling. For hosts beneath the configured native admin domain, that early
-intercept prevents the Agent origin from exposing console or controller API
-routes. For Agent hosts, OCC authenticates the shared session cookie, resolves
-the selected IAM identity, resolves the requested host to the exact Agent,
-revalidates exact Agent `use`, selects the current active revision, and
-validates native configuration support before proxying. Attributable IAM denials
-during proxy admission preserve an IAM denial audit for the human session and
-exact Agent instead of becoming unaudited dependency failures.
+`onRequest` intercepts native Agent hosts before OCC routing, preventing those origins from exposing console/API routes. OCC authenticates the shared session, resolves the exact Agent and IAM principal, revalidates `use` and the assignment, then checks the active revision and native configuration. Denials retain attributable human IAM audit evidence.
 
-Admission reads Better Auth once and returns the verified session metadata with
-the caller identity. The status and proxy paths reuse that result to check
-expiry and attribute access, without a second session lookup. Each WebSocket
-lease runs admission again against current session state.
+Admission reads Better Auth once and returns identity and session metadata for expiry checks and attribution. Each WebSocket lease repeats admission against current session state.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 

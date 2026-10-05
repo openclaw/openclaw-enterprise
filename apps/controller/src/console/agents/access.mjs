@@ -101,7 +101,7 @@ export function renderAgentAccess(context, agent) {
     element(
       "p",
       { className: "notice" },
-      "Recipients use their own OpenClaw profile and the selected role. This Agent’s files, plugins and provider accounts remain shared.",
+      "Recipients use the selected OpenClaw role. This Agent’s files, plugins and provider accounts remain shared.",
     ),
     element(
       "p",
