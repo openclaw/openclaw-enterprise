@@ -8638,6 +8638,27 @@ export class OpenClawController {
     return immutableCopy(snapshot);
   }
 
+  private async currentAgentConfiguration(
+    state: PlatformReadView,
+    namespace: Readonly<Namespace>,
+    agent: Readonly<Agent>,
+  ): Promise<Readonly<Configuration>> {
+    const metadata = await state.configurations.findConfiguration(
+      namespace.id,
+      agent.configurationId,
+    );
+    if (!metadata || metadata.kind !== "agent") {
+      throw new ScopeViolationError(
+        "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
+      );
+    }
+    const driver = this.configurationDriver();
+    return this.exactConfiguration(
+      await this.driverOperation(() => driver.read({ id: metadata.id, namespaceId: namespace.id })),
+      metadata,
+    );
+  }
+
   private async driverOperation<T>(
     operation: () => Promise<T>,
     capability: "Configuration" | "ServiceAccount" = "Configuration",
