@@ -116,6 +116,11 @@ export function renderAgentAccess(context, agent) {
       { className: "muted" },
       "Sharing adds Namespace discovery, Agent read and OpenClaw entry access. The selected OpenClaw role defines runtime permissions; OCE deployment administration is separate.",
     ),
+    element(
+      "p",
+      { className: "hint" },
+      "To open OpenClaw yourself, assign your Principal ID an OpenClaw role here.",
+    ),
     feedback,
     form,
     element("h3", {}, "Direct Agent grants"),

@@ -1250,6 +1250,14 @@ export function installFixture(scenario, evidence) {
                 scopes: ["operator.admin"],
               },
             },
+            {
+              id: "platform-administrator",
+              permissions: {
+                sessions: { others: "write" },
+                agents: "*",
+                scopes: ["operator.admin"],
+              },
+            },
           ];
           const deployedRoles = structuredClone(runtimeRoles);
           if (scenario.runtimeRolePolicyChanged) {

@@ -157,6 +157,8 @@ approvals, runtime images, and credential-service networking.
 
 Open **Share before first deployment**, **Share while stopped**, **Configured and deployed role permissions**, **Change OpenClaw role**, or **OpenClaw roles unavailable**. Review both permission summaries, share an existing Principal, change its role and remove the direct assignment. These previews demonstrate simulated UI states; backend lifecycle and native admission need the integration suites.
 
+In **Share an Agent**, check the hint explaining that administrators assign themselves an OpenClaw role too. Select `platform-administrator` and inspect its full native permissions before sharing the fixture person.
+
 ### Return to loaded pages
 
 During delayed reads, exercise Back/Forward, Refresh, refocus, and Namespace

@@ -2385,8 +2385,9 @@ export const scenarios = {
     name: "Share an Agent",
     path: draft,
     description:
-      "Choose any configured OpenClaw role for an existing person. The selected role controls native permissions.",
+      "Choose an OpenClaw role for an existing person. Administrators also assign themselves a role to open OpenClaw.",
     steps: [
+      "Check the hint explaining that administrators assign themselves a role to open OpenClaw.",
       "Enter prn_00000000-0000-4000-8000-000000000003 as the existing Principal ID.",
       "Choose an OpenClaw role, review its permissions, acknowledge shared access, and share.",
       "Remove the direct binding; Namespace discovery remains available.",
