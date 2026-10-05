@@ -3137,6 +3137,28 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.deepEqual(managedConfiguration.gateway.auth.trustedProxy.managedIdentities, [
     "occ-workspace-files",
   ]);
+  // An empty allow-list is safe only with role/digest enforcement and a bounded
+  // managed identity scope. Start without proxy fields so the Driver must supply them.
+  const generatedProxy = driver.kubernetesGatewayConfigurationDocument({
+    gateway: { roles: humanRevision.configuration.gateway.roles },
+  }).gateway.auth.trustedProxy;
+  assert.deepEqual(
+    {
+      allowUsers: generatedProxy.allowUsers,
+      roleHeader: generatedProxy.roleHeader,
+      rolePolicyHashHeader: generatedProxy.rolePolicyHashHeader,
+      managedIdentityPrefixes: generatedProxy.managedIdentityPrefixes,
+      managedIdentities: generatedProxy.managedIdentities,
+    },
+    {
+      allowUsers: [],
+      roleHeader: "x-occ-role",
+      rolePolicyHashHeader: "x-occ-role-policy",
+      managedIdentityPrefixes: ["oce:"],
+      managedIdentities: ["occ-workspace-files"],
+    },
+  );
+
   // The Driver supplies omitted selectors but rejects a conflicting identity boundary.
   const implicitScope = structuredClone(humanRevision.configuration);
   delete implicitScope.gateway.auth.trustedProxy.managedIdentityPrefixes;
