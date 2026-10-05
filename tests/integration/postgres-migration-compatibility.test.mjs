@@ -9,6 +9,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
@@ -1031,15 +1033,6 @@ async function assertCompletedHistory(db, previous = []) {
     ).rows[0].count,
     0,
     "migration must not invent inheritance intent for existing Agent bindings",
-  );
-  assert.equal(
-    (
-      await db.app.query(
-        "SELECT count(*)::integer AS count FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL",
-      )
-    ).rows[0].count,
-    0,
-    "migration must not assign runtime roles to legacy access bindings",
   );
   assert.equal(
     catalogDigest(await migrationCatalog(db.migrator, "drizzle")),
@@ -2400,5 +2393,167 @@ test(
     assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
     assert.equal((await authorize(principals[0], "read", "namespace")).allowed, true);
     assert.equal((await authorize(principals[1], "read", "namespace")).allowed, true);
+  },
+);
+
+test(
+  "Runtime-role upgrade preserves existing human administrators without a revocation fallback",
+  requiresHistoryPostgres,
+  async (context) => {
+    let pool;
+    context.after(async () => pool?.end());
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
+      prefix: 47,
+    });
+    const namespaceId = await seedCanonicalData(db, { preset: true });
+    const agentId = (
+      await db.app.query("SELECT id FROM occ.agents WHERE namespace_id=$1", [namespaceId])
+    ).rows[0].id;
+    const otherNamespace = `ns_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,$2,'ready',now())",
+      [otherNamespace, `other-${randomUUID()}`],
+    );
+    const people = Object.fromEntries(
+      ["global", "exact", "group", "otherScope", "readOnly"].map((name) => [
+        name,
+        `prn_${randomUUID()}`,
+      ]),
+    );
+    for (const principal of Object.values(people)) {
+      await db.app.query(
+        "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','runtime-upgrade',$1)",
+        [principal],
+      );
+    }
+    const adminRole = `role_${randomUUID()}`;
+    const readRole = `role_${randomUUID()}`;
+    await db.app.query("INSERT INTO occ.iam_roles(id,permissions) VALUES($1,$2),($3,$4)", [
+      adminRole,
+      JSON.stringify([{ action: "administer", resourceKind: "agent" }]),
+      readRole,
+      JSON.stringify([{ action: "read", resourceKind: "agent" }]),
+    ]);
+    const groupId = `group_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.iam_groups(id,namespace_id,name) VALUES($1,$2,'Runtime administrators')",
+      [groupId, namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.iam_group_memberships(namespace_id,group_id,principal_id) VALUES($1,$2,$3)",
+      [namespaceId, groupId, people.group],
+    );
+    for (const [name, namespace, role, resourceKind, resourceId] of [
+      ["global", null, adminRole, null, null],
+      ["exact", namespaceId, adminRole, "agent", agentId],
+      ["otherScope", otherNamespace, adminRole, null, null],
+      ["readOnly", namespaceId, readRole, "agent", agentId],
+    ]) {
+      await db.app.query(
+        "INSERT INTO occ.iam_access_bindings(id,namespace_id,identity_subject_id,role_id,resource_kind,resource_id) VALUES($1,$2,$3,$4,$5,$6)",
+        [`binding_${randomUUID()}`, namespace, people[name], role, resourceKind, resourceId],
+      );
+    }
+    await db.app.query(
+      "INSERT INTO occ.iam_access_bindings(id,namespace_id,group_subject_id,role_id) VALUES($1,$2,$3,$4)",
+      [`binding_${randomUUID()}`, namespaceId, groupId, adminRole],
+    );
+    const serviceId = (
+      await db.app.query("SELECT service_principal_id FROM occ.agents WHERE id=$1", [agentId])
+    ).rows[0].service_principal_id;
+    await db.app.query(
+      "INSERT INTO occ.iam_access_bindings(id,namespace_id,identity_subject_id,role_id) VALUES($1,$2,$3,$4)",
+      [`binding_${randomUUID()}`, namespaceId, serviceId, adminRole],
+    );
+    const applicationUrl = new URL(db.migrationUrl);
+    applicationUrl.username = "occ_app";
+    applicationUrl.password = "occ-app-local";
+    pool = new pg.Pool({ connectionString: applicationUrl.toString() });
+    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const resource = { kind: "agent", namespaceId, id: agentId };
+    // Installation, exact-Agent and Namespace-group administrators retain entry;
+    // read-only, other-Namespace and service identities must not acquire it.
+    const expected = [people.global, people.exact, people.group].sort();
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preRuntimeRoles",
+    });
+    const assignments = (
+      await db.app.query(
+        "SELECT id,identity_subject_id,runtime_role FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL ORDER BY identity_subject_id",
+      )
+    ).rows;
+    assert.deepEqual(
+      assignments.map((row) => row.identity_subject_id),
+      expected,
+    );
+    assert.ok(assignments.every((row) => row.runtime_role === "platform-administrator"));
+    for (const principalId of Object.values(people)) {
+      const access = await iam.authorizeRuntimeAccess({ principalId, action: "use", resource });
+      assert.equal(access.allowed, expected.includes(principalId));
+      if (access.allowed) {
+        assert.equal(access.runtimeRole, "platform-administrator");
+      }
+    }
+    const assignment = assignments.find((row) => row.identity_subject_id === people.exact);
+    // The original OCE administrator grant survives both a downgrade and removal;
+    // neither transition may restore the old native administrator privilege.
+    await db.app.query("UPDATE occ.iam_access_bindings SET runtime_role='reviewer' WHERE id=$1", [
+      assignment.id,
+    ]);
+    assert.equal(
+      (await iam.authorizeRuntimeAccess({ principalId: people.exact, action: "use", resource }))
+        .runtimeRole,
+      "reviewer",
+    );
+    await db.app.query("DELETE FROM occ.iam_access_bindings WHERE id=$1", [assignment.id]);
+    assert.equal(
+      (await iam.authorize({ principalId: people.exact, action: "administer", resource })).allowed,
+      true,
+    );
+    assert.equal(
+      (await iam.authorizeRuntimeAccess({ principalId: people.exact, action: "use", resource }))
+        .allowed,
+      false,
+    );
+    await runHistoryMigration(db, "production");
+    assert.equal(
+      (await iam.authorizeRuntimeAccess({ principalId: people.exact, action: "use", resource }))
+        .allowed,
+      false,
+    );
+    // A deny on the old entry permission excludes all matching administrators.
+    const denied = await historyDatabase(
+      context,
+      await migrationHistoryFixture(),
+      "runtime_denied",
+      { prefix: 47 },
+    );
+    const deniedNamespace = await seedCanonicalData(denied, { preset: true });
+    await denied.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','runtime-upgrade',$1)",
+      [people.global],
+    );
+    await denied.app.query("INSERT INTO occ.iam_roles(id,permissions) VALUES($1,$2)", [
+      adminRole,
+      JSON.stringify([{ action: "administer", resourceKind: "agent" }]),
+    ]);
+    await denied.app.query(
+      "INSERT INTO occ.iam_access_bindings(id,identity_subject_id,role_id) VALUES($1,$2,$3)",
+      [`binding_${randomUUID()}`, people.global, adminRole],
+    );
+    await denied.app.query(
+      "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,effect) VALUES($1,$2,'administer','agent','deny')",
+      [`restriction_${randomUUID()}`, deniedNamespace],
+    );
+    await runHistoryMigration(denied, "production");
+    assert.equal(
+      (
+        await denied.app.query(
+          "SELECT count(*)::integer AS count FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL",
+        )
+      ).rows[0].count,
+      0,
+    );
   },
 );

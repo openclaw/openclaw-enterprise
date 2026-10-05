@@ -7,6 +7,7 @@ import type {
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
+import { ADMINISTRATOR_RUNTIME_ROLE } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
 export const RUNTIME_ROLE_HEADER = "x-occ-role";
@@ -53,6 +54,7 @@ export function configuredRuntimeRoles(
     .filter(
       ([id, definition]) =>
         id !== RUNTIME_SERVICE_ROLE &&
+        id !== ADMINISTRATOR_RUNTIME_ROLE &&
         id === id.trim() &&
         id.length > 0 &&
         id.length <= 128 &&
@@ -62,6 +64,15 @@ export function configuredRuntimeRoles(
     .map(([id, definition]) =>
       immutableCopy({ id, permissions: definition as Record<string, unknown> }),
     );
+}
+
+export function agentRuntimeRoles(
+  configuration: OpenClawConfigurationDocument,
+): readonly AgentRuntimeRole[] {
+  return [
+    { id: ADMINISTRATOR_RUNTIME_ROLE, permissions: RUNTIME_SERVICE_POLICY },
+    ...configuredRuntimeRoles(configuration),
+  ];
 }
 
 export function managedRuntimeRoles(
@@ -77,15 +88,21 @@ export function managedRuntimeRoles(
     typeof roles.default !== "string" ||
     !Object.hasOwn(definitions, roles.default) ||
     (Object.hasOwn(definitions, RUNTIME_SERVICE_ROLE) &&
-      !isDeepStrictEqual(definitions[RUNTIME_SERVICE_ROLE], RUNTIME_SERVICE_POLICY))
+      !isDeepStrictEqual(definitions[RUNTIME_SERVICE_ROLE], RUNTIME_SERVICE_POLICY)) ||
+    (Object.hasOwn(definitions, ADMINISTRATOR_RUNTIME_ROLE) &&
+      !isDeepStrictEqual(definitions[ADMINISTRATOR_RUNTIME_ROLE], RUNTIME_SERVICE_POLICY))
   ) {
     throw new TypeError(
-      "Gateway roles require a configured default and must not define the reserved oce-service role.",
+      "Gateway roles require a configured default and must not override reserved runtime administrator or service policies.",
     );
   }
   return {
     ...roles,
-    definitions: { ...definitions, [RUNTIME_SERVICE_ROLE]: RUNTIME_SERVICE_POLICY },
+    definitions: {
+      ...definitions,
+      [RUNTIME_SERVICE_ROLE]: RUNTIME_SERVICE_POLICY,
+      [ADMINISTRATOR_RUNTIME_ROLE]: RUNTIME_SERVICE_POLICY,
+    },
   } as OpenClawConfigurationValue;
 }
 
@@ -98,7 +115,28 @@ export function humanRuntimeAccess(
   const gateway = asRecord(revision.configuration.gateway);
   const auth = asRecord(gateway?.auth);
   const proxy = asRecord(auth?.trustedProxy);
-  const role = configuredRuntimeRoles(revision.configuration).find(
+  // Preserve the pre-role administrator path for an explicit assignment. The
+  // original trusted-proxy and pairing requirements still apply.
+  if (gateway?.roles === undefined && runtimeRole === ADMINISTRATOR_RUNTIME_ROLE) {
+    const approval = asRecord(proxy?.deviceAutoApprove);
+    return endpoint !== undefined &&
+      auth?.mode === "trusted-proxy" &&
+      proxy?.userHeader === "x-occ-identity" &&
+      Array.isArray(proxy.allowUsers) &&
+      proxy.allowUsers.includes(RUNTIME_SERVICE_IDENTITY) &&
+      approval?.enabled === true &&
+      Array.isArray(approval.scopes) &&
+      approval.scopes.includes("operator.admin")
+      ? {
+          endpoint,
+          headers: {
+            "x-occ-identity": RUNTIME_SERVICE_IDENTITY,
+            "x-openclaw-scopes": "operator.admin",
+          },
+        }
+      : undefined;
+  }
+  const role = agentRuntimeRoles(revision.configuration).find(
     (candidate) => candidate.id === runtimeRole,
   );
   if (

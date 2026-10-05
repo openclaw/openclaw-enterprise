@@ -22,6 +22,7 @@ import {
   waitFor,
   waitForReadyGatewayPod,
 } from "../helpers/harness-topology-k3d-real.mjs";
+import { ADMINISTRATOR_RUNTIME_ROLE } from "../../packages/contracts/src/index.ts";
 import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 
 const executeFile = promisify(execFile);
@@ -247,7 +248,12 @@ async function readOceControlState(topology) {
   };
 }
 
-async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomain) {
+async function redeployWithNativeAdminAccess(
+  topology,
+  publicOrigin,
+  nativeDomain,
+  { configuredRoles = true } = {},
+) {
   const targetForStableOrigin = expectedNativeAdminTarget(topology, publicOrigin, nativeDomain);
   const current = await topology.request(
     "GET",
@@ -255,6 +261,15 @@ async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomai
   );
   assert.equal(current.status, 200, JSON.stringify(current.error));
   const values = nativeRolesGateway(current.data.values, targetForStableOrigin.origin);
+  if (!configuredRoles) {
+    delete values.gateway.roles;
+    const proxy = values.gateway.auth.trustedProxy;
+    delete proxy.roleHeader;
+    delete proxy.rolePolicyHashHeader;
+    delete proxy.managedIdentityPrefixes;
+    delete proxy.managedIdentities;
+    proxy.allowUsers = ["occ-workspace-files"];
+  }
   const patched = await topology.request(
     "PATCH",
     `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
@@ -324,7 +339,7 @@ async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomai
       roleId: role.data.id,
       resourceKind: "agent",
       resourceId: topology.agent.id,
-      runtimeRole: "administrator",
+      runtimeRole: ADMINISTRATOR_RUNTIME_ROLE,
     });
     assert.equal(assignment.status, 201, JSON.stringify(assignment.error));
   }
@@ -1095,6 +1110,7 @@ test(
       topology,
       ingress.origin,
       nativeDomain,
+      { configuredRoles: false },
     );
     const status = await nativeAdminStatus(topology);
     assert.equal(status.status, "available");

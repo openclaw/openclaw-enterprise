@@ -38,3 +38,35 @@ ALTER TABLE occ.iam_restrictions DROP CONSTRAINT iam_restrictions_action_valid;
 ALTER TABLE occ.iam_restrictions ADD CONSTRAINT iam_restrictions_action_valid CHECK (
   action IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'use')
 );
+--> statement-breakpoint
+-- Preserve current human native administrators as explicit, revocable assignments.
+-- Core stores the standard opaque administrator role; Compute supplies its native policy.
+WITH eligible AS (
+  SELECT DISTINCT a.namespace_id, a.id AS agent_id, i.id AS principal_id
+  FROM occ.agents a
+  JOIN occ.iam_access_bindings b ON (b.namespace_id IS NULL OR b.namespace_id = a.namespace_id)
+    AND (b.resource_kind IS NULL OR (b.resource_kind = 'agent' AND b.resource_id = a.id))
+  JOIN occ.iam_roles r ON r.id = b.role_id AND (r.namespace_id IS NULL OR r.namespace_id = a.namespace_id)
+    AND r.permissions @> '[{"action":"administer","resourceKind":"agent"}]'::jsonb
+  JOIN occ.iam_identities i ON i.kind = 'principal' AND (
+    i.id = b.identity_subject_id OR EXISTS (
+      SELECT 1 FROM occ.iam_group_memberships m
+      WHERE m.group_id = b.group_subject_id AND m.principal_id = i.id
+        AND (m.namespace_id IS NULL OR m.namespace_id = a.namespace_id)
+    )
+  )
+  WHERE NOT EXISTS (
+    SELECT 1 FROM occ.iam_restrictions d WHERE d.action = 'administer' AND d.resource_kind = 'agent'
+      AND (d.namespace_id IS NULL OR d.namespace_id = a.namespace_id)
+      AND (d.resource_id IS NULL OR d.resource_id = a.id)
+  )
+), entry_role AS (
+  INSERT INTO occ.iam_roles (id, name, permissions)
+  SELECT 'role_' || gen_random_uuid()::text, 'Agent runtime entry',
+    '[{"action":"read","resourceKind":"agent"},{"action":"use","resourceKind":"agent"}]'::jsonb
+  WHERE EXISTS (SELECT 1 FROM eligible)
+  RETURNING id
+)
+INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id, runtime_role)
+SELECT 'binding_' || gen_random_uuid()::text, e.namespace_id, e.principal_id, r.id, 'agent', e.agent_id, 'platform-administrator'
+FROM eligible e CROSS JOIN entry_role r;

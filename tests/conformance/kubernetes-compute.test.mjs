@@ -17,7 +17,10 @@ import {
   SETUP_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  ADMINISTRATOR_RUNTIME_ROLE,
+  admitLoggingConfiguration,
+} from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
@@ -3074,6 +3077,31 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     },
     route.spec.rules[0].filters[1],
   ]);
+
+  // Explicit administrator assignments retain the old transport without roles or
+  // a role-admission patch. A configured restricted role never takes this route.
+  const administratorRevision = structuredClone(revision);
+  administratorRevision.configuration.gateway = {
+    auth: { trustedProxy: { deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] } } },
+  };
+  assert.deepEqual(
+    driver.getAgentRuntimeAccess(
+      administratorRevision,
+      "prn_00000000-0000-4000-8000-000000000003",
+      ADMINISTRATOR_RUNTIME_ROLE,
+    ),
+    {
+      endpoint: driver.getGatewayEndpoint(revision),
+      headers: { "x-occ-identity": "occ-workspace-files", "x-openclaw-scopes": "operator.admin" },
+    },
+  );
+  assert.ok(
+    driver.listAgentRuntimeRoles(revision).some((role) => role.id === ADMINISTRATOR_RUNTIME_ROLE),
+  );
+  assert.equal(
+    driver.getAgentRuntimeAccess(revision, "prn_00000000-0000-4000-8000-000000000003", "reviewer"),
+    undefined,
+  );
 
   // Human ingress preserves only OCC's verified role descriptor; service ingress overwrites it.
   const humanRevision = {

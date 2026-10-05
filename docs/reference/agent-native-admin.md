@@ -6,7 +6,11 @@ The feature is disabled by default. When enabled, the console shows **OpenClaw**
 
 ## Who can open it
 
-Native admin UI is the only Agent chat surface in the console, and it is for exact Agent `administer` holders with a human session (see [Authorization and availability](#authorization-and-availability)). Other people message the Agent through a channel its Configuration sets up, such as [Slack](../guides/integrations/slack.md), or ask someone who can edit that Configuration to let them in. An operator with cluster access can check a real response with [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
+Opening OpenClaw requires a human session, Agent `use` permission and an explicit runtime assignment. OCE `administer` permission controls Agent management separately.
+
+Existing human administrators receive explicit `platform-administrator` assignments when runtime roles are introduced, including effective Installation, Namespace-group and exact-Agent grants. Denied administrators and service identities are excluded. These assignments can be downgraded or removed independently of OCE administration; removal does not restore access through the old administrator grant. Group-derived assignments become individual assignments managed through Sharing.
+
+Kubernetes always offers `platform-administrator`, with full native access. Without configured `gateway.roles`, this assignment retains the existing shared administrator transport and profile, including on already-running Gateways. With configured roles it uses the person's native profile and a Driver-owned administrator policy. Other assigned roles require configured definitions and qualified human transport. The reserved `platform-administrator` policy cannot be overridden.
 
 Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
 

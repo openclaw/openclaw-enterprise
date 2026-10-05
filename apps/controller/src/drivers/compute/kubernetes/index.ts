@@ -8,6 +8,7 @@ import {
 import { randomBytes, X509Certificate } from "node:crypto";
 import {
   configuredRuntimeRoles,
+  agentRuntimeRoles,
   humanRuntimeAccess,
   managedRuntimeRoles,
   RUNTIME_ROLE_HEADER,
@@ -93,7 +94,11 @@ import type {
   RuntimeImage,
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
-import { admittedLoggingLevel, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
+import {
+  ADMINISTRATOR_RUNTIME_ROLE,
+  admittedLoggingLevel,
+  normalizeSecretBindings,
+} from "@openclaw-enterprise/contracts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -2407,11 +2412,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   listAgentRuntimeRoles(revision: AgentRevision) {
-    return configuredRuntimeRoles(revision.configuration);
+    return agentRuntimeRoles(revision.configuration);
   }
 
   getAgentRuntimeAccess(revision: AgentRevision, principalId: string, runtimeRole: string) {
     const endpoint = this.getGatewayEndpoint(revision);
+    if (!/^prn_[A-Za-z0-9-]{1,196}$/u.test(principalId)) {
+      return undefined;
+    }
     const humanEndpoint = endpoint === undefined ? undefined : new URL(endpoint);
     if (humanEndpoint !== undefined) {
       humanEndpoint.pathname = this.gatewayRoutePath(revision, "people");
@@ -2421,7 +2429,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ...revision,
         configuration: this.kubernetesGatewayConfigurationDocument(revision.configuration),
       },
-      humanEndpoint?.toString(),
+      runtimeRole === ADMINISTRATOR_RUNTIME_ROLE &&
+        asRecord(revision.configuration.gateway)?.roles === undefined
+        ? endpoint
+        : humanEndpoint?.toString(),
       principalId,
       runtimeRole,
     );

@@ -840,6 +840,9 @@ export interface RuntimeAccessDecision extends AuthorizationDecision {
   readonly runtimeRole?: string;
 }
 
+/** Explicit full runtime access, including upgrades from Agent administer grants. Compute owns its policy. */
+export const ADMINISTRATOR_RUNTIME_ROLE = "platform-administrator";
+
 export interface AgentRuntimeRole {
   readonly id: string;
   readonly permissions: Readonly<Record<string, unknown>>;
