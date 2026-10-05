@@ -121,9 +121,23 @@ export function createOccMetrics(
           ],
         })
       : undefined;
-  // These two bounded label sets provide a baseline before the first operation.
+  // A callback whose state and browser cookie match no pending attempt is unauthenticated
+  // and writes no audit event; this counter is its only aggregate record.
+  const unmatchedCallbacks =
+    service === "api"
+      ? new Counter({
+          name: "occ_sign_in_unmatched_callbacks_total",
+          help: "External sign-in callbacks refused before matching a pending attempt.",
+          labelNames: ["provider"],
+          registers: [registry],
+        })
+      : undefined;
+  // These bounded label sets provide a baseline before the first observation.
   operationDuration?.zero({ operation: "deploy" });
   operationDuration?.zero({ operation: "stop" });
+  for (const provider of ["github", "google", "oidc"]) {
+    unmatchedCallbacks?.inc({ provider }, 0);
+  }
   let inFlight: Promise<string> | undefined;
   return {
     contentType: registry.contentType,
@@ -144,6 +158,9 @@ export function createOccMetrics(
     },
     observeAgentOperation(operation: "deploy" | "stop", seconds: number) {
       operationDuration?.observe({ operation }, seconds);
+    },
+    observeUnmatchedSignInCallback(provider: "github" | "google" | "oidc") {
+      unmatchedCallbacks?.inc({ provider });
     },
     exposition(): Promise<string> {
       if (inFlight !== undefined) {

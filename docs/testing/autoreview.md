@@ -14,7 +14,14 @@ Enterprise repository root:
 The helper requires Python 3 and an installed, authenticated reviewer CLI (Codex
 by default). Image review and the helper test suite also require Pillow. Pass `--model codex=gpt-6-astra` to select the Enterprise standard;
 the unchanged upstream helper has its own default when the option is omitted. It
-needs no Enterprise runtime or pnpm dependencies. For a committed branch, use `--mode branch --base origin/main`; fetch the intended base first.
+needs no Enterprise runtime or pnpm dependencies. For a committed branch in a
+fork checkout, use `--mode branch --base upstream/main` when `upstream` points
+to `openclaw/openclaw-enterprise`. Verify the remote URL and fetch the intended
+base first; use the actual target branch for an existing or dependent PR.
+Pass `--base` explicitly: the helper's `origin/main` default may refer to the
+fork rather than the upstream base. Follow the
+[fork PR policy](../../CONTRIBUTING.md#prepare-a-pull-request) without renaming
+existing remotes.
 Local mode includes untracked files and staged and unstaged changes. The default
 threshold is P0; pass `--max-priority P2` when that broader scope is requested.
 

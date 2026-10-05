@@ -377,6 +377,14 @@
       "tag": "0047_provisioning_configuration_release",
       "breakpoints": true,
       "sha256": "17ce01049bea0830128faef1602c567cbb8c117c2feab1907be6f3df55cd9d30"
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787000000048,
+      "tag": "0048_administrator_credential_source_grants",
+      "breakpoints": true,
+      "sha256": "90e15104a8bf967a6a25e455e6c40b0f7201aacdce004f7565fea8991a3e11b4"
     }
   ],
   "initialSchemaStates": {
@@ -423,7 +431,8 @@
     "preCredentialWithdrawals": "bdb958966896575964ac9c1d23c51759a7a11b23bc7d5980cdf0496fab1a8b8f",
     "preBrokerReceiptFence": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539",
     "preModelProbeFailureCause": "038d68892adeb6cf41001617b9ec55ca8a32115c04cfa487f0674b3756294bc2",
-    "preProvisioningConfigurationRelease": "3db47081c1e1f671c51aff211ae1fe560dfffe1f80b2176d16b76838cf8f3b30"
+    "preProvisioningConfigurationRelease": "3db47081c1e1f671c51aff211ae1fe560dfffe1f80b2176d16b76838cf8f3b30",
+    "preAdministratorCredentialSourceGrants": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

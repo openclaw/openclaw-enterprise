@@ -330,6 +330,13 @@
       "when": 1787000000047,
       "tag": "0047_provisioning_configuration_release",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787000000048,
+      "tag": "0048_administrator_credential_source_grants",
+      "breakpoints": true
     }
   ]
 }

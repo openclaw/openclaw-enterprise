@@ -721,7 +721,8 @@
                   { "const": "RUNTIME_LOGS_SANDBOX_NOT_FOUND", "type": "string" },
                   { "const": "RUNTIME_LOGS_UNAVAILABLE", "type": "string" },
                   { "const": "RUNTIME_LOGS_AUDIT_UNAVAILABLE", "type": "string" },
-                  { "const": "RUNTIME_LOGS_TIMEOUT", "type": "string" }
+                  { "const": "RUNTIME_LOGS_TIMEOUT", "type": "string" },
+                  { "const": "RUNTIME_CREDENTIALS_CLUSTER_RBAC", "type": "string" }
                 ]
               },
               "details": {
@@ -8031,18 +8032,6 @@
             },
             "description": "Default Response"
           },
-          "413": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "415": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -8945,7 +8934,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
         "operationId": "provisionAgent",
         "parameters": [
           {
@@ -9407,6 +9396,7 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
             "action": "read",
             "condition": "associated_service_account",
@@ -9424,7 +9414,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision/{workId}": {
       "get": {
-        "description": "Requires current read authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.",
+        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can read it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.",
         "operationId": "getAgentProvisioning",
         "parameters": [
           {
@@ -9566,10 +9556,49 @@
         "summary": "Get first-time provisioning status for one exact work item",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
             "action": "read",
             "condition": "provisioning_work",
             "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "provisioning_work",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "deploy",
+            "condition": "provisioning_work",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "provisioning_work",
+            "resourceKind": "configuration",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "provisioning_work",
+            "resourceKind": "configuration",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "associated_service_account",
+            "resourceKind": "service_account",
+            "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_secret",
+            "resourceKind": "secret",
             "scope": "requested"
           }
         ]
@@ -9577,7 +9606,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision/{workId}/retry": {
       "post": {
-        "description": "Requires current operate authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.",
+        "description": "Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can retry it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.",
         "operationId": "retryAgentProvisioning",
         "parameters": [
           {
@@ -9725,10 +9754,49 @@
         "summary": "Retry failed first-time provisioning for one exact work item",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "provisioning_work",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
           {
             "action": "operate",
             "condition": "provisioning_work",
             "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "deploy",
+            "condition": "provisioning_work",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "provisioning_work",
+            "resourceKind": "configuration",
+            "scope": "requested"
+          },
+          {
+            "action": "update",
+            "condition": "provisioning_work",
+            "resourceKind": "configuration",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "associated_service_account",
+            "resourceKind": "service_account",
+            "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "bound_secret",
+            "resourceKind": "secret",
             "scope": "requested"
           }
         ]
@@ -13715,18 +13783,6 @@
             },
             "description": "Default Response"
           },
-          "413": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "415": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -14437,18 +14493,6 @@
             "description": "Default Response"
           },
           "409": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "413": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
@@ -18436,6 +18480,18 @@
             },
             "description": "Default Response"
           },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -19665,7 +19721,7 @@
     },
     "/namespaces/{namespaceId}/presets": {
       "get": {
-        "description": "Only Preset resources with individual read permission are returned.",
+        "description": "Requires read permission on the requested Namespace. Only Preset resources with individual read permission are returned.",
         "operationId": "listPresets",
         "parameters": [
           {
@@ -19869,6 +19925,7 @@
         "summary": "List readable Presets in one Namespace",
         "tags": ["Presets"],
         "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
           { "action": "read", "resourceKind": "preset", "scope": "each_returned" }
         ]
       },

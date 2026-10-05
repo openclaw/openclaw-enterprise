@@ -154,20 +154,31 @@ OCE identifies an IdP account only by the ID token's `sub` claim for this issuer
 
 ## Attach and detach
 
-Read the account version with `GET /api/auth/accounts/:userId`, then attach:
+As a human Installation administrator, [sign in as a human administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
+so `OCC_URL`, `OCC_ORIGIN` and `OCC_SESSION_COOKIE_JAR` are set, and set `USER_ID` to the
+account's `id`. Read the account version, then attach:
 
 ```bash
-curl -sS -X POST "$OCC_AUTH_BASE_URL/api/auth/accounts/$USER_ID/providers/oidc" \
-  -H "Origin: $OCC_AUTH_BASE_URL" -H 'Content-Type: application/json' \
-  -b "$COOKIE_JAR" \
-  --data '{"subject":"<sub>","expectedVersion":1}'
+VERSION="$(curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/api/auth/accounts/$USER_ID" | jq -er .data.version)" &&
+jq -n --arg subject '<sub>' --argjson version "$VERSION" \
+  '{subject: $subject, expectedVersion: $version}' |
+  curl --fail-with-body --silent --show-error \
+    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "$OCC_URL/api/auth/accounts/$USER_ID/providers/oidc"
 ```
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
-when OIDC is off, the version is stale or the account is disabled, and `404` when
-another account holds the subject. Attachment advances the account version and ends the
-account's sessions. The method's `providerId` starts with `oidc:`; detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+when OIDC is off, the version is stale, the account is disabled, or another account
+holds the subject ("The external identity is already assigned."). Attachment advances
+the account version and ends the account's sessions. The method's `providerId` starts
+with `oidc:`; detach it with `POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+
+Accounts are created with a password, and an OIDC identity can be attached only
+afterwards. To add someone who should sign in only through the IdP, follow
+[Add a person](../topics/iam.md#add-a-person), which covers the password left behind.
 
 ## Changes, rotation and outages
 
@@ -183,7 +194,8 @@ account's sessions. The method's `providerId` starts with `oidc:`; detach it wit
 - An IdP outage, blocked egress or a rejected ID token fails that sign-in closed and
   returns the browser to `/console/?authError=oidc`; the recovery account's password
   still signs in. OIDC shares the external sign-in budgets with GitHub and Google.
-  An IdP that cannot answer also logs `authentication.provider-unavailable-warning`
+  An IdP that cannot answer, or that refuses the configured client
+  (`cause: client_rejected`), also logs `authentication.provider-unavailable-warning`
   with the failing step and cause; see the
   [external sign-in reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
 

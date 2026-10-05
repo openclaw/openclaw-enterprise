@@ -1007,7 +1007,7 @@ function assertSecret(secret: Secret): void {
     !namespaceIdentifier.test(secret.namespaceId) ||
     typeof secret.name !== "string" ||
     secret.name.length < 1 ||
-    secret.name.length > 200 ||
+    Array.from(secret.name).length > 200 ||
     secret.name !== secret.name.trim() ||
     /[\x00-\x1f\x7f]/.test(secret.name) ||
     typeof secret.driverId !== "string" ||
@@ -1058,7 +1058,7 @@ function assertCredentialSource(source: CredentialSource): void {
     !namespaceIdentifier.test(source.namespaceId) ||
     typeof source.name !== "string" ||
     source.name.length < 1 ||
-    source.name.length > 200 ||
+    Array.from(source.name).length > 200 ||
     source.name !== source.name.trim() ||
     Array.from(source.name).some((character) => {
       const code = character.charCodeAt(0);
@@ -1853,7 +1853,7 @@ function repositories(
         !serviceAccountIdentifier.test(account.id) ||
         typeof account.name !== "string" ||
         account.name.length < 1 ||
-        account.name.length > 200 ||
+        Array.from(account.name).length > 200 ||
         account.name !== account.name.trim() ||
         /[\x00-\x1f\x7f]/.test(account.name) ||
         (account.credential !== undefined && !validCredential(account.credential))

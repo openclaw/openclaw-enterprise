@@ -714,7 +714,7 @@ for (const action of ["disable", "drawer"]) {
       await route.continue();
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-    await login(page, fixture, url.pathname + url.search);
+    await login(page, fixture, url);
     await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     assert.equal(
       await page
@@ -796,7 +796,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
     await route.abort("failed");
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
   await page.getByRole("button", { name: "Disable Slack" }).click();
@@ -869,7 +869,7 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
   );
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
 
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page.getByRole("heading", { name: "Runtime Slack Navigation Agent" }).waitFor();
   requests.length = 0;
   await selectSecret(page, "Slack app token", slackAppSecret);
@@ -952,7 +952,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     });
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
 
   const activity = page.locator(".deployment-status");
   await activity

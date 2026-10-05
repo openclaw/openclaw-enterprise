@@ -31,8 +31,25 @@ Prepare:
 
 - each selected image as an immutable `@sha256:` digest with passing checks and
   a reviewed source commit;
+- a clean checkout of the release you are installing, at `RELEASE_SOURCE_SHA`.
+  Run the helper from its root: it renders that checkout's Helm chart and
+  compares the Collector configuration with that checkout's files;
+- the OCC CLI from the same release, installed at the path you pass as `--occ`
+  (`/secure/occ/bin/occ` below): its
+  [release binary](../cli.md#connect-to-your-installation), or `bin/occ` from
+  `pnpm cli:build` in that checkout. The helper reads the deployment inventory
+  and deploys Agents through it, and an older CLI can lack those commands;
+- a [pre-upgrade baseline](upgrade-baseline.md) of Helm, Kubernetes, OCC and
+  database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
+- Node.js, which builds the startup preflight Pods; its Kubernetes identity must
+  create and delete Pods and Secrets and read Pod logs in the release namespace;
+- with the bundled Collector enabled, its config Secret
+  [refreshed](../observability.md#refresh-the-collector-configuration-on-upgrade)
+  from this checkout and the Collector restarted, even for an image-only
+  release. Helm does not update the Secret, and the helper stops before mutation
+  when its `collector.yaml` or `kubernetes.yaml` differs;
 - a PostgreSQL backup before a controller release whose migrations may require
   data restoration; and
 - Agent-volume backups before a runtime release whose recovery may require
@@ -85,6 +102,10 @@ export OCC_SERVICE_KEY_FILE='/secure/occ/operator-service-key.json'
 export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem'
 export RELEASE_SOURCE_SHA='<full-40-character-git-sha>'
 export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
+cd /secure/src/openclaw-enterprise # the release checkout
+git fetch origin
+git checkout --detach "$RELEASE_SOURCE_SHA"
+test -z "$(git status --porcelain)" || echo 'The release checkout is not clean.' >&2
 ```
 
 The evidence directory must not exist. The command creates it with mode `0700`.
@@ -136,35 +157,39 @@ Secret and restarts OCC with the new checksum. A controller-only release still
 does not deploy Agents; plan any Agent changes separately. Keep candidate files
 unchanged and available at the same paths for recovery.
 
-With the bundled Collector enabled, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
-from the release source and restart the Collector before upgrading; Helm does
-not update it. The command reads that Secret and stops before mutation when its
-`collector.yaml` or `kubernetes.yaml` differs from the checkout. Add
-`--collector-config-reviewed` only to keep a reviewed custom configuration.
-
 ### Apply other Installation changes
 
 An upgrade keeps your Installation YAML. A release that changes recommended
-Installation values, such as the Gateway Pod memory request of `1280Mi` in the
-[installation profiles](installation-profiles.md) and production example, does
-not change an existing Installation. A candidate that changes any setting other
+Installation values, such as the Gateway and Harness memory requests and limits
+in the [installation profiles](installation-profiles.md) and production example,
+does not change an existing Installation; adopted resource values apply to each
+Agent at its next deployment. A candidate that changes any setting other
 than the Plugin Driver selection stops the helper with `candidate Installation
 changes a protected setting`. Diff `deploy/examples/production/installation.yaml`
 and `scripts/render-installation-profile.mjs` between the deployed and candidate
 source, decide which changes to adopt, and apply them as a separate change, not
-during an image upgrade. Use the chart source of the installed controller and
-keep the image references in `values.yaml` unchanged:
+during an image upgrade. Run these commands from a checkout of the installed
+controller's source revision, not the release checkout, and keep the image
+references in `values.yaml` unchanged:
 
 ```bash
 set -euo pipefail
+cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision
 cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
 # Edit /secure/occ/installation.yaml and review the diff, then:
-export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName' /secure/occ/values.yaml)"
-kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-  --namespace openclaw-system create secret generic "$OCC_INSTALLATION_SECRET" \
-  --from-file=installation.yaml=/secure/occ/installation.yaml \
-  --dry-run=client -o yaml |
-  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' apply -f -
+yq -r '.presets.files[]?' /secure/occ/installation.yaml | while read -r preset_file; do
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system exec deploy/openclaw-enterprise-api --container api -- \
+    sh -c 'cd "$(dirname "$OCC_CONFIG_PATH")" && test -f "$1" && test -r "$1"' sh "$preset_file" ||
+    { echo "Could not verify Preset file $preset_file in the API container." >&2; exit 1; }
+done
+export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
+export OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
+jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document /secure/occ/installation.yaml \
+  '{data: {($key): ($document | @base64)}}' |
+  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+    --namespace openclaw-system patch secret "$OCC_INSTALLATION_SECRET" \
+    --type merge --patch-file /dev/stdin
 OCC_CHECKSUM="$(sha256sum /secure/occ/installation.yaml | cut -d ' ' -f 1)" \
   yq -i '.controlPlane.installationChecksum = strenv(OCC_CHECKSUM)' /secure/occ/values.yaml
 helm upgrade oce deploy/helm/openclaw-enterprise \
@@ -173,11 +198,21 @@ helm upgrade oce deploy/helm/openclaw-enterprise \
 ```
 
 The new checksum restarts the API and worker so they read the new Installation.
-Use your configured Secret key if it is not `installation.yaml`. Settings that
+This path has no startup preflight, and the API stops before its replacement
+starts: an Installation the controller rejects keeps the API down, with a
+`startup-error` code such as `PRESET_FILE_INVALID`, until you undo the change.
+The Preset loop checks file readability, not contents. Helm reports a rejection
+only after its 5-minute timeout; the API log shows `startup-error` sooner, but
+let Helm return before you undo.
+The patch replaces only the Installation key and keeps the Secret's
+`openclaw.dev/installation-id` annotation. Do not re-create the Secret with
+`kubectl apply`: if its last applied configuration carries that annotation,
+apply deletes it and the next upgrade refuses the Secret. Settings that
 shape Agent Pods, such as Gateway resources, apply only to Pods created
 afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
-file and repeat the commands. The edited files are the baseline for the next
-upgrade.
+file and rerun the Secret patch, checksum and `helm upgrade` commands; skip the
+loop, which needs a running API container. The edited files are the baseline for
+the next upgrade.
 
 ## Bind the Installation once
 
@@ -189,7 +224,7 @@ bootstrap key and annotate the Secret:
 
 ```bash
 export OCC_INSTALLATION_ID="$(jq -er '.meta.installationId' "$OCC_BOOTSTRAP_KEY_FILE")"
-export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName' /secure/occ/values.yaml)"
+export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
 kubectl --kubeconfig /secure/occ/kubeconfig \
   --context '<reviewed-context>' --namespace openclaw-system \
   annotate secret "$OCC_INSTALLATION_SECRET" \
@@ -225,7 +260,20 @@ the protected values equal to live values; the helper preserves
 the running broker's exact hostname in the candidate. It qualifies the pair
 before cluster mutation and verifies the deployed pair and broker capability.
 
-The command applies reviewed settings, scales the API and worker to zero, and
+Before it stops anything, the command runs a startup preflight: one-shot API and
+worker Pods on the selected controller image, built from the rendered chart (same
+environment, mounts and service account), with the candidate Installation in a
+temporary Secret. Each loads the Installation, Drivers and `presets.files` as
+startup does, without opening the database. If either fails, as when a listed
+Preset file is missing from the image, the command waits for both Pods, prints
+each failure, deletes the Pods and Secret, and stops; the old release keeps
+serving. Each Pod's log and status are saved as `preflight-<api|worker>.log` and
+`preflight-<api|worker>-status.json`; saving them can run up to about 90 seconds
+past `--timeout-seconds`. Runtime upgrades run it on the current controller image. If
+the helper is killed first, delete what it left with
+`kubectl delete pod,secret -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=upgrade-preflight`.
+
+The command then applies reviewed settings, scales the API and worker to zero, and
 waits for their Pods to terminate. Helm restores the candidate Deployments after
 its initialization hooks succeed. The helper verifies rollout and OCC access.
 

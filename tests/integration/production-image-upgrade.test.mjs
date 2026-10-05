@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -22,6 +22,11 @@ test("production image upgrades preserve controller/runtime ownership and wait f
 
   const bin = join(directory, "bin");
   await mkdir(bin);
+  // The fixture commands below answer at once, and the readiness polls end on their
+  // counters, not on time, so the helper's 2 s poll interval only adds wall time.
+  const sleep = join(bin, "sleep");
+  await writeFile(sleep, "#!/usr/bin/env bash\nexit 0\n");
+  await chmod(sleep, 0o755);
   const stat = join(bin, "stat");
   await writeFile(
     stat,
@@ -177,7 +182,8 @@ fi
     LIVE_VALUES_FILE: liveValues,
     OCC_SERVICE_KEY_FILE: protectedFiles["service-key"],
     OCC_URL: "https://occ.example.invalid",
-    PATH: `${bin}:/bin:/usr/bin`,
+    // The helper runs node for its startup preflight; CI installs node outside /usr/bin.
+    PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin`,
   };
 
   await assert.rejects(
@@ -231,11 +237,15 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
+  // The startup preflight reads each controller container's image and Installation
+  // mount from the rendered chart; this stand-in renders only those fields.
   await writeFile(
     helm,
     `#!/usr/bin/env bash
 if [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
+elif [[ "$1" == template ]]; then
+  printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
 fi
 `,
   );
@@ -301,6 +311,10 @@ case "$*" in
     ;;
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
+  *' create --filename -'*) cat >/dev/null ;;
+  *' create --filename'*) ;;
+  *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
+  *' logs pod/'*) printf 'installation-startup-ready\\n' ;;
 esac
 `,
   );

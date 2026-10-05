@@ -212,9 +212,10 @@ configuration. In Helm, the bundled Collector uses dedicated config and exporter
 Secrets, read-only `/var/log/pods`, a non-root UID with supplementary group
 `0` for CRI file read access, and restricted Pod and container security
 settings. Its dedicated egress policy permits DNS, the Kubernetes API for
-metadata, and one approved exporter or proxy `/32`. The shared dependency
-egress policy also selects Collector Pods and permits the configured database
-destination; NetworkPolicy permissions are additive. Its file offsets and exporter queue use a
+metadata, and one approved exporter or proxy: a `/32` address or an in-cluster
+namespace and Pod selector, on the exporter port. No chart policy grants the
+Collector database access; the shared dependency egress policy selects only
+the API, worker and initialization Pods. Its file offsets and exporter queue use a
 bounded `emptyDir`; they are best-effort across process or container restart and
 are lost with Pod or node replacement. In Docker development, forwarding is
 nonblocking with finite Engine and container-local buffers. Export outage or
@@ -262,9 +263,11 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   and URLs are redacted and cut to 1 KiB.
 - **Errors.** Driver and cluster error text never reaches a client; failures map
   to fixed codes.
-- **Ordering.** The operator switch (`501`) and the per-principal rate limit
-  run before authorization, so a principal without grants learns only whether
-  the feature is on and can spend only its own request budget.
+- **Ordering.** The operator switch (`501`) runs before authorization, so a
+  principal without grants learns only whether the feature is on. The
+  per-principal rate limit and the replica's concurrent-read limit apply after
+  authorization: every denial is refused and audited, and only authorized
+  requests spend the caller's request budget.
 - **Cluster access.** The tenant API, Gateway observer and execution tenant API
   roles gain read-only `pods/log get` and `events get,list` through
   `agentRuntimeLogs.enabled`. RBAC cannot separate Agents, so OCC reads only

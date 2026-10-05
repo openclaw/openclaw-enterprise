@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import { verifyIdToken } from "../../apps/controller/src/auth/id-token.ts";
 import {
@@ -9,6 +9,7 @@ import {
   oidcProviderId,
 } from "../../apps/controller/src/auth/oidc.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { encodeSegment as encode, idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
 
 // An Auth0-shaped issuer: the trailing slash is part of `iss`.
 const issuer = "https://tenant.idp.example.test/";
@@ -26,24 +27,11 @@ const environment = {
   OCC_AUTH_OIDC_CLIENT_SECRET: "fixture-oidc-secret",
 };
 
-function keyPair(kid, modulusLength = 2048) {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength });
-  return {
-    kid,
-    privateKey,
-    jwk: { ...publicKey.export({ format: "jwk" }), kid, alg: "RS256", use: "sig" },
-  };
-}
-const current = keyPair("current-kid");
-const other = keyPair("other-kid");
-const weak = keyPair("weak-kid", 1024);
+const current = rsaSigningKey("current-kid");
+const other = rsaSigningKey("other-kid");
+const weak = rsaSigningKey("weak-kid", 1024);
 const jwks = { keys: [other.jwk, current.jwk, weak.jwk] };
-
-function encode(value) {
-  return Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString(
-    "base64url",
-  );
-}
+const sign = idTokenSigner(current);
 
 function claims(overrides = {}) {
   return {
@@ -57,16 +45,8 @@ function claims(overrides = {}) {
   };
 }
 
-function token(
-  payload = claims(),
-  {
-    header = { alg: "RS256", kid: current.kid, typ: "JWT" },
-    key = current.privateKey,
-    algorithm = "sha256",
-  } = {},
-) {
-  const input = `${encode(header)}.${encode(payload)}`;
-  return `${input}.${sign(algorithm, Buffer.from(input), key).toString("base64url")}`;
+function token(payload = claims(), options) {
+  return sign(payload, options);
 }
 
 function verified(value, expected = {}) {
@@ -228,6 +208,7 @@ test("issuer, audience and nonce must match exactly", () => {
   assert.equal(verified(token(claims({ aud: [[clientId]] }))), undefined);
   assert.equal(verified(token(claims({ aud: undefined }))), undefined);
   assert.equal(verified(token(claims({ azp: "other" }))), undefined);
+  assert.equal(verified(token(claims({ aud: [clientId], azp: "other" }))), undefined);
   assert.equal(verified(token(claims({ nonce: "other" }))), undefined);
   assert.equal(verified(token(claims({ nonce: undefined }))), undefined);
   assert.equal(verified(token(claims({ nonce: "" })), { nonce: "" }), undefined);
@@ -243,8 +224,10 @@ test("exp, iat and nbf are enforced", () => {
   assert.equal(verified(token(claims({ exp: seconds }))), undefined);
   assert.equal(verified(token(claims({ exp: undefined }))), undefined);
   assert.equal(verified(token(claims({ iat: seconds + 61 }))), undefined);
+  assert.equal(verified(token(claims({ iat: seconds + 60 }))), subject);
   assert.equal(verified(token(claims({ iat: seconds - 3601 }))), undefined);
   assert.equal(verified(token(claims({ iat: seconds - 3600 }))), subject);
+  assert.equal(verified(token(claims({ iat: String(seconds) }))), undefined);
   assert.equal(verified(token(claims({ nbf: seconds + 61 }))), undefined);
   assert.equal(verified(token(claims({ nbf: String(seconds) }))), undefined);
   assert.equal(verified(token(claims({ nbf: null }))), undefined);
@@ -252,17 +235,21 @@ test("exp, iat and nbf are enforced", () => {
 
 test("only RS256 from a 2,048-bit JWKS key named by kid verifies", () => {
   const payload = claims();
-  assert.equal(
-    verified(`${encode({ alg: "none", kid: current.kid })}.${encode(payload)}.`),
-    undefined,
-  );
+  const unsigned = `${encode({ alg: "none", kid: current.kid })}.${encode(payload)}.`;
+  assert.equal(verified(unsigned), undefined);
+  assert.equal(verified(`${unsigned}AA`), undefined);
   const hsInput = `${encode({ alg: "HS256", kid: current.kid })}.${encode(payload)}`;
-  const hs = createHmac("sha256", "fixture-oidc-secret").update(hsInput).digest("base64url");
-  assert.equal(verified(`${hsInput}.${hs}`), undefined);
+  for (const secret of ["fixture-oidc-secret", current.jwk.n]) {
+    // HS256 under the client secret or the published RSA modulus is never a signature.
+    const hs = createHmac("sha256", secret).update(hsInput).digest("base64url");
+    assert.equal(verified(`${hsInput}.${hs}`), undefined);
+  }
   assert.equal(
     verified(token(payload, { header: { alg: "RS512", kid: current.kid }, algorithm: "sha512" })),
     undefined,
   );
+  // The header's alg is checked itself, not only implied by the signature that verifies.
+  assert.equal(verified(token(payload, { header: { alg: "RS512", kid: current.kid } })), undefined);
   assert.equal(verified(token(payload, { header: { alg: "RS256" } })), undefined);
   assert.equal(verified(token(payload, { header: { alg: "RS256", kid: "unknown" } })), undefined);
   // A correctly signed token is refused when its key is below the floor.
@@ -283,11 +270,48 @@ test("only RS256 from a 2,048-bit JWKS key named by kid verifies", () => {
       member,
     );
   }
-  assert.equal(verified(token(payload), { jwks: { keys: [] } }), undefined);
-  assert.equal(verified(token(payload), { jwks: "not a jwks" }), undefined);
+  // A signature never carries over to another payload.
+  const [header, , signature] = token(payload).split(".");
+  assert.equal(verified(`${header}.${encode(claims({ sub: "1" }))}.${signature}`), undefined);
+  // The JWKS key must itself be an RS256 signing key.
+  assert.equal(
+    verified(token(payload), { jwks: { keys: [{ ...current.jwk, alg: "RS512" }] } }),
+    undefined,
+  );
+  assert.equal(
+    verified(token(payload), { jwks: { keys: [{ ...current.jwk, use: "enc" }] } }),
+    undefined,
+  );
+  assert.equal(
+    verified(token(payload), { jwks: { keys: [{ ...current.jwk, kty: "EC" }] } }),
+    undefined,
+  );
+  // A header without kid never selects a JWKS key, even one that has no kid either.
+  assert.equal(
+    verified(token(payload, { header: { alg: "RS256" } }), {
+      jwks: { keys: [{ ...current.jwk, kid: undefined }] },
+    }),
+    undefined,
+  );
+  for (const unusable of [{ keys: [] }, {}, null, "not a jwks"]) {
+    assert.equal(verified(token(payload), { jwks: unusable }), undefined);
+  }
+});
+
+test("malformed tokens are rejected", () => {
+  const valid = token();
+  assert.equal(verified(`${valid}.AAAA`), undefined);
+  assert.equal(verified(valid.split(".").slice(0, 2).join(".")), undefined);
+  const [header, payload, signature] = valid.split(".");
+  // Segments are unpadded base64url: padding and the standard alphabet are refused.
+  assert.equal(verified(`${header}.${payload}.${signature}=`), undefined);
+  assert.equal(verified(`${header}.${payload.slice(0, -1)}+.${signature}`), undefined);
+  assert.equal(verified(`${encode("not json")}.${payload}.${signature}`), undefined);
+  assert.equal(verified(""), undefined);
 });
 
 test("subject must be 1-255 printable ASCII characters", () => {
+  assert.equal(verified(token(claims({ sub: undefined }))), undefined);
   assert.equal(verified(token(claims({ sub: "" }))), undefined);
   assert.equal(verified(token(claims({ sub: "1".repeat(256) }))), undefined);
   assert.equal(verified(token(claims({ sub: "has space" }))), undefined);
@@ -383,7 +407,7 @@ test("code exchange fetches only the pinned token and JWKS URLs", async (t) => {
     rejectedIdentity,
   );
   // Key rotation: the JWKS is read for each callback, so a new key verifies at once.
-  const rotated = keyPair("rotated-kid");
+  const rotated = rsaSigningKey("rotated-kid");
   respond = (url) =>
     url === environment.OCC_AUTH_OIDC_TOKEN_URL
       ? json({

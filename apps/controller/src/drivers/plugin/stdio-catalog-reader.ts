@@ -20,6 +20,8 @@ type JsonRpcRequest = {
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+// How long a Codex app-server gets to exit after SIGTERM before SIGKILL.
+const CHILD_KILL_GRACE_MS = 1_000;
 
 function requiredString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -140,7 +142,14 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         settled = true;
         clearTimeout(timeout);
         signal?.removeEventListener("abort", abort);
-        child.kill("SIGTERM");
+        if (child.exitCode === null && child.signalCode === null) {
+          // A Codex that ignores SIGTERM would otherwise outlive the request and keep
+          // this process's stdio pipes open.
+          const kill = setTimeout(() => child.kill("SIGKILL"), CHILD_KILL_GRACE_MS);
+          kill.unref();
+          child.once("exit", () => clearTimeout(kill));
+          child.kill("SIGTERM");
+        }
         if (error) {
           reject(error);
         } else {
@@ -148,14 +157,30 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
         }
       };
 
+      const write = (message: unknown) => {
+        if (!settled) {
+          child.stdin.write(JSON.stringify(message) + "\n");
+        }
+      };
+
       const sendNext = () => {
-        const request = requests[next];
-        child.stdin.write(JSON.stringify(request) + "\n");
+        write(requests[next]);
       };
 
       const sendInitialized = () => {
-        child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
+        write({ method: "initialized", params: {} });
       };
+
+      // Codex can close its input or exit before reading a request (EPIPE). Without a
+      // listener that write error is uncaught and ends this whole process.
+      child.stdin.on("error", () => {
+        finish(
+          new NotImplementedError(
+            "codex-plugin-catalog-discovery",
+            "Codex plugin catalog discovery could not send its request to Codex.",
+          ),
+        );
+      });
 
       createInterface({ input: child.stdout }).on("line", (line) => {
         let message: Record<string, unknown>;
@@ -174,13 +199,13 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
           return;
         }
         if (message.error !== undefined) {
-          const error = asRecord(message.error);
+          // The app-server's own message can name paths under the Codex home, and this
+          // text becomes the 501 response body, so only our request method is named.
+          // The reader has no logger to keep the detail server-side.
           finish(
             new NotImplementedError(
               "codex-plugin-catalog-discovery",
-              `Codex plugin catalog discovery failed during ${requests[next]?.method}: ${
-                error?.message ?? "unknown error"
-              }`,
+              `Codex plugin catalog discovery failed during ${requests[next]?.method}.`,
             ),
           );
           return;

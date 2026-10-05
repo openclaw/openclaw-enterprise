@@ -95,6 +95,18 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/**
+ * A running Agent has no active revision yet (its first deployment, or a redeploy after a
+ * stop, is still activating). A lifecycle state, not an outage; it stays a
+ * DependencyUnavailableError so callers that need a revision still answer 503.
+ */
+export class NoActiveAgentRevisionError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent has no active gateway revision.");
+    this.name = "NoActiveAgentRevisionError";
+  }
+}
+
 export class RepositoryOptionsUnavailableError extends Error {
   constructor(message = "Repository options are unavailable.") {
     super(message);
@@ -309,7 +321,7 @@ export class NamespaceNotEmptyError extends ResourceConflictError {
 }
 
 export class NamespaceNotReadyError extends ResourceConflictError {
-  constructor(message = "The Namespace is not ready for deployment.") {
+  constructor(message = "The Namespace is not ready.") {
     super(message);
     this.name = "NamespaceNotReadyError";
   }
@@ -319,7 +331,7 @@ export class NamespaceNotReadyError extends ResourceConflictError {
 export class NativeWorkerSupportError extends Error {
   constructor() {
     super(
-      "Dedicated native OpenClaw is unavailable: the pinned OpenClaw runtime does not support required worker placement (cloudWorkers.requiredProfile) or native worker inference. See https://docs-enterprise.openclaw.org/reference/harness-execution/#native-worker-support",
+      "Dedicated native OpenClaw is unavailable: the pinned runtime does not support required worker placement (cloudWorkers.requiredProfile) or native worker inference. See https://docs-enterprise.openclaw.org/reference/harness-execution/#native-worker-support",
     );
     this.name = "NativeWorkerSupportError";
   }
@@ -384,6 +396,27 @@ export class ActivationPendingError extends Error {
   constructor(code: ActivationPendingCode, message: string) {
     super(message);
     this.name = "ActivationPendingError";
+    this.code = code;
+  }
+}
+
+/** An activation step that cannot complete for this revision. */
+export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+
+/**
+ * Activation found its workloads running but one of them can never complete
+ * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
+ * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
+ * by the admitted Configuration, so the worker fails the deployment with `code`
+ * instead of waiting for the convergence deadline. The message stays in the
+ * controller; status shows a fixed text.
+ */
+export class ActivationFailedError extends Error {
+  readonly code: ActivationFailedCode;
+
+  constructor(code: ActivationFailedCode, message: string) {
+    super(message);
+    this.name = "ActivationFailedError";
     this.code = code;
   }
 }
@@ -486,6 +519,36 @@ export class RuntimeLogsForbiddenByClusterError extends Error {
   constructor() {
     super("The cluster denied a runtime log or Event read.");
     this.name = "RuntimeLogsForbiddenByClusterError";
+  }
+}
+
+/**
+ * The cluster refused the API access to an Agent's runtime credential Secrets or their
+ * Deployment preflight: an operator must grant the documented tenant RoleBinding. It stays a
+ * dependency outage for callers that fail closed, and carries only fixed operation names and
+ * the Kubernetes namespace, for the server log.
+ */
+export class RuntimeCredentialsForbiddenByClusterError extends DependencyUnavailableError {
+  readonly verb: "get" | "list" | "create";
+  readonly resource: "secrets" | "deployments";
+  readonly kubernetesNamespace: string;
+  readonly plane: "control" | "execution";
+  readonly status: 403;
+
+  constructor(denial: {
+    readonly verb: RuntimeCredentialsForbiddenByClusterError["verb"];
+    readonly resource: RuntimeCredentialsForbiddenByClusterError["resource"];
+    readonly kubernetesNamespace: string;
+    readonly plane: RuntimeCredentialsForbiddenByClusterError["plane"];
+    readonly status: RuntimeCredentialsForbiddenByClusterError["status"];
+  }) {
+    super("The cluster denied access to Agent runtime credentials.");
+    this.name = "RuntimeCredentialsForbiddenByClusterError";
+    this.verb = denial.verb;
+    this.resource = denial.resource;
+    this.kubernetesNamespace = denial.kubernetesNamespace;
+    this.plane = denial.plane;
+    this.status = denial.status;
   }
 }
 

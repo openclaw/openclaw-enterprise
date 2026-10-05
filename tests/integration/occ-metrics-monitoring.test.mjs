@@ -16,12 +16,11 @@ import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { startMetricsListener } from "../../apps/controller/src/metrics/listener.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 
+import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
+
 const run = promisify(execFile);
 const engine = process.env.OCC_METRICS_TEST_ENGINE ?? "docker";
-const prometheusImage =
-  "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0";
-const grafanaImage =
-  "docker.io/grafana/grafana@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0";
+const { prometheus: prometheusImage, grafana: grafanaImage } = metricsMonitoringImages;
 
 async function containerState(name) {
   const { stdout } = await run(engine, ["inspect", "--format", "{{json .State}}", name]);

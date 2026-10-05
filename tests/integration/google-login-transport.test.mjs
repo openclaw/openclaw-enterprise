@@ -15,6 +15,7 @@ import {
   loginSecret as secret,
   redirectProviderFetch,
   startProviderServer,
+  testOversizedProviderBodies,
   until,
 } from "../helpers/human-login-transport.mjs";
 
@@ -52,11 +53,12 @@ function idToken(state = callbackState, overrides = {}) {
   return token;
 }
 
-function loginFixture(state = {}, providers = {}) {
+function loginFixture(state = {}, providers = {}, options = {}) {
   return createLoginFixture({
     provider: "google",
     providers: { google: { clientId, clientSecret, allowedDomains: [] }, ...providers },
     state,
+    ...options,
   });
 }
 
@@ -329,44 +331,29 @@ test(
         assert.deepEqual(login.subjects, []);
         assertNoSecrets(login);
       });
-
-      for (const declared of [false, true]) {
-        await t.test(
-          `${endpoint} cancels oversized ${declared ? "declared" : "chunked"} bodies`,
-          async () => {
-            const login = loginFixture();
-            const valid = provider();
-            let closed = false;
-            serve = (request, response) => {
-              if (request.url !== endpoint) {
-                return valid(request, response);
-              }
-              response.on("close", () => {
-                closed = true;
-              });
-              if (declared) {
-                response.setHeader("content-length", String(128 * 1024));
-              }
-              response.write("x".repeat(64 * 1024 + 1));
-              // Leave the stream open: rejection must cancel it without waiting for EOF.
-            };
-            const started = performance.now();
-            await expectDenied(await login.callback());
-            assert.ok(performance.now() - started < 2_000);
-            await until(() => closed);
-            assert.deepEqual(login.subjects, []);
-          },
-        );
-      }
     }
 
+    await testOversizedProviderBodies(t, {
+      endpoints: [
+        ["/token", "token"],
+        ["/oauth2/v3/certs", "jwks"],
+      ],
+      serve: (handler) => {
+        serve = handler;
+      },
+      provider,
+      login: loginFixture,
+    });
+
     await t.test("certificate body reads use the remaining overall deadline", async () => {
-      const login = loginFixture();
+      // The production deadline is 10 s; a shorter one keeps the stalled read short.
+      const providerDeadlineMs = 2_000;
+      const login = loginFixture({}, {}, { providerDeadlineMs });
       const valid = provider();
       let closed = false;
       serve = async (request, response) => {
         if (request.url === "/token") {
-          await delay(3_000);
+          await delay(1_500);
           return valid(request, response);
         }
         response.on("close", () => {
@@ -377,8 +364,11 @@ test(
       const started = performance.now();
       await expectDenied(await login.callback());
       const elapsed = performance.now() - started;
-      // Separate per-request timers would take about 13 seconds here.
-      assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
+      // Separate per-request timers would take about 3.5 seconds here.
+      assert.ok(
+        elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 1_000,
+        `Elapsed: ${elapsed}`,
+      );
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
       assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "google"]]);

@@ -17,10 +17,10 @@ import {
   seedBackendBinding,
   serviceAccountDriverId,
   startBackendlessDevelopmentServer,
-  stopProcess,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
 async function request(origin, session, method, path, body) {

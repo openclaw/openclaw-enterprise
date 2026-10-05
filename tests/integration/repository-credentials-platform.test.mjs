@@ -377,16 +377,20 @@ test(
       await fixture.startWorker();
     }
     assert.notEqual(fixture.workerPid, previousWorkerPid);
-    await kube.waitFor("maintenance after worker replacement", async () =>
-      fixture.events
+    await kube.waitFor("maintenance after worker replacement", async () => {
+      const maintained = fixture.events
         .slice(replacementCursor)
         .some(
           (event) =>
             event.event === "worker.completed" &&
             event.revisionId === revision.id &&
             event.code === "REVISION_ALREADY_ACTIVE",
-        ),
-    );
+        );
+      if (!maintained) {
+        await fixture.expediteWork(revision);
+      }
+      return maintained;
+    });
     assert.deepEqual(
       (await fixture.attempts(revision))
         .filter(({ phase }) => phase === "open")
@@ -524,7 +528,9 @@ test(
       "-n",
       placement,
     );
-    const repairedPod = await fixture.readyPod(agent, revision, pod.metadata.uid);
+    const repairedPod = await fixture.readyPod(agent, revision, pod.metadata.uid, {
+      expedite: true,
+    });
     await assertWorkspaceReplacement(pod, repairedPod);
     const repaired = await fixture.material(repairedPod);
     assert.notEqual(repaired.generation, original.generation);
@@ -582,7 +588,9 @@ test(
     for (const binding of repaired.bindings) {
       assert.equal((await credentials.status(binding.sessionId)).state, "DISPOSED");
     }
-    const gracefulPod = await fixture.readyPod(agent, revision, pod.metadata.uid);
+    const gracefulPod = await fixture.readyPod(agent, revision, pod.metadata.uid, {
+      expedite: true,
+    });
     await assertWorkspaceReplacement(pod, gracefulPod);
     const gracefulMaterial = await fixture.material(gracefulPod);
     assert.notEqual(gracefulMaterial.generation, repaired.generation);
@@ -695,14 +703,18 @@ test(
       );
       assert.deepEqual(receipt.rows, [{ state: "active", session_id: binding.sessionId }]);
     }
-    await kube.waitFor("unavailable receipt to leave maintenance pending", async () =>
-      (await revisionWork(restarted.revision)).find(
+    await kube.waitFor("unavailable receipt to leave maintenance pending", async () => {
+      const failed = (await revisionWork(restarted.revision)).find(
         (work) =>
           !priorFailedWork.has(work.idempotency_key) &&
           work.state === "failed_permanent" &&
           work.reason_code === "REVISION_FINALIZATION_INCOMPLETE",
-      ),
-    );
+      );
+      if (failed === undefined) {
+        await fixture.expediteWork(restarted.revision);
+      }
+      return failed;
+    });
     assert.deepEqual(await fixture.attempts(restarted.revision), crashAttempts);
     const pendingPod = await fixture.readyPod(agent, restarted.revision);
     assert.equal(pendingPod.metadata.uid, restarted.pod.metadata.uid);

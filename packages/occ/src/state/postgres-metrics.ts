@@ -103,15 +103,8 @@ export class PostgresMetricsSnapshot {
     } finally {
       // Wait for query settlement before returning the client. The pool takes
       // error ownership during release; retain ours if release itself fails.
-      let released = false;
-      try {
-        client.release(failed || transportError !== undefined);
-        released = true;
-      } finally {
-        if (released) {
-          client.removeListener?.("error", onTransportError);
-        }
-      }
+      client.release(failed || transportError !== undefined);
+      client.removeListener?.("error", onTransportError);
     }
     if (transportError !== undefined) {
       throw transportError;

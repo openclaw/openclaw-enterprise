@@ -8,6 +8,7 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const accessToken = "oauth-access-private-fixture";
@@ -289,17 +290,11 @@ test("device login configures plugins and admits its opaque Secret reference in 
 test("device login is bound to its initiating actor, Namespace, and exact Agent scope", async (t) => {
   const fixture = await createFixture(t);
   const account = await fixture.createAccountWithPolicy("other-actor", (principal) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "reader-role",
+      bindingId: "reader-binding",
       namespaceId: fixture.namespace.id,
-      permissions: [{ action: "read", resourceKind: "namespace" }],
-    });
-    fixture.policy.bindings.push({
-      id: "reader-binding",
-      namespaceId: fixture.namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "reader-role",
+      permissions: { namespace: ["read"] },
     });
   });
   const otherSession = await fixture.signIn(account.credentials);
@@ -310,10 +305,8 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
   assert.equal(deniedStart.status, 403);
   assert.deepEqual(fixture.requests, []);
   // Even another authorized administrator cannot operate the initiating actor's login.
-  fixture.policy.bindings.push({
+  bindRole(fixture.policy, account.principal.id, {
     id: "other-admin-binding",
-    subjectKind: "identity",
-    subjectId: account.principal.id,
     roleId: fixture.policy.roles[0].id,
   });
   const login = await fixture.start();

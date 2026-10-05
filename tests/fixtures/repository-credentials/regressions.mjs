@@ -232,7 +232,11 @@ export function registerCredentialFixtureRegressions() {
           .length;
       const postsBefore = posts();
       fixture.disconnectAfterMutation("POST", `/${path}`);
-      await assert.rejects(send({ method: "POST", path, body }));
+      // The provider accepted the write and then lost the connection, so the gateway
+      // reports an uncertain exchange (not an ordinary failure) and never replays it.
+      const lost = await gatewayRequest(serviceFixture, `/${path}`, { method: "POST", body });
+      assert.equal(lost.status, 502, `${label} lost response status`);
+      assert.deepEqual(JSON.parse(lost.body), { error: { code: "exchange-uncertain" } });
       assert.equal(posts() - postsBefore, 1, `${label} creation must dispatch exactly once`);
       const resources = kind === "comment" ? fixture.comments : fixture[kind];
       assert.equal(

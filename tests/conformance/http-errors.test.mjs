@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RequestFailure, requestFailure } from "../../apps/controller/src/http/errors.ts";
+import {
+  canonicalFailure,
+  RequestFailure,
+  requestFailure,
+} from "../../apps/controller/src/http/errors.ts";
 import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
@@ -31,6 +35,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
   SecretBindingValidationError,
@@ -99,7 +104,7 @@ const cases = [
     {
       status: 409,
       code: "NAMESPACE_NOT_READY",
-      message: "The requested Namespace is not ready for deployment.",
+      message: "The requested Namespace is not ready.",
     },
   ],
   [
@@ -568,12 +573,13 @@ const cases = [
     },
   ],
   [
-    "missing admission evidence",
+    "a 401 admission failure",
     admissionFailure({ statusCode: 401 }),
     {
       status: 401,
       code: "UNAUTHENTICATED",
-      message: "The caller did not provide valid admission evidence.",
+      message:
+        "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
     },
   ],
   [
@@ -623,6 +629,22 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message: "A required platform dependency is unavailable.",
+    },
+  ],
+  [
+    "a cluster RBAC denial of runtime credentials names the fix, not the namespace",
+    new RuntimeCredentialsForbiddenByClusterError({
+      verb: "get",
+      resource: "secrets",
+      kubernetesNamespace: INTERNAL,
+      plane: "execution",
+      status: 403,
+    }),
+    {
+      status: 503,
+      code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+      message:
+        "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
     },
   ],
   [
@@ -707,5 +729,18 @@ for (const [name, error, expected] of cases) {
       expected,
     );
     assert.doesNotMatch(failure.message, /internal detail/);
+    // The wire cap (256 characters) must not cut a mapped message, such as a trailing doc link.
+    let sent;
+    const reply = {
+      request: { id: "req_1" },
+      header: () => reply,
+      status: () => reply,
+      send: (body) => {
+        sent = body;
+        return reply;
+      },
+    };
+    canonicalFailure(reply, failure);
+    assert.equal(sent.error.message, failure.message);
   });
 }

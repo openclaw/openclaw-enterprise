@@ -142,7 +142,9 @@ refused with its capability error even when the Agent principal also lacks a
 grant. When only the Agent principal's grant is missing, the `403` names that
 `servicePrincipalId`, the action, and the exact Secret or credential source,
 for example `The Agent service principal <id> is not authorized to operate
-secret <id>`. Denials of your own permissions stay generic.
+secret <id>`. Its audit event records your own request with reason code
+`AGENT_PRINCIPAL_NOT_AUTHORIZED` and names that principal, action, resource and
+IAM evidence in its details. Denials of your own permissions stay generic.
 
 ### Pending deployment progress
 
@@ -158,6 +160,13 @@ not connected. Otherwise the code is `REVISION_INCOMPLETE`. These codes change n
 outcome: the revision stays pending until it is ready, a held runtime failure
 ends it, or the convergence deadline passes. The worker rechecks an unready
 revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
+
+A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
+apply its workspace node, so activation fails at once with
+`AGENT_GATEWAY_UNAUTHORIZED`. Check that the Agent's Configuration sets
+`gateway.auth.password` to `OPENCLAW_GATEWAY_PASSWORD` (**Enable gateway password
+access**) and deploy again; the gateway log's `runtime.workspace_node` line names
+OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
 
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway

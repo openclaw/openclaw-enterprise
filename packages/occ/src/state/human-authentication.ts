@@ -81,10 +81,11 @@ export interface HumanAuthenticationAttempt extends HumanAuthenticationAttemptKe
 
 export type HumanAuthenticationDenial =
   | "INVALID_CREDENTIALS"
-  | "INVALID_ATTEMPT"
   | "EXTERNAL_IDENTITY_REJECTED"
   | "SESSION_REJECTED"
-  | "PROVIDER_UNAVAILABLE";
+  | "PROVIDER_UNAVAILABLE"
+  | "MEMBERSHIP_REQUIRED"
+  | "MEMBERSHIP_UNAVAILABLE";
 
 /** A duplicate account email; the caller maps it to its own conflict response. */
 export class UserAlreadyExistsError extends ResourceConflictError {
@@ -92,6 +93,20 @@ export class UserAlreadyExistsError extends ResourceConflictError {
     super("The requested account already exists.");
     this.name = "UserAlreadyExistsError";
   }
+}
+
+// Account creation answers a taken identity with the same message (createAuthAccount route).
+const EXTERNAL_IDENTITY_ASSIGNED = "The external identity is already assigned.";
+
+/** The unique violation raised when another account already holds the external identity. */
+function isExternalIdentityConflict(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "23505" &&
+    "constraint" in error &&
+    error.constraint === "account_provider_account_unique"
+  );
 }
 
 /** A validated password account whose hash was computed before the State transaction. */
@@ -536,14 +551,8 @@ export class PostgresHumanAuthentication {
             [methodId, external.subject, external.providerId, prepared.id],
           );
         } catch (error) {
-          if (
-            error instanceof Error &&
-            "code" in error &&
-            error.code === "23505" &&
-            "constraint" in error &&
-            error.constraint === "account_provider_account_unique"
-          ) {
-            throw new ResourceConflictError("The external identity is already assigned.");
+          if (isExternalIdentityConflict(error)) {
+            throw new ResourceConflictError(EXTERNAL_IDENTITY_ASSIGNED);
           }
           throw error;
         }
@@ -897,17 +906,28 @@ export class PostgresHumanAuthentication {
         [providerId, subject],
       );
       if (existing !== undefined) {
+        // The route admits only an Installation administrator covering the target Principal
+        // (controller humanAccountActor), who can already list every account's sign-in
+        // methods, so naming the conflict discloses nothing new. Keep that gate in front.
         if (existing.user_id !== userId || existing.identity_only !== true) {
-          throw new ScopeViolationError("The external identity is already assigned.");
+          throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
         }
         return { methodId: existing.id as string, created: false };
       }
       const methodId = randomUUID();
-      await this.query(
-        unit,
-        `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only) VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
-        [methodId, subject, providerId, userId],
-      );
+      try {
+        await this.query(
+          unit,
+          `INSERT INTO occ.account (id, account_id, provider_id, user_id, created_at, updated_at, identity_only) VALUES ($1, $2, $3, $4, clock_timestamp(), clock_timestamp(), true)`,
+          [methodId, subject, providerId, userId],
+        );
+      } catch (error) {
+        // A concurrent attach of the same identity committed first.
+        if (isExternalIdentityConflict(error)) {
+          throw new ResourceStateConflictError(EXTERNAL_IDENTITY_ASSIGNED);
+        }
+        throw error;
+      }
       await this.query(
         unit,
         `UPDATE occ.human_authentication_accounts SET version = version + 1, changed_at = clock_timestamp() WHERE user_id = $1`,
@@ -1227,20 +1247,32 @@ export class PostgresHumanAuthentication {
     });
   }
 
-  /** `provider` names the external sign-in provider whose callback was refused. */
+  /**
+   * `provider` names the external sign-in provider whose callback was refused. A GitHub
+   * membership denial (RFC-0061) also records the numeric GitHub `subject` that provider
+   * authenticated, so an administrator can tell whose sign-in the allowlist refused.
+   */
   async recordDenied(
     reason: HumanAuthenticationDenial,
     provider?: "github" | "google" | "oidc",
+    identity?: { readonly subject: string },
   ): Promise<void> {
+    const membership = reason === "MEMBERSHIP_REQUIRED" || reason === "MEMBERSHIP_UNAVAILABLE";
+    const githubSubject =
+      provider === "github" &&
+      typeof identity?.subject === "string" &&
+      /^[1-9][0-9]{0,19}$/.test(identity.subject);
     if (
       ![
         "INVALID_CREDENTIALS",
-        "INVALID_ATTEMPT",
         "EXTERNAL_IDENTITY_REJECTED",
         "SESSION_REJECTED",
         "PROVIDER_UNAVAILABLE",
+        "MEMBERSHIP_REQUIRED",
+        "MEMBERSHIP_UNAVAILABLE",
       ].includes(reason) ||
-      (provider !== undefined && !["github", "google", "oidc"].includes(provider))
+      (provider !== undefined && !["github", "google", "oidc"].includes(provider)) ||
+      (membership ? !githubSubject : identity !== undefined)
     ) {
       throw new ScopeViolationError("The authentication denial classification is invalid.");
     }
@@ -1256,7 +1288,12 @@ export class PostgresHumanAuthentication {
         resource: { kind: "installation", id: this.installationId },
         outcome: "denied",
         reasonCode: reason,
-        ...(provider === undefined ? {} : { details: { provider } }),
+        ...(provider === undefined
+          ? {}
+          : {
+              details:
+                identity === undefined ? { provider } : { provider, subject: identity.subject },
+            }),
       }),
     );
   }

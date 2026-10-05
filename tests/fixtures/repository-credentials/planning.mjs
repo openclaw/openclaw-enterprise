@@ -26,7 +26,7 @@ export async function createGitHubPlanningFixture(t) {
     resources.after(() => key.close());
     const factory = createGitHubDriverFactory({
       configuration,
-      key,
+      authority: key,
       clock,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,

@@ -12,7 +12,7 @@ import test from "node:test";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
+import { NoActiveAgentRevisionError, ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -331,6 +331,21 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(exactAvailable.status, 200);
   assert.equal(exactAvailable.data.status, "available");
 
+  // An IAM outage is a dependency failure, never an Agent lifecycle state: the console must
+  // not read it as "unavailable" (deploying) for an Agent the caller may not even administer.
+  const authorize = context.fixture.iamDriver.authorize;
+  context.fixture.iamDriver.authorize = async () => {
+    throw new Error("IAM outage");
+  };
+  let iamOutage;
+  try {
+    iamOutage = await nativeStatus(context);
+  } finally {
+    context.fixture.iamDriver.authorize = authorize;
+  }
+  assert.equal(iamOutage.status, 503);
+  assert.equal(iamOutage.body.error.code, "DEPENDENCY_UNAVAILABLE");
+
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
   assert.equal(denied.status, 403);
@@ -393,7 +408,7 @@ test("native admin status requires exact Agent administer and reports lifecycle 
 
   // Redeployment makes the Agent desired-running before a worker selects the new revision.
   const pending = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
-  await assert.rejects(controllerStatus, DependencyUnavailableError);
+  await assert.rejects(controllerStatus, NoActiveAgentRevisionError);
   const unavailable = await nativeStatus(context, { session: exactAdministerOnlySession });
   assert.equal(unavailable.status, 200);
   assert.deepEqual(unavailable.data, { status: "unavailable" });

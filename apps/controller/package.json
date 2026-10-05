@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.3",
+    "@fastify/fast-json-stringify-compiler": "5.1.0",
     "@fastify/swagger": "9.9.0",
     "@fastify/type-provider-typebox": "6.1.0",
     "@grpc/grpc-js": "1.14.5",

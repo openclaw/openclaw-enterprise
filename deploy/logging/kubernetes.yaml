@@ -2,7 +2,13 @@ receivers:
   filelog:
     include:
       - /var/log/pods/*_openclaw-enterprise-*_*/*/*.log
-      - /var/log/pods/*_*-initialization-*_*/*/*.log
+      # The initialization Job's Pods are named by generateName from
+      # `<release>-initialization-`, which Kubernetes cuts to 58 characters
+      # before adding 5 random ones: a 53-character release name keeps only
+      # `-init` of the suffix. Match that remainder and the Job's container names.
+      # Records are classified by Pod labels, not by file name.
+      - /var/log/pods/*_*-init*_*/migration/*.log
+      - /var/log/pods/*_*-init*_*/bootstrap/*.log
       - /var/log/pods/*_gateway-*_*/*/*.log
       - /var/log/pods/*_agent-*_*/*/*.log
     exclude:

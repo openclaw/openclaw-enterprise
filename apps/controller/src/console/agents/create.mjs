@@ -18,6 +18,8 @@ const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
 // The API's text for a conflict whose reason it does not name.
 const GENERIC_CONFLICT = "The requested platform resource already exists.";
+// The API's Agent name limit, in characters (code points).
+const AGENT_NAME_MAX_CHARACTERS = 200;
 
 // TODO: This starter list is intentionally hardcoded for the initial Console release.
 // Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
@@ -333,13 +335,20 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   }
 
   const formId = "create-agent-form";
+  // No maxlength: it counts UTF-16 code units, so an emoji would count twice. The API
+  // counts characters (code points), and so does this check.
   const name = element("input", {
     id: "agent-name",
     name: "name",
     required: "",
-    maxlength: "200",
     autocomplete: "off",
   });
+  const checkNameLength = () =>
+    name.setCustomValidity(
+      Array.from(name.value.trim()).length > AGENT_NAME_MAX_CHARACTERS
+        ? `Use at most ${AGENT_NAME_MAX_CHARACTERS} characters.`
+        : "",
+    );
   const mode = element(
     "select",
     { id: "execution-mode" },
@@ -1075,6 +1084,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   form.addEventListener("input", (event) => {
     edited = true;
     event.target.setCustomValidity?.("");
+    if (event.target === name) {
+      checkNameLength();
+    }
   });
   form.addEventListener("change", () => {
     edited = true;
@@ -1534,7 +1546,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         ![400, 403, 404, 409, 429].includes(error.status);
       // The API refuses to retry a job whose Namespace or Agent lifecycle changed, that was
       // cancelled or handed off, or whose Secret was deleted; that job can never finish. A
-      // refusal that names its reason (the deleted Secret) is shown as sent.
+      // refusal that names its reason is shown as sent; a race in the store can still
+      // answer with the generic conflict text, which keeps the fixed sentence.
       const retryRefused = retrying && error.status === 409;
       const retryRefusal =
         error.serverMessage !== undefined && error.serverMessage !== GENERIC_CONFLICT
@@ -1583,6 +1596,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    // A restored draft sets the name without an input event.
+    checkNameLength();
     if (
       pending ||
       outcomeUnknown ||
@@ -1769,7 +1784,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
         : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
           ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
-          : error.status === 409 && savedConfiguration
+          : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
             ? error.serverMessage === AGENT_NAME_CONFLICT
               ? AGENT_NAME_CONFLICT
               : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."

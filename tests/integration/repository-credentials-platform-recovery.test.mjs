@@ -71,9 +71,14 @@ test(
           "-l",
           `openclaw.dev/agent=${agent.id}`,
         );
-        return (
-          current.activeRevisionId === undefined && pods.length === 0 && saved?.phase === "disposed"
-        );
+        const retired =
+          current.activeRevisionId === undefined &&
+          pods.length === 0 &&
+          saved?.phase === "disposed";
+        if (!retired) {
+          await fixture.expediteWork(revision);
+        }
+        return retired;
       });
       assert.equal(credentials.repositories[0].github.issuesOfTokens.length, issued);
       assert.equal((await credentials.status(sessionId)).state, "DISPOSED");

@@ -161,6 +161,7 @@ test("audit evidence retains Installation identity and rejects another Namespace
       action: "agents.create",
       resource: resource(),
     }),
+    /Audit event and resource scopes must match exactly/,
   );
   assert.equal(sink.events.length, 1);
 });

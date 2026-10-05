@@ -13,6 +13,13 @@ inputs:
   artifact-prefix:
     description: Prefix for the uploaded result artifact.
     required: true
+  static-checks:
+    description: >-
+      Whether checks-baseline-1 runs the workspace boundary, lint, format, OpenAPI
+      and docs checks before its tests ("false" when the workflow runs them in a
+      separate job).
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -20,7 +27,7 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
     - id: pnpm-store
-      uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@ee0cf16623068ff535cc20f4a1ce175c8c5b8d25
+      uses: ./.github/actions/setup-pnpm-store-cache
       with:
         node-version: ${{ inputs.node-version }}
         cache-mode: read-write
@@ -30,8 +37,11 @@ runs:
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
-        inputs.lane != 'repository-credentials-platform' &&
         !startsWith(inputs.lane, 'k3d-fixture-') && !startsWith(inputs.lane, 'k3d-observability')
+      with:
+        # GitHub-hosted and Blacksmith runners are per-job VMs, so skip the builder
+        # removal; a persistent runner would accumulate buildx_buildkit_* containers.
+        cleanup: false
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
@@ -60,47 +70,54 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'checks-browser' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres' || inputs.lane == 'postgres-application' || inputs.lane == 'postgres-auth'
+      if: startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'checks-baseline' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
         cache: true
     - name: Run workspace boundary check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm check:workspace
     - name: Run lint check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm lint
     - name: Run format check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm format:check
     - name: Run OpenAPI check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm openapi:check
     - name: Run docs check
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm docs:install && pnpm docs:check && pnpm docs:build
     - name: Install documentation browser dependencies
-      if: inputs.lane == 'checks-browser'
+      # Only browser part 1 runs docs-compute-matrix. Baseline part 1's docs-site
+      # test needs Pagefind; the docs check above installs it otherwise.
+      if: inputs.lane == 'checks-browser' || (inputs.lane == 'checks-baseline-1' && inputs.static-checks == 'false')
       shell: bash
       run: pnpm docs:install
     - name: Run typecheck
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm typecheck
     - name: Check Go CLI
-      if: inputs.lane == 'checks-baseline'
+      if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm cli:check && pnpm cli:test
+    - name: Build workspace output
+      # Part 1 builds it in its typecheck step; some tests read apps/controller/dist.
+      if: inputs.lane == 'checks-baseline-2'
+      shell: bash
+      run: pnpm build
     - name: Build Go CLI for OpenShell development proof
       if: inputs.lane == 'openshell'
       shell: bash
@@ -113,7 +130,7 @@ runs:
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes'
+      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'repository-credentials-platform'
       uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
       with:
         script: |
@@ -128,19 +145,32 @@ runs:
     - name: Prepare lane
       shell: bash
       env:
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'repository-credentials-platform') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
     - name: Run lane
       shell: bash
       env:
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (inputs.lane == 'checks-baseline' || inputs.lane == 'checks-browser') && '300000' || inputs.lane == 'k3d-model' && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'k3d-model' && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
-        # fixture-only browser lane.
-        OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ inputs.lane == 'checks-browser' && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
-      run: node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+        # fixture-only browser lanes.
+        OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ startsWith(inputs.lane, 'checks-browser') && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
+      run: |
+        if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
+          # Hosted runners have been lost mid-lane (suspected memory pressure); a
+          # lost runner skips every later step, so the sampler also logs live.
+          bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+        fi
+        node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json"
+    - name: Show last memory samples
+      if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
+      continue-on-error: true
+      shell: bash
+      run: tail -n 120 "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" || true
     - name: Cleanup lane
       if: always()
       shell: bash
@@ -178,11 +208,20 @@ runs:
         overwrite: true
         if-no-files-found: ignore
         retention-days: 7
+    - name: Upload memory samples
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always() && inputs.lane == 'k3d-fixture-configuration'
+      continue-on-error: true
+      with:
+        name: memory-${{ inputs.artifact-prefix }}-${{ inputs.lane }}-attempt-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/memory/${{ inputs.lane }}.log
+        if-no-files-found: ignore
+        retention-days: 7
     - name: Upload browser failure diagnostics
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       # Screenshots and console/network logs for failed browser tests;
       # passing runs write nothing.
-      if: failure() && inputs.lane == 'checks-browser'
+      if: failure() && startsWith(inputs.lane, 'checks-browser')
       with:
         name: browser-failures-${{ inputs.artifact-prefix }}-${{ inputs.lane }}
         path: ${{ runner.temp }}/browser-failures/${{ inputs.lane }}

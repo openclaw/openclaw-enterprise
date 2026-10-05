@@ -15,6 +15,10 @@
   },
   "files": [
     {
+      "path": "tests/integration/production-network-access.test.mjs",
+      "expectedTests": ["production Helm policies enforce workload network access levels"]
+    },
+    {
       "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
       "expectedTests": [
         "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",

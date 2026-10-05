@@ -9,7 +9,6 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
-import { hasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import {
   githubConfigurationData,
   serviceConfigurationData,
@@ -168,7 +167,7 @@ test("GitHub factory snapshots a registry-selected write grant through session a
   const factory = createGitHubDriverFactory({
     configuration,
     binding: selection,
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -198,15 +197,6 @@ test("GitHub factory snapshots a registry-selected write grant through session a
     /unsupported-profile/,
   );
   service.close(opened.session.sessionId);
-});
-
-test("hasControlCharacter flags C0 controls and DEL but no other characters", () => {
-  for (const code of [0x00, 0x09, 0x0a, 0x1f, 0x7f]) {
-    assert.equal(hasControlCharacter(`a${String.fromCharCode(code)}b`), true, code.toString(16));
-  }
-  // Space, tilde, C1 controls, a line separator, an astral character and a lone surrogate pass.
-  assert.equal(hasControlCharacter(" ~\u0080\u009f\u2028\u{1f600}\ud800"), false);
-  assert.equal(hasControlCharacter(""), false);
 });
 
 test("push-ref policy normalizes branch refs and changes grant identity", () => {
@@ -312,30 +302,34 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
     /invalid-repository-registry/,
   );
   const registry = validateGitHubRepositoryRegistry(registryInput());
-  for (const [name, request] of Object.entries({
-    "default write profile outside Namespace policy": {
-      namespaceId: "namespace-b",
-      repositoryRef: "application",
-    },
-    "unknown repository reference": { namespaceId: "namespace-a", repositoryRef: "missing" },
-    "Namespace without a policy": {
-      namespaceId: "namespace-c",
-      repositoryRef: "application",
-      profile: "git-read",
-    },
-    "unsupported selected profile": {
-      namespaceId: "namespace-a",
-      repositoryRef: "application",
-      profile: "app-full",
-    },
-    "explicit null profile": {
-      namespaceId: "namespace-a",
-      repositoryRef: "application",
-      profile: null,
-    },
+  // A well-formed request outside the registry's policy is not authorized; a malformed
+  // profile is refused by the registry's profile validation before any policy lookup.
+  const notAuthorized = /repository-binding-not-authorized/;
+  const invalidProfile = /invalid-repository-registry/;
+  for (const [name, [request, expected]] of Object.entries({
+    "default write profile outside Namespace policy": [
+      { namespaceId: "namespace-b", repositoryRef: "application" },
+      notAuthorized,
+    ],
+    "unknown repository reference": [
+      { namespaceId: "namespace-a", repositoryRef: "missing" },
+      notAuthorized,
+    ],
+    "Namespace without a policy": [
+      { namespaceId: "namespace-c", repositoryRef: "application", profile: "git-read" },
+      notAuthorized,
+    ],
+    "unsupported selected profile": [
+      { namespaceId: "namespace-a", repositoryRef: "application", profile: "app-full" },
+      invalidProfile,
+    ],
+    "explicit null profile": [
+      { namespaceId: "namespace-a", repositoryRef: "application", profile: null },
+      invalidProfile,
+    ],
   })) {
     await t.test(name, () => {
-      assert.throws(() => resolveGitHubRepositoryBinding(registry, request));
+      assert.throws(() => resolveGitHubRepositoryBinding(registry, request), expected);
     });
   }
 });

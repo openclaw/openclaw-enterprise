@@ -41,9 +41,10 @@ another version or the draft. Its milestones use the persisted record:
 
 A `failed` result shows the stored error and an **Open vN Logs** link to that
 version's [Logs tab](../topics/agent-logs.md), which the draft does not have.
-For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`, and
-`RUNTIME_MODEL_PROBE_TIMEOUT` it also states the next step and links
-**Credentials** or the draft **Configuration**. A provider the runtime cannot
+For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
+`RUNTIME_MODEL_PROBE_TIMEOUT` and `AGENT_GATEWAY_UNAUTHORIZED` it also states
+the next step and links **Credentials** or the draft **Configuration** (for
+`AGENT_GATEWAY_UNAUTHORIZED`, select **Enable gateway password access** there). A provider the runtime cannot
 reach (refused connection, unknown host) usually reports
 `RUNTIME_MODEL_PROBE_TIMEOUT` with OpenClaw and `RUNTIME_MODEL_PROBE_FAILED`
 with Codex.
@@ -228,6 +229,20 @@ writer's contents. Reading requires Agent `read`, saving requires `operate`, and
 access needs an active revision with a reachable gateway. An uncertain save
 requires a successful Reload before retrying. See
 [Workspace Files](../topics/workspace-files.md).
+
+## Talk to the Agent
+
+The console has no chat panel. To give an Agent a task:
+
+- Message it in a channel its Configuration sets up, such as Slack. The
+  [channel settings](channels-and-credentials.md#slack-editor), not OCE grants,
+  decide who may mention it.
+- With Agent `administer`, use the [native admin panel](#conditional-native-admin-panel)
+  when the Installation enables it. It is unavailable under GitHub, Google, or
+  OIDC sign-in.
+- Otherwise ask someone who can edit the Agent's Configuration to let you into
+  its channel. An operator with cluster access can check a real response with
+  [model verification](../operate/model-verification.md).
 
 ## Conditional native admin panel
 

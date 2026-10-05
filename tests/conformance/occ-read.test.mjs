@@ -12,6 +12,7 @@ import {
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { bindRole, grantRole, permissionsFor, principalIAMState } from "../helpers/iam-grants.mjs";
 
 const installation = Object.freeze({
   id: "installation-read-test",
@@ -19,88 +20,51 @@ const installation = Object.freeze({
   createdAt: "2026-08-17T00:00:00.000Z",
 });
 async function createFixture() {
-  const identities = ["principal-admin", "principal-exact-a", "principal-scoped-b"].map((id) => ({
-    kind: "principal",
-    id,
-    issuer: "https://identity.example.com",
-    subject: id,
-  }));
-  const roles = [
-    {
-      id: "role-admin",
-      permissions: [
-        { action: "read", resourceKind: "installation" },
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent_revision" },
-        { action: "create", resourceKind: "secret" },
-        { action: "operate", resourceKind: "secret" },
-        { action: "create", resourceKind: "namespace" },
-        { action: "create", resourceKind: "configuration" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "create", resourceKind: "agent" },
-        { action: "update", resourceKind: "agent" },
-        { action: "deploy", resourceKind: "agent" },
-      ],
+  const exactNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const scopedNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
+  const iamState = principalIAMState(
+    ["principal-admin", "principal-exact-a", "principal-scoped-b"],
+    "https://identity.example.com",
+  );
+  const { identities, roles } = iamState;
+  grantRole(iamState, "principal-admin", {
+    id: "role-admin",
+    bindingId: "binding-admin",
+    permissions: {
+      installation: ["read"],
+      namespace: ["read", "create"],
+      agent: ["read", "create", "update", "deploy"],
+      agent_revision: ["read"],
+      secret: ["create", "operate"],
+      configuration: ["create", "read"],
     },
-    {
-      id: "role-principal-exact-a",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    },
-    {
-      id: "role-principal-scoped-b",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000002",
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    },
-  ];
-  const bindings = [
-    {
-      id: "binding-admin",
-      subjectKind: "identity",
-      subjectId: "principal-admin",
-      roleId: "role-admin",
-    },
-    ...[
-      ["namespace", "ns_00000000-0000-4000-8000-000000000001"],
-      ["agent", "agent-3"],
-      ["agent_revision", "agent_revision-6"],
-    ].map(([resourceKind, resourceId]) => ({
-      id: `binding-a-${resourceKind}`,
-      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-      subjectKind: "identity",
-      subjectId: "principal-exact-a",
+  });
+  const reads = { namespace: ["read"], agent: ["read"], agent_revision: ["read"] };
+  roles.push({
+    id: "role-principal-exact-a",
+    namespaceId: exactNamespaceId,
+    permissions: permissionsFor(reads),
+  });
+  for (const [kind, id] of [
+    ["namespace", exactNamespaceId],
+    ["agent", "agent-3"],
+    ["agent_revision", "agent_revision-6"],
+  ]) {
+    bindRole(iamState, "principal-exact-a", {
+      id: `binding-a-${kind}`,
       roleId: "role-principal-exact-a",
-      resourceKind,
-      resourceId,
-    })),
-    {
-      id: "binding-scoped-b",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000002",
-      subjectKind: "identity",
-      subjectId: "principal-scoped-b",
-      roleId: "role-principal-scoped-b",
-    },
-  ];
+      namespaceId: exactNamespaceId,
+      resource: { kind, id },
+    });
+  }
+  grantRole(iamState, "principal-scoped-b", {
+    id: "role-principal-scoped-b",
+    bindingId: "binding-scoped-b",
+    namespaceId: scopedNamespaceId,
+    permissions: reads,
+  });
   const iam = new NativeIAMDriver(
-    {
-      loadNativeIAMState: async () => ({
-        identities,
-        groups: [],
-        memberships: [],
-        roles,
-        bindings,
-        restrictions: [],
-      }),
-    },
+    { loadNativeIAMState: async () => iamState },
     { id: "iam-read-test" },
   );
   let sequence = 0;
@@ -180,14 +144,11 @@ async function createFixture() {
       id: `role-${agent.id}`,
       permissions: [{ action: "operate", resourceKind: "secret" }],
     });
-    bindings.push({
+    bindRole(iamState, agent.servicePrincipalId, {
       id: `binding-${agent.id}`,
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
       roleId: `role-${agent.id}`,
       namespaceId: agent.namespaceId,
-      resourceKind: "secret",
-      resourceId: secret.id,
+      resource: { kind: "secret", id: secret.id },
     });
     await controller.updateAgent("principal-admin", {
       namespaceId: agent.namespaceId,

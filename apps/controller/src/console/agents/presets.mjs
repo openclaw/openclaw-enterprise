@@ -58,7 +58,7 @@ export function createPresetFields(context, apply) {
   const chooseHint = () =>
     defaultId
       ? "Choose a Preset or start with the default Preset."
-      : "Choose a Preset. default-codex is not available in this Namespace.";
+      : "Choose a Preset. default-codex is not available to you in this Namespace.";
   const startDefault = button(
     "Start with default Preset",
     () => {
@@ -454,7 +454,7 @@ export function createPresetFields(context, apply) {
       }
       if (presets.length === 0) {
         status.textContent =
-          "No Presets in this Namespace. Ask an administrator to install default-codex or another Preset.";
+          "No Presets available to you in this Namespace. Ask an administrator to install default-codex or another Preset, or to give you read access to a Preset.";
       } else {
         status.textContent = chooseHint();
       }

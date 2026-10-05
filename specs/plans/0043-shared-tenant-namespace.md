@@ -83,6 +83,26 @@ causes the caller regression to fail at its respective missing-rejection asserti
 fixed sources were restored and their local/VM hashes match. Historical native model receipts below predate
 this merge; these current fixtures do not prove native model execution.
 
+## Main refresh on 2026-10-05
+
+Merge pinned main `dd934c39` into the published branch without rewriting history.
+Preserve the shared placement and upgrade refusal while adopting main's runtime
+credential RBAC diagnostics, scheduling-event filtering and test cleanup.
+Main moved the lifecycle/isolation case into
+`tests/integration/kubernetes-compute-driver-real.test.mjs` and common helpers
+into `tests/helpers/kubernetes-compute-real.mjs`; carry the namespace, credential
+projection and legacy upgrade assertions into those owners. Keep all four real
+Kubernetes scenarios selected by their existing CI lanes.
+
+The reviewer scope note remains intentional: every worker and configured
+development API runs optional Compute preflight. Docker or SSH Compute preflight
+failure therefore prevents development startup. The unconfigured Docker entrypoint
+retains its cheap read-only early preflight before opening the database pool.
+
+Focused contracts pass (275 passed, no failures, one macOS argument-size skip).
+Local typecheck is blocked by main's new direct compiler dependency, absent from
+the installed graph; clean CI must verify the merged source before merge.
+
 ## Verification
 
 | Required outcome                                   | Check                                                                                             | Result |

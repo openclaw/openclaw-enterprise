@@ -15,6 +15,7 @@ import {
   newPage,
   settledFetches,
   trackSettledFetches,
+  waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -334,7 +335,15 @@ test("console shows the external observability link only to Installation adminis
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Logout" }).click();
+  // Navigating away before the sign-out request is answered aborts it, and the old session
+  // then opens the Console again instead of the login form.
+  await page.waitForURL(/\/console\/login$/);
+  // The shell renders before the probe is answered, so wait for the denial itself.
+  const limitedProbe = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/observability",
+  );
   await login(page, fixture, "/console/", limited.credentials);
+  assert.equal((await limitedProbe).status(), 403);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   // A denied read is audited, so navigation must not repeat it.
@@ -353,6 +362,49 @@ test("console shows the external observability link only to Installation adminis
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 2);
+});
+
+test("a navigation while the Installation-access probe is answered does not ask again", async (t) => {
+  // The API audits every denied probe, so the Console must not repeat one it already sent.
+  let answered = 0;
+  const fixture = await createConsoleAppFixture(t, {
+    observabilityUrl: "https://metrics.example.test/d/operations",
+    async onSend(request, _reply, payload) {
+      if (request.url === "/observability") {
+        answered += 1;
+      }
+      return payload;
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Probe access", { ready: true });
+  const limited = await fixture.createAccountWithPolicy("probe-limited", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-browser-probe-reader",
+      namespaceId: namespace.id,
+      permissions: [{ action: "read", resourceKind: "namespace" }],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-browser-probe-reader",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-browser-probe-reader",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  // The API has answered (and audited) the probe; its response reaches the page only later.
+  const probe = await holdRoute(t, page, "**/observability", (route, response) =>
+    route.fulfill({ response }),
+  );
+  await login(page, fixture, "/console/agents", limited.credentials);
+  await probe.waitForRelease();
+  await page.getByRole("link", { name: "Namespaces" }).click();
+  await page.waitForURL(/\/console\/namespaces/);
+  probe.release();
+  await page.getByRole("list", { name: "Namespaces" }).getByText("Probe access").waitFor();
+  assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
+  assert.equal(answered, 1);
 });
 
 test("console ignores stale collection successes and errors while switching Namespaces", async (t) => {
@@ -453,6 +505,14 @@ async function releaseHeldRoute(page, pattern, hold) {
   await page.unroute(pattern);
 }
 
+// The console retains a view for Back and in-app returns only if it finished its reads before
+// the reader left; otherwise the return rebuilds it. Wait for this before leaving a view whose
+// DOM a test later expects to be reused. The page must run trackSettledFetches().
+async function waitForSettledView(page) {
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  await waitForIdleFetches(page);
+}
+
 async function expectRetainedPreview(page, visibleText) {
   if (visibleText) {
     await page.getByText(visibleText, { exact: true }).waitFor();
@@ -469,15 +529,18 @@ test("console keeps loaded route families visible while return reads refresh", a
   await fixture.createNamespace("A second Namespace", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Retained route Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
 
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  await waitForSettledView(page);
   const originalAgentRow = await page
     .getByRole("link", { name: "Retained route Agent", exact: true })
     .elementHandle();
 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForSettledView(page);
   const originalNamespaceList = await page
     .getByRole("list", { name: "Namespaces", exact: true })
     .elementHandle();
@@ -500,6 +563,7 @@ test("console keeps loaded route families visible while return reads refresh", a
 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForSettledView(page);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const namespacesPattern = "**/namespaces";
@@ -559,6 +623,7 @@ test("console keeps loaded route families visible while return reads refresh", a
     "Workspace files require a deployed Agent with a current version and a reachable gateway.";
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
   await page.locator(".native-admin-access").waitFor({ state: "attached" });
+  await waitForSettledView(page);
   const originalNativePanel = await page.locator(".native-admin-access").elementHandle();
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
@@ -603,6 +668,51 @@ test("console keeps loaded route families visible while return reads refresh", a
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
 });
 
+test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Early tab", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Early tab Agent");
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/agents?namespace=" + namespace.id);
+  await page.getByText("Early tab Agent", { exact: true }).waitFor();
+
+  // Hold the detail's Configuration read so the first tab is still loading when the reader
+  // switches tabs; the switch updates the URL in place.
+  const configurationPattern =
+    "**/namespaces/" + namespace.id + "/configurations/" + agent.configurationId;
+  const configurationHold = await holdRoute(t, page, configurationPattern, (route, response) =>
+    response ? route.fulfill({ response }) : route.continue(),
+  );
+  t.after(() => configurationHold.release());
+  await page.getByRole("link", { name: "Early tab Agent", exact: true }).click();
+  await configurationHold.waitForRelease();
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  const workspaceNotice = page.getByText(
+    "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+    { exact: true },
+  );
+  await workspaceNotice.waitFor();
+  await releaseHeldRoute(page, configurationPattern, configurationHold);
+  await waitForSettledView(page);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+  const notice = await workspaceNotice.elementHandle();
+
+  // The view is retained under the URL it shows, so Back reuses it instead of rebuilding it.
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  await page.goBack();
+  await workspaceNotice.waitFor();
+  await waitForSettledView(page);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+  assert.equal(
+    await notice.evaluate((node) => node.isConnected),
+    true,
+    "Back restores the retained workspace tab",
+  );
+});
+
 test("Refresh and focus restoration retain rows until fresh data arrives", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -639,6 +749,7 @@ test("console retained views clear after session expiry and exact Agent denial",
   const namespace = await fixture.createNamespace("Retained invalidation", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Denied retained Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
 
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
@@ -662,6 +773,8 @@ test("console retained views clear after session expiry and exact Agent denial",
   fixture.memoryDatabase.session.length = 0;
   await login(page, fixture, "/console/agents/" + agent.id + "?namespace=" + namespace.id);
   await page.getByRole("heading", { name: "Denied retained Agent", exact: true }).waitFor();
+  // The heading shows before the detail finishes loading; leaving earlier keeps no preview.
+  await waitForSettledView(page);
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   fixture.policy.restrictions.push({
@@ -894,6 +1007,56 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Username").waitFor();
   await expectNoText(page, /Continue with Acme SSO/);
+});
+
+test("GitHub allowlist refusals tell the person why, and other reasons stay generic", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  let password = true;
+  // Discovery models GitHub sign-in with password sign-in for everyone, then recovery-only.
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { github: true, google: false, password, sessionBinding: true },
+        meta: { requestId: "browser-github-allowlist" },
+      }),
+    }),
+  );
+  const cases = [
+    [
+      "membership",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access or use your password.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access.",
+    ],
+    [
+      "membership-unavailable",
+      "Could not check your GitHub organization membership. Try again later or use your password.",
+      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+    ],
+    [
+      "toString",
+      "Could not sign in with GitHub. Try again or use your password.",
+      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+    ],
+  ];
+  for (const [reason, withPassword, recoveryOnly] of cases) {
+    for (const [available, message] of [
+      [true, withPassword],
+      [false, recoveryOnly],
+    ]) {
+      password = available;
+      await page.goto(`${fixture.origin}/console/?authError=github&authReason=${reason}`);
+      await page.getByText(message, { exact: true }).waitFor();
+    }
+  }
+  // The reason applies only to GitHub's own error.
+  password = true;
+  await page.goto(`${fixture.origin}/console/?authError=google&authReason=membership`);
+  await page.getByRole("button", { name: "Login" }).waitFor();
+  await expectNoText(page, /organization/);
 });
 
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {

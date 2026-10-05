@@ -30,6 +30,20 @@ export function githubConfigurationData(overrides = {}) {
   };
 }
 
+export function githubTokenConfigurationData(overrides = {}) {
+  return {
+    kind: "github-token",
+    providerInstanceId: "github-test",
+    configVersion: "1",
+    repositoryId: "73",
+    repository: "fixture/repository",
+    tokenFile: "/protected/token",
+    developmentOnly: true,
+    pushRefAllowlist: ["refs/heads/agent/*"],
+    ...overrides,
+  };
+}
+
 // Keep raw targets byte-for-byte, including deliberately invalid protocol inputs.
 export function requestHead(
   method,

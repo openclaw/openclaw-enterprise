@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   normalizePresetTemplate,
@@ -362,4 +367,120 @@ test("preset admission and rendering bound stored and expanded JSON", () => {
     () => renderPresetTemplate(template, { text: "x".repeat(600_000) }),
     /maximum size/,
   );
+});
+
+// A Preset version is the SHA-256 of its canonical JSON (sorted keys, no whitespace),
+// so reformatting a bundled file is not a new version.
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function presetVersion(document) {
+  return createHash("sha256").update(canonicalJson(document)).digest("hex").slice(0, 16);
+}
+
+async function readJson(url) {
+  return JSON.parse(await readFile(url, "utf8"));
+}
+
+/** Problems that would let a bundled default change without its previous version archived. */
+async function bundledPresetArchiveProblems(presetDirectory) {
+  const archive = new URL("archive/", presetDirectory);
+  const versions = await readJson(new URL("versions.json", archive));
+  const problems = [];
+  for (const [file, history] of Object.entries(versions)) {
+    const stem = file.replace(/\.json$/, "");
+    const recorded = history.at(-1);
+    const actual = presetVersion(await readJson(new URL(file, presetDirectory)));
+    if (actual !== recorded) {
+      problems.push(
+        `deploy/presets/${file} is version ${actual}, but archive/versions.json records ${recorded} as current. ` +
+          `Archive the shipped version before changing it: ` +
+          `git show origin/main:deploy/presets/${file} > deploy/presets/archive/${stem}/${recorded}.json, ` +
+          `then append "${actual}" to "${file}" in deploy/presets/archive/versions.json.`,
+      );
+    }
+    const superseded = history.slice(0, -1);
+    // A revert may make an earlier version current again; superseded ones are unique.
+    if (new Set(superseded).size !== superseded.length) {
+      problems.push(`archive/versions.json lists a superseded ${file} version twice.`);
+    }
+    const archived = superseded.length === 0 ? [] : await readdir(new URL(`${stem}/`, archive));
+    for (const version of superseded) {
+      if (!archived.includes(`${version}.json`)) {
+        problems.push(`archive/${stem}/${version}.json is missing for a superseded ${file}.`);
+        continue;
+      }
+      const document = await readJson(new URL(`${stem}/${version}.json`, archive));
+      if (presetVersion(document) !== version) {
+        problems.push(`archive/${stem}/${version}.json no longer matches its version.`);
+      }
+    }
+    for (const entry of archived) {
+      if (!superseded.includes(entry.replace(/\.json$/, ""))) {
+        problems.push(`archive/${stem}/${entry} is not listed in archive/versions.json.`);
+      }
+    }
+  }
+  const stems = Object.entries(versions)
+    .filter(([, history]) => history.length > 1)
+    .map(([file]) => file.replace(/\.json$/, ""));
+  for (const entry of await readdir(archive, { withFileTypes: true })) {
+    if (entry.isDirectory() && !stems.includes(entry.name)) {
+      problems.push(`archive/${entry.name}/ has no superseded versions in archive/versions.json.`);
+    }
+  }
+  return problems;
+}
+
+test("every superseded bundled default Preset is archived as a valid template", async () => {
+  const presetDirectory = new URL("../../deploy/presets/", import.meta.url);
+  assert.deepEqual(await bundledPresetArchiveProblems(presetDirectory), []);
+  const versions = await readJson(new URL("archive/versions.json", presetDirectory));
+  // Startup refreshes and deletes copies by comparing them with these templates,
+  // so each must still pass the current Preset admission.
+  for (const [file, history] of Object.entries(versions)) {
+    for (const version of history.slice(0, -1)) {
+      const document = await readJson(
+        new URL(`archive/${file.replace(/\.json$/, "")}/${version}.json`, presetDirectory),
+      );
+      assert.deepEqual(Object.keys(document).sort(), ["name", "template"]);
+      normalizePresetTemplate(document.template, namespaceId);
+    }
+  }
+});
+
+test("the archive guard fails when a bundled default changes without archiving its version", async (t) => {
+  const copy = await mkdtemp(join(tmpdir(), "occ-preset-archive-"));
+  t.after(() => rm(copy, { recursive: true, force: true }));
+  await cp(new URL("../../deploy/presets/", import.meta.url), copy, { recursive: true });
+  const presetDirectory = pathToFileURL(`${copy}/`);
+  const codex = new URL("default-codex.json", presetDirectory);
+  const versions = await readJson(new URL("archive/versions.json", presetDirectory));
+  const shipped = versions["default-codex.json"].at(-1);
+  // Reformatting is not a change.
+  await writeFile(codex, JSON.stringify(await readJson(codex)));
+  assert.deepEqual(await bundledPresetArchiveProblems(presetDirectory), []);
+
+  const changed = await readJson(codex);
+  changed.template.agent.name = "Changed default";
+  await writeFile(codex, JSON.stringify(changed, null, 2));
+  const [problem] = await bundledPresetArchiveProblems(presetDirectory);
+  assert.match(problem, new RegExp(`records ${shipped} as current`));
+  assert.match(problem, new RegExp(`archive/default-codex/${shipped}\\.json`));
+  // Recording the new version without the archived file still fails.
+  versions["default-codex.json"].push(presetVersion(changed));
+  await writeFile(new URL("archive/versions.json", presetDirectory), JSON.stringify(versions));
+  assert.deepEqual(await bundledPresetArchiveProblems(presetDirectory), [
+    `archive/default-codex/${shipped}.json is missing for a superseded default-codex.json.`,
+  ]);
 });

@@ -11,6 +11,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   authenticatedHeaders,
@@ -190,6 +191,39 @@ function createOpenClawConfiguration() {
       },
     },
   };
+}
+
+async function configureAgentHarnessSecret(context, namespace, agent, configurationId, secretName) {
+  const harnessSecret = await context.controller.createSecret(context.principal.id, {
+    namespaceId: namespace.id,
+    name: secretName,
+    value: "synthetic-configuration-key",
+  });
+  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
+    namespaceId: namespace.id,
+    agentId: agent.body.data.id,
+    configurationId,
+    harnessAuth: { method: "api_key", source: harnessSecret.ref },
+  });
+  context.identities.push({
+    kind: "service_principal",
+    id: admittedAgent.servicePrincipalId,
+    namespaceId: namespace.id,
+    agentId: admittedAgent.id,
+  });
+  context.roles.push({
+    id: "model-consumer",
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  context.bindings.push({
+    id: "model-consumer",
+    subjectKind: "identity",
+    subjectId: admittedAgent.servicePrincipalId,
+    roleId: "model-consumer",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    resourceId: harnessSecret.id,
+  });
 }
 
 test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, exact scope, and audit", async () => {
@@ -502,28 +536,11 @@ test("Configuration authorization failures target the exact Configuration resour
 
 for (const runtimeLogging of [undefined, "driver"]) {
   test(`Configuration references and immutable revisions with ${runtimeLogging ?? "platform"} logging`, async () => {
-    const computeDriver = {
-      id: "compute-configuration-integration",
-      capability: "compute",
+    const computeDriver = createReadyComputeDriver("compute-configuration-integration", {
       implementation: "integration-compute-substrate",
       validateHarnessAuth() {},
       ...(runtimeLogging === undefined ? {} : { runtimeLogging }),
-      async ensureNamespace(namespace) {
-        return { namespaceId: namespace.id, namespaceReady: true };
-      },
-      async deleteNamespace(namespace) {
-        return { namespaceId: namespace.id, namespaceDeleted: true };
-      },
-      async prepareRevision(revision) {
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-        };
-      },
-      async retireRevision() {},
-    };
+    });
     const context = await fixture({ computeDriver });
     const namespace = await bootstrapAndCreateNamespace(context);
     const collection = `/namespaces/${namespace.id}/configurations`;
@@ -554,36 +571,13 @@ for (const runtimeLogging of [undefined, "driver"]) {
     await context.controller.transact((state) =>
       state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
     );
-    const harnessSecret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name: "configuration-model-key",
-      value: "synthetic-configuration-key",
-    });
-    const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-      namespaceId: namespace.id,
-      agentId: agent.body.data.id,
+    await configureAgentHarnessSecret(
+      context,
+      namespace,
+      agent,
       configurationId,
-      harnessAuth: { method: "api_key", source: harnessSecret.ref },
-    });
-    context.identities.push({
-      kind: "service_principal",
-      id: admittedAgent.servicePrincipalId,
-      namespaceId: namespace.id,
-      agentId: admittedAgent.id,
-    });
-    context.roles.push({
-      id: "model-consumer",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    context.bindings.push({
-      id: "model-consumer",
-      subjectKind: "identity",
-      subjectId: admittedAgent.servicePrincipalId,
-      roleId: "model-consumer",
-      namespaceId: namespace.id,
-      resourceKind: "secret",
-      resourceId: harnessSecret.id,
-    });
+      "configuration-model-key",
+    );
     const deployed = await request(
       context.app,
       "POST",
@@ -630,27 +624,10 @@ for (const runtimeLogging of [undefined, "driver"]) {
 }
 
 test("Deploy rejects Configuration content that selects no supported Harness runtime with a 400", async () => {
-  const computeDriver = {
-    id: "compute-configuration-integration",
-    capability: "compute",
+  const computeDriver = createReadyComputeDriver("compute-configuration-integration", {
     implementation: "integration-compute-substrate",
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
+  });
   const context = await fixture({ computeDriver });
   const namespace = await bootstrapAndCreateNamespace(context);
   const collection = `/namespaces/${namespace.id}/configurations`;
@@ -670,36 +647,13 @@ test("Deploy rejects Configuration content that selects no supported Harness run
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
-  const harnessSecret = await context.controller.createSecret(context.principal.id, {
-    namespaceId: namespace.id,
-    name: "runtime-less-model-key",
-    value: "synthetic-configuration-key",
-  });
-  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-    namespaceId: namespace.id,
-    agentId: agent.body.data.id,
+  await configureAgentHarnessSecret(
+    context,
+    namespace,
+    agent,
     configurationId,
-    harnessAuth: { method: "api_key", source: harnessSecret.ref },
-  });
-  context.identities.push({
-    kind: "service_principal",
-    id: admittedAgent.servicePrincipalId,
-    namespaceId: namespace.id,
-    agentId: admittedAgent.id,
-  });
-  context.roles.push({
-    id: "model-consumer",
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  context.bindings.push({
-    id: "model-consumer",
-    subjectKind: "identity",
-    subjectId: admittedAgent.servicePrincipalId,
-    roleId: "model-consumer",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: harnessSecret.id,
-  });
+    "runtime-less-model-key",
+  );
 
   const deployed = await request(
     context.app,

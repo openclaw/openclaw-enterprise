@@ -4,13 +4,14 @@ import pg from "pg";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
+  createAccount,
   currentSession,
   defaultInstallSettings,
   githubUpgradeSettings,
   memoryLogger,
+  onboardPasswordAccounts,
   passwordSignIn,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
@@ -40,39 +41,28 @@ test(
       await app?.close();
       await pool.end();
     });
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Phase 0: the default install, no GitHub configuration.
+    const {
+      admin,
+      roles: { reader: readerRole },
+      accounts: { member },
+    } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
+      secrets,
+      password,
+      accounts: { member: { email: "activation-provisioned@example.test" } },
     });
-    const admin = { email: adminEmail, password: adminPassword };
     const installation = await state.loadInstallation();
-    const policy = await state.loadNativeIAMState(installation.id);
-    const readerRole = policy.roles.find((role) =>
-      role.permissions.some(
-        (permission) => permission.action === "read" && permission.resourceKind === "installation",
-      ),
-    );
-    assert.ok(readerRole);
-
-    // Phase 0: the default install, no GitHub configuration.
     app = await composeProductionSignIn(t, {
       databaseUrl,
       settings: defaultInstallSettings,
       secrets,
     });
     let adminHeaders = await signedInHeaders(app, origin, admin);
-    const adminId = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const create = (email) =>
-      app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: readerRole.id },
-      });
-    const provisioned = await create("activation-provisioned@example.test");
-    assert.equal(provisioned.statusCode, 201, provisioned.body);
-    const member = { id: provisioned.json().data.id, email: "activation-provisioned@example.test" };
     // Accounts an older controller wrote: one with its Principal, one without.
     const olderController = await createPostgresControllerAuth({
       mode: "production",
@@ -107,7 +97,7 @@ test(
     const log = memoryLogger();
     app = await composeProductionSignIn(t, {
       databaseUrl,
-      settings: githubUpgradeSettings(adminId),
+      settings: githubUpgradeSettings(admin.id),
       secrets,
       logger: log.logger,
     });
@@ -142,10 +132,10 @@ test(
       ).rows
         .map(({ user_id }) => user_id)
         .sort();
-      assert.deepEqual(enrolled, [adminId, member.id, older.id].sort());
+      assert.deepEqual(enrolled, [admin.id, member.id, older.id].sort());
       assert.equal(
         (await pool.query("SELECT user_id FROM occ.human_authentication_recovery")).rows[0].user_id,
-        adminId,
+        admin.id,
       );
       assert.equal(await currentSession(app, preActivationCookie), null, "unbound sessions end");
     });
@@ -167,17 +157,17 @@ test(
     );
 
     await t.test("administrators still create password accounts after activation", async () => {
-      const created = await create("activation-after@example.test");
-      assert.equal(created.statusCode, 201, created.body);
-      const signedIn = await passwordSignIn(app, origin, {
+      const created = await createAccount(app, adminHeaders, {
         email: "activation-after@example.test",
         password,
+        roleId: readerRole.id,
       });
+      const signedIn = await passwordSignIn(app, origin, created);
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       assert.equal(
         (await currentSession(app, cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]))).user
           .id,
-        created.json().data.id,
+        created.id,
       );
     });
 

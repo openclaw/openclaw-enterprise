@@ -86,7 +86,9 @@ from that revision; missing evidence leaves the cause unspecified. Held runtime
 failures end deployment early: `RUNTIME_AUTHENTICATION_FAILED` (rejected
 credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, or
-`RUNTIME_STARTUP_FAILED`; fix and redeploy. `RUNTIME_MODEL_PROBE_FAILED` adds
+`RUNTIME_STARTUP_FAILED`; fix and redeploy. A dedicated gateway that refuses its
+own CLI fails with
+[`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
 with a closed code and admitted `pluginId`.
 
@@ -382,6 +384,9 @@ its compatibility limits before planning deployment.
   for deployment.
 - `503 DEPENDENCY_UNAVAILABLE`: A selected Harness descriptor, Compute
   implementation, or other required dependency is unavailable.
+- `503 RUNTIME_CREDENTIALS_CLUSTER_RBAC`: The cluster denied the API
+  ServiceAccount access to the Agent's runtime credential Secrets or Deployment
+  preflight. An operator must [grant the tenant RoleBindings](../guides/deploy/production-agents.md#grant-tenant-rolebindings).
 
 ## Related
 

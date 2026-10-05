@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/index.ts";
+import { githubLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import {
   callbackState,
   cookiePairs,
@@ -11,18 +12,22 @@ import {
   loginOrigin as origin,
   redirectProviderFetch,
   startProviderServer,
+  testOversizedProviderBodies,
   until,
 } from "../helpers/human-login-transport.mjs";
 
 const providerId = `github:${createHash("sha256").update("fixture-client").digest("hex")}`;
+// The production deadline is 10 s; the stalled-provider cases shorten it to keep the wait short.
+const providerDeadlineMs = 2_000;
 
-function loginFixture(state = {}, { trustedClientAddress = true } = {}) {
+function loginFixture(state = {}, { trustedClientAddress = true, ...options } = {}) {
   return createLoginFixture({
     provider: "github",
     providers: { github: { clientId: "fixture-client", clientSecret: "fixture-client-secret" } },
     state,
     trustedClientAddress,
     recoveryEmail: "Recovery@example.test",
+    ...options,
   });
 }
 
@@ -98,38 +103,22 @@ test(
           assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
         },
       );
-
-      for (const declared of [false, true]) {
-        await t.test(
-          `${endpoint} cancels oversized ${declared ? "declared" : "chunked"} bodies`,
-          async () => {
-            const login = loginFixture();
-            let closed = false;
-            serve = (request, response) => {
-              if (request.url !== endpoint) {
-                return token(response);
-              }
-              response.on("close", () => {
-                closed = true;
-              });
-              if (declared) {
-                response.setHeader("content-length", String(128 * 1024));
-              }
-              response.write("x".repeat(64 * 1024 + 1));
-              // Leave the stream open: rejection must cancel it without waiting for EOF.
-            };
-            const started = performance.now();
-            await expectDenied(await login.callback());
-            assert.ok(performance.now() - started < 2_000);
-            await until(() => closed);
-            assert.deepEqual(login.subjects, []);
-          },
-        );
-      }
     }
 
+    await testOversizedProviderBodies(t, {
+      endpoints: [
+        ["/login/oauth/access_token", "token"],
+        ["/user", "profile"],
+      ],
+      serve: (handler) => {
+        serve = handler;
+      },
+      provider: () => (_request, response) => token(response),
+      login: loginFixture,
+    });
+
     await t.test("shared deadline aborts a stalled token response before headers", async () => {
-      const login = loginFixture();
+      const login = loginFixture({}, { providerDeadlineMs });
       let closed = false;
       serve = (_request, response) => {
         response.on("close", () => {
@@ -139,18 +128,21 @@ test(
       const started = performance.now();
       await expectDenied(await login.callback());
       const elapsed = performance.now() - started;
-      assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
+      assert.ok(
+        elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 2_000,
+        `Elapsed: ${elapsed}`,
+      );
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
       assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
     });
 
     await t.test("profile body reads use the remaining overall deadline", async () => {
-      const login = loginFixture();
+      const login = loginFixture({}, { providerDeadlineMs });
       let closed = false;
       serve = async (request, response) => {
         if (request.url === "/login/oauth/access_token") {
-          await delay(3_000);
+          await delay(1_500);
           return token(response);
         }
         response.on("close", () => {
@@ -161,8 +153,11 @@ test(
       const started = performance.now();
       await expectDenied(await login.callback());
       const elapsed = performance.now() - started;
-      // Separate per-request timers would take about 13 seconds here.
-      assert.ok(elapsed >= 9_000 && elapsed < 12_000, `Elapsed: ${elapsed}`);
+      // Separate per-request timers would take about 3.5 seconds here.
+      assert.ok(
+        elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 1_000,
+        `Elapsed: ${elapsed}`,
+      );
       await until(() => closed);
       assert.deepEqual(login.subjects, []);
       assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
@@ -182,11 +177,42 @@ test(
         await expectDenied(await login.callback());
         assert.deepEqual(login.subjects, []);
         assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
+        assert.deepEqual(login.operationalLogs(), []);
       },
     );
 
+    // GitHub answers token errors with HTTP 200. A wrong client secret or callback
+    // registration fails every sign-in, so the operator log must name it.
+    for (const code of ["incorrect_client_credentials", "redirect_uri_mismatch"]) {
+      await t.test(`token error ${code} is logged as a refused client`, async () => {
+        const login = loginFixture();
+        serve = (_request, response) =>
+          response.end(
+            JSON.stringify({ error: code, error_description: "fixture-sensitive-error" }),
+          );
+        await expectDenied(await login.callback());
+        assert.deepEqual(login.subjects, []);
+        assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
+        assert.deepEqual(login.operationalLogs(), [
+          {
+            severity: "WARN",
+            service: "occ-api",
+            event: "authentication.provider-unavailable-warning",
+            provider: "github",
+            providerId,
+            step: "token",
+            cause: "client_rejected",
+          },
+        ]);
+        assert.doesNotMatch(
+          JSON.stringify(login.operationalLogs()),
+          /fixture-sensitive|fixture-client-secret/,
+        );
+      });
+    }
+
     await t.test(
-      "callback denials separate invalid attempts, provider outages and rejected identities",
+      "callbacks count unmatched attempts and audit provider outages and rejected identities",
       async () => {
         const profile = (status, body) => (request, response) => {
           if (request.url === "/login/oauth/access_token") {
@@ -196,12 +222,13 @@ test(
         };
         const unreachable = () => assert.fail("The provider must not be called");
         const withState = (query) => `state=${callbackState}&${query}`;
-        // [case, expected reason, provider handler, callback query, State overrides]
+        // [case, expected audit reason (none: counted as unmatched), provider handler,
+        // callback query, State overrides]
         const cases = [
-          ["malformed state", "INVALID_ATTEMPT", unreachable, "state=short&code=c"],
+          ["malformed state", undefined, unreachable, "state=short&code=c"],
           [
             "unknown attempt",
-            "INVALID_ATTEMPT",
+            undefined,
             unreachable,
             undefined,
             {
@@ -243,7 +270,8 @@ test(
           const login = loginFixture(overrides);
           serve = handler;
           await expectDenied(await login.callback(query));
-          assert.deepEqual(login.denials, [[reason, "github"]], name);
+          assert.deepEqual(login.denials, reason === undefined ? [] : [[reason, "github"]], name);
+          assert.deepEqual(login.unmatched, reason === undefined ? ["github"] : [], name);
         }
       },
     );
@@ -587,11 +615,353 @@ test("guarded adapter never lists, counts or mutates raw session rows", async ()
   assert.deepEqual(await context.adapter.findMany({ model: "session" }), []);
   assert.equal(await context.adapter.count({ model: "session" }), 0);
   const where = [{ field: "id", value: "stale-session" }];
-  await assert.rejects(context.adapter.consumeOne({ model: "session", where }));
+  const refused = {
+    name: "APIError",
+    status: "UNAUTHORIZED",
+    message: "Authentication was not accepted.",
+  };
+  await assert.rejects(context.adapter.consumeOne({ model: "session", where }), refused);
   await assert.rejects(
     context.adapter.incrementOne({ model: "session", where, increment: { version: 1 } }),
+    refused,
   );
   assert.equal(login.db.session.length, 1, "the raw row is untouched");
   // Other models still pass through to the underlying adapter.
   assert.equal(await context.adapter.count({ model: "user" }), 1);
+});
+
+// RFC-0061: with an allowlist, the callback reads membership with the user token after
+// GET /user and before the account lookup, and fails closed when GitHub cannot answer.
+test(
+  "GitHub org and team allowlist admits only active members and fails closed on lookup outages",
+  { timeout: 60_000 },
+  async (t) => {
+    let serve;
+    const { requests, port } = await startProviderServer(t, (request, response) =>
+      serve(request, response),
+    );
+    const providerOrigin = `http://127.0.0.1:${port}`;
+    const acme = "/user/memberships/orgs/acme";
+    const other = "/user/memberships/orgs/other";
+    const team = "/orgs/other/teams/platform/memberships/Octo-Cat";
+    redirectProviderFetch(
+      t,
+      new Set(
+        ["https://github.com/login/oauth/access_token", "https://api.github.com/user"].concat(
+          [acme, other, team].map((path) => `https://api.github.com${path}`),
+        ),
+      ),
+      providerOrigin,
+    );
+    function allowlisted(
+      state = {},
+      allowlist = { allowedOrgs: ["acme"], allowedTeams: ["other/platform"] },
+      options = {},
+    ) {
+      return createLoginFixture({
+        ...options,
+        provider: "github",
+        providers: {
+          github: {
+            clientId: "fixture-client",
+            clientSecret: "fixture-client-secret",
+            ...allowlist,
+          },
+        },
+        state,
+        recoveryEmail: "Recovery@example.test",
+      });
+    }
+    const membership = (state) => (response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ state, role: "member", organization: { login: "x" } }));
+    };
+    const notFound = (response) => response.writeHead(404).end('{"message":"Not Found"}');
+    // answers: path -> (response) => void; unlisted membership paths fail the test.
+    function provider(answers, login = "Octo-Cat") {
+      const routes = Object.entries(answers);
+      return (request, response) => {
+        if (request.url === "/login/oauth/access_token") {
+          return token(response);
+        }
+        if (request.url === "/user") {
+          assert.equal(request.headers.authorization, "Bearer ghu_fixture_provider_token");
+          return response.end(JSON.stringify({ id: 12345678, login }));
+        }
+        assert.equal(request.headers.authorization, "Bearer ghu_fixture_provider_token");
+        assert.equal(request.headers.accept, "application/vnd.github+json");
+        // Compare with the fixed paths; never select a handler by the request's own key.
+        for (const [path, answer] of routes) {
+          if (path === request.url) {
+            return answer(response);
+          }
+        }
+        assert.fail(`unexpected membership request ${request.url}`);
+      };
+    }
+    async function expectRefused(response, code) {
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), {
+        code,
+        message: "Authentication was not accepted.",
+      });
+      assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
+    }
+    const subject = { subject: "12345678" };
+
+    await t.test("an active organization member reaches the account lookup", async () => {
+      const login = allowlisted();
+      serve = provider({ [acme]: membership("active") });
+      const before = requests.length;
+      // The fixture State holds no account, so the attached-identity lookup refuses.
+      await expectDenied(await login.callback());
+      assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
+      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
+      assert.deepEqual(requests.slice(before), ["/login/oauth/access_token", "/user", acme]);
+    });
+
+    await t.test("an active team member is admitted after its organization", async () => {
+      const login = allowlisted();
+      serve = provider({
+        [acme]: notFound,
+        [other]: membership("active"),
+        [team]: membership("active"),
+      });
+      const before = requests.length;
+      await expectDenied(await login.callback());
+      assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
+      assert.deepEqual(requests.slice(before), [
+        "/login/oauth/access_token",
+        "/user",
+        acme,
+        other,
+        team,
+      ]);
+    });
+
+    const refusals = [
+      [
+        "a non-member of every entry, without reading the team",
+        { [acme]: notFound, [other]: notFound },
+      ],
+      ["a pending organization invitation", { [acme]: membership("pending"), [other]: notFound }],
+      [
+        "an organization member outside the team",
+        { [acme]: notFound, [other]: membership("active"), [team]: notFound },
+      ],
+      [
+        "a pending team membership",
+        { [acme]: notFound, [other]: membership("active"), [team]: membership("pending") },
+      ],
+    ];
+    for (const [label, answers] of refusals) {
+      await t.test(`refuses ${label} as MEMBERSHIP_REQUIRED`, async () => {
+        const login = allowlisted();
+        serve = provider(answers);
+        const before = requests.length;
+        await expectRefused(await login.callback(), "MEMBERSHIP_REQUIRED");
+        assert.deepEqual(login.subjects, [], "no account lookup");
+        assert.deepEqual(login.denials, [["MEMBERSHIP_REQUIRED", "github", subject]]);
+        assert.deepEqual(login.operationalLogs(), []);
+        assert.deepEqual(requests.slice(before).slice(2), Object.keys(answers));
+      });
+    }
+
+    // [label, acme answer, expected log fields]
+    const outages = [
+      [
+        "a 5xx",
+        (response) => response.writeHead(503).end("{}"),
+        { cause: "http_status", status: 503 },
+      ],
+      [
+        "a 429",
+        (response) => response.writeHead(429).end("{}"),
+        { cause: "http_status", status: 429 },
+      ],
+      [
+        "a 401",
+        (response) => response.writeHead(401).end("{}"),
+        { cause: "http_status", status: 401 },
+      ],
+      [
+        "a 403 (App blocked or Members permission not accepted)",
+        (response) =>
+          response.writeHead(403).end('{"message":"Resource not accessible by integration"}'),
+        { cause: "http_status", status: 403 },
+      ],
+      [
+        "a redirect",
+        (response) =>
+          response.writeHead(301, { location: `${providerOrigin}/redirect-target` }).end(),
+        { cause: "redirect" },
+      ],
+      [
+        "an oversized body",
+        (response) => response.end("x".repeat(64 * 1024 + 1)),
+        { cause: "oversized_response" },
+      ],
+      ["a malformed body", (response) => response.end("not json"), { cause: "malformed_response" }],
+      [
+        "an unknown state",
+        (response) => response.end(JSON.stringify({ state: "fixture-sensitive" })),
+        { cause: "malformed_response" },
+      ],
+    ];
+    for (const [label, answer, fields] of outages) {
+      await t.test(`fails closed on ${label} as MEMBERSHIP_UNAVAILABLE`, async () => {
+        const login = allowlisted();
+        serve = provider({ [acme]: answer, [other]: notFound });
+        await expectRefused(await login.callback(), "MEMBERSHIP_UNAVAILABLE");
+        assert.equal(requests.includes("/redirect-target"), false);
+        assert.deepEqual(login.subjects, []);
+        assert.deepEqual(login.denials, [["MEMBERSHIP_UNAVAILABLE", "github", subject]]);
+        assert.deepEqual(login.operationalLogs(), [
+          {
+            severity: "WARN",
+            service: "occ-api",
+            event: "authentication.provider-unavailable-warning",
+            provider: "github",
+            providerId,
+            step: "membership",
+            ...fields,
+          },
+        ]);
+        assert.doesNotMatch(
+          JSON.stringify(login.operationalLogs()),
+          /acme|Octo-Cat|ghu_|fixture-sensitive/,
+        );
+      });
+    }
+
+    await t.test("a team check with a malformed profile login fails closed", async () => {
+      const login = allowlisted();
+      serve = provider({ [acme]: notFound, [other]: membership("active") }, "not a login");
+      const before = requests.length;
+      await expectRefused(await login.callback(), "MEMBERSHIP_UNAVAILABLE");
+      assert.deepEqual(requests.slice(before).slice(2), [acme, other], "no team request");
+      assert.equal(login.operationalLogs()[0].cause, "malformed_response");
+    });
+
+    // A team's organization lookup is shared with a listed organization, failure included.
+    for (const [label, answer, code] of [
+      ["a non-member", notFound, "MEMBERSHIP_REQUIRED"],
+      [
+        "a failed lookup",
+        (response) => response.writeHead(503).end("{}"),
+        "MEMBERSHIP_UNAVAILABLE",
+      ],
+    ]) {
+      await t.test(`one organization lookup serves its team entries for ${label}`, async () => {
+        const login = allowlisted({}, { allowedOrgs: ["acme"], allowedTeams: ["acme/platform"] });
+        serve = provider({ [acme]: answer });
+        const before = requests.length;
+        await expectRefused(await login.callback(), code);
+        assert.deepEqual(requests.slice(before).slice(2), [acme]);
+        assert.equal(login.operationalLogs().length, code === "MEMBERSHIP_REQUIRED" ? 0 : 1);
+      });
+    }
+
+    await t.test("a later match admits after an earlier lookup failed", async () => {
+      const login = allowlisted();
+      serve = provider({
+        [acme]: (response) => response.writeHead(502).end("{}"),
+        [other]: membership("active"),
+        [team]: membership("active"),
+      });
+      const before = requests.length;
+      await expectDenied(await login.callback());
+      assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
+      assert.deepEqual(requests.slice(before).slice(2), [acme, other, team]);
+      assert.deepEqual(login.operationalLogs(), []);
+    });
+
+    await t.test("a stalled lookup ends at the shared deadline", async () => {
+      const login = allowlisted(undefined, undefined, { providerDeadlineMs });
+      let closed = false;
+      serve = provider({
+        [acme]: (response) => {
+          response.on("close", () => {
+            closed = true;
+          });
+        },
+      });
+      const started = performance.now();
+      await expectRefused(await login.callback(), "MEMBERSHIP_UNAVAILABLE");
+      const elapsed = performance.now() - started;
+      assert.ok(
+        elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 2_000,
+        `Elapsed: ${elapsed}`,
+      );
+      await until(() => closed);
+      assert.deepEqual(login.denials, [["MEMBERSHIP_UNAVAILABLE", "github", subject]]);
+      assert.equal(login.operationalLogs()[0].cause, "timeout");
+    });
+  },
+);
+
+test("GitHub allowlist settings parse, normalize and refuse invalid entries", () => {
+  const client = {
+    OCC_AUTH_GITHUB_CLIENT_ID: "github-client",
+    OCC_AUTH_GITHUB_CLIENT_SECRET: "github-secret",
+    OCC_AUTH_GITHUB_RECOVERY_USER_ID: "recovery-user",
+  };
+  const base = { clientId: "github-client", clientSecret: "github-secret" };
+  assert.deepEqual(githubLoginConfiguration(client), { ...base, recoveryUserId: "recovery-user" });
+  assert.deepEqual(
+    githubLoginConfiguration({
+      ...client,
+      OCC_AUTH_GITHUB_ALLOWED_ORGS: "",
+      OCC_AUTH_GITHUB_ALLOWED_TEAMS: " ",
+    }),
+    { ...base, recoveryUserId: "recovery-user" },
+  );
+  assert.deepEqual(
+    githubLoginConfiguration({
+      ...client,
+      OCC_AUTH_GITHUB_ALLOWED_ORGS: " Acme , acme-labs,acme",
+      OCC_AUTH_GITHUB_ALLOWED_TEAMS: "Other/Platform_Team",
+    }),
+    {
+      ...base,
+      recoveryUserId: "recovery-user",
+      allowedOrgs: ["acme", "acme-labs"],
+      allowedTeams: ["other/platform_team"],
+    },
+  );
+  for (const [name, value] of [
+    ["OCC_AUTH_GITHUB_ALLOWED_ORGS", "acme,"],
+    ["OCC_AUTH_GITHUB_ALLOWED_ORGS", "-acme"],
+    ["OCC_AUTH_GITHUB_ALLOWED_ORGS", "acme/platform"],
+    ["OCC_AUTH_GITHUB_ALLOWED_ORGS", "a".repeat(40)],
+    ["OCC_AUTH_GITHUB_ALLOWED_TEAMS", "acme"],
+    ["OCC_AUTH_GITHUB_ALLOWED_TEAMS", "acme/platform/extra"],
+    ["OCC_AUTH_GITHUB_ALLOWED_TEAMS", "acme/plat form"],
+    ["OCC_AUTH_GITHUB_ALLOWED_TEAMS", "acme/../user"],
+    [
+      "OCC_AUTH_GITHUB_ALLOWED_ORGS",
+      Array.from({ length: 11 }, (_, index) => `org${index}`).join(","),
+    ],
+  ]) {
+    assert.throws(
+      () => githubLoginConfiguration({ ...client, [name]: value }),
+      new RegExp(name),
+      `${name}=${value}`,
+    );
+  }
+  // Ten entries across both lists is the cap.
+  assert.throws(
+    () =>
+      githubLoginConfiguration({
+        ...client,
+        OCC_AUTH_GITHUB_ALLOWED_ORGS: Array.from({ length: 6 }, (_, i) => `org${i}`).join(","),
+        OCC_AUTH_GITHUB_ALLOWED_TEAMS: Array.from({ length: 5 }, (_, i) => `org/t${i}`).join(","),
+      }),
+    /at most 10/,
+  );
+  // An allowlist without the GitHub client is a configuration error, not a no-op.
+  assert.throws(
+    () => githubLoginConfiguration({ OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme" }),
+    /GitHub sign-in requires client ID, client secret and recovery user ID/,
+  );
 });

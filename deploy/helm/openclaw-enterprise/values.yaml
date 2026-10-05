@@ -62,6 +62,13 @@ auth:
     secretName: occ-github-login
     clientIdKey: client-id
     clientSecretKey: client-secret
+    # Optional allowlist (RFC-0061): GitHub organization logins, and "org/team-slug" entries,
+    # whose active members may sign in; at most 10 entries together. Empty admits any
+    # attached GitHub identity. Set, the GitHub App needs the organization permission
+    # Members: read and an installation on each listed organization; sign-in fails closed
+    # when GitHub cannot answer the membership lookup.
+    allowedOrgs: []
+    allowedTeams: []
     # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443
     # to 0.0.0.0/0; list the web and api IPv4 ranges from api.github.com/meta to narrow it.
     egressCidrs: []

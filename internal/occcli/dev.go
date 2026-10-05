@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -62,7 +63,15 @@ func developmentCommand() *cobra.Command {
 					// configuration; kill it only if it does not stop in time.
 					process.Cancel = func() error { return process.Process.Signal(syscall.SIGTERM) }
 					process.WaitDelay = 10 * time.Second
-					return process.Run()
+					err := process.Run()
+					// The script prints its own diagnostic; pass its status on
+					// (usage errors exit 2) instead of collapsing it to 1. An
+					// interrupt keeps the generic error.
+					var exited *exec.ExitError
+					if errors.As(err, &exited) && exited.ExitCode() > 0 && cmd.Context().Err() == nil {
+						return &ExitStatusError{Code: exited.ExitCode()}
+					}
+					return err
 				default:
 					return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")
 				}
@@ -97,6 +106,12 @@ func developmentCommand() *cobra.Command {
 	command.AddCommand(analyze)
 	return command
 }
+
+// ExitStatusError asks the caller to exit with Code without printing anything
+// more: the child process that failed has already reported why.
+type ExitStatusError struct{ Code int }
+
+func (err *ExitStatusError) Error() string { return fmt.Sprintf("exit status %d", err.Code) }
 
 func developmentRepository() (string, error) {
 	directory, err := os.Getwd()

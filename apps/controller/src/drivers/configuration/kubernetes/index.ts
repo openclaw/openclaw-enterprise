@@ -16,6 +16,7 @@ import type {
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 import { ResourceConflictError } from "@openclaw-enterprise/occ";
+import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
   validateKubernetesAuthentication,
@@ -423,60 +424,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   }
 
   private async createCore(): Promise<CoreV1Api> {
-    const sdk = await import("@kubernetes/client-node");
-    const configuration = new sdk.KubeConfig();
-    const authentication = this.options.authentication;
-    if (authentication.mode === "inCluster") {
-      configuration.loadFromCluster();
-    } else {
-      configuration.loadFromFile(authentication.kubeconfigPath);
-      const contexts = configuration
-        .getContexts()
-        .filter((context) => context.name === authentication.context);
-      const selected = contexts[0];
-      if (contexts.length !== 1 || selected === undefined) {
-        throw new ConfigurationValidationError(
-          "The kubeconfig must contain exactly the selected context.",
-        );
-      }
-      if (
-        configuration.getClusters().filter((cluster) => cluster.name === selected.cluster)
-          .length !== 1
-      ) {
-        throw new ConfigurationValidationError(
-          "The context must select exactly one Kubernetes cluster.",
-        );
-      }
-      configuration.setCurrentContext(authentication.context);
-      if (configuration.getCurrentContext() !== authentication.context) {
-        throw new ConfigurationValidationError(
-          "The selected Kubernetes context could not be activated.",
-        );
-      }
-    }
-    const cluster = configuration.getCurrentCluster();
-    if (cluster === null || configuration.getCurrentUser() == null) {
-      throw new ConfigurationValidationError(
-        "The Kubernetes cluster or credential identity is missing.",
-      );
-    }
-    let endpoint: URL;
-    try {
-      endpoint = new URL(cluster.server);
-    } catch {
-      throw new ConfigurationValidationError("The Kubernetes API server URL is invalid.");
-    }
-    if (
-      endpoint.protocol !== "https:" ||
-      endpoint.username ||
-      endpoint.password ||
-      endpoint.pathname !== "/" ||
-      endpoint.search ||
-      endpoint.hash ||
-      cluster.skipTLSVerify === true
-    ) {
-      throw new ConfigurationValidationError("The Kubernetes API server must use verified HTTPS.");
-    }
-    return configuration.makeApiClient(sdk.CoreV1Api);
+    const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
+      this.options.authentication,
+      (message) => new ConfigurationValidationError(message),
+    );
+    return new sdk.CoreV1Api(clientConfiguration);
   }
 }

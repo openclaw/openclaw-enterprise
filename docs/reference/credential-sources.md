@@ -113,9 +113,10 @@ if the request fails after that, repeating the same request converges. If the
 gateway no longer holds a copy (`absent`), the update also returns `503`;
 delete the source and register it again.
 
-Installations bootstrapped before `update` existed do not grant
-`credential_source:update` to existing Roles. An administrator must add it to a
-Role before anyone can update a source.
+Migration `0048_administrator_credential_source_grants` adds the current
+`credential_source` grants, including `update`, to an unchanged built-in
+Installation administrator Role from an earlier bootstrap. Other Roles keep
+their exact grants; grant `update` through a Namespace Role where needed.
 
 A running Agent keeps the previous value until its Harness restarts, because the
 gateway gives updated values only to new processes. To rotate a key:

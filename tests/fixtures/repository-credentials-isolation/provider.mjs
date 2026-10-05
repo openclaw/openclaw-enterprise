@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createServer, request } from "node:https";
 import { lstat, readFile, writeFile, rename } from "node:fs/promises";
 import { startGitHubFixture } from "../repository-credentials/github.mjs";
@@ -13,25 +14,41 @@ const tls = {
   ca: await readFile("/inputs/tls.crt"),
 };
 const secrets = [];
+// "github-app" issues installation tokens; "github-token" is the development
+// authority, which holds one static token that GitHub never issued to it.
+const authority = process.env.ISOLATION_AUTHORITY ?? "github-app";
+if (authority !== "github-app" && authority !== "github-token") {
+  throw new Error("unknown isolation authority");
+}
+// Hold the first credential use once, so the host can probe the Agent container
+// while a Git launcher and helper are running against the gateway.
+let held = false;
+async function holdOnce() {
+  if (held) {
+    return;
+  }
+  held = true;
+  await writeFile("/state/held", "ready", { mode: 0o600 });
+  // The host releases explicitly; this backstop stays under the gateway's 30 s
+  // first-header deadline so a slow probe does not fail the held request.
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    try {
+      await lstat("/state/release-hold");
+      return;
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("fixture-hold-timeout");
+}
 const github = await startGitHubFixture(context, {
   tls,
   clock: { wallNow: () => Date.now() },
-  async beforeIssueResponse() {
-    await writeFile("/state/issuing", "ready", { mode: 0o600 });
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline) {
-      try {
-        await lstat("/state/release-issue");
-        return;
-      } catch (error) {
-        if (error.code !== "ENOENT") {
-          throw error;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    throw new Error("fixture-issue-gate-timeout");
-  },
+  beforeIssueResponse: holdOnce,
   tokenResponse(packet) {
     secrets.push(packet.token);
     return packet;
@@ -39,7 +56,22 @@ const github = await startGitHubFixture(context, {
 });
 const pem = github.privateKey.export({ type: "pkcs8", format: "pem" });
 secrets.push(pem, pem.split("\n")[1], tls.key.toString().split("\n")[1]);
-await writeFile("/inputs/app.pem", pem, { mode: 0o600 });
+if (authority === "github-token") {
+  // The token exists only here and in the service's read-only input mount. The host
+  // compares Agent surfaces against it and patterns derived from it; none of these
+  // values is ever passed into the Agent container.
+  const token = `ghp_${randomBytes(18).toString("hex")}`;
+  github.acceptStatic(token);
+  secrets.push(
+    token,
+    token.slice(4),
+    Buffer.from(token).toString("base64"),
+    Buffer.from(`x-access-token:${token}`).toString("base64"),
+  );
+  await writeFile("/inputs/token", `${token}\n`, { mode: 0o600 });
+} else {
+  await writeFile("/inputs/app.pem", pem, { mode: 0o600 });
+}
 const git = await startGitSmartHttpFixture(context, { tls, authorize: github.authorize });
 const relayErrors = [];
 const sockets = new Set();
@@ -61,6 +93,23 @@ const relay = createServer(tls, (incoming, outgoing) => {
       }
     }
   }
+  // Nothing is issued for a static token: hold its first authenticated Git request.
+  if (authority === "github-token" && authorization && host === "github.com" && !held) {
+    let gone = false;
+    incoming.once("close", () => (gone = !incoming.complete));
+    incoming.pause();
+    holdOnce().then(
+      () => (gone ? outgoing.destroy() : forward(incoming, outgoing, origin)),
+      () => {
+        relayErrors.push("hold-failed");
+        outgoing.destroy();
+      },
+    );
+    return;
+  }
+  forward(incoming, outgoing, origin);
+});
+function forward(incoming, outgoing, origin) {
   const upstream = request(
     new URL(incoming.url, origin),
     {
@@ -83,7 +132,7 @@ const relay = createServer(tls, (incoming, outgoing) => {
   });
   incoming.once("aborted", () => upstream.destroy());
   incoming.pipe(upstream);
-});
+}
 relay.on("connection", (socket) => {
   sockets.add(socket);
   socket.once("close", () => sockets.delete(socket));

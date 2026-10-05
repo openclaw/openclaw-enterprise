@@ -107,16 +107,6 @@ async function readProfile(name) {
   return profile;
 }
 
-function clone(value) {
-  if (Array.isArray(value)) {
-    return value.map((entry) => clone(entry));
-  }
-  if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, clone(entry)]));
-  }
-  return value;
-}
-
 function yamlScalar(value) {
   if (typeof value === "string") {
     if (value.length === 0) {
@@ -368,6 +358,8 @@ function clientSelectors(source, diagnostics) {
 }
 
 const recoveryUserIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const githubOrganization = /^[a-z0-9][a-z0-9-]{0,38}$/;
+const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
@@ -396,6 +388,26 @@ function signInProvider(source, name, diagnostics) {
       description: "a lowercase DNS domain name such as example.com",
       nonempty: false,
     });
+  }
+  // GitHub's organization and team allowlist (RFC-0061), as the chart and API accept it.
+  if (source.allowedOrgs !== undefined) {
+    rendered.allowedOrgs = stringArray(source, [...path, "allowedOrgs"], diagnostics, {
+      validate: (value) => githubOrganization.test(value),
+      description: "a lowercase GitHub organization login such as acme",
+      nonempty: false,
+    });
+  }
+  if (source.allowedTeams !== undefined) {
+    rendered.allowedTeams = stringArray(source, [...path, "allowedTeams"], diagnostics, {
+      validate: (value) => githubTeam.test(value),
+      description: "a lowercase org/team-slug entry such as acme/platform",
+      nonempty: false,
+    });
+  }
+  if ((rendered.allowedOrgs?.length ?? 0) + (rendered.allowedTeams?.length ?? 0) > 10) {
+    diagnostics.errors.push(
+      "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
+    );
   }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
@@ -664,7 +676,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     github,
     "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "egressCidrs"],
+    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams", "egressCidrs"],
     diagnostics,
   );
   const google = section(controlPlane, "google", diagnostics, false);
@@ -1008,7 +1020,7 @@ function buildRendered(profile, parsed, diagnostics) {
         : { files: stringArray(presets, ["presets", "files"], diagnostics, { nonempty: false }) }),
     },
     drivers: {
-      plugin: clone(profile.installation.drivers.plugin),
+      plugin: profile.installation.drivers.plugin,
       configuration: {
         id: "config-kubernetes",
         configuration: {
@@ -1030,17 +1042,25 @@ function buildRendered(profile, parsed, diagnostics) {
           },
           resources: {
             // Tenant runtimes may burst to four cores; 100m requests keep the
-            // scheduling reservation unchanged. An OpenClaw Gateway settles
-            // near 1.2 GiB once it has served a few turns; a dedicated Codex
-            // Gateway with native admin chat peaked at 1.9 GiB and was
-            // OOM-killed at 2Gi on its first coding turn.
+            // scheduling reservation unchanged. Memory requests cover measured
+            // use between turns, so the scheduler places Agents by what they
+            // actually hold; limits cover measured peaks.
+            // Gateways, embedded or dedicated, held 1.2-1.6 GiB between turns
+            // and peaked at 1.8-2.2 GiB; a dedicated Codex Gateway serving native
+            // admin chat was OOM-killed at 2Gi on its first coding turn.
             gateway: {
-              requests: { cpu: "100m", memory: "1280Mi" },
+              requests: { cpu: "100m", memory: "1792Mi" },
               limits: { cpu: "4", memory: "3Gi" },
             },
+            // A Codex Harness held 0.45-0.57 GiB between turns and peaked at
+            // 1 GiB running a test suite and 1.9 GiB running tsc; lint, tsc and
+            // tests together were OOM-killed at 2Gi, and the same turn reached a
+            // 4Gi limit (memory.peak 4096 MiB, about 3.2 GiB anonymous) and
+            // survived only by page-cache reclaim; the limit reserves no node
+            // memory, so raising it leaves scheduling unchanged.
             agent: {
-              requests: { cpu: "100m", memory: "128Mi" },
-              limits: { cpu: "4", memory: "2Gi" },
+              requests: { cpu: "100m", memory: "768Mi" },
+              limits: { cpu: "4", memory: "6Gi" },
             },
             namespace: {
               quota: { pods: "10" },

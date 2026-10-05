@@ -2022,10 +2022,17 @@ test("matches exact reviewed exceptions and reports binding changes and stale en
   assert.deepEqual(rules(await check({ exceptions })), ["internal-root-barrel", "stale-exception"]);
   await write(path, 'import type { Value } from "./leaf.ts";');
   assert.deepEqual(rules(await check({ exceptions })), ["stale-exception"]);
-  await assert.rejects(check({ exceptions: { version: 1, exceptions: [exception, exception] } }));
-  await assert.rejects(
-    check({ exceptions: { version: 1, exceptions: [{ ...exception, owner: "" }] } }),
-  );
+  for (const [invalid, message] of [
+    [{ version: 2, exceptions: [] }, "Unsupported module-boundary exceptions version."],
+    [{ version: 1, exceptions: {} }, "Invalid module-boundary exceptions."],
+    [
+      { version: 1, exceptions: [{ ...exception, owner: "" }] },
+      "Exceptions require an exact edge, reason, removal condition and capability owner.",
+    ],
+    [{ version: 1, exceptions: [exception, exception] }, "Duplicate module-boundary exception."],
+  ]) {
+    await assert.rejects(check({ exceptions: invalid }), { message });
+  }
 });
 
 test("binds cycle exceptions to the complete cycle edge set", async (t) => {
@@ -2143,13 +2150,32 @@ test("requires explicit valid policy and reports CLI success, violations and con
       return true;
     });
   }
-  await assert.rejects(verifyModuleBoundaries({ root }));
-  for (const invalid of [
-    { ...policy, version: 2 },
-    { ...policy, sourceRoots: ["../outside"] },
-    { ...policy, boundaries: [{ rule: "invalid", from: ["apps/**"] }] },
+  await assert.rejects(verifyModuleBoundaries({ root }), {
+    message: "An explicit module-boundary policy is required.",
+  });
+  // Each policy has one mistake, refused by its own validation check.
+  const boundary = { rule: "invalid", message: "bad", from: ["apps/**"], to: ["packages/**"] };
+  for (const [change, message] of [
+    [{ version: 2 }, "Unsupported module-boundary policy version."],
+    [{ sourceRoots: ["../outside"] }, "Invalid policy field: sourceRoots"],
+    [{ rootBarrels: ["packages/library/src/*.ts"] }, "Invalid policy field: rootBarrels"],
+    [{ workspaceNamespaces: ["@fixture"] }, "Invalid policy field: workspaceNamespaces"],
+    [{ boundaries: {} }, "Invalid policy field: boundaries"],
+    [{ boundaries: [{ ...boundary, message: " " }] }, "Boundaries require a rule and message."],
+    [{ boundaries: [{ ...boundary, from: ["../apps/**"] }] }, "Invalid boundary field: from"],
+    [
+      { boundaries: [{ ...boundary, specifiers: ["@fixture/*-internal"] }] },
+      "Invalid boundary field: specifiers",
+    ],
+    [
+      { boundaries: [{ rule: "invalid", message: "bad", from: ["apps/**"] }] },
+      "Boundaries require source patterns and target paths or specifiers.",
+    ],
+    [{ boundaries: [{ ...boundary, kinds: ["eval"] }] }, "Invalid boundary field: kinds"],
+    [{ packageImports: [] }, "Invalid policy field: packageImports"],
+    [{ cycles: { runtime: "allow" } }, "Invalid policy field: cycles.runtime"],
   ]) {
-    await assert.rejects(check({ policy: invalid }));
+    await assert.rejects(check({ policy: { ...policy, ...change } }), { message });
   }
 });
 

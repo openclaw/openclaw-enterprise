@@ -196,7 +196,7 @@ controller image; it does not claim a live production deployment.
 
 ### Browser failure diagnostics
 
-When a browser test fails in the checks-browser lane, CI uploads a
+When a browser test fails in a checks-browser lane, CI uploads a
 `browser-failures-*` artifact, kept for three days. Each failed test gets a
 directory with a screenshot of every open page and `failure.json`. That file
 holds the error, page URLs, requests still pending at failure time, and recent

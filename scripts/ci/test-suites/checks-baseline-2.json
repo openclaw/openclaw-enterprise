@@ -2,224 +2,98 @@
   "env": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
+  "fileConcurrency": 8,
+  "parallelFiles": [
+    "tests/integration/ci-prepare.test.mjs",
+    "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/integration/repository-credentials-admission.test.mjs",
+    "tests/conformance/ssh-compute.test.mjs",
+    "tests/conformance/module-boundaries.test.mjs",
+    "tests/integration/repository-credentials-router.test.mjs",
+    "tests/conformance/module-policy.test.mjs",
+    "tests/integration/native-admin-access.test.mjs",
+    "tests/integration/repository-credentials-transport-bounds.test.mjs",
+    "tests/integration/cli-release.test.mjs",
+    "tests/integration/container-resume.test.mjs",
+    "tests/integration/metrics-monitoring-readiness.test.mjs",
+    "tests/integration/repository-credentials-descriptions.test.mjs",
+    "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/container-release.test.mjs",
+    "tests/integration/password-sign-in-audit.test.mjs",
+    "tests/integration/ci-impact-gate.test.mjs",
+    "tests/integration/workspace-setup-api.test.mjs",
+    "tests/integration/repository-credentials-service-loss.test.mjs",
+    "tests/integration/ci-runner.test.mjs",
+    "tests/integration/k3d-launcher.test.mjs",
+    "tests/integration/password-sign-in-admission.test.mjs",
+    "tests/integration/google-login-transport.test.mjs",
+    "tests/conformance/slack-channel-directory.test.mjs",
+    "tests/conformance/repository-credentials-github.test.mjs",
+    "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/integration/known-device-cookie.test.mjs",
+    "tests/conformance/postgres-controller-auth-binding.test.mjs",
+    "tests/integration/repository-credentials-package.test.mjs",
+    "tests/integration/repository-credentials-restart.test.mjs",
+    "tests/conformance/plugin-driver.test.mjs",
+    "tests/integration/ci-image-reconciliation.test.mjs",
+    "tests/conformance/repository-runtime-material.test.mjs",
+    "tests/integration/repository-credentials-server-timeout.test.mjs",
+    "tests/integration/repository-credentials-http.test.mjs",
+    "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+    "tests/integration/repository-credentials-projected-inputs.test.mjs",
+    "tests/integration/ci-image-pull.test.mjs",
+    "tests/conformance/slack-proxy-tunnel.test.mjs",
+    "tests/integration/repository-runtime-materialization.test.mjs",
+    "tests/conformance/repository-credentials-contracts.test.mjs",
+    "tests/integration/plugin-driver-startup.test.mjs",
+    "tests/integration/repository-credentials-config.test.mjs",
+    "tests/integration/kubernetes-peer-status.test.mjs",
+    "tests/conformance/repository-credentials-lifecycle.test.mjs",
+    "tests/integration/ssh-compute-startup.test.mjs",
+    "tests/integration/oidc-login-transport.test.mjs",
+    "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
+    "tests/integration/ci-cleanup.test.mjs",
+    "tests/conformance/runtime-model-probe-settlement.test.mjs",
+    "tests/conformance/hosted-plugin-discovery.test.mjs",
+    "tests/integration/plugin-driver-real-preflight.test.mjs",
+    "tests/conformance/postgres-transaction-commit.test.mjs",
+    "tests/conformance/plugin-runtime-policy.test.mjs",
+    "tests/integration/password-sign-in-policy.test.mjs",
+    "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+    "tests/integration/oidc-id-token.test.mjs",
+    "tests/integration/repository-credentials-shutdown.test.mjs",
+    "tests/integration/repository-credentials-descriptions-uncertain.test.mjs",
+    "tests/conformance/repository-transactions.test.mjs",
+    "tests/integration/google-id-token.test.mjs",
+    "tests/integration/first-agent-startup.test.mjs",
+    "tests/conformance/repository-sessions-memory.test.mjs",
+    "tests/conformance/repository-credentials-github-token.test.mjs",
+    "tests/conformance/repository-credentials-registry.test.mjs",
+    "tests/integration/ci-openshell.test.mjs",
+    "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/integration/dev-codex-seccomp-failure.test.mjs",
+    "tests/conformance/runtime-probe-cpu-counter.test.mjs",
+    "tests/conformance/repository-material-store.test.mjs",
+    "tests/conformance/plugin-runtime-templates.test.mjs",
+    "tests/integration/ci-logging.test.mjs",
+    "tests/conformance/slack-proxy-reset.test.mjs",
+    "tests/conformance/repository-credentials-custody.test.mjs",
+    "tests/conformance/repository-credentials-receive-pack.test.mjs",
+    "tests/integration/runtime-assets.test.mjs",
+    "tests/conformance/repository-client-environment.test.mjs",
+    "tests/conformance/repository-credentials-tool-evidence.test.mjs",
+    "tests/integration/client-address.test.mjs",
+    "tests/integration/full-integration-preflight.test.mjs",
+    "tests/conformance/repository-material-expiry-probe.test.mjs",
+    "tests/integration/container-promote.test.mjs"
+  ],
+  "serialFiles": {
+    "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
+    "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
+  },
   "files": [
-    {
-      "path": "tests/conformance/audit.test.mjs"
-    },
-    {
-      "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
-    },
-    {
-      "path": "tests/conformance/codex-seccomp-profile.test.mjs"
-    },
-    {
-      "path": "tests/conformance/configuration-occ.test.mjs"
-    },
-    {
-      "path": "tests/conformance/console-api-client.test.mjs"
-    },
-    {
-      "path": "tests/conformance/contracts.test.mjs"
-    },
-    {
-      "path": "tests/docs/docs-length.test.mjs"
-    },
-    {
-      "path": "tests/docs/docs-server.test.mjs"
-    },
-    {
-      "path": "tests/docs/docs-site.test.mjs"
-    },
-    {
-      "path": "tests/docs/generated-api-reference.test.mjs"
-    },
-    {
-      "path": "tests/conformance/harness-device-auth.test.mjs"
-    },
-    {
-      "path": "tests/conformance/http-errors.test.mjs"
-    },
-    {
-      "path": "tests/conformance/credential-source-occ.test.mjs"
-    },
-    {
-      "path": "tests/conformance/docker-compute.test.mjs"
-    },
-    {
-      "path": "tests/conformance/grafana-overview-dashboard.test.mjs"
-    },
-    {
-      "path": "tests/conformance/iam.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-compute.test.mjs"
-    },
-    {
-      "path": "tests/conformance/node-enrollment-client.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-preflight.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-configuration.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-ownership.test.mjs"
-    },
-    {
-      "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
-    },
-    {
-      "path": "tests/conformance/occ-api-security.test.mjs"
-    },
-    {
-      "path": "tests/conformance/runtime-logs-content.test.mjs"
-    },
-    {
-      "path": "tests/conformance/runtime-logs-sandbox.test.mjs"
-    },
-    {
-      "path": "tests/conformance/runtime-logs-replay.test.mjs"
-    },
-    {
-      "path": "tests/conformance/codex-stderr-filter.test.mjs"
-    },
-    {
-      "path": "tests/conformance/occ-read.test.mjs"
-    },
-    {
-      "path": "tests/conformance/openshell-gateway-wire.test.mjs"
-    },
-    {
-      "path": "tests/conformance/platform-state-memory.test.mjs"
-    },
-    {
-      "path": "tests/conformance/pr-status.test.mjs"
-    },
-    {
-      "path": "tests/conformance/presets.test.mjs"
-    },
-    {
-      "path": "tests/conformance/secret-gateway-delivery.test.mjs"
-    },
-    {
-      "path": "tests/conformance/secret-occ.test.mjs"
-    },
-    {
-      "path": "tests/conformance/slack-configuration.test.mjs"
-    },
-    {
-      "path": "tests/conformance/service-account-driver.test.mjs"
-    },
-    {
-      "path": "tests/conformance/test-files.test.mjs"
-    },
-    {
-      "path": "tests/conformance/utils.test.mjs"
-    },
-    {
-      "path": "tests/conformance/workspace-files-configuration.test.mjs"
-    },
-    {
-      "path": "tests/conformance/workspace-files.test.mjs"
-    },
-    {
-      "path": "tests/conformance/workspace-node-supervisor.test.mjs"
-    },
-    {
-      "path": "tests/integration/presets-controller.test.mjs"
-    },
-    {
-      "path": "tests/integration/profile-renderer.test.mjs"
-    },
-    {
-      "path": "tests/integration/bootstrap-output.test.mjs"
-    },
-    {
-      "path": "tests/integration/bootstrap-volume.test.mjs"
-    },
-    {
-      "path": "tests/integration/configuration-controller.test.mjs"
-    },
-    {
-      "path": "tests/integration/configuration-startup.test.mjs"
-    },
-    {
-      "path": "tests/integration/console-api.test.mjs"
-    },
-    {
-      "path": "tests/integration/console-build-metadata.test.mjs"
-    },
-    {
-      "path": "tests/integration/controller-lifecycle.test.mjs"
-    },
-    {
-      "path": "tests/integration/driver-plugin-installation.test.mjs"
-    },
-    {
-      "path": "tests/integration/git-hooks.test.mjs"
-    },
-    {
-      "path": "tests/integration/occ-api.test.mjs"
-    },
-    {
-      "path": "tests/integration/production-controller-security.test.mjs"
-    },
-    {
-      "path": "tests/integration/production-healthcheck.test.mjs"
-    },
-    {
-      "path": "tests/integration/production-image-upgrade.test.mjs"
-    },
-    {
-      "path": "tests/integration/sandbox-driver-startup.test.mjs"
-    },
-    {
-      "path": "tests/integration/secret-api.test.mjs"
-    },
-    {
-      "path": "tests/integration/plugin-discovery-api.test.mjs"
-    },
-    {
-      "path": "tests/integration/device-authorization-api.test.mjs"
-    },
-    {
-      "path": "tests/integration/runtime-credentials-api.test.mjs"
-    },
-    {
-      "path": "tests/integration/secret-driver-startup.test.mjs"
-    },
-    {
-      "path": "tests/integration/service-api-keys.test.mjs"
-    },
-    {
-      "path": "tests/integration/startup-ipv6-loopback.test.mjs"
-    },
-    {
-      "path": "tests/integration/common-logging.test.mjs"
-    },
-    {
-      "path": "tests/integration/dev-up.test.mjs",
-      "expectedTests": [
-        "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
-        "dev-up preserves a selected custom runtime image and skips the quickstart build",
-        "dev-up applies per-image overrides on top of the shared runtime image",
-        "Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell",
-        "Kubernetes dev-up rejects an unsupported control-plane selection",
-        "dev-up rejects a public controller port rendered by real Compose",
-        "dev-up refuses an existing key destination before invoking Compose",
-        "dev-up fails closed when bootstrap exits unsuccessfully",
-        "dev-up fails closed when the worker exits before readiness",
-        "dev-up preserves a copied key when the authenticated installation check is rejected",
-        "dev-up rejects an authenticated installation response for a different Installation"
-      ]
-    },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
     },
@@ -240,9 +114,6 @@
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
-    },
-    {
-      "path": "tests/integration/ci-impact.test.mjs"
     },
     {
       "path": "tests/integration/ci-impact-gate.test.mjs"
@@ -306,9 +177,6 @@
       "path": "tests/integration/ssh-compute-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/plugin-compute.test.mjs"
-    },
-    {
       "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
     },
     {
@@ -322,6 +190,12 @@
     },
     {
       "path": "tests/conformance/slack-channel-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-reset.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
     },
     {
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
@@ -365,6 +239,12 @@
     },
     {
       "path": "tests/conformance/repository-credentials-github.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-github-token.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.mjs"
@@ -415,9 +295,6 @@
     },
     {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
-    },
-    {
-      "path": "tests/integration/repository-credentials-client-config.test.mjs"
     },
     {
       "path": "tests/integration/repository-credentials-router.test.mjs"
@@ -497,9 +374,6 @@
         "repository source obeys its dependency policy with exact current exceptions",
         "repository policy allows a public root and rejects a new HTTP Driver import"
       ]
-    },
-    {
-      "path": "tests/integration/github-login-transport.test.mjs"
     },
     {
       "path": "tests/integration/google-id-token.test.mjs"

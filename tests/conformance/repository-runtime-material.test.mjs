@@ -1451,42 +1451,117 @@ test("Kubernetes preserves native configuration bytes without repository binding
 
 test("Kubernetes rejects malformed repository exec configuration before any API access", async (t) => {
   const malformed = [
-    ["tools null", { tools: null }],
-    ["tools array", { tools: [] }],
-    ["exec string", { tools: { exec: "full" } }],
-    ["exec null", { tools: { exec: null } }],
-    ["exec array", { tools: { exec: [] } }],
-    ["prefix scalar", { tools: { exec: { pathPrepend: "/operator/bin" } } }],
-    ["prefix null", { tools: { exec: { pathPrepend: null } } }],
-    ["prefix nonstring", { tools: { exec: { pathPrepend: ["/operator/bin", 1] } } }],
-    ["agents null", { agents: null }],
-    ["agents array", { agents: [] }],
-    ["agent list object", { agents: { list: {} } }],
-    ["agent list null", { agents: { list: null } }],
-    ["agent entries null", { agents: { entries: null } }],
-    ["agent entries array", { agents: { entries: [] } }],
-    ["agent entry null", { agents: { entries: { main: null } } }],
-    ["agent entry exec string", { agents: { entries: { main: { tools: { exec: "full" } } } } }],
+    ["tools null", { tools: null }, "Repository credentials require tools to be an object."],
+    ["tools array", { tools: [] }, "Repository credentials require tools to be an object."],
+    [
+      "exec string",
+      { tools: { exec: "full" } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "exec null",
+      { tools: { exec: null } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "exec array",
+      { tools: { exec: [] } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "prefix scalar",
+      { tools: { exec: { pathPrepend: "/operator/bin" } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    [
+      "prefix null",
+      { tools: { exec: { pathPrepend: null } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    [
+      "prefix nonstring",
+      { tools: { exec: { pathPrepend: ["/operator/bin", 1] } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    ["agents null", { agents: null }, "Repository credentials require agents to be an object."],
+    ["agents array", { agents: [] }, "Repository credentials require agents to be an object."],
+    [
+      "agent list object",
+      { agents: { list: {} } },
+      "Repository credentials require agents.list to be an array.",
+    ],
+    [
+      "agent list null",
+      { agents: { list: null } },
+      "Repository credentials require agents.list to be an array.",
+    ],
+    [
+      "agent entries null",
+      { agents: { entries: null } },
+      "Repository credentials require agents.entries to be an object.",
+    ],
+    [
+      "agent entries array",
+      { agents: { entries: [] } },
+      "Repository credentials require agents.entries to be an object.",
+    ],
+    [
+      "agent entry null",
+      { agents: { entries: { main: null } } },
+      "Repository credentials require agents.entries entry to be an object.",
+    ],
+    [
+      "agent entry exec string",
+      { agents: { entries: { main: { tools: { exec: "full" } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
     [
       "agent entry prefix nonstring",
       { agents: { entries: { main: { tools: { exec: { pathPrepend: [false] } } } } } },
+      "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
-    ["agent null", { agents: { list: [null] } }],
-    ["agent array", { agents: { list: [[]] } }],
-    ["agent tools null", { agents: { list: [{ id: "main", tools: null }] } }],
-    ["agent tools array", { agents: { list: [{ id: "main", tools: [] }] } }],
-    ["agent exec null", { agents: { list: [{ id: "main", tools: { exec: null } }] } }],
-    ["agent exec array", { agents: { list: [{ id: "main", tools: { exec: [] } }] } }],
+    [
+      "agent null",
+      { agents: { list: [null] } },
+      "Repository credentials require agents.list entry to be an object.",
+    ],
+    [
+      "agent array",
+      { agents: { list: [[]] } },
+      "Repository credentials require agents.list entry to be an object.",
+    ],
+    [
+      "agent tools null",
+      { agents: { list: [{ id: "main", tools: null }] } },
+      "Repository credentials require agents.list entry.tools to be an object.",
+    ],
+    [
+      "agent tools array",
+      { agents: { list: [{ id: "main", tools: [] }] } },
+      "Repository credentials require agents.list entry.tools to be an object.",
+    ],
+    [
+      "agent exec null",
+      { agents: { list: [{ id: "main", tools: { exec: null } }] } },
+      "Repository credentials require agents.list entry.tools.exec to be an object.",
+    ],
+    [
+      "agent exec array",
+      { agents: { list: [{ id: "main", tools: { exec: [] } }] } },
+      "Repository credentials require agents.list entry.tools.exec to be an object.",
+    ],
     [
       "agent prefix scalar",
       { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: "/agent/bin" } } }] } },
+      "Repository credentials require agents.list entry.tools.exec.pathPrepend to be an array of strings.",
     ],
     [
       "agent prefix nonstring",
       { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
+      "Repository credentials require agents.list entry.tools.exec.pathPrepend to be an array of strings.",
     ],
   ];
-  for (const [name, configuration] of malformed) {
+  for (const [name, configuration, message] of malformed) {
     await t.test(name, async () => {
       const f = await fixture();
       const agentDefaults = f.revision.configuration.agents.defaults;
@@ -1495,7 +1570,9 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
         f.revision.configuration.agents.defaults = agentDefaults;
       }
       const before = structuredClone(f.revision.configuration);
-      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])));
+      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+        message,
+      });
       assert.deepEqual(
         f.apiCalls,
         [],
@@ -1503,7 +1580,9 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
       );
       // Activation is a separate reconciliation entrypoint and must not bypass
       // the same native configuration validation before consulting workloads.
-      await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])));
+      await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])), {
+        message,
+      });
       assert.deepEqual(f.apiCalls, [], "activation must reject before Kubernetes reads or writes");
       assert.deepEqual(f.revision.configuration, before);
     });
@@ -1643,13 +1722,39 @@ for (const mode of ["embedded", "dedicated"]) {
           ready: false,
           repositoryCredentialMaterialMissing: [missing],
         });
-        await assert.rejects(f.driver.activateRevision(f.revision, context));
+        // Dedicated activation reports the missing material. Embedded activation refuses
+        // earlier: preparation stopped, so the shared gateway Deployment was never created.
+        await assert.rejects(
+          f.driver.activateRevision(f.revision, context),
+          mode === "dedicated"
+            ? {
+                name: "DependencyUnavailableError",
+                message: "Repository credential material is unavailable for activation.",
+              }
+            : { message: "The Agent gateway workload is unavailable." },
+        );
         assert.equal(
           f.calls.filter((call) => call.operation === "write" && call.kind === "Secret").length,
           0,
         );
         assert.equal(f.secrets().length, 0);
         assert.equal(f.deployments().length, 0);
+        if (mode === "embedded") {
+          // Once the shared gateway exists, embedded activation reaches the same refusal and
+          // publishes no Secret for the set while one retained reference is missing.
+          const project = runtimeBinding("session_material_project");
+          await f.driver.prepareRevision(f.revision, f.context([pending, project]));
+          assert.equal(f.deployments().length, 1);
+          const writes = f.calls.length;
+          await assert.rejects(f.driver.activateRevision(f.revision, context), {
+            name: "DependencyUnavailableError",
+            message: "Repository credential material is unavailable for activation.",
+          });
+          assert.deepEqual(
+            f.calls.slice(writes).filter((call) => call.operation === "write"),
+            [],
+          );
+        }
       },
     );
 
@@ -1661,7 +1766,9 @@ for (const mode of ["embedded", "dedicated"]) {
         const document = JSON.parse(binding.files["client.json"]);
         document.sessionId = "another-session";
         binding.files["client.json"] = JSON.stringify(document);
-        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])));
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])), {
+          message: "Repository credential material is invalid.",
+        });
         assert.equal(f.secrets().length, 0);
         assert.equal(f.deployments().length, 0);
       },
@@ -1690,11 +1797,23 @@ for (const mode of ["embedded", "dedicated"]) {
           }
           return create(request);
         };
-        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])));
+        // The API error is replaced so a Secret body it may carry never reaches callers.
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])), {
+          message: "Repository credential material could not be created.",
+        });
         assert.equal(f.secrets().length, 1);
         assert.equal(f.deployments().length, 0);
         await f.driver.stopRevision(f.revision);
         assert.equal(f.secrets().length, 0);
+        // A conflict whose Secret is gone by the follow-up read cannot confirm custody.
+        f.clients.core.createNamespacedSecret = async () => {
+          throw Object.assign(new Error("Secret already exists"), { statusCode: 409 });
+        };
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])), {
+          message: "Repository credential material creation could not be confirmed.",
+        });
+        assert.equal(f.secrets().length, 0);
+        assert.equal(f.deployments().length, 0);
       },
     );
 
@@ -1803,7 +1922,10 @@ for (const mode of ["embedded", "dedicated"]) {
         f.setPods([oldPod, replacementPod]);
         const waiting = await f.driver.prepareRevision(f.revision, f.context([replacement]));
         assert.equal(waiting.ready, false);
-        await assert.rejects(f.driver.activateRevision(f.revision, f.context([replacement])));
+        await assert.rejects(f.driver.activateRevision(f.revision, f.context([replacement])), {
+          name: "DependencyUnavailableError",
+          message: "The exact repository credential runtime generation is not ready.",
+        });
 
         replacementPod.status.conditions = [{ type: "Ready", status: "True" }];
         f.setPods([replacementPod]);

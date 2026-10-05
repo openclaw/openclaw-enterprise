@@ -8,7 +8,9 @@ import {
   consoleOrigin as origin,
   currentSession,
   defaultInstallSettings,
+  installationRoles,
   passwordSignIn,
+  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -56,6 +58,8 @@ test(
     const signIn = (email, password, remoteAddress) =>
       passwordSignIn(app, origin, { email, password }, remoteAddress);
     const sessionOf = (cookie) => currentSession(app, cookie);
+    const adminHeaders = () =>
+      signedInHeaders(app, origin, { email: adminEmail, password: adminPassword });
 
     await t.test("the bootstrap administrator signs in with the generated password", async () => {
       const response = await signIn(adminEmail, adminPassword);
@@ -67,17 +71,8 @@ test(
 
     let member;
     await t.test("the administrator creates a password account with the exact Origin", async () => {
-      const admin = await signIn(adminEmail, adminPassword);
-      const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
-      const installation = await new PostgresPlatformState(pool).loadInstallation();
-      const policy = await new PostgresPlatformState(pool).loadNativeIAMState(installation.id);
-      const role = policy.roles.find((candidate) =>
-        candidate.permissions.some(
-          (permission) =>
-            permission.action === "read" && permission.resourceKind === "installation",
-        ),
-      );
-      assert.ok(role);
+      const headers = await adminHeaders();
+      const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
       const payload = { email: memberEmail, password: memberPassword, roleId: role.id };
       for (const refused of [
         { cookie: headers.cookie },
@@ -195,8 +190,7 @@ test(
     await t.test(
       "account controls refuse with a specific conflict, not a dependency failure",
       async () => {
-        const admin = await signIn(adminEmail, adminPassword);
-        const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
+        const headers = await adminHeaders();
         const memberSession = cookieHeaderFromSetCookie(
           (await signIn(memberEmail, memberPassword)).headers["set-cookie"],
         );
@@ -234,8 +228,7 @@ test(
         providerCalls += 1;
         return originalFetch(input, init);
       });
-      const admin = await signIn(adminEmail, adminPassword);
-      const cookie = cookieHeaderFromSetCookie(admin.headers["set-cookie"]);
+      const { cookie } = await adminHeaders();
       for (const provider of ["github", "google"]) {
         const start = await app.inject({
           method: "POST",

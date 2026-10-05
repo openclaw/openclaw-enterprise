@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { request } from "node:http";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
@@ -11,7 +10,10 @@ import {
 } from "../fixtures/repository-credentials/builders.mjs";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
+import {
+  controlRequest,
+  startCredentialServiceFixture,
+} from "../fixtures/repository-credentials/service.mjs";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import {
   createGitHubDriverFactory,
@@ -20,38 +22,8 @@ import {
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
 
-function control(socketPath, path, payload, headers = {}) {
-  const body = Buffer.from(JSON.stringify(payload));
-  return new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        socketPath,
-        method: "POST",
-        path,
-        agent: false,
-        headers: {
-          host: "localhost",
-          "content-type": "application/json",
-          "content-length": body.length,
-          ...headers,
-        },
-      },
-      (incoming) => {
-        const chunks = [];
-        incoming.on("data", (chunk) => chunks.push(chunk));
-        incoming.on("error", reject);
-        incoming.on("end", () =>
-          resolve({ status: incoming.statusCode, body: JSON.parse(Buffer.concat(chunks)) }),
-        );
-      },
-    );
-    outgoing.on("error", reject);
-    outgoing.end(body);
-  });
-}
-
 function descriptions(socketPath, payload) {
-  return control(socketPath, "/v1/repository-descriptions", payload);
+  return controlRequest(socketPath, "POST", "/v1/repository-descriptions", payload);
 }
 
 async function waitForRevocation(github) {
@@ -113,7 +85,7 @@ test("private metadata sessions reject other methods and routes before issuing a
   const factory = createGitHubDriverFactory({
     configuration: githubConfigurationData(),
     metadataOnly: true,
-    key,
+    authority: key,
     clock,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
@@ -319,20 +291,25 @@ test("ordinary registry and standalone session admission reject the private meta
     autoOpen: false,
     gateway: { listen: "127.0.0.1:0" },
   });
-  assert.throws(() =>
-    resolveGitHubRepositoryBinding(registry.registry, {
-      namespaceId: registry.namespaceId,
-      repositoryRef: "repo-a",
-      profile: "metadata-read",
-    }),
+  // The registry's profile set excludes the private metadata profile outright, before any
+  // Namespace policy lookup.
+  assert.throws(
+    () =>
+      resolveGitHubRepositoryBinding(registry.registry, {
+        namespaceId: registry.namespaceId,
+        repositoryRef: "repo-a",
+        profile: "metadata-read",
+      }),
+    /invalid-repository-registry/,
   );
   const binding = resolveGitHubRepositoryBinding(registry.registry, {
     namespaceId: registry.namespaceId,
     repositoryRef: "repo-a",
     profile: "git-read",
   });
-  const result = await control(
+  const result = await controlRequest(
     registry.config.gateway.controlSocket,
+    "POST",
     "/v1/sessions",
     {
       namespaceId: registry.namespaceId,
@@ -350,8 +327,9 @@ test("ordinary registry and standalone session admission reject the private meta
 
   const standalone = await startCredentialServiceFixture(t, { gateway: { listen: "127.0.0.1:0" } });
   assert.throws(() => standalone.factory.resolve("metadata-read"), /unsupported-profile/);
-  const standaloneResult = await control(
+  const standaloneResult = await controlRequest(
     standalone.config.gateway.controlSocket,
+    "POST",
     "/v1/sessions",
     {
       profile: "metadata-read",

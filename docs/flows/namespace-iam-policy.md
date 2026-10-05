@@ -118,6 +118,9 @@ Driver. Namespace locking serializes grant creation with Namespace deletion;
 exact resource targets retain their existing deletion locks, and deleting a
 target resource deletes the bindings on it in the same transaction. Identity foreign
 keys protect persisted bindings without expanding application-role privileges.
+Deletion audit projections and Namespace policy removal live in
+`packages/occ/src/iam-policy-cleanup.ts`; callers pass their existing transaction
+unit, so cleanup and its audit retain the same commit boundary.
 Both adapters apply one subject rule on every AccessBinding write: a human
 without a Namespace, a non-Agent ServicePrincipal of the exact Namespace, or the
 ServicePrincipal of a live Agent there. PostgreSQL checks the owning Agent in

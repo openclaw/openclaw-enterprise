@@ -353,34 +353,39 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
   assert.equal(schema.additionalProperties, false);
   assert.equal(Object.isFrozen(schema.properties.runtime), true);
   assert.equal(Check(schema, options()), true);
+  // Each invalid option names the check that refuses it.
   const invalid = [
-    [[], null],
-    [["executor"], {}],
-    [["ssh"], {}],
-    [["hosts"], {}],
-    [["runtime"], {}],
-    [["network"], {}],
-    [["ssh", "extra"], true],
-    [["hosts", "stable", "extra"], true],
-    [["runtime", "extra"], true],
-    [["network", "extra"], true],
-    [["network", "gatewayPortRange", "extra"], true],
-    [["ssh", "connectTimeoutSeconds"], 0],
-    [["ssh", "connectTimeoutSeconds"], 1.5],
-    [["ssh", "connectTimeoutSeconds"], Number.MAX_SAFE_INTEGER + 1],
-    [["hosts", "stable", "address"], ""],
-    [["hosts", "stable", "address"], "-oProxyCommand=bad"],
-    [["hosts", "stable", "address"], "host;false"],
-    [["hosts", "stable", "user"], "nobody"],
-    [["hosts", "stable", "port"], 0],
-    [["hosts", "stable", "port"], 65536],
-    [["hosts", "stable", "port"], 1.2],
-    [["runtime", "user"], "root"],
-    [["runtime", "user"], "bad user"],
-    [["runtime", "user"], ""],
-    [["network", "gatewayPortRange", "start"], 1023],
-    [["network", "gatewayPortRange", "end"], 65536],
-    [["network", "gatewayPortRange", "start"], 1.1],
+    [[], null, /SSH options must be an object/],
+    [["executor"], {}, /SSH options contains an unsupported option/],
+    [["ssh"], {}, /ssh\.identityFile is required/],
+    [["hosts"], {}, /hosts must map exact Namespace names to SSH hosts/],
+    [["runtime"], {}, /runtime\.nodePath is required/],
+    [["network"], {}, /gatewayPortRange must be an object/],
+    [["ssh", "extra"], true, /ssh contains an unsupported option/],
+    [["hosts", "stable", "extra"], true, /SSH host contains an unsupported option/],
+    [["runtime", "extra"], true, /runtime contains an unsupported option/],
+    [["network", "extra"], true, /network contains an unsupported option/],
+    [["network", "gatewayPortRange", "extra"], true, /gatewayPortRange contains an unsupported/],
+    [["ssh", "connectTimeoutSeconds"], 0, /connectTimeoutSeconds must be a positive safe/],
+    [["ssh", "connectTimeoutSeconds"], 1.5, /connectTimeoutSeconds must be a positive safe/],
+    [
+      ["ssh", "connectTimeoutSeconds"],
+      Number.MAX_SAFE_INTEGER + 1,
+      /connectTimeoutSeconds must be a positive safe/,
+    ],
+    [["hosts", "stable", "address"], "", /Host address is required/],
+    [["hosts", "stable", "address"], "-oProxyCommand=bad", /Host address must be a hostname or IP/],
+    [["hosts", "stable", "address"], "host;false", /Host address must be a hostname or IP/],
+    [["hosts", "stable", "user"], "nobody", /SSH hosts require user root/],
+    [["hosts", "stable", "port"], 0, /Host port must be an integer from 1 to 65535/],
+    [["hosts", "stable", "port"], 65536, /Host port must be an integer from 1 to 65535/],
+    [["hosts", "stable", "port"], 1.2, /Host port must be an integer from 1 to 65535/],
+    [["runtime", "user"], "root", /runtime\.user must be a non-root account-name prefix/],
+    [["runtime", "user"], "bad user", /runtime\.user must be a non-root account-name prefix/],
+    [["runtime", "user"], "", /runtime\.user is required/],
+    [["network", "gatewayPortRange", "start"], 1023, /Gateway port range start must be an integer/],
+    [["network", "gatewayPortRange", "end"], 65536, /Gateway port range end must be an integer/],
+    [["network", "gatewayPortRange", "start"], 1.1, /Gateway port range start must be an integer/],
   ];
   const paths = [
     ["ssh", "identityFile"],
@@ -393,6 +398,7 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
     ["hosts", "stable", "openclawPath"],
   ];
   for (const key of paths) {
+    const description = key[0] === "hosts" ? `Host ${key[2]}` : key.join(".");
     for (const value of [
       "relative",
       "",
@@ -404,10 +410,14 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       "/shell$(bad)",
       "/systemd%u",
     ]) {
-      invalid.push([key, value]);
+      const message =
+        value === ""
+          ? `${description} is required.`
+          : `${description} must be an absolute path without whitespace, quotes, control characters, or shell/systemd expansions.`;
+      invalid.push([key, value, { message }]);
     }
   }
-  for (const [keys, value] of invalid) {
+  for (const [keys, value, refusal] of invalid) {
     let candidate = options();
     if (keys.length === 0) {
       candidate = value;
@@ -415,12 +425,8 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       setOption(candidate, keys, value);
     }
     assert.equal(Check(schema, candidate), false, keys.join("."));
-    assert.throws(
-      () => SshComputeDriver.validateConfiguration(candidate),
-      undefined,
-      keys.join("."),
-    );
-    assert.throws(() => new SshComputeDriver(candidate));
+    assert.throws(() => SshComputeDriver.validateConfiguration(candidate), refusal, keys.join("."));
+    assert.throws(() => new SshComputeDriver(candidate), refusal, keys.join("."));
   }
   const reversed = options();
   reversed.network.gatewayPortRange = { start: 2000, end: 1999 };
@@ -919,12 +925,19 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
       /gateway authentication|OPENCLAW_GATEWAY_PASSWORD/,
     );
   }
-  for (const change of [
-    { servicePrincipalId: "foreign" },
-    { namespaceId: "foreign" },
-    { compute: { id: "foreign", implementation: "occ/ssh" } },
+  // Bind an Agent in a second Namespace; a revision naming it reaches the ownership check.
+  const otherNamespace = { ...tenant, id: "ns-ssh-other" };
+  bind(f.driver, revision(f.driver, 1, "agent-ssh-other"), otherNamespace);
+  const ownership = /AgentRevision ownership or selected Compute Driver differs/;
+  for (const [change, refusal] of [
+    [{ servicePrincipalId: "foreign" }, ownership],
+    [{ namespaceId: "foreign" }, /SSH revision requires a bound Namespace and Agent/],
+    [{ agentId: "agent-ssh-unbound" }, /SSH revision requires a bound Namespace and Agent/],
+    [{ namespaceId: otherNamespace.id }, ownership],
+    [{ compute: { ...rev.compute, id: "foreign" } }, ownership],
+    [{ compute: { ...rev.compute, implementation: "occ/foreign" } }, ownership],
   ]) {
-    await assert.rejects(f.driver.prepareRevision({ ...rev, ...change }));
+    await assert.rejects(f.driver.prepareRevision({ ...rev, ...change }), refusal);
   }
   await missing(f.agentDir(rev));
 });

@@ -295,6 +295,15 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
       mutateStored: (stored) => (stored.metadata.labels["openclaw.dev/secret"] = secretId()),
     },
     {
+      name: "foreign namespace annotation",
+      mutateStored: (stored) =>
+        (stored.metadata.annotations["openclaw.dev/namespace-id"] = namespaceId()),
+    },
+    {
+      name: "record owned by another Secret Driver",
+      mutateRecord: (record) => ({ ...record, driverId: "secret-other-driver" }),
+    },
+    {
       name: "foreign driver annotation",
       mutateStored: (stored) =>
         (stored.metadata.annotations["openclaw.dev/secret-driver-id"] = "other"),
@@ -315,12 +324,13 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
     const backendRef = await driver.create(identity, "safe-value");
     scenario.mutateStored?.(client.secrets.get(`${namespace}/${backendRef.name}`));
-    const secret = {
+    const record = {
       ...identity,
       driverId: driver.id,
       backendRef: scenario.mutateBackendRef?.(backendRef) ?? backendRef,
       createdAt: new Date().toISOString(),
     };
+    const secret = scenario.mutateRecord?.(record) ?? record;
     await assert.rejects(driver.resolve(secret), SecretOwnershipError, scenario.name);
     await assert.rejects(
       driver.withValue(secret, async () => assert.fail("foreign Secret must not be used")),

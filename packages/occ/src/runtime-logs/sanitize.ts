@@ -758,11 +758,7 @@ function sandboxFields(
     if (typeof value !== "string" || value.length === 0) {
       continue;
     }
-    if (key === "cmd_line") {
-      // argv credentials (`-u user:pass`, `-p pass`) have no key the text rules can see.
-      const command = redactArgvCredentials(stripRuntimeLogControls(value));
-      fields[key] = sanitizeRuntimeLogText(command, SANDBOX_REDACTED_FIELD_BYTES).text;
-    } else if (SANDBOX_REDACTED_FIELDS.has(key)) {
+    if (SANDBOX_REDACTED_FIELDS.has(key)) {
       fields[key] = sanitizeRuntimeLogText(value, SANDBOX_REDACTED_FIELD_BYTES).text;
     } else if (SANDBOX_FIELDS.has(key)) {
       fields[key] = sanitizeRuntimeLogText(value, MAX_FIELD_CHARS).text;
@@ -834,9 +830,7 @@ export function sanitizeSandboxLogLines(
       const url = sanitizeRuntimeLogText(parsed.fields.url, SANDBOX_REDACTED_FIELD_BYTES).text;
       shown = shown.replace(parsed.fields.url, () => url);
     }
-    // A PROC line whose `[cmd:` was not recovered, or a tracing message quoting a
-    // command, still carries argv; mask credential flags in the message too.
-    const message = sanitizeRuntimeLogText(redactArgvCredentials(shown));
+    const message = sanitizeRuntimeLogText(shown);
     const subsystem =
       line.target.length === 0
         ? undefined

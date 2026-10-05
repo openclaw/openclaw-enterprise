@@ -47,6 +47,7 @@ import {
   agentPostRequests,
   optionValues,
   createRepositoryLaunchFixture,
+  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
 const defaultCodexPreset = JSON.parse(
@@ -480,6 +481,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   releaseOptions();
   await page.getByText(/No approved repositories are available/).waitFor();
+  await waitForCreateFormReads(page);
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
 
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
@@ -620,6 +622,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     await setupGuide.getAttribute("href"),
     "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
   );
+  await waitForCreateFormReads(unavailablePage);
   assert.equal(
     await unavailablePage.getByRole("button", { name: "Create Agent" }).isEnabled(),
     true,
@@ -659,6 +662,8 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
   await deniedPage.getByText(/Repository choices are denied/).waitFor();
+  // The disabled state must reflect both reads' outcome, not a read still pending.
+  await waitForCreateFormReads(deniedPage);
   assert.equal(await deniedPage.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   await deniedPage.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
   assert.equal(configurationPostRequests(deniedRequests, deniedNamespace.id).length, 0);
@@ -2035,7 +2040,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
         body: JSON.stringify({
           error: {
             code: "INVALID_REQUEST",
-            message: "The request does not match the operation contract: /name is too long.",
+            message: "The request does not match the operation contract.",
           },
           meta: { requestId: "req_00000000-0000-4000-8000-000000000400" },
         }),
@@ -2168,8 +2173,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   const retry = page.getByRole("button", { name: "Retry provisioning request" });
-  // Longer than the API's 200-character limit, so a resend that reaches validation fails.
-  await page.getByLabel("Agent name").fill("n".repeat(201));
+  // The stub refuses the resend at admission.
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
     .getByText(/^Outcome unknown\. Retry resubmits the same request ID and saved references\./)
@@ -2177,9 +2181,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   // A 400 to the resend shows the request was never admitted, so the form unlocks.
   await retry.click();
-  await page
-    .getByText(/^The request does not match the operation contract: \/name is too long\./)
-    .waitFor();
+  await page.getByText(/^The request does not match the operation contract\./).waitFor();
   assert.equal(await retry.isVisible(), false);
   assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
   await page.getByLabel("Agent name").fill("Taken name");
@@ -2284,7 +2286,8 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const jobUrl = (work) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
   // Each job fails transiently, then the API refuses its retry: first with the generic
-  // conflict text, which names no reason, then naming the Secret that was deleted.
+  // conflict text (a store race; controller refusals name a reason), then naming the
+  // Secret that was deleted.
   const refusals = [
     "The requested platform resource already exists.",
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
@@ -2769,7 +2772,7 @@ test("Agent creation reports unavailable Secret storage before creating Configur
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
-test("Agent creation shows the API's duplicate-name conflict, generic text for other conflicts, and keeps the form usable", async (t) => {
+test("Agent creation shows the API's duplicate-name conflict, a not-ready Namespace, generic text for other conflicts, and keeps the form usable", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Duplicate Agent name", { ready: true });
@@ -2818,6 +2821,36 @@ test("Agent creation shows the API's duplicate-name conflict, generic text for o
     .waitFor();
   assert.equal(await page.getByText("The requested platform resource already exists.").count(), 0);
   await page.unroute(agentsUrl, otherConflict);
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+
+  // A Namespace that is still provisioning is named as the cause, not a saved-state conflict.
+  const notReady = async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000410" },
+      }),
+    });
+  };
+  await page.route(agentsUrl, notReady);
+  const refused = page.waitForResponse(agentPost);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  assert.equal((await refused).status(), 409);
+  await page
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings). Request ID: req_00000000-0000-4000-8000-000000000410",
+    })
+    .waitFor();
+  assert.equal(await page.getByText(/conflicts with the saved state/).count(), 0);
+  await page.unroute(agentsUrl, notReady);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
   const rejected = page.waitForResponse(agentPost);
@@ -2896,7 +2929,13 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
       .isDisabled(),
     true,
   );
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  // Plugin catalog discovery is a read sent as POST. The codex_pat Secret above arms its
+  // prefetch with a 300 ms debounce, so it may or may not have been sent before the switch.
+  const pluginCatalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  assert.deepEqual(
+    nonAuthWriteRequests(requests).filter((request) => request.path !== pluginCatalogPath),
+    [],
+  );
   assert.deepEqual(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`), []);
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");

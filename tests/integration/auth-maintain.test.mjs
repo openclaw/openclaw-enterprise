@@ -495,6 +495,7 @@ test(
           // The disabled account lost its password instead of regaining access.
           await assert.rejects(
             auth.auth.api.signInEmail({ body: { email: disabledUser.email, password } }),
+            { status: "UNAUTHORIZED", message: "Invalid email or password" },
           );
           // Unbound legacy sessions commit: nothing in the database still fences them.
           const { rowCount } = await pool.query(

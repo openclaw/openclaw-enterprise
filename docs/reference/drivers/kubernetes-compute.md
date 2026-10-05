@@ -143,11 +143,11 @@ drivers:
         requireImmutableDigest: true
       resources:
         gateway:
-          requests: { cpu: 100m, memory: 1280Mi }
+          requests: { cpu: 100m, memory: 1792Mi }
           limits: { cpu: "4", memory: 3Gi }
         agent:
-          requests: { cpu: 100m, memory: 128Mi }
-          limits: { cpu: "4", memory: 256Mi }
+          requests: { cpu: 100m, memory: 768Mi }
+          limits: { cpu: "4", memory: 6Gi }
         namespace:
           quota: { pods: "10" }
           containerDefaults:
@@ -201,11 +201,13 @@ Kubernetes API certificates must be verified in either mode.
 ### Images and resources
 
 Configure Gateway and Agent images, resource requests/limits, namespace quotas
-and container defaults. `runtime.nodeSelector`
-selects Harness and embedded Pods; dedicated real Gateways require
-`runtime.gatewayNodeSelector`, including their private-state initializer. Use
-disjoint trusted and tenant node pools in production. Quotas and defaults cover both roles in a shared tenant namespace;
-the two-cluster profile applies them separately to each physical target. Production requires
+and container defaults. `runtime.nodeSelector` selects Harness and embedded Pods;
+dedicated real Gateways require `runtime.gatewayNodeSelector`, including their
+private-state initializer. Use disjoint trusted and tenant node pools in
+production. Quotas and defaults cover both roles in a shared tenant namespace;
+the two-cluster profile applies them separately to each physical target. The
+[installation profiles](../../guides/deploy/installation-profiles.md) explain
+the measured memory defaults. Production requires
 `images.requireImmutableDigest: true` and SHA-256 image digests. Quote
 whole-core quantities, such as `cpu: "4"`.
 

@@ -12,6 +12,7 @@ import {
   loginSecret as secret,
   redirectProviderFetch,
   startProviderServer,
+  testOversizedProviderBodies,
 } from "../helpers/human-login-transport.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 
@@ -136,7 +137,8 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     const before = requests.length;
     await expectDenied(await fixture.callback(`state=${callbackState}&code=${"c".repeat(4097)}`));
     assert.equal(requests.length, before);
-    assert.deepEqual(fixture.denials, [["INVALID_ATTEMPT", "oidc"]]);
+    assert.deepEqual(fixture.denials, []);
+    assert.deepEqual(fixture.unmatched, ["oidc"]);
   });
 
   await t.test("tokens for another issuer, client or nonce are rejected", async () => {
@@ -166,6 +168,18 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     assert.deepEqual(fixture.operationalLogs(), [
       unavailableLog({ step: "token", cause: "redirect" }),
     ]);
+  });
+
+  await testOversizedProviderBodies(t, {
+    endpoints: [
+      ["/oauth/token", "token"],
+      ["/.well-known/jwks.json", "jwks"],
+    ],
+    serve: (handler) => {
+      serve = handler;
+    },
+    provider,
+    login: loginFixture,
   });
 
   await t.test("an unavailable JWKS logs one warning with the HTTP status", async () => {
@@ -204,6 +218,31 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
     serve = (_request, response) => {
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "invalid_grant" }));
+    };
+    await expectDenied(await fixture.callback());
+    assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc"]]);
+    assert.deepEqual(fixture.operationalLogs(), []);
+  });
+
+  await t.test("a refused client secret logs one warning instead of a rejection", async () => {
+    const fixture = loginFixture();
+    serve = (_request, response) => {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "invalid_client", error_description: "fixture-code" }));
+    };
+    await expectDenied(await fixture.callback());
+    assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
+    assert.deepEqual(fixture.operationalLogs(), [
+      unavailableLog({ step: "token", cause: "client_rejected" }),
+    ]);
+    assertNoSecrets(fixture.operationalLogs());
+  });
+
+  await t.test("an unreadable 4xx token answer stays a rejection without a warning", async () => {
+    const fixture = loginFixture();
+    serve = (_request, response) => {
+      response.writeHead(401, { "content-type": "text/html" });
+      response.end("<html>invalid_client</html>");
     };
     await expectDenied(await fixture.callback());
     assert.deepEqual(fixture.denials, [["EXTERNAL_IDENTITY_REJECTED", "oidc"]]);

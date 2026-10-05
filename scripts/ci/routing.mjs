@@ -133,15 +133,21 @@ export function isTransientFetchError(error) {
 }
 
 // Same retry rule as scripts/ci/download-pinned.sh: transient network errors
-// and HTTP 408/429/5xx are retried (five attempts; no retry starts after
-// 120 s); any other error or HTTP status fails at once. The caller verifies
-// the checksum, never retried.
+// and HTTP 408/429/5xx are retried (eight attempts, backoff doubling to a
+// 20 s cap; no retry starts after 120 s); any other error or HTTP status fails
+// at once. The caller verifies the checksum, never retried.
 export async function fetchPinnedBytes(
   artifact,
-  { attempts = 5, firstDelayMs = 2_000, budgetMs = 120_000, attemptTimeoutMs = 60_000 } = {},
+  {
+    attempts = 8,
+    firstDelayMs = 2_000,
+    maxDelayMs = 20_000,
+    budgetMs = 120_000,
+    attemptTimeoutMs = 60_000,
+  } = {},
 ) {
   const started = Date.now();
-  let delayMs = firstDelayMs;
+  let delayMs = Math.min(firstDelayMs, maxDelayMs);
   for (let attempt = 1; ; attempt += 1) {
     let failure;
     let cause;
@@ -170,7 +176,7 @@ export async function fetchPinnedBytes(
       `${artifact.name} download failed (${failure}); retrying in ${delayMs} ms (attempt ${attempt + 1}/${attempts}).`,
     );
     await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
-    delayMs *= 2;
+    delayMs = Math.min(delayMs * 2, maxDelayMs);
   }
 }
 

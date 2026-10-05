@@ -421,7 +421,7 @@ export class DockerComputeDriver implements ComputeDriver {
       this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       await this.lifecycle.beforeNamespaceDelete(namespace);
       for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
-        await this.removeContainer(containerId, true);
+        await this.removeContainer(containerId);
       }
       await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
       await this.removeNetwork(name);
@@ -521,9 +521,6 @@ export class DockerComputeDriver implements ComputeDriver {
         context?.workspaceSetup,
       );
       agentCreated = agent.created ? agent.containerName : undefined;
-      if (!agent.ready) {
-        return result;
-      }
       const gateway = await this.reconcileGateway(
         prepared,
         network,
@@ -543,7 +540,7 @@ export class DockerComputeDriver implements ComputeDriver {
           continue;
         }
         try {
-          await this.removeContainer(name, true);
+          await this.removeContainer(name);
         } catch (cleanupError) {
           failures.push(cleanupError);
         }
@@ -638,7 +635,7 @@ export class DockerComputeDriver implements ComputeDriver {
         this.agentOwnership(revision),
         `container ${agentName}`,
       );
-      await this.removeContainer(agentName, true);
+      await this.removeContainer(agentName);
     }
     const gatewayName = this.gatewayContainerName(revision.namespaceId, revision.agentId);
     const gateway = await this.container(gatewayName);
@@ -649,7 +646,7 @@ export class DockerComputeDriver implements ComputeDriver {
         `container ${gatewayName}`,
       );
       if (gateway.Config?.Labels?.[REVISION_LABEL] === revision.id) {
-        await this.removeContainer(gatewayName, true);
+        await this.removeContainer(gatewayName);
       }
     }
   }
@@ -663,7 +660,7 @@ export class DockerComputeDriver implements ComputeDriver {
     const initializer = await this.container(initializerName);
     if (initializer !== undefined) {
       this.verifyOwnership(initializer.Config?.Labels, ownership, `container ${initializerName}`);
-      await this.removeContainer(initializerName, true);
+      await this.removeContainer(initializerName);
     }
     await this.removeWorkspaceVolumes(ownership);
   }
@@ -746,7 +743,7 @@ export class DockerComputeDriver implements ComputeDriver {
       if (existing.State?.Running) {
         throw new Error("Workspace initialization is already running.");
       }
-      await this.removeContainer(name, true);
+      await this.removeContainer(name);
     }
     await this.request(
       "POST",
@@ -840,7 +837,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       }
       throw new Error("Workspace initialization timed out.");
     } finally {
-      await this.removeContainer(name, true);
+      await this.removeContainer(name);
     }
   }
 
@@ -922,10 +919,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         if (healthy(existing) && transportMatches) {
           return { containerName, created: false, ready: true };
         }
-        await this.removeContainer(containerName, true);
+        await this.removeContainer(containerName);
       }
       if (currentRevision !== revision.revision || currentRevisionId !== revision.id) {
-        await this.removeContainer(containerName, true);
+        await this.removeContainer(containerName);
       }
     }
 
@@ -977,7 +974,6 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   ): Promise<{
     readonly containerName: string;
     readonly created: boolean;
-    readonly ready: boolean;
     readonly appServerToken: string;
   }> {
     const containerName = this.agentContainerName(
@@ -993,11 +989,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         return {
           containerName,
           created: false,
-          ready: true,
           appServerToken: required(containerTransportToken(existing), "Codex transport token"),
         };
       }
-      await this.removeContainer(containerName, true);
+      await this.removeContainer(containerName);
     }
     // OCC admission requires all native entries to share the same primary model.
     const agents = asRecord(revision.configuration.agents);
@@ -1040,7 +1035,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         [HARNESS_VERSION_LABEL]: revision.harness.version,
       },
     });
-    return { containerName, created: true, ready: true, appServerToken };
+    return { containerName, created: true, appServerToken };
   }
 
   private async createRuntimeContainer(
@@ -1108,7 +1103,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       );
       return await this.waitForHealthyContainer(input.name);
     } catch (error) {
-      await this.removeContainer(input.name, true).catch(() => {});
+      await this.removeContainer(input.name).catch(() => {});
       throw error;
     }
   }
@@ -1307,11 +1302,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     return containerIds;
   }
 
-  private async removeContainer(name: string, force: boolean): Promise<void> {
-    const suffix = force ? "?force=true&v=true" : "?v=true";
+  private async removeContainer(name: string): Promise<void> {
     await this.request(
       "DELETE",
-      `/containers/${encodeURIComponent(name)}${suffix}`,
+      `/containers/${encodeURIComponent(name)}?force=true&v=true`,
       undefined,
       [204, 404],
     );

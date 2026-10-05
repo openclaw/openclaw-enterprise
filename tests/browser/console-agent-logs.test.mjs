@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
@@ -12,7 +13,9 @@ import {
   nativeValues,
   newPage,
   settlePageRequests,
+  trackSettledFetches,
   waitForCondition,
+  waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 
 // The console runs against the production controller app, IAM, cursor signing and
@@ -59,6 +62,11 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
     ),
     line(2, `pushing with ${secret}`),
     line(3, '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"hi"}}'),
+    // A pretty-printed JSON value, as Codex prints it: withheld as one run, never called corrupt.
+    line(3, "{"),
+    line(3, '  "id": 7,'),
+    line(3, '  "result": {}'),
+    line(3, "}"),
     line(
       4,
       '{"event":"codex.model_probe","attempt":1,"elapsedMs":900,"exitCode":1,"signal":null,"code":"AUTHENTICATION_FAILED"}',
@@ -69,7 +77,7 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
 
   const card = page.locator(".runtime-pod");
   await card.getByRole("heading", { name: "Gateway" }).waitFor();
@@ -82,7 +90,12 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("runtime.startup_phase").waitFor();
   await pane.getByText("pushing with [redacted:token]").waitFor();
-  await pane.getByText("1 structured output withheld").waitFor();
+  // The reason code in parentheses is the one `occ agent logs` prints for the same rows.
+  await pane.getByText("1 structured output line withheld (unrecognised_structured)").waitFor();
+  await pane
+    .getByText("4 multi-line, unparseable or deeply nested JSON lines withheld (malformed)")
+    .waitFor();
+  assert.equal(await pane.getByText(/malformed structured/).count(), 0);
   // A failure code shows on the collapsed row, not only after expanding it.
   const probe = pane.locator(".log-row", { hasText: "codex.model_probe" });
   assert.equal(
@@ -114,6 +127,67 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
   assert.equal(await page.getByRole("button", { name: "Logs", exact: true }).count(), 0);
 });
 
+test("invisible and bidirectional characters in log text show as visible escapes", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.events = [
+    {
+      type: "Warning",
+      container: "gateway",
+      reason: "BackOff",
+      message: "pulling report\u202egnp.exe",
+      count: 1,
+      lastObservedAt: "2026-09-30T11:59:00Z",
+    },
+  ];
+  computeDriver.state.lines = [
+    // U+202E would display the rest of the line reversed ("invoice for exe.pdf").
+    line(1, "invoice for \u202efdp.exe, zero\u200bwidth and \u2066isolate\u2069 end"),
+    line(
+      2,
+      '{"event":"runtime.startup_phase","container":"gateway","phase":"conf\u202eig","outcome":"ok","ms":12,"sinceStartMs":40}',
+    ),
+    line(3, "plain text, emoji \u{1f600} and \u6f22\u5b57 stay as they are"),
+    // A tag character hides ASCII outside the Basic Multilingual Plane.
+    line(4, "tagged\u{e0041} line"),
+  ];
+
+  const { page } = await newPage(t, fixture);
+  const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  await login(page, fixture, url);
+
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  const text = pane.locator(".log-message", { hasText: "invoice for" });
+  await text.waitFor();
+  assert.equal(
+    await text.textContent(),
+    "invoice for \\u202efdp.exe, zero\\u200bwidth and \\u2066isolate\\u2069 end",
+  );
+  // The filter matches what the row shows.
+  assert.match(
+    await pane.locator(".log-row", { hasText: "invoice for" }).getAttribute("data-search"),
+    /invoice for \\u202efdp\.exe/,
+  );
+  const phase = pane.locator(".log-row", { hasText: "runtime.startup_phase" });
+  await phase.locator("summary").click();
+  await phase.locator("dd", { hasText: "conf" }).waitFor();
+  assert.equal(await phase.locator("dd", { hasText: "conf" }).textContent(), "conf\\u202eig");
+  assert.equal(
+    await pane.locator(".log-message", { hasText: "plain text" }).textContent(),
+    "plain text, emoji \u{1f600} and \u6f22\u5b57 stay as they are",
+  );
+  assert.equal(
+    await pane.locator(".log-message", { hasText: "tagged" }).textContent(),
+    "tagged\\U000e0041 line",
+  );
+  // Pasting the original text into the filter still finds the escaped row.
+  await page.getByLabel("Filter", { exact: true }).fill("for \u202efdp");
+  await pane.locator(".log-row", { hasText: "invoice for" }).waitFor({ state: "visible" });
+  await page
+    .locator(".runtime-pod")
+    .getByText("gateway · BackOff: pulling report\\u202egnp.exe")
+    .waitFor();
+});
+
 test("startup warnings on a Ready Pod without restarts read as history", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   // A healthy first deploy: readiness probes failed while the Gateway started, then it
@@ -131,7 +205,7 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
   computeDriver.state.lines = [line(1, "gateway ready")];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
 
   const card = page.locator(".runtime-pod");
   const earlier = card.getByRole("list", { name: "Earlier warning Events" });
@@ -159,7 +233,7 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("first view line").waitFor();
 
@@ -230,7 +304,7 @@ test("level chips and the text filter narrow only the loaded window; download sa
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("Gateway ready").waitFor();
   await page
@@ -254,7 +328,10 @@ test("level chips and the text filter narrow only the loaded window; download sa
   // The wrapper's plain failure line is an error, so hiding `unknown` keeps it.
   await pane.getByText("Harness model authentication probe failed.").waitFor();
   assert.equal(await pane.getByText("model call failed").isVisible(), true);
-  assert.equal(await pane.getByText("1 structured output withheld").isVisible(), true);
+  assert.equal(
+    await pane.getByText("1 structured output line withheld (unrecognised_structured)").isVisible(),
+    true,
+  );
   await page
     .getByText(
       "Showing 3 of 5 loaded lines. Filters search only the lines loaded in this view, not the whole container log.",
@@ -308,29 +385,22 @@ test("an operator without administer sees status but no log text and is never re
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "operator must not see this")];
   const operator = await fixture.createAccountWithPolicy("runtime-operator", (principal) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "role-console-runtime-operator",
+      bindingId: "binding-console-runtime-operator",
       namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "operate", resourceKind: "agent" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-runtime-operator",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-runtime-operator",
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "operate"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
     });
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, operator.credentials);
+  await login(page, fixture, url, operator.credentials);
 
   await page.locator(".runtime-pod").getByRole("heading", { name: "Gateway" }).waitFor();
   await page
@@ -358,29 +428,22 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   computeDriver.state.lines = [line(1, "log reader can see this")];
   computeDriver.state.previousLines = [line(0, "output before the restart")];
   const reader = await fixture.createAccountWithPolicy("runtime-log-reader", (principal) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "role-console-runtime-log-reader",
+      bindingId: "binding-console-runtime-log-reader",
       namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read_logs", resourceKind: "agent" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-runtime-log-reader",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-runtime-log-reader",
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "read_logs"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
     });
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, reader.credentials);
+  await login(page, fixture, url, reader.credentials);
 
   // Runtime status needs operate; log text needs only read_logs, so the tab still reads it.
   await page
@@ -434,7 +497,7 @@ test("the Logs tab explains cluster RBAC, unsupported Drivers and unavailable re
   computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page
     .getByText(/Ask your platform operator to enable agentRuntimeLogs in the Helm chart/)
     .waitFor();
@@ -531,7 +594,7 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
 
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await page.locator("#runtime-log-source").selectOption("sandbox");
   await pane
@@ -590,7 +653,7 @@ test("a Gateway view points at an unready Harness Pod instead of reading as a ne
   computeDriver.state.harnessLines = [line(2, "Harness model authentication probe failed.")];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page.locator("#runtime-log-source").selectOption("gateway");
   await page
     .getByRole("log", { name: "Runtime log output" })
@@ -628,7 +691,7 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
   ];
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page
     .locator(".runtime-pod")
     .getByText(`agent-${revisionId.slice(4, 12)}-old`)
@@ -652,28 +715,22 @@ test("the Gateway hint skips a rollout's old Harness Pod and covers a Harness wi
 test("a reader without operate learns what log text needs and is asked for status once per page", async (t) => {
   const { fixture, namespace, agent, revisionId } = await logsFixture(t);
   const reader = await fixture.createAccountWithPolicy("runtime-reader", (principal) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "role-console-runtime-reader",
+      bindingId: "binding-console-runtime-reader",
       namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-runtime-reader",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-runtime-reader",
+      permissions: {
+        namespace: ["read"],
+        agent: ["read"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
     });
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, reader.credentials);
+  await login(page, fixture, url, reader.credentials);
 
   await page
     .getByText(
@@ -696,28 +753,22 @@ test("a reader without operate learns what log text needs and is asked for statu
 test("a status denial for one operator does not carry over to the next sign-in on the tab", async (t) => {
   const { fixture, namespace, agent, revisionId } = await logsFixture(t);
   const reader = await fixture.createAccountWithPolicy("runtime-switch-reader", (principal) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "role-console-runtime-switch-reader",
+      bindingId: "binding-console-runtime-switch-reader",
       namespaceId: namespace.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    });
-    fixture.policy.bindings.push({
-      id: "binding-console-runtime-switch-reader",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-console-runtime-switch-reader",
+      permissions: {
+        namespace: ["read"],
+        agent: ["read"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
     });
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search, reader.credentials);
+  await login(page, fixture, url, reader.credentials);
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
 
   // Sign out and in as the administrator without reloading the page.
@@ -751,6 +802,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   }));
   computeDriver.state.lines = [...earlier, line(1, "before leaving")];
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   // A recorded deployment result keeps the Agent view cacheable for Back.
   await page.route(
@@ -775,7 +827,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   );
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("before leaving").waitFor();
   await page.getByRole("button", { name: "Follow" }).click();
@@ -799,6 +851,12 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   // Both timers fire while the view is cached and stop.
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
+  // The heading shows before the Namespaces page has checked access. Advancing the clock past
+  // the console's 15 s request timeout while a session or Namespace read is pending fails it
+  // ("Session unavailable" or "Namespace access unavailable") and drops every cached view, so
+  // let the page finish its reads first.
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await waitForIdleFetches(page);
   await page.clock.runFor(25_000);
   const statusBeforeBack = statusReads();
   computeDriver.state.lines = [...computeDriver.state.lines, line(9, "after back")];

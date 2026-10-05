@@ -8,10 +8,13 @@ import {
   kubernetesNamespaceName,
   kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  ResourceConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
+} from "../../packages/occ/src/index.ts";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
-const kubeconfigPath = "/tmp/openclaw-enterprise-conformance/kubeconfig";
-const contextName = "openclaw-enterprise-local";
 const namespace = Object.freeze({
   id: "ns_runtime_00000000-0000-4000-8000-000000000001",
   name: "Runtime credential tenant",
@@ -30,39 +33,15 @@ const agent = Object.freeze({
 });
 
 function options(overrides = {}) {
-  const resources = {
-    requests: { cpu: "100m", memory: "64Mi" },
-    limits: { cpu: "250m", memory: "128Mi" },
-  };
   return {
-    authentication: { mode: "kubeconfig", kubeconfigPath, context: contextName },
-    images: {
-      gateway: "openclaw-enterprise/gateway-fixture:local",
-      agent: "openclaw-enterprise/agent-fixture:local",
-      requireImmutableDigest: false,
-    },
-    resources: {
-      gateway: resources,
-      agent: resources,
-      namespace: {
-        quota: { pods: "10", "requests.cpu": "2", "requests.memory": "1Gi" },
-        containerDefaults: resources,
-      },
-    },
-    network: {
-      dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
-      gatewayPort: 8080,
+    ...conformanceKubernetesOptions({
       gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-      gatewayClients: [
-        { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
-      ],
-    },
-    servicePrincipalCredentials: { mode: "disabled" },
-    runtime: {
-      transportSecretPrefix: "transport",
-      gatewayStorageClassName: "local-path",
-      channels: { proxyUrl: "http://10.42.0.15:3128" },
-    },
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        channels: { proxyUrl: "http://10.42.0.15:3128" },
+      },
+    }),
     ...overrides,
   };
 }
@@ -91,6 +70,9 @@ function credentialFixture({
   runtime = true,
   namespaceReadStatus = 200,
   twoCluster = false,
+  secretReadStatus = undefined,
+  secretCreateStatus = undefined,
+  deploymentListStatus = undefined,
 } = {}) {
   const configured = options(runtime ? {} : { runtime: undefined });
   if (twoCluster) {
@@ -102,7 +84,7 @@ function credentialFixture({
       envoyNamespace: "envoy",
     };
     configured.executionCluster = {
-      authentication: { mode: "kubeconfig", kubeconfigPath, context: "execution" },
+      authentication: { ...configured.authentication, context: "execution" },
       harnessRouting: { ...configured.gatewayRouting, hostname: "harness.example.test" },
       network: {
         dns: configured.network.dns,
@@ -186,6 +168,9 @@ function credentialFixture({
     },
     async readNamespacedSecret(request) {
       calls.push({ kind: "readSecret", name: request.name });
+      if (secretReadStatus !== undefined) {
+        throw httpError(secretReadStatus);
+      }
       const secret = locate(secrets, request)?.[1];
       if (secret === undefined) {
         throw httpError(404);
@@ -194,6 +179,9 @@ function credentialFixture({
     },
     async createNamespacedSecret(request) {
       calls.push({ kind: "createSecret", name: request.body.metadata.name });
+      if (secretCreateStatus !== undefined) {
+        throw httpError(secretCreateStatus);
+      }
       assert.equal(request.namespace, controlNamespace?.metadata.name ?? namespaceName);
       created.push(structuredClone(request.body));
       const observed = {
@@ -228,6 +216,9 @@ function credentialFixture({
   const apps = {
     async listNamespacedDeployment(request) {
       calls.push({ kind: "listDeployments", request: structuredClone(request) });
+      if (deploymentListStatus !== undefined && request.namespace === namespaceName) {
+        throw httpError(deploymentListStatus);
+      }
       assert.ok([namespaceName, controlNamespace?.metadata.name].includes(request.namespace));
       assert.equal(
         request.labelSelector,
@@ -534,6 +525,70 @@ test("draft Agent cleanup tolerates absent compute Namespace without bypassing s
     credential.driver.getAgentRuntimeCredentialStatus(binding()),
     /namespace is unavailable/,
   );
+});
+
+test("a cluster denial of runtime credential Secrets names the Kubernetes operation and namespace", async () => {
+  // The data-plane tenant-api RoleBinding is missing: the API may not read the embedded
+  // Agent's transport Secret, so operators need the operation, not a generic outage.
+  for (const [executionMode, kubernetesNamespace, plane] of [
+    ["embedded", kubernetesNamespaceName(namespace.id), "execution"],
+    ["dedicated", kubernetesNamespaceName(namespace.id), "execution"],
+  ]) {
+    const { driver } = credentialFixture({ secretReadStatus: 403 });
+    const denied = await driver
+      .getAgentRuntimeCredentialStatus({ namespace, agent: { ...agent, executionMode } })
+      .then(
+        () => assert.fail("a denied Secret read must fail"),
+        (error) => error,
+      );
+    assert.ok(denied instanceof RuntimeCredentialsForbiddenByClusterError, executionMode);
+    // Callers that fail closed on dependency outages keep doing so.
+    assert.ok(denied instanceof DependencyUnavailableError);
+    assert.deepEqual(
+      {
+        verb: denied.verb,
+        resource: denied.resource,
+        kubernetesNamespace: denied.kubernetesNamespace,
+        plane: denied.plane,
+        status: denied.status,
+      },
+      { verb: "get", resource: "secrets", kubernetesNamespace, plane, status: 403 },
+    );
+  }
+
+  const { driver, created } = credentialFixture({ secretCreateStatus: 403 });
+  const denied = await driver.provisionAgentRuntimeCredentials(binding(), {}).then(
+    () => assert.fail("a denied Secret create must fail"),
+    (error) => error,
+  );
+  assert.ok(denied instanceof RuntimeCredentialsForbiddenByClusterError);
+  assert.equal(denied.verb, "create");
+  assert.equal(denied.resource, "secrets");
+  assert.equal(denied.kubernetesNamespace, kubernetesNamespaceName(namespace.id));
+  assert.equal(created.length, 0);
+
+  // A dedicated Agent's preflight also lists Deployments in the data-plane namespace.
+  const preflight = credentialFixture({ deploymentListStatus: 403 });
+  const listDenied = await preflight.driver.provisionAgentRuntimeCredentials(binding(), {}).then(
+    () => assert.fail("a denied Deployment list must fail"),
+    (error) => error,
+  );
+  assert.ok(listDenied instanceof RuntimeCredentialsForbiddenByClusterError);
+  assert.deepEqual(
+    [listDenied.verb, listDenied.resource, listDenied.kubernetesNamespace, listDenied.plane],
+    ["list", "deployments", kubernetesNamespaceName(namespace.id), "execution"],
+  );
+  assert.equal(preflight.created.length, 0);
+
+  // Other failures, including a rejected API credential (401), keep the generic outage.
+  for (const status of [400, 401]) {
+    const unavailable = credentialFixture({ secretReadStatus: status });
+    await assert.rejects(unavailable.driver.getAgentRuntimeCredentialStatus(binding()), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError, String(status));
+      assert.equal(error instanceof RuntimeCredentialsForbiddenByClusterError, false);
+      return true;
+    });
+  }
 });
 
 test("mocked Kubernetes client preflights the transport Secret before initial create", async () => {

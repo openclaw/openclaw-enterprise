@@ -14,9 +14,11 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -39,29 +41,6 @@ function bodyAtJsonLimit(limit, buildBody) {
   const body = buildBody(value);
   assert.equal(jsonBodyBytes(body), limit);
   return { body, value };
-}
-
-function createTestComputeDriver() {
-  return {
-    id: "compute-secret-api",
-    capability: "compute",
-    implementation: "deterministic-test",
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
 }
 
 async function createFixture(options = {}) {
@@ -106,12 +85,13 @@ async function createFixture(options = {}) {
               controller = new OpenClawController(installation, {
                 state: new InMemoryPlatformState({ auditSink }),
                 recordOperations: options.recordOperations ?? false,
+                ...(options.now === undefined ? {} : { now: options.now }),
               });
               return controller;
             },
           }),
       iamDriver,
-      computeDriver: options.computeDriver ?? createTestComputeDriver(),
+      computeDriver: options.computeDriver ?? createReadyComputeDriver("compute-secret-api"),
       configurationDriver: createTestConfigurationDriver({ id: "configuration-secret-api" }),
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
@@ -214,7 +194,7 @@ function createModelDiscoveryFixture() {
   const native = createTestKubernetesComputeDriver("compute-model-discovery");
   return createFixture({
     computeDriver: {
-      ...createTestComputeDriver(),
+      ...createReadyComputeDriver("compute-secret-api"),
       discoverHarnessModels: native.discoverHarnessModels,
     },
   });
@@ -389,17 +369,11 @@ test("Agent model discovery requires namespace Agent-create permission before pr
   const fixture = await createModelDiscoveryFixture();
   const namespace = await bootstrapNamespace(fixture);
   const { principal: reader, app: readerApp } = await fixture.createPrincipal("model-reader");
-  fixture.state.roles.push({
+  grantRole(fixture.state, reader.id, {
     id: "role-model-reader",
+    bindingId: "binding-model-reader",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-model-reader",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-model-reader",
+    permissions: { namespace: ["read"] },
   });
   const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
   const apiKey = `denied-discovery-key-${randomUUID()}`;
@@ -771,17 +745,11 @@ test("Secret API denial and storage failures return value-free errors", async ()
   assert.equal(created.status, 201);
 
   const { principal: reader, app: readerApp } = await fixture.createPrincipal("secret-reader");
-  fixture.state.roles.push({
+  grantRole(fixture.state, reader.id, {
     id: "role-secret-reader-without-secret",
+    bindingId: "binding-secret-reader-without-secret",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-secret-reader-without-secret",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-secret-reader-without-secret",
+    permissions: { namespace: ["read"] },
   });
 
   const denied = await request(
@@ -837,7 +805,7 @@ for (const [model, method, executionMode] of [
     const fixture = await createFixture({
       recordOperations: true,
       computeDriver: {
-        ...createTestComputeDriver(),
+        ...createReadyComputeDriver("compute-secret-api"),
         validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
       },
     });
@@ -910,29 +878,42 @@ for (const [model, method, executionMode] of [
     assert.equal(forbidden.status, 403);
     assert.equal(forbidden.body.error.code, "FORBIDDEN");
     // Administrative rights on the actor do not give the Agent permission to receive a key.
-    const denied = await request(fixture.app, "POST", `${path}/deploy`);
-    assert.equal(denied.status, 403);
     const { servicePrincipalId } = await fixture
       .controller()
       .getAgent(fixture.principal.id, namespace.id, agent.id);
+    // The Agent's service principal exists but holds no grant on the key.
     fixture.state.identities.push({
       kind: "service_principal",
       id: servicePrincipalId,
       namespaceId: namespace.id,
     });
-    fixture.state.roles.push({
-      id: "harness-key-delivery",
-      namespaceId: namespace.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
+    const denied = await request(fixture.app, "POST", `${path}/deploy`);
+    assert.equal(denied.status, 403);
+    // The caller's own grants passed, so the denial audit records the caller's deploy request
+    // and names the Agent service principal and the grant it lacks, never the caller as denied.
+    const agentDenial = fixture.auditSink.events.findLast(
+      (event) => event.kind === "authorization_denial",
+    );
+    assert.equal(agentDenial.reasonCode, "AGENT_PRINCIPAL_NOT_AUTHORIZED");
+    // The route's reason passes through the audit factory like any other: redacted and capped
+    // at 120 characters. The details below still name the principal, action and resource.
+    assert.ok(denied.body.error.message.length > 120);
+    assert.equal(agentDenial.decisionReason, denied.body.error.message.slice(0, 120));
+    assert.deepEqual(agentDenial.authorization, {
+      principalId: fixture.principal.id,
+      action: "deploy",
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
     });
-    fixture.state.bindings.push({
+    assert.equal(agentDenial.details.servicePrincipalId, servicePrincipalId);
+    assert.equal(agentDenial.details.action, "operate");
+    assert.deepEqual(agentDenial.details.resource, key.data.ref);
+    assert.equal(agentDenial.details.iamEvidence, undefined);
+    assert.equal(agentDenial.details.servicePrincipalEvidence.identityId, servicePrincipalId);
+    grantRole(fixture.state, servicePrincipalId, {
       id: "harness-key-delivery",
       namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: servicePrincipalId,
-      roleId: "harness-key-delivery",
-      resourceKind: "secret",
-      resourceId: key.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: key.data.id },
     });
     const admitted = await request(fixture.app, "POST", `${path}/deploy`);
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
@@ -991,36 +972,17 @@ test("Changing Harness Secret bindings requires grants on both removed and repla
     200,
   );
   const { principal, app } = await fixture.createPrincipal("harness-editor");
-  fixture.state.roles.push({
+  grantRole(fixture.state, principal.id, {
     id: "harness-editor",
     namespaceId: namespace.id,
-    permissions: [
-      { action: "update", resourceKind: "agent" },
-      { action: "read", resourceKind: "configuration" },
-    ],
+    permissions: { agent: ["update"], configuration: ["read"] },
   });
-  fixture.state.bindings.push({
-    id: "harness-editor",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "harness-editor",
-  });
-  fixture.state.roles.push({
+  const { binding: grant } = grantRole(fixture.state, principal.id, {
     id: "harness-source",
     namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: secrets[0].id },
   });
-  const grant = {
-    id: "harness-source",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "harness-source",
-    resourceKind: "secret",
-    resourceId: secrets[0].id,
-  };
-  fixture.state.bindings.push(grant);
   const patch = (harnessAuth) =>
     request(app, "PATCH", path, { body: { configurationId: configuration.id, harnessAuth } });
   assert.equal((await patch(replacement)).status, 403); // Missing replacement authority.
@@ -1147,4 +1109,113 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
       "The request does not match the operation contract: body /x has an unsupported value.",
     );
   }
+});
+
+/** Records gateway copies; OCC admission, IAM and the audit rows under test stay real. */
+function createRecordingCredentialGateway() {
+  const stored = new Map();
+  return {
+    id: "credential-gateway-secret-api",
+    capability: "credential_gateway",
+    implementation: "test-recording-gateway",
+    stored,
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource(context, input) {
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
+    },
+    async updateSource(context, input) {
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
+    },
+    async rotateSource() {
+      throw new Error("not exercised");
+    },
+    async sourceStatus(context) {
+      return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
+    },
+    async removeSource(context) {
+      stored.delete(context.source.id);
+    },
+    async attachForRevision() {
+      throw new Error("not exercised");
+    },
+    async attachmentStatus() {
+      throw new Error("not exercised");
+    },
+    async withdraw() {
+      throw new Error("not exercised");
+    },
+  };
+}
+
+test("credential source writes commit one value-free audit row each", async () => {
+  let now = Date.now();
+  const fixture = await createFixture({
+    now: () => new Date(now),
+    computeDriver: {
+      ...createReadyComputeDriver("compute-secret-api"),
+      async resolveSandboxNamespace(namespace) {
+        return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
+      },
+    },
+  });
+  const namespace = await bootstrapNamespace(fixture);
+  const gateway = createRecordingCredentialGateway();
+  fixture.controller().registerDriver(gateway);
+  fixture.controller().selectDriver("credential_gateway", gateway.id);
+  const value = `credential-source-value-${randomUUID()}`;
+  const rotated = `credential-source-rotated-${randomUUID()}`;
+  const secret = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "Source key", value },
+  });
+  assert.equal(secret.status, 201);
+  const sources = `/namespaces/${namespace.id}/credential-sources`;
+
+  const created = await request(fixture.app, "POST", sources, {
+    body: { name: "openai", type: "openai", secrets: { api_key: secret.data.ref } },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: value });
+  const updatedSecret = await request(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespace.id}/secrets/${secret.data.id}`,
+    { body: { value: rotated } },
+  );
+  assert.equal(updatedSecret.status, 200);
+  const updated = await request(fixture.app, "PATCH", `${sources}/${created.data.id}`, {
+    body: {},
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: rotated });
+  // Past the registration fence: no timed-out registration could still create a gateway copy.
+  now += 71_000;
+  const deleted = await request(fixture.app, "DELETE", `${sources}/${created.data.id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(gateway.stored.has(created.data.id), false);
+
+  const mutations = fixture.auditSink.events.filter(
+    (event) => event.kind === "mutation" && event.resource.kind === "credential_source",
+  );
+  assert.deepEqual(
+    mutations.map((event) => [event.action, event.resource]),
+    ["create", "update", "delete"].map((verb) => [
+      `openclaw.credential_sources.${verb}`,
+      { kind: "credential_source", id: created.data.id, namespaceId: namespace.id },
+    ]),
+  );
+  const audit = JSON.stringify(fixture.auditSink.events);
+  assert.equal(audit.includes(value), false);
+  assert.equal(audit.includes(rotated), false);
 });

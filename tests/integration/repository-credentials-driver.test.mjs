@@ -1,11 +1,12 @@
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
+import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { createServer, request as httpRequest } from "node:http";
+import { createServer } from "node:http";
 import { request } from "node:https";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -715,7 +716,9 @@ test("durable admission capability rejects an old response, malformed replies, a
     if (response === undefined) {
       return;
     }
-    outgoing.writeHead(response.status, { "content-type": "application/json" });
+    outgoing.writeHead(response.status, {
+      "content-type": response.contentType ?? "application/json",
+    });
     outgoing.end(JSON.stringify(response.body));
   });
   await new Promise((resolve) => server.listen(socket, resolve));
@@ -727,18 +730,25 @@ test("durable admission capability rejects an old response, malformed replies, a
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
   // An older broker reports healthy protocol 1 but does not recognize this endpoint.
   await client.health(AbortSignal.timeout(1000));
-  await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(1000)));
+  // Every refusal is the retryable control error, never a parse or type error.
+  const unavailable = { name: "RepositoryCredentialControlError", retryable: true };
+  await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(1000)), unavailable);
   for (const value of [
     { status: 200, body: {} },
     { status: 200, body: { durableAdmissionVersion: 2 } },
     { status: 200, body: { durableAdmissionVersion: "1" } },
     { status: 503, body: { error: "unavailable" } },
+    // A well-formed reply still needs both a 200 status and a JSON content type.
+    { status: 503, body: { durableAdmissionVersion: 1 } },
+    { status: 200, body: { durableAdmissionVersion: 1 }, contentType: "text/plain" },
   ]) {
     response = value;
-    await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(1000)));
+    await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(1000)), unavailable);
   }
+  response = { status: 200, body: { durableAdmissionVersion: 1 } };
+  await client.checkAdmissionReady(AbortSignal.timeout(1000));
   response = undefined;
-  await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(50)));
+  await assert.rejects(client.checkAdmissionReady(AbortSignal.timeout(50)), unavailable);
 });
 
 test(
@@ -813,30 +823,14 @@ test(
     // An old Driver omits durableAdmission; the new broker rejects it before
     // contacting the receipt fixture, so a generic failure cannot qualify the pair.
     const input = { ...receipts[0].input, recoverOnly: true };
-    const body = JSON.stringify(input);
     const before = receipts.length;
-    const status = await new Promise((resolve, reject) => {
-      const outgoing = httpRequest(
-        {
-          socketPath: fixture.config.gateway.controlSocket,
-          path: "/v1/sessions",
-          method: "POST",
-          headers: {
-            host: "localhost",
-            "content-type": "application/json",
-            "content-length": Buffer.byteLength(body),
-            "x-admission-id": `${Date.now()}-${randomUUID()}`,
-          },
-        },
-        (incoming) => {
-          incoming.resume();
-          incoming.once("end", () => resolve(incoming.statusCode));
-          incoming.once("error", reject);
-        },
-      );
-      outgoing.once("error", reject);
-      outgoing.end(body);
-    });
+    const { status } = await controlRequest(
+      fixture.config.gateway.controlSocket,
+      "POST",
+      "/v1/sessions",
+      input,
+      { "x-admission-id": `${Date.now()}-${randomUUID()}` },
+    );
     assert.equal(status, 400);
     assert.equal(receipts.length, before);
     // An unavailable result alone cannot prove which request reached the

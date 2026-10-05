@@ -21,6 +21,7 @@ var (
 	namespaceIDArg        = idArg{kind: "Namespace", prefix: "ns_", lookup: "occ namespace list"}
 	configurationIDArg    = idArg{kind: "Configuration", prefix: "cfg_", lookup: "occ agent get AGENT_ID"}
 	secretIDArg           = idArg{kind: "Secret", prefix: "sec_", lookup: "occ secret list"}
+	presetIDArg           = idArg{kind: "Preset", prefix: "pre_", lookup: "occ preset list"}
 	credentialSourceIDArg = idArg{kind: "credential source", prefix: "cs_", lookup: "occ credential-source list"}
 	agentIDArg            = idArg{kind: "Agent", prefix: "agt_", lookup: "occ agent list"}
 	revisionIDArg         = idArg{kind: "deployment", prefix: "rev_", lookup: "occ agent revisions AGENT_ID"}

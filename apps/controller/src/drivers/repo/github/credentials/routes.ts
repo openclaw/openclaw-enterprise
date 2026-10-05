@@ -1,10 +1,16 @@
-import type { Denied, RequestHead, RequestPlan } from "../../credentials/backend-contracts.ts";
+import type {
+  Denied,
+  InputVerdict,
+  RequestHead,
+  RequestPlan,
+} from "../../credentials/backend-contracts.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import type { GitHubTokenProfile } from "./types.ts";
-import { allowsGraphqlInput } from "./graphql-input.ts";
+import { allowsGraphqlInput, allowsReadOnlyGraphqlInput } from "./graphql-input.ts";
+import { allowsReceivePackInput } from "./routes/receive-pack.ts";
 import { createResponsePolicy } from "./response.ts";
 import { classifyRoute, nativeGraphqlAccept } from "./routes/classification.ts";
-import type { Route } from "./routes/classification.ts";
+import type { GitHubGraphqlMode, Route } from "./routes/classification.ts";
 
 const deny = (): Denied =>
   Object.freeze({ kind: "denied", status: 400, code: "unsupported-request" });
@@ -22,11 +28,20 @@ interface RoutePolicyOptions {
   readonly gitOrigin: string;
   readonly apiOrigin: string;
   readonly limits: ServiceLimits;
+  /**
+   * "deny" removes the /graphql route; "read-only" also refuses mutations; the
+   * default keeps token-bounded GraphQL.
+   */
+  readonly graphql?: GitHubGraphqlMode;
+  /** When set, git-push plans inspect receive-pack commands before credential use. */
+  readonly pushRefAllowlist?: readonly string[];
 }
 
 interface PlanDependencies {
   readonly route: RoutePolicy["route"];
   readonly responsePolicy: ReturnType<typeof createResponsePolicy>;
+  readonly graphqlInput: (body: Uint8Array) => boolean;
+  readonly receivePackInput: ((body: Uint8Array) => InputVerdict) | undefined;
 }
 
 function inputLimit(kind: Route["kind"], limits: ServiceLimits): number {
@@ -112,7 +127,10 @@ function planRequest(
       connectMs: options.limits.connectMs,
     }),
     responsePolicy: dependencies.responsePolicy(git, selected.target, selected.rawResponse),
-    ...(selected.graphql === true ? { inputPolicy: allowsGraphqlInput } : {}),
+    ...(selected.graphql === true ? { inputPolicy: dependencies.graphqlInput } : {}),
+    ...(selected.kind === "git-push" && dependencies.receivePackInput
+      ? { inputPolicy: dependencies.receivePackInput }
+      : {}),
   }) as RequestPlan;
 }
 
@@ -122,9 +140,18 @@ export function createRoutePolicy(options: RoutePolicyOptions): RoutePolicy {
       repository: options.repository,
       profile: options.profile,
       targetBytes: options.limits.targetBytes,
+      graphql: options.graphql ?? "token-bounded",
     });
   const responsePolicy = createResponsePolicy(options, (head) => route(head) !== undefined);
-  const dependencies: PlanDependencies = { route, responsePolicy };
+  const dependencies: PlanDependencies = {
+    route,
+    responsePolicy,
+    graphqlInput: options.graphql === "read-only" ? allowsReadOnlyGraphqlInput : allowsGraphqlInput,
+    receivePackInput:
+      options.pushRefAllowlist === undefined
+        ? undefined
+        : allowsReceivePackInput(options.pushRefAllowlist),
+  };
   return Object.freeze({
     route,
     plan: (head: RequestHead) => planRequest(head, options, dependencies),

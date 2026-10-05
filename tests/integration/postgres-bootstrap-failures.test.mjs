@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -177,18 +178,6 @@ async function rowCounts() {
   });
 }
 
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function privateOutputDirectory(prefix) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   await chmod(directory, 0o700);
@@ -347,7 +336,7 @@ for (const sharedOutput of [false, true]) {
       assert.notEqual(winnerIndex, -1);
       const loserIndex = winnerIndex === 0 ? 1 : 0;
       const loserCreatedServiceKey =
-        !sharedOutput && (await exists(environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE));
+        !sharedOutput && existsSync(environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE);
       if (sharedOutput) {
         assert.ok([1, 2].includes(counts.service_keys));
         assert.ok([1, 2].includes(counts.users));
@@ -356,8 +345,8 @@ for (const sharedOutput of [false, true]) {
         assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
       }
       const outputEnvironment = sharedOutput ? environments[0] : environments[winnerIndex];
-      assert.equal(await exists(outputEnvironment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-      assert.equal(await exists(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+      assert.equal(existsSync(outputEnvironment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
+      assert.equal(existsSync(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
       const output = JSON.parse(
         await readFile(outputEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
       );
@@ -369,9 +358,9 @@ for (const sharedOutput of [false, true]) {
         if (index === winnerIndex || sharedOutput) {
           continue;
         }
-        assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), loserCreatedServiceKey);
+        assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), loserCreatedServiceKey);
         assert.equal(
-          await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE),
+          existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE),
           loserCreatedServiceKey,
         );
       }
@@ -428,7 +417,7 @@ test(
     const winnerOutputDigest = sha256(winnerOutputBytes);
     const winnerOutput = JSON.parse(winnerOutputBytes);
     assert.ok(rejectedEvent.attempt, rejected[0].stderr);
-    const loserCreatedServiceKey = await exists(
+    const loserCreatedServiceKey = existsSync(
       environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE,
     );
 
@@ -608,8 +597,8 @@ test(
     assert.equal(failure.attempt.passwordFile, environment.OCC_BOOTSTRAP_PASSWORD_FILE);
     assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
 
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
     const serviceKeyOutput = JSON.parse(
       await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
     );
@@ -659,8 +648,8 @@ test(
     assert.doesNotMatch(result.stderr, /^occ_/m);
     assert.equal(failure.attempt.passwordFile, environment.OCC_BOOTSTRAP_PASSWORD_FILE);
     assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
     const serviceKeyOutput = JSON.parse(
       await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
     );
@@ -714,7 +703,7 @@ test(
     assert.equal(failure.code, "COMMIT_OUTCOME_UNKNOWN");
     assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
 
-    assert.equal(await exists(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
+    assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
     const serviceKeyOutput = JSON.parse(
       await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
     );
@@ -734,3 +723,160 @@ test(
     assert.equal(serviceKeyOutput.data.name, "bootstrap-admin");
   },
 );
+
+const ADMINISTRATOR_PRINCIPAL = "(SELECT id FROM occ.iam_identities WHERE kind = 'principal')";
+
+// Each case breaks one invariant the existing-Installation check verifies. The fast
+// check must not accept any of them; the full check then fails exactly as before.
+const PARTIAL_INSTALLATIONS = [
+  ["administrator account", `UPDATE occ."user" SET email = 'moved-' || email`],
+  [
+    "Principal subject",
+    "UPDATE occ.iam_identities SET subject = 'another-user' WHERE kind = 'principal'",
+  ],
+  [
+    "Principal issuer",
+    "UPDATE occ.iam_identities SET issuer = issuer || ':moved' WHERE kind = 'principal'",
+  ],
+  [
+    "administrator binding",
+    `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = ${ADMINISTRATOR_PRINCIPAL}`,
+  ],
+  ...["administer", "read"].map((action) => [
+    `${action} installation permission`,
+    `UPDATE occ.iam_roles AS role SET permissions = (
+       SELECT jsonb_agg(permission) FROM jsonb_array_elements(role.permissions) AS permission
+       WHERE NOT (permission->>'action' = '${action}' AND permission->>'resourceKind' = 'installation'))
+     WHERE id IN (SELECT role_id FROM occ.iam_access_bindings
+       WHERE identity_subject_id = ${ADMINISTRATOR_PRINCIPAL})`,
+  ]),
+  [
+    "readable IAM state",
+    `UPDATE occ.iam_access_bindings SET resource_kind = 'unknown-kind', resource_id = 'x'
+     WHERE identity_subject_id = ${ADMINISTRATOR_PRINCIPAL}`,
+  ],
+];
+
+async function bootstrapExistingInstallation(context, label) {
+  await resetFailureDatabase();
+  const directory = await privateOutputDirectory(`openclaw-bootstrap-${label}-`);
+  context.after(async () => {
+    await resetFailureDatabase();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const environment = productionEnvironment({
+    directory,
+    email: `bootstrap-${label}-${randomUUID()}@example.test`,
+    name: `Bootstrap ${label}`,
+  });
+  const fresh = await runProductionBootstrap(environment);
+  assert.equal(fresh.ok, true, fresh.stderr);
+  return { environment, fresh };
+}
+
+function alreadyBootstrappedEvent(result) {
+  return jsonLines(result.stderr).find(
+    (line) => line.event === "installation.already-bootstrapped",
+  );
+}
+
+test(
+  "production bootstrap of a fresh database takes the full path",
+  requiresFailurePostgres,
+  async (context) => {
+    const { fresh } = await bootstrapExistingInstallation(context, "fresh-path");
+    assert.ok(
+      jsonLines(fresh.stdout).some((line) => line.event === "installation.bootstrapped"),
+      fresh.stdout,
+    );
+    assert.equal(alreadyBootstrappedEvent(fresh), undefined);
+  },
+);
+
+test(
+  "production bootstrap of a complete Installation verifies it without the auth stack",
+  requiresFailurePostgres,
+  async (context) => {
+    const { environment } = await bootstrapExistingInstallation(context, "fast-path");
+    const counts = await rowCounts();
+    const outputs = await Promise.all(
+      [environment.OCC_BOOTSTRAP_PASSWORD_FILE, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE].map(
+        async (path) => sha256(await readFile(path, "utf8")),
+      ),
+    );
+
+    const repeated = await runProductionBootstrap(environment);
+    assert.equal(repeated.ok, true, repeated.stderr);
+    assert.ok(
+      jsonLines(repeated.stdout).some((line) => line.event === "installation.already-bootstrapped"),
+      repeated.stdout,
+    );
+    assert.equal(alreadyBootstrappedEvent(repeated)?.step, "fast-path", repeated.stderr);
+    assert.deepEqual(await rowCounts(), counts);
+    assert.deepEqual(
+      await Promise.all(
+        [environment.OCC_BOOTSTRAP_PASSWORD_FILE, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE].map(
+          async (path) => sha256(await readFile(path, "utf8")),
+        ),
+      ),
+      outputs,
+    );
+  },
+);
+
+test(
+  "production bootstrap takes the fast path whatever the administrator's sign-in accounts",
+  requiresFailurePostgres,
+  async (context) => {
+    // Both checks look up the user only; its credential accounts do not count.
+    const { environment } = await bootstrapExistingInstallation(context, "no-accounts");
+    await withPool(migratorDatabaseUrl(), (pool) => pool.query("DELETE FROM occ.account"));
+    const repeated = await runProductionBootstrap(environment);
+    assert.equal(repeated.ok, true, repeated.stderr);
+    assert.equal(alreadyBootstrappedEvent(repeated)?.step, "fast-path", repeated.stderr);
+  },
+);
+
+test(
+  "production bootstrap of a complete Installation still rejects a non-origin auth base URL",
+  requiresFailurePostgres,
+  async (context) => {
+    const { environment } = await bootstrapExistingInstallation(context, "base-url");
+    const repeated = await runProductionBootstrap({
+      ...environment,
+      OCC_AUTH_BASE_URL: "http://127.0.0.1:0/auth",
+    });
+    assert.equal(repeated.ok, false, repeated.stdout);
+    assert.equal(alreadyBootstrappedEvent(repeated), undefined, repeated.stderr);
+    const failure = jsonLines(repeated.stderr).find(
+      (line) => line.event === "installation.bootstrap-failed",
+    );
+    assert.equal(failure?.code, "AUTH_BASE_URL_INVALID", repeated.stderr);
+  },
+);
+
+for (const [invariant, breakInvariant] of PARTIAL_INSTALLATIONS) {
+  test(
+    `production bootstrap without the ${invariant} takes the full path and fails`,
+    requiresFailurePostgres,
+    async (context) => {
+      const { environment } = await bootstrapExistingInstallation(
+        context,
+        `partial-${invariant.toLowerCase().replaceAll(/[^a-z]+/g, "-")}`,
+      );
+      await withPool(migratorDatabaseUrl(), (pool) => pool.query(breakInvariant));
+      const counts = await rowCounts();
+
+      const repeated = await runProductionBootstrap(environment);
+      assert.equal(repeated.ok, false, repeated.stdout);
+      assert.equal(alreadyBootstrappedEvent(repeated), undefined, repeated.stderr);
+      const failure = jsonLines(repeated.stderr).find(
+        (line) => line.event === "installation.bootstrap-failed",
+      );
+      assert.equal(failure?.code, "BOOTSTRAP_FAILED", repeated.stderr);
+      assert.equal(failure.attempt, undefined);
+      // The existing-Installation path never repairs.
+      assert.deepEqual(await rowCounts(), counts);
+    },
+  );
+}

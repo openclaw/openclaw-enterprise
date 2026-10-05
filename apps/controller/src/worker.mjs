@@ -2,6 +2,7 @@ import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
+  PresetFileError,
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
@@ -54,6 +55,9 @@ function configuration() {
 }
 
 function workerStartupFailureCode(error) {
+  if (error instanceof PresetFileError) {
+    return "PRESET_FILE_INVALID";
+  }
   const message = error instanceof Error ? error.message : "";
   if (/PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";

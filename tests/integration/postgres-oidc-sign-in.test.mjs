@@ -4,12 +4,12 @@ import test from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
+  attachProvider,
+  authRowCounts,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
@@ -17,10 +17,10 @@ import {
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
-  installationRoles,
   memoryLogger,
   oidcSignIn,
   oidcUpgradeSettings,
+  onboardPasswordAccounts,
   passwordSignIn,
   readAccount,
   signedInHeaders,
@@ -80,46 +80,27 @@ test(
     });
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.20");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Password onboarding on the default install, before OIDC is configured.
+    const { admin, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    // Password onboarding on the default install, before OIDC is configured.
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: Object.fromEntries(
+        ["member", "disabled", "both", "stranded"].map((name) => [
+          name,
+          { email: `oidc-${name}@example.test` },
+        ]),
+      ),
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const accounts = {};
-    for (const name of ["member", "disabled", "both", "stranded"]) {
-      const email = `oidc-${name}@example.test`;
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: roles.reader.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      accounts[name] = { id: created.json().data.id, email, password };
-    }
     const { member, disabled, both, stranded } = accounts;
-    await app.close();
-    app = undefined;
+    let adminHeaders;
 
-    const counts = async () =>
-      (
-        await pool.query(
-          `SELECT (SELECT count(*)::int FROM occ."user") AS users,
-                  (SELECT count(*)::int FROM occ.account) AS methods,
-                  (SELECT count(*)::int FROM occ.session) AS sessions`,
-        )
-      ).rows[0];
+    const counts = () => authRowCounts(pool);
     const denials = async (reason) =>
       (await state.transact((unit) => unit.audit.list())).filter(
         ({ action, outcome, reasonCode, details }) =>
@@ -128,16 +109,8 @@ test(
           reasonCode === reason &&
           details?.provider === "oidc",
       ).length;
-    const attach = async (userId, subject, provider = "oidc") =>
-      app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/providers/${provider}`,
-        headers: adminHeaders,
-        payload: {
-          subject,
-          expectedVersion: (await readAccount(app, adminHeaders, userId)).version,
-        },
-      });
+    const attach = (userId, subject, provider = "oidc") =>
+      attachProvider(app, adminHeaders, userId, provider, subject);
     async function assertRefused(authorization, message, reason = "EXTERNAL_IDENTITY_REJECTED") {
       const before = await counts();
       const deniedBefore = await denials(reason);
@@ -236,8 +209,13 @@ test(
           .map(({ providerId, subject }) => [providerId, subject]),
         [[oidcProviderId, memberSubject]],
       );
-      // A subject attached elsewhere is refused for another account.
-      assert.equal((await attach(both.id, memberSubject)).statusCode, 404);
+      // A subject attached elsewhere is refused for another account, as a named conflict.
+      const taken = await attach(both.id, memberSubject);
+      assert.equal(taken.statusCode, 409, taken.body);
+      assert.deepEqual(taken.json().error, {
+        code: "RESOURCE_CONFLICT",
+        message: "The external identity is already assigned.",
+      });
 
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();

@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyReply } from "fastify";
 import { PresetValidationError } from "@openclaw-enterprise/contracts";
+import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
@@ -26,6 +27,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
   SecretBindingValidationError,
@@ -94,7 +96,8 @@ export function canonicalFailure(reply: FastifyReply, error: RequestFailure): vo
   reply.status(error.status).send({
     error: {
       code: error.code,
-      message: error.message,
+      // Some messages come from Drivers or name submitted values; none may break the cap.
+      message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
     },
     meta: { requestId: reply.request.id },
@@ -297,6 +300,98 @@ function capped(message: string): string {
   return characters.length <= 256 ? characters.join("") : `${characters.slice(0, 255).join("")}…`;
 }
 
+// In Unicode mode, `\p{Cs}` matches only a surrogate that is not part of a pair.
+const UNPAIRED_SURROGATE = /\p{Cs}/u;
+
+function unstorableText(value: string): "nul" | "surrogate" | undefined {
+  return value.includes("\u0000")
+    ? "nul"
+    : UNPAIRED_SURROGATE.test(value)
+      ? "surrogate"
+      : undefined;
+}
+
+/**
+ * PostgreSQL text and jsonb cannot hold U+0000, and UTF-8 has no encoding for an unpaired
+ * UTF-16 surrogate: text stores U+FFFD in its place and jsonb rejects it. Refuses either one
+ * in any string or object key of `value` (path parameters or a parsed JSON body), so the
+ * caller gets a 400 instead of a 500 or 503 from the database, or a name stored differently
+ * from the one it was shown. It names the first offender in document order. Detail codes
+ * follow the workspace file content rule: a NUL is INVALID_FORMAT (as a `^[^\u0000]*$`
+ * pattern reports it), a surrogate INVALID_VALUE. The walk is iterative because a body can
+ * nest deeply.
+ */
+export function unstorableTextFailure(
+  context: "params" | "body",
+  value: unknown,
+): RequestFailure | undefined {
+  interface Node {
+    readonly value: unknown;
+    readonly parent?: Node;
+    readonly key?: string;
+  }
+  const pending: Node[] = [{ value }];
+  let found: { readonly node: Node; readonly problem: "nul" | "surrogate" } | undefined;
+  while (found === undefined && pending.length > 0) {
+    const node = pending.pop()!;
+    // A key is checked when its entry is visited, so keys and values share document order.
+    const problem =
+      (node.key === undefined ? undefined : unstorableText(node.key)) ??
+      (typeof node.value === "string" ? unstorableText(node.value) : undefined);
+    if (problem !== undefined) {
+      found = { node, problem };
+    } else if (node.value !== null && typeof node.value === "object") {
+      const entries = Array.isArray(node.value)
+        ? node.value.map((entry, index) => [String(index), entry] as const)
+        : Object.entries(node.value);
+      // Reversed onto the stack, so the walk reports the first offender in document order.
+      // (A loop, not push(...entries): a large array would exceed the argument limit.)
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, entry] = entries[index]!;
+        pending.push({ value: entry, parent: node, key });
+      }
+    }
+  }
+  if (found === undefined) {
+    return undefined;
+  }
+  const segments: string[] = [];
+  for (let node: Node | undefined = found.node; node?.key !== undefined; node = node.parent) {
+    segments.push(jsonPointer(node.key.replaceAll("\u0000", "?").replace(/\p{Cs}/gu, "?")));
+  }
+  segments.reverse();
+  // ErrorDetail paths are at most 512 characters; keep whole leading segments, or as much of
+  // the first one as fits (cut between escapes and whole characters).
+  let path = "";
+  for (const segment of segments) {
+    if (path.length + segment.length + 1 <= 512) {
+      path += `/${segment}`;
+      continue;
+    }
+    if (path === "") {
+      path = "/";
+      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
+        if (path.length + piece.length > 512) {
+          break;
+        }
+        path += piece;
+      }
+    }
+    break;
+  }
+  const nul = found.problem === "nul";
+  return failure(
+    400,
+    "INVALID_REQUEST",
+    capped(
+      `The request does not match the operation contract: ${context} ${path || "/"} contains ${
+        nul ? "a NUL character" : "an unpaired UTF-16 surrogate"
+      }.`,
+    ),
+    [{ path, code: nul ? "INVALID_FORMAT" : "INVALID_VALUE" }],
+  );
+}
+
 /**
  * Names each remaining kind and as many of its resource IDs as fit the 256-character
  * message contract; a kind whose IDs do not all fit says how many are left.
@@ -408,6 +503,13 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];
     return failure(mapped.status, error.code, mapped.message);
+  }
+  if (error instanceof RuntimeCredentialsForbiddenByClusterError) {
+    return failure(
+      503,
+      "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+      "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+    );
   }
   if (error instanceof ChannelCredentialError) {
     const messages = {
@@ -575,11 +677,7 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   }
   if (error instanceof NamespaceNotReadyError) {
-    return failure(
-      409,
-      "NAMESPACE_NOT_READY",
-      "The requested Namespace is not ready for deployment.",
-    );
+    return failure(409, "NAMESPACE_NOT_READY", "The requested Namespace is not ready.");
   }
   if (error instanceof NamespaceNotEmptyError) {
     return failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
@@ -678,9 +776,9 @@ export function requestFailure(error: unknown): RequestFailure {
         status === 403 ? "FORBIDDEN" : "UNAUTHENTICATED",
         status === 403
           ? reason === "untrusted_origin"
-            ? "A trusted browser origin is required: session-cookie requests that change state must come from the console and send its Origin header."
+            ? UNTRUSTED_ORIGIN_MESSAGE
             : "The request did not satisfy the configured admission boundary."
-          : "The caller did not provide valid admission evidence.",
+          : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
       );
     }
   }

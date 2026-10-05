@@ -253,5 +253,7 @@ that installed Compute isolates workloads; operator review remains mandatory.
 - [Compute comparison](compute-matrix.md)
 - [Packaged-driver testing](../../testing/local.md#packaged-driver-integration)
 
-The package resolver and startup checks live in
-[Installation composition](../../../apps/controller/src/composition/installation-config.ts).
+The [Driver package loader](../../../apps/controller/src/composition/driver-packages.ts)
+resolves installed packages and checks their factories;
+[Installation composition](../../../apps/controller/src/composition/installation-config.ts)
+validates selections and constructs the runtime bundle.

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
+import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { APIError, betterAuth } = await import(require.resolve("better-auth"));
@@ -23,10 +23,12 @@ export function createLoginFixture({
   state: stateOverrides = {},
   trustedClientAddress = true,
   recoveryEmail,
+  providerDeadlineMs,
 }) {
   const attempts = [];
   const subjects = [];
   const denials = [];
+  const unmatched = [];
   const errors = [];
   const authLogs = [];
   const operationalLines = [];
@@ -52,8 +54,14 @@ export function createLoginFixture({
       subjects.push([providerId, subject]);
     },
     snapshotPassword: async () => undefined,
-    recordDenied: async (reason, deniedProvider) => {
-      denials.push(deniedProvider === undefined ? [reason] : [reason, deniedProvider]);
+    recordDenied: async (reason, deniedProvider, details) => {
+      denials.push(
+        deniedProvider === undefined
+          ? [reason]
+          : details === undefined
+            ? [reason, deniedProvider]
+            : [reason, deniedProvider, details],
+      );
     },
     ...stateOverrides,
   };
@@ -64,6 +72,8 @@ export function createLoginFixture({
     {
       trustedClientAddress,
       onOperationalEvent: (event) => emitOccLogEvent(logger, event),
+      ...(providerDeadlineMs === undefined ? {} : { providerDeadlineMs }),
+      onUnmatchedCallback: (name) => unmatched.push(name),
     },
   );
   if (recoveryEmail !== undefined) {
@@ -109,6 +119,7 @@ export function createLoginFixture({
     attempts,
     subjects,
     denials,
+    unmatched,
     errors,
     authLogs,
     // Operational log records without their timestamp.
@@ -199,6 +210,12 @@ export async function startProviderServer(t, handle) {
     requests.push(request.url);
     handle(request, response);
   });
+  // Pooled connections outlive each subtest. A subtest that never yields to the event loop
+  // (the 4096-callback admission sweep) stalls every timer. If it runs past the server's
+  // idle timeout (about 6 s), the next fetch is written to a pooled socket before the
+  // overdue server timer destroys it, and fails as a provider outage. Only the client
+  // closes idle connections here.
+  server.keepAliveTimeout = 0;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
     server.closeAllConnections();
@@ -207,20 +224,49 @@ export async function startProviderServer(t, handle) {
   return { requests, port: server.address().port };
 }
 
+// One subtest per [endpoint, step] and framing. The endpoint answers past the provider
+// response cap (64 KiB) and leaves its stream open; every other path gets `provider()`'s
+// valid answer. The callback must be denied at once, cancel the stream and log
+// oversized_response. The declared case sends one byte only to flush its headers, so
+// only the declared-length check can refuse it in time.
+export async function testOversizedProviderBodies(t, { endpoints, serve, provider, login }) {
+  for (const [endpoint, step] of endpoints) {
+    for (const declared of [false, true]) {
+      await t.test(
+        `${endpoint} cancels oversized ${declared ? "declared" : "chunked"} bodies`,
+        async () => {
+          const fixture = login();
+          const valid = provider();
+          let closed = false;
+          serve((request, response) => {
+            if (request.url !== endpoint) {
+              return valid(request, response);
+            }
+            response.on("close", () => {
+              closed = true;
+            });
+            if (declared) {
+              response.setHeader("content-length", String(128 * 1024));
+            }
+            response.write(declared ? "x" : "x".repeat(64 * 1024 + 1));
+          });
+          const started = performance.now();
+          await expectDenied(await fixture.callback());
+          assert.ok(performance.now() - started < 2_000);
+          await until(() => closed);
+          assert.deepEqual(fixture.subjects, []);
+          assert.deepEqual(
+            fixture.operationalLogs().map((line) => [line.step, line.cause]),
+            [[step, "oversized_response"]],
+          );
+        },
+      );
+    }
+  }
+}
+
 // RS256 ID tokens signed by a fresh key that the returned JWKS publishes as "fixture-kid".
 export function createIdTokenSigner() {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const jwks = {
-    keys: [
-      { ...publicKey.export({ format: "jwk" }), kid: "fixture-kid", alg: "RS256", use: "sig" },
-    ],
-  };
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return {
-    jwks,
-    sign(claims) {
-      const input = `${encode({ alg: "RS256", kid: "fixture-kid", typ: "JWT" })}.${encode(claims)}`;
-      return `${input}.${sign("sha256", Buffer.from(input), privateKey).toString("base64url")}`;
-    },
-  };
+  const key = rsaSigningKey("fixture-kid");
+  return { jwks: { keys: [key.jwk] }, sign: idTokenSigner(key) };
 }

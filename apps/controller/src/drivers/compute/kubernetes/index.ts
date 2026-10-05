@@ -83,10 +83,12 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel, normalizeSecretBindings } from "@openclaw-enterprise/contracts";
 import {
+  ActivationFailedError,
   ActivationPendingError,
   ConfigurationHarnessError,
   DependencyUnavailableError,
   ResourceConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   TransientDependencyError,
@@ -687,6 +689,26 @@ function runtimeEventContainer(fieldPath: unknown): string | null {
   return typeof fieldPath === "string"
     ? (RUNTIME_EVENT_CONTAINER_FIELD_PATH.exec(fieldPath)?.[1] ?? null)
     : null;
+}
+
+// The scheduler's PVC bind lost an optimistic-concurrency race (usually with the PV
+// controller) and retried: a fresh Agent's workspace claim often shows this once. Only
+// this exact message, and only once the Pod has a node, is dropped from runtime status;
+// every other FailedScheduling Event is kept.
+const SETTLED_VOLUME_BINDING_CONFLICT =
+  /^running PreBind plugin "VolumeBinding": Operation cannot be fulfilled on persistentvolumeclaims "[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?": the object has been modified; please apply your changes to the latest version and try again$/;
+
+function settledSchedulingConflict(
+  event: Record<string, unknown> | undefined,
+  scheduled: boolean,
+): boolean {
+  return (
+    scheduled &&
+    event?.type === "Warning" &&
+    event.reason === "FailedScheduling" &&
+    typeof event.message === "string" &&
+    SETTLED_VOLUME_BINDING_CONFLICT.test(event.message)
+  );
 }
 
 const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
@@ -2584,7 +2606,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
           const events =
             options.events === false
               ? []
-              : await this.runtimeLogStep(signal, () => this.runtimePodEvents(target, status.uid));
+              : await this.runtimeLogStep(signal, () =>
+                  this.runtimePodEvents(
+                    target,
+                    status.uid,
+                    isNonEmptyString(asRecord(pod.spec)?.nodeName),
+                  ),
+                );
           return { ...status, events };
         }),
       );
@@ -2808,6 +2836,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async runtimePodEvents(
     namespace: KubernetesNamespaceAddress,
     podUid: string,
+    scheduled: boolean,
   ): Promise<readonly AgentRuntimeEvent[]> {
     const clients = await this.clients(namespace.plane);
     const list = asRecord(
@@ -2832,7 +2861,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           involved?.uid === podUid &&
           involved.kind === "Pod" &&
           (involved.namespace === undefined || involved.namespace === namespace.name) &&
-          (event?.type === "Normal" || event?.type === "Warning")
+          (event?.type === "Normal" || event?.type === "Warning") &&
+          !settledSchedulingConflict(event, scheduled)
         );
       })
       .map((event) => {
@@ -5409,24 +5439,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
   }
 
-  private async gatewayRouteForRevision(
-    name: string,
-    ownership: Ownership,
-    namespace: KubernetesNamespaceAddress,
-    revisionId: string,
-  ): Promise<ManagedKubernetesObject<"HTTPRoute"> | undefined> {
-    if (this.options.gatewayRouting === undefined) {
-      return undefined;
-    }
-    const existing = await this.getOwned("HTTPRoute", name, namespace, ownership);
-    if (existing === undefined) {
-      return undefined;
-    }
-    return existing.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revisionId
-      ? existing
-      : undefined;
-  }
-
   private async deleteNamedRuntimeResources(
     name: string,
     ownership: Ownership,
@@ -5843,7 +5855,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (spec === undefined) {
         return undefined;
       }
-      const secret = await this.getOwned("Secret", spec.name, context.namespace, context.ownership);
+      const secret = await this.runtimeCredentialClusterAccess(
+        "get",
+        "secrets",
+        context.namespace,
+        () => this.getOwned("Secret", spec.name, context.namespace, context.ownership),
+      );
       if (secret !== undefined) {
         this.requireCompleteRuntimeCredentialSecret(
           secret,
@@ -5995,15 +6012,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
       : [context.namespace];
     for (const namespace of targets) {
       const clients = await this.clients(namespace.plane);
-      const observed = await this.request(() =>
-        clients.apps.listNamespacedDeployment({
-          namespace: namespace.name,
-          labelSelector: labelsToSelector({
-            "openclaw.dev/namespace": context.namespaceId,
-            "openclaw.dev/agent": context.agentId,
-          }),
-          timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
-        }),
+      const observed = await this.runtimeCredentialClusterAccess(
+        "list",
+        "deployments",
+        namespace,
+        () =>
+          this.request(() =>
+            clients.apps.listNamespacedDeployment({
+              namespace: namespace.name,
+              labelSelector: labelsToSelector({
+                "openclaw.dev/namespace": context.namespaceId,
+                "openclaw.dev/agent": context.agentId,
+              }),
+              timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
+            }),
+          ),
       );
       if (!Array.isArray(observed?.items)) {
         throw new DependencyUnavailableError("The Agent runtime workload preflight failed.");
@@ -6076,18 +6099,48 @@ export class KubernetesComputeDriver implements ComputeDriver {
     values: Readonly<Record<string, string>>,
   ): Promise<void> {
     const clients = await this.clients(context.namespace.plane);
-    await this.request(
-      () =>
-        clients.core.createNamespacedSecret({
-          namespace: context.namespace.name,
-          body: {
-            ...this.manifest("v1", "Secret", spec.name, context.ownership, context.namespace),
-            type: "Opaque",
-            stringData: values,
-          },
-        }),
-      { mutating: true },
+    await this.runtimeCredentialClusterAccess("create", "secrets", context.namespace, () =>
+      this.request(
+        () =>
+          clients.core.createNamespacedSecret({
+            namespace: context.namespace.name,
+            body: {
+              ...this.manifest("v1", "Secret", spec.name, context.ownership, context.namespace),
+              type: "Opaque",
+              stringData: values,
+            },
+          }),
+        { mutating: true },
+      ),
     );
+  }
+
+  /**
+   * One runtime credential Kubernetes call whose denial an operator fixes with the tenant-api
+   * RoleBinding. The typed error names only the fixed operation and the namespace; the
+   * cluster's response text never travels with it.
+   */
+  private async runtimeCredentialClusterAccess<T>(
+    verb: RuntimeCredentialsForbiddenByClusterError["verb"],
+    resource: RuntimeCredentialsForbiddenByClusterError["resource"],
+    namespace: KubernetesNamespaceAddress,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      // A 401 is a rejected API credential, which no RoleBinding fixes; it stays generic.
+      if (numericErrorStatus(error) === 403) {
+        throw new RuntimeCredentialsForbiddenByClusterError({
+          verb,
+          resource,
+          kubernetesNamespace: namespace.name,
+          plane: namespace.plane,
+          status: 403,
+        });
+      }
+      throw error;
+    }
   }
 
   private generateRuntimeCredentialToken(): string {
@@ -7596,6 +7649,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           const failure = asRecord(status.workspaceNodeFailure);
           if (failure === undefined || !this.validRuntimeStatusIdentifier(failure.code)) {
             throw new DependencyUnavailableError("Runtime status returned invalid data.");
+          }
+          // The Gateway refuses its own CLI as unauthorized (no gateway.auth.password):
+          // it can never confirm the node for this revision, so fail activation now.
+          if (failure.code === "GATEWAY_UNAUTHORIZED") {
+            throw new ActivationFailedError(
+              "AGENT_GATEWAY_UNAUTHORIZED",
+              "The exact AgentRevision gateway refused its own CLI as unauthorized.",
+            );
           }
           // OpenClaw did not load the node: say why instead of timing out.
           throw new DependencyUnavailableError(

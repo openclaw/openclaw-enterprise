@@ -339,6 +339,19 @@ test("a backward wall clock does not extend access or task authority", async () 
   );
 });
 
+test("a forward wall clock past the deadline closes the session before its timer fires", async () => {
+  const { clock, service, opened, exchange } = setup();
+  assert.equal((await service.execute(exchange(), send)).kind, "completed");
+  // The wall deadline passes after one monotonic second, so the close timer has not fired.
+  await clock.advance(1000, 86_401_000);
+  const refused = service.reserve(opened.bearer, head(clock), new AbortController().signal);
+  assert.deepEqual(
+    { kind: refused.kind, status: refused.status, code: refused.code },
+    { kind: "denied", status: 401, code: "session-unavailable" },
+  );
+  assert.equal(service.status(opened.session.sessionId).state, "CLOSED");
+});
+
 test("final dispatch rejects closure after asynchronous authentication and joins live I/O", async () => {
   const { service, opened, exchange } = setup();
   let ready;

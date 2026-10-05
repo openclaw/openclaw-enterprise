@@ -11,6 +11,7 @@ import {
   numericErrorStatus,
   sha256Hex,
 } from "../../packages/utils/src/index.ts";
+import { hasControlCharacter as clientHasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 
 test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   const original = { identity: { namespaceId: "tenant-a" }, roles: ["reader"] };
@@ -106,11 +107,28 @@ test("deepFreeze freezes nested event data in place and handles cycles", () => {
   }, TypeError);
 });
 
-test("hasControlCharacter flags C0 controls and DEL but no other characters", () => {
-  for (const code of [0x00, 0x09, 0x0a, 0x1f, 0x7f]) {
-    assert.equal(hasControlCharacter(`a${String.fromCharCode(code)}b`), true, code.toString(16));
-  }
-  // Space, tilde, C1 controls, a line separator, an astral character and a lone surrogate pass.
-  assert.equal(hasControlCharacter(" ~\u0080\u009f\u2028\u{1f600}\ud800"), false);
-  assert.equal(hasControlCharacter(""), false);
-});
+// The isolated repository-credentials runtimes never load a workspace package (their build
+// closures reject bare specifiers), so client-contracts keeps its own copy of this check.
+// Both copies must flag exactly the same characters.
+for (const [owner, check] of [
+  ["@openclaw-enterprise/utils", hasControlCharacter],
+  ["repository-credentials client-contracts", clientHasControlCharacter],
+]) {
+  test(`${owner} hasControlCharacter flags exactly C0 controls and DEL`, () => {
+    for (let code = 0; code <= 0xffff; code += 1) {
+      const character = String.fromCharCode(code);
+      const expected = code <= 0x1f || code === 0x7f;
+      const label = `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+      assert.equal(check(`a${character}b`), expected, label);
+      if (expected) {
+        assert.equal(check(`${character}ab`), true, `${label} first`);
+        assert.equal(check(`ab${character}`), true, `${label} last`);
+      }
+    }
+    // Every UTF-16 code unit is covered above, including C1 controls (U+0080-U+009F), the
+    // line and paragraph separators (U+2028, U+2029) and lone surrogates; astral characters
+    // and the empty string pass too. Callers that must refuse more add their own rules.
+    assert.equal(check("\u{1f600}\u{e0001}"), false);
+    assert.equal(check(""), false);
+  });
+}

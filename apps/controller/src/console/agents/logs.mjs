@@ -23,11 +23,34 @@ const GAP_LABELS = {
   truncated: "Page limit reached",
   buffer_lost: "Sandbox buffer lost lines",
 };
+// What each withheld reason means, followed by the API's reason code as `occ agent logs`
+// prints it. `malformed` is mostly a pretty-printed JSON value split across lines (normal
+// Codex output), so the text never calls it corrupt.
 const WITHHELD_LABELS = {
-  unrecognised_structured: "structured output withheld",
-  oversized: "oversized lines withheld",
-  malformed: "malformed structured lines withheld",
+  unrecognised_structured: "structured output",
+  oversized: "oversized",
+  malformed: "multi-line, unparseable or deeply nested JSON",
 };
+
+// Agent output is attacker-influenced. A bidirectional override (U+202E) would display the
+// rest of a line reversed, and zero-width or other invisible characters hide text, so every
+// character that is not graphic (the characters `occ agent logs` escapes) shows as an escape.
+const HIDDEN_CHARACTER = /[^\p{L}\p{M}\p{N}\p{P}\p{S}\p{Zs}]/gu;
+
+function visibleText(value) {
+  return String(value).replace(HIDDEN_CHARACTER, (character) => {
+    const code = character.codePointAt(0);
+    return code > 0xffff
+      ? `\\U${code.toString(16).padStart(8, "0")}`
+      : `\\u${code.toString(16).padStart(4, "0")}`;
+  });
+}
+
+function withheldText({ count, reason }) {
+  const label = WITHHELD_LABELS[reason];
+  const lines = count === 1 ? "line" : "lines";
+  return `${count} ${label ? `${label} ${lines}` : lines} withheld (${reason})`;
+}
 
 function runtimeErrorText(error, tier, source) {
   if (error.status === 403) {
@@ -141,7 +164,9 @@ function podCard(pod) {
             element(
               "li",
               {},
-              `${event.container ? `${event.container} · ` : ""}${event.reason}${event.count > 1 ? ` ×${event.count}` : ""}: ${event.message}`,
+              visibleText(
+                `${event.container ? `${event.container} · ` : ""}${event.reason}${event.count > 1 ? ` ×${event.count}` : ""}: ${event.message}`,
+              ),
             ),
           ),
         )
@@ -191,7 +216,7 @@ function recordRow(record) {
     return element(
       "div",
       { className: "log-row log-row-withheld", role: "note" },
-      `${record.count} ${WITHHELD_LABELS[record.reason] ?? "lines withheld"}`,
+      withheldText(record),
     );
   }
   const summary = element(
@@ -200,17 +225,19 @@ function recordRow(record) {
     element("span", { className: "log-time" }, record.time ? displayDate(record.time) : "—"),
     element("span", { className: `log-level log-level-${record.level}` }, record.level),
     element("span", { className: "log-kind" }, record.kind),
-    record.subsystem ? element("span", { className: "log-subsystem" }, record.subsystem) : null,
-    element("span", { className: "log-message" }, record.message),
+    record.subsystem
+      ? element("span", { className: "log-subsystem" }, visibleText(record.subsystem))
+      : null,
+    element("span", { className: "log-message" }, visibleText(record.message)),
     // A failure code is the point of the line; keep it visible without expanding.
     record.fields?.code === undefined
       ? null
-      : element("span", { className: "log-code" }, `code=${record.fields.code}`),
+      : element("span", { className: "log-code" }, `code=${visibleText(record.fields.code)}`),
   );
   const provenance = record.kind === "sandbox" ? policyProvenance(record.fields) : null;
   if (provenance !== null) {
     summary.append(
-      element("span", { className: "log-provenance" }, provenance),
+      element("span", { className: "log-provenance" }, visibleText(provenance)),
       element("span", { className: "log-join", title: INFERRED_JOIN_TITLE }, INFERRED_JOIN_LABEL),
     );
   }
@@ -220,20 +247,20 @@ function recordRow(record) {
   } else {
     const fields = element("dl", { className: "log-fields" });
     for (const [name, value] of Object.entries(record.fields)) {
-      fields.append(element("dt", {}, name), element("dd", {}, String(value)));
+      fields.append(element("dt", {}, visibleText(name)), element("dd", {}, visibleText(value)));
     }
     row = element("details", { className: "log-row" }, element("summary", {}, summary), fields);
   }
   // Filters match only lines; gap and withheld rows always stay visible.
   row.dataset.level = record.level;
-  row.dataset.search = [
-    record.kind,
-    record.subsystem ?? "",
-    record.message,
-    ...Object.entries(record.fields ?? {}).map(([name, value]) => `${name}=${value}`),
-  ]
-    .join(" ")
-    .toLowerCase();
+  row.dataset.search = visibleText(
+    [
+      record.kind,
+      record.subsystem ?? "",
+      record.message,
+      ...Object.entries(record.fields ?? {}).map(([name, value]) => `${name}=${value}`),
+    ].join(" "),
+  ).toLowerCase();
   return row;
 }
 
@@ -548,7 +575,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (row.dataset.level === undefined) {
       return true;
     }
-    const text = filterInput.value.trim().toLowerCase();
+    // Rows hold escaped text, so a pasted line with an invisible character still matches.
+    const text = visibleText(filterInput.value.trim()).toLowerCase();
     return (
       !hiddenLevels.has(row.dataset.level) && (text === "" || row.dataset.search.includes(text))
     );

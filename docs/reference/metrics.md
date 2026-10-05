@@ -39,12 +39,20 @@ actor, credential, Driver-instance, payload, raw URL, or user-defined labels.
 | `occ_agents`                                  | Gauge     | `lifecycle_state`                 | Persisted Agent reconciliation lifecycle; see below.                                     |
 | `occ_agent_operation_duration_seconds`        | Histogram | `operation`                       | Admission to successful deployment or stop completion, including queue wait and retries. |
 | `occ_work_oldest_pending_age_seconds`         | Gauge     | None                              | Age since admission of the oldest queued/claimed item; zero when no work is pending.     |
+| `occ_sign_in_unmatched_callbacks_total`       | Counter   | `provider`                        | API sign-in callbacks refused before matching a pending attempt; see below.              |
 
 HTTP excludes health probes, metrics scrapes, and disconnected requests without
 a completed response. `route` is the registered template or `unmatched`; wildcard
 routes stay templates. Methods are `GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|OTHER`;
 status classes are `1xx|2xx|3xx|4xx|5xx|other`. Status classes cannot distinguish
 401/403 from other 4xx failures. These are not model-turn or WebSocket durations.
+
+`provider` is `github|google|oidc`; all three start at zero. A callback counts
+when it is malformed or its state and browser cookie match no pending, unexpired
+attempt (unknown, replayed or expired). Its sender is unauthenticated and can mint
+both values, so these callbacks write no audit event; this counter is their only
+aggregate record. Callbacks that match an attempt are audited, not counted. See
+[external sign-in](authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
 
 Work kinds are `namespace_ensure|namespace_delete|agent_revision|agent_stop|agent_delete|agent_credential_withdrawal`. Outcomes are
 `success|pending|retry|permanent|claim_lost|error`. Pending convergence, retries,
@@ -124,9 +132,10 @@ upgrades must explicitly review this list; new defaults are filtered out.
 
 For `R` observed registered route/method pairs, HTTP has at most `20R` series
 (six statuses plus fourteen histogram series). Unmatched methods add at most
-eight pairs. Worker application metrics have at most 136 series (30 outcomes,
-70 pass-duration series, 28 operation-duration series, and eight gauges). Process collectors add at most 53 series
-per process. Do not preallocate the route/status Cartesian product.
+eight pairs. Sign-in callbacks add three API series. Worker application metrics
+have at most 136 series (30 outcomes, 70 pass-duration series, 28
+operation-duration series, and eight gauges). Process collectors add at most 53
+series per process. Do not preallocate the route/status Cartesian product.
 
 ## Replica aggregation
 

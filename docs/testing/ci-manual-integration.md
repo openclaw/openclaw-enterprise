@@ -52,7 +52,7 @@ and `full` groups and Full Integration dispatch. Follow the
 for private input setup and result handling. Ordinary constructor,
 security-rejection, and password cases in
 [postgres-connection-auth.test.mjs](../../tests/integration/postgres-connection-auth.test.mjs)
-run in the mandatory `postgres` lane.
+run in the mandatory `postgres-platform` lane.
 
 [ssh-compute-real.test.mjs](../../tests/integration/ssh-compute-real.test.mjs) belongs
 to the `ssh-host` lane, excluded from the `ci` and `full` groups and

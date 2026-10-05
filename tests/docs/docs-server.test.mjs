@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const root = fileURLToPath(new URL("../../", import.meta.url));
+import { spawnDocsPreview, waitForDocsPreview } from "../helpers/docs-site.mjs";
 
 test("preview serves static docs on loopback and confines reads to site output", async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-server-"));
@@ -18,14 +16,7 @@ test("preview serves static docs on loopback and confines reads to site output",
   await writeFile(join(fixture, "dist/docs/guide/index.html"), "<h1>Guide</h1>");
   await writeFile(join(fixture, "private.txt"), "not site content");
   await symlink(join(fixture, "private.txt"), join(fixture, "dist/docs/outside.txt"));
-  const child = spawn(
-    process.execPath,
-    [join(root, "scripts/docs-site/serve.mjs"), "--port", "0"],
-    {
-      cwd: fixture,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const child = spawnDocsPreview(fixture);
   t.after(async () => {
     if (child.exitCode === null) {
       const exited = once(child, "exit");
@@ -33,22 +24,7 @@ test("preview serves static docs on loopback and confines reads to site output",
       await exited;
     }
   });
-  const origin = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Preview did not become ready")), 10_000);
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`Preview exited before ready: ${code}`));
-    });
-    let output = "";
-    child.stdout.on("data", (data) => {
-      output += data;
-      const match = output.match(/http:\/\/127\.0\.0\.1:\d+/);
-      if (match) {
-        clearTimeout(timer);
-        resolve(match[0]);
-      }
-    });
-  });
+  const origin = await waitForDocsPreview(child);
   const home = await fetch(origin);
   assert.equal(home.status, 200);
   assert.match(home.headers.get("content-type"), /text\/html/);

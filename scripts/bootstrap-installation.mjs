@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createPostgresControllerAuth } from "../apps/controller/src/auth/index.ts";
+import { betterAuthIssuer, validHttpBaseURL } from "../apps/controller/src/auth/configuration.ts";
 import {
   bootstrapOutputPath,
   writeProtectedBootstrapFile,
@@ -79,7 +79,13 @@ function authBaseURL(raw, mode) {
   ) {
     throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback HTTP(S) URL.");
   }
-  return parsed.toString().replace(/\/$/, "");
+  const baseURL = parsed.toString().replace(/\/$/, "");
+  // The auth stack rejects the same values; check here so the already-bootstrapped path,
+  // which never loads it, still fails the Job on them.
+  if (!validHttpBaseURL(baseURL)) {
+    throw new Error("OCC_AUTH_BASE_URL must be an absolute HTTP origin URL.");
+  }
+  return baseURL;
 }
 
 function passwordOutputPath(raw) {
@@ -185,6 +191,9 @@ function freshBootstrapConfig(config) {
 }
 
 async function createAuth(pool, config, installationId) {
+  // Better Auth and Drizzle cost seconds to load, which an already-bootstrapped
+  // Installation skips on every upgrade (see verifiedWithoutAuth).
+  const { createPostgresControllerAuth } = await import("../apps/controller/src/auth/index.ts");
   return createPostgresControllerAuth({
     mode: config.mode,
     installationId,
@@ -264,6 +273,30 @@ function administratorPrincipal(state, issuer, userId) {
     : undefined;
 }
 
+/**
+ * The existing-Installation verification below, without loading Better Auth: the
+ * configured administrator's user row (Better Auth stores and looks up the email
+ * lowercased, as `adminEmail` already is) and its administrator Principal in the same
+ * parsed IAM state. True only when every check passes. Any miss or error returns
+ * false, and the full verification then runs and reports exactly as before.
+ */
+async function verifiedWithoutAuth(pool, state, installation, email) {
+  try {
+    const users = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [email]);
+    if (users.rows.length !== 1) {
+      return false;
+    }
+    const persisted = await state.loadNativeIAMState(installation.id);
+    return (
+      administratorPrincipal(persisted, betterAuthIssuer(installation.id), users.rows[0].id) !==
+      undefined
+    );
+  } catch {
+    // The full verification reproduces and reports the error.
+    return false;
+  }
+}
+
 let bootstrapAttempt;
 let pool;
 let logging;
@@ -281,7 +314,18 @@ try {
   pool = await createPostgresPool(config.databaseUrl);
   const state = new PostgresPlatformState(pool);
   const existing = await state.loadInstallation();
-  if (existing !== undefined) {
+  if (
+    existing !== undefined &&
+    (await verifiedWithoutAuth(pool, state, existing, config.adminEmail))
+  ) {
+    process.stdout.write(`${JSON.stringify({ event: "installation.already-bootstrapped" })}\n`);
+    emitOccLogEvent(logger, {
+      event: "installation.already-bootstrapped",
+      installationId: existing.id,
+      step: "fast-path",
+    });
+  } else if (existing !== undefined) {
+    emitOccLogEvent(logger, { event: "installation.fast-path-skipped" });
     const auth = await createAuth(pool, config, existing.id);
     const user = await findCredentialUser(auth, config.adminEmail);
     if (user === null) {

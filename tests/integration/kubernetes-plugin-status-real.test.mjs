@@ -310,9 +310,6 @@ async function createStatusCandidate(label, context) {
       .retireRevision(candidate)
       .catch(() => {});
     await kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false");
-    await kubectl("wait", "--for=delete", `namespace/${namespaceName}`, "--timeout=30s").catch(
-      () => {},
-    );
   });
   return {
     driver,

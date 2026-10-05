@@ -469,8 +469,10 @@ Activation is one-way: the database refuses older images' sessions and
    `GET /api/auth/session`.
 2. Create the Secret, then set `auth.github.enabled: true`, that ID as
    `auth.recoveryUserId`, and `agentNativeAdmin.enabled: false` in protected
-   values, keeping workspace routing. Optionally narrow `auth.github.egressCidrs` or set `api.trustedProxy`
-   ([settings](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)).
+   values, keeping workspace routing. Optionally narrow `auth.github.egressCidrs`, set `api.trustedProxy`
+   ([settings](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)), or limit
+   sign-in to members with `auth.github.allowedOrgs` and `allowedTeams`, after granting the App
+   Members: read ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)).
    Profile installs set [these inputs](installation-profiles.md#external-sign-in-and-trusted-proxies)
    and keep them in every rerender; rerender.
 

@@ -1,0 +1,28 @@
+{
+  "requiredEnv": ["OCC_TEST_RUNTIME_IMAGE"],
+  "prepare": {
+    "requiresPreparedStateForFile": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/runtime-image-startup-probe.test.mjs",
+      "expectedTests": [
+        "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
+        "runtime image Codex Harness stays unready until its model probe passes",
+        "runtime image Codex Harness fails fast when the provider rejects its credential",
+        "runtime image embedded Gateway probes its model before it starts OpenClaw",
+        "runtime image embedded Gateway fails fast when the provider rejects its credential",
+        "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
+        "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
+        "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-model-probe-outcomes.test.mjs",
+      "expectedTests": [
+        "runtime image embedded Gateway passes its model probe at a 500m CPU limit",
+        "runtime image embedded Gateway reports a hung provider as a model probe timeout"
+      ]
+    }
+  ]
+}

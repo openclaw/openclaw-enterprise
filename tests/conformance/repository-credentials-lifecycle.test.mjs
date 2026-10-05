@@ -58,7 +58,9 @@ test("cancelled queue entries release capacity while dispatched owner retains it
   assert.equal(queue.pending, 0);
 });
 
-function uncertainLifecycle({ kind = "uncertain" } = {}) {
+// `failure` makes the Driver fail after dispatch instead: "acquire" throws, "settle"
+// throws while settling a well-formed rejection, "outcome" returns no outcome at all.
+function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
   const clock = createControlledClock(1700000000000);
   const authority = Object.freeze({
     sessionId: "session",
@@ -89,12 +91,25 @@ function uncertainLifecycle({ kind = "uncertain" } = {}) {
       custody.driver.assertAttempt(attempt, "acquire");
       attempt.observeDispatch();
       acquires++;
-      const result = Object.freeze({ kind, attemptId: attempt.id });
+      if (failure === "acquire") {
+        throw new Error("fixture acquire failed");
+      }
+      if (failure === "outcome") {
+        return undefined;
+      }
+      const result = Object.freeze(
+        failure === "settle"
+          ? { kind: "rejected", code: "scope-mismatch", attemptId: attempt.id }
+          : { kind, attemptId: attempt.id },
+      );
       originals.add(result);
       return result;
     },
     async settle(original) {
       assert.ok(originals.has(original));
+      if (failure === "settle") {
+        throw new Error("fixture settle failed");
+      }
     },
     async finalize() {
       finalizes++;
@@ -125,27 +140,47 @@ function uncertainLifecycle({ kind = "uncertain" } = {}) {
   };
 }
 
-test("settled unknown issue without captured material occupies its reservation and blocks remint", async () => {
-  const { lifecycle, custody, acquires, finalizes, close } = uncertainLifecycle();
-  await assert.rejects(lifecycle.acquire(1000, new AbortController().signal));
-  await tick();
-  assert.equal(custody.reservations.size, 1);
-  assert.equal(lifecycle.activeActions, 0);
-  await assert.rejects(lifecycle.acquire(1000, new AbortController().signal));
-  assert.equal(acquires(), 1);
-  close();
-  await tick();
-  assert.equal(lifecycle.finalized, false);
-  assert.equal(finalizes(), 0);
+test("unknown or unsettled issue without captured material occupies its reservation and blocks remint", async () => {
+  // A Driver that fails after dispatch leaves the same unknown issue; the failures that
+  // never settle keep their provider action open.
+  for (const { failure, activeActions } of [
+    { failure: undefined, activeActions: 0 },
+    { failure: "acquire", activeActions: 1 },
+    { failure: "settle", activeActions: 1 },
+    { failure: "outcome", activeActions: 0 },
+  ]) {
+    const { lifecycle, custody, acquires, finalizes, close } = uncertainLifecycle({ failure });
+    // The waiter sees only that the provider action failed.
+    await assert.rejects(lifecycle.acquire(1000, new AbortController().signal), {
+      message: "ACTION_FAILED",
+    });
+    await tick();
+    assert.equal(custody.reservations.size, 1, failure);
+    assert.equal([...custody.reservations][0].unknown, true, failure);
+    assert.equal(lifecycle.activeActions, activeActions, failure);
+    assert.equal(lifecycle.blocked, true, failure);
+    await assert.rejects(lifecycle.acquire(1000, new AbortController().signal), {
+      message: "SESSION_UNAVAILABLE",
+    });
+    assert.equal(acquires(), 1);
+    close();
+    await tick();
+    assert.equal(lifecycle.finalized, false);
+    assert.equal(finalizes(), 0);
+  }
 });
 
 test("a result cannot clear the original dispatch latch by claiming not-dispatched", async () => {
   const { lifecycle, custody, acquires, close } = uncertainLifecycle({ kind: "not-dispatched" });
-  await assert.rejects(lifecycle.acquire(1000, new AbortController().signal));
+  await assert.rejects(lifecycle.acquire(1000, new AbortController().signal), {
+    message: "ACTION_FAILED",
+  });
   await tick();
   assert.equal(custody.reservations.size, 1);
   assert.equal(lifecycle.blocked, true);
-  await assert.rejects(lifecycle.acquire(1000, new AbortController().signal));
+  await assert.rejects(lifecycle.acquire(1000, new AbortController().signal), {
+    message: "SESSION_UNAVAILABLE",
+  });
   assert.equal(acquires(), 1);
   close();
 });
@@ -522,3 +557,165 @@ for (const [profile, permissions] of [
     assert.deepEqual(github.errors, []);
   });
 }
+
+// An expiry-only backend has no provider call that ends a credential, so the
+// common owner must drop a settled copy once it is neither the admitted current
+// credential nor in use. `gate` holds acquisition before capture; `leaseMs` is
+// both the custody bound and the reported validity.
+function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {}) {
+  const clock = createControlledClock(1700000000000);
+  let open = true;
+  let lifecycle;
+  const custody = createCustody({
+    clock,
+    maximumSlots: 2,
+    maximumAccessBytes: 16384,
+    maximumRenewalBytes: 16384,
+    maximumCallbacks: 2,
+    admitted: () => open,
+    changed: () => lifecycle?.maintain(),
+  });
+  const originals = new WeakSet();
+  const original = (attempt, outcome) => {
+    const value = Object.freeze({ attemptId: attempt.id, ...outcome });
+    originals.add(value);
+    return value;
+  };
+  const counts = { acquire: 0, retire: 0, finalize: 0 };
+  const gates = [];
+  const driver = {
+    cleanup: "expiry-only",
+    replacement: "overlap",
+    async acquire(attempt) {
+      custody.driver.assertAttempt(attempt, "acquire");
+      counts.acquire++;
+      if (gates.length) {
+        await gates.shift();
+      }
+      const observedWallMs = clock.wallNow();
+      const expiresAtWallMs = observedWallMs + leaseMs;
+      const credential = custody.driver.capture(attempt, Buffer.from(`static-${counts.acquire}`), {
+        observedWallMs,
+        expiresAtWallMs,
+      });
+      return original(attempt, { kind: "acquired", credential, observedWallMs, expiresAtWallMs });
+    },
+    async retire(attempt) {
+      counts.retire++;
+      return original(attempt, { kind: "unsupported" });
+    },
+    async finalize(attempt) {
+      custody.driver.assertAttempt(attempt, "finalize");
+      counts.finalize++;
+      return original(attempt, { kind: "finalized" });
+    },
+    async settle(value) {
+      assert.ok(originals.has(value));
+    },
+  };
+  lifecycle = createLifecycle({
+    clock,
+    authority: Object.freeze({
+      sessionId: "static-session",
+      providerInstanceId: "instance",
+      repositoryId: "opaque",
+      grantId: "static-grant",
+    }),
+    deadlineMonoMs: 86400000,
+    custody,
+    driver,
+    queue: createProviderQueue(64),
+    providerActionMs: 30000,
+    safetyMarginMs,
+    admitted: () => open,
+    changed() {},
+  });
+  return {
+    clock,
+    custody,
+    lifecycle,
+    counts,
+    hold() {
+      let release;
+      gates.push(new Promise((resolve) => (release = resolve)));
+      return () => release();
+    },
+    close() {
+      open = false;
+      lifecycle.close();
+    },
+  };
+}
+
+test("expiry-only renewal releases the superseded copy while the session stays admitted", async () => {
+  const { clock, custody, lifecycle, counts, close } = expiryOnlyLifecycle();
+  const first = await lifecycle.acquire(1000, new AbortController().signal);
+  lifecycle.release(first);
+  // Near the lease end the current copy no longer covers a new request, so the
+  // owner captures a replacement without any provider retirement.
+  await clock.advance(3600000 - 60000 - 500);
+  const second = await lifecycle.acquire(clock.monotonicNow() + 1000, new AbortController().signal);
+  assert.notEqual(second, first);
+  await tick();
+  assert.deepEqual([...custody.records], [second]);
+  assert.equal(custody.reservations.size, 1);
+  assert.equal(counts.retire, 0);
+  assert.equal(lifecycle.counters.expired, 1);
+  lifecycle.release(second);
+  close();
+});
+
+test("expiry-only acquisitions refused after capture free their slot for the next acquire", async () => {
+  const { custody, lifecycle, counts, hold, close } = expiryOnlyLifecycle();
+  // A waiter that leaves mid-acquisition aborts it; the late capture is refused
+  // (CREDENTIAL_NOT_USABLE) and must not keep one of the two custody slots.
+  for (let refused = 0; refused < 2; refused++) {
+    const release = hold();
+    const waiter = new AbortController();
+    const pending = lifecycle.acquire(1000, waiter.signal);
+    await tick();
+    waiter.abort();
+    await assert.rejects(pending);
+    release();
+    await tick();
+    await tick();
+    assert.equal(custody.records.size, 0, `refused copy ${refused} still held`);
+  }
+  const record = await lifecycle.acquire(1000, new AbortController().signal);
+  assert.equal(counts.acquire, 3);
+  assert.deepEqual([...custody.records], [record]);
+  assert.equal(counts.retire, 0);
+  lifecycle.release(record);
+  close();
+});
+
+test("expiry-only close releases the copy and finalizes without waiting for the lease", async () => {
+  const { custody, lifecycle, counts, close } = expiryOnlyLifecycle();
+  const record = await lifecycle.acquire(1000, new AbortController().signal);
+  lifecycle.release(record);
+  close();
+  await tick();
+  await tick();
+  // No clock advance: the one-hour lease has not elapsed.
+  assert.equal(custody.records.size, 0);
+  assert.equal(custody.reservations.size, 0);
+  assert.equal(counts.retire, 0);
+  assert.equal(counts.finalize, 1);
+  assert.equal(lifecycle.finalized, true);
+  assert.equal(lifecycle.blocked, false);
+});
+
+test("expiry-only close keeps a copy with an in-flight use until that use ends", async () => {
+  const { custody, lifecycle, counts, close } = expiryOnlyLifecycle();
+  const record = await lifecycle.acquire(1000, new AbortController().signal);
+  close();
+  await tick();
+  assert.deepEqual([...custody.records], [record]);
+  assert.equal(counts.finalize, 0);
+  lifecycle.release(record);
+  await tick();
+  await tick();
+  assert.equal(custody.records.size, 0);
+  assert.equal(counts.retire, 0);
+  assert.equal(lifecycle.finalized, true);
+});

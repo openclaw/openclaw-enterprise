@@ -188,6 +188,9 @@ Identifiers are examples; production upstream origins are fixed to
 `github.com` and `api.github.com`. Registry mode instead uses backend fields
 `kind: "github-app-registry"`, `backendId`, `registryFile` and `privateKeyFile`;
 all repository policy comes from that registry, and unbound admission is refused.
+For local development only, `kind: "github-token"` uses a host GitHub token
+instead of an App; it requires a process flag and never reaches Kubernetes. See
+the [development token authority](repository-credentials/development-token.md).
 
 Kubernetes copies selected projection generations into service-owned
 private files before protected-path validation. API and worker receive

@@ -127,6 +127,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       { action: "read", resourceKind: "secret" },
       { action: "update", resourceKind: "secret" },
       { action: "delete", resourceKind: "secret" },
+      { action: "read", resourceKind: "preset" },
       { action: "read", resourceKind: "agent" },
       { action: "operate", resourceKind: "agent" },
       { action: "delete", resourceKind: "agent" },
@@ -141,8 +142,32 @@ test("service API keys authenticate scoped automation without replacing sessions
   });
   const body = { servicePrincipalId: principal.id, namespaceId, name: "tenant-automation" };
   const issue = () => request("POST", "/api/auth/service-keys", { body });
+  async function assertServiceKeyManagementDenied(headers, keyResponse, status) {
+    assert.equal(
+      (await request("POST", "/api/auth/service-keys", { headers, body })).status,
+      status,
+    );
+    assert.equal(
+      (await request("DELETE", `/api/auth/service-keys/${keyResponse.data.id}`, { headers }))
+        .status,
+      status,
+    );
+  }
+  // A key's expiry is computed from the controller's clock at issuance; allow one second
+  // of rounding on either side of the request.
+  function assertIssuedLifetime(response, before, seconds) {
+    const expiresAt = Date.parse(response.data.expiresAt);
+    assert.ok(
+      expiresAt >= before + seconds * 1000 - 1000 &&
+        expiresAt <= Date.now() + seconds * 1000 + 1000,
+      `expiresAt ${response.data.expiresAt} is not ${seconds} s after issuance`,
+    );
+  }
+  const issuedBefore = Date.now();
   const issued = await issue();
   assert.equal(issued.status, 201);
+  // Without expiresIn a key lives the documented 30 days.
+  assertIssuedLifetime(issued, issuedBefore, 30 * 24 * 60 * 60);
   assert.equal(issued.data.servicePrincipalId, principal.id);
   assert.equal(issued.data.namespaceId, namespaceId);
   assert.match(issued.data.key, /^occ_/);
@@ -297,6 +322,47 @@ test("service API keys authenticate scoped automation without replacing sessions
       { env },
     );
     assert.deepEqual(JSON.parse(secretUpdated.stdout), cliSecret);
+
+    // Presets: the key may read them but not delete them until it is granted delete.
+    const preset = await request("POST", `/namespaces/${namespaceId}/presets`, {
+      body: { name: "cli-preset", template: { agent: { name: "CLI Preset Agent" } } },
+    });
+    assert.equal(preset.status, 201);
+    const presetList = await run(occCli, ["preset", "list", "-o", "json"], { env });
+    assert.deepEqual(
+      JSON.parse(presetList.stdout).map(({ id, name }) => ({ id, name })),
+      [{ id: preset.data.id, name: "cli-preset" }],
+    );
+    const presetRead = await run(occCli, ["preset", "get", preset.data.id, "-o", "json"], {
+      env,
+    });
+    assert.deepEqual(JSON.parse(presetRead.stdout), preset.data);
+    await assert.rejects(run(occCli, ["preset", "delete", preset.data.id], { env }), (error) => {
+      assert.match(error.stderr, /HTTP 403\)/);
+      return true;
+    });
+    assert.equal(
+      (await request("GET", `/namespaces/${namespaceId}/presets/${preset.data.id}`)).status,
+      200,
+    );
+    // The grant stays on the key's Role for the rest of this test.
+    policy.roles
+      .find((candidate) => candidate.id === "tenant-automation")
+      .permissions.push({ action: "delete", resourceKind: "preset" });
+    const presetDeleted = await run(
+      occCli,
+      ["preset", "delete", preset.data.id, "--output", "json"],
+      { env },
+    );
+    assert.deepEqual(JSON.parse(presetDeleted.stdout), {
+      deleted: true,
+      id: preset.data.id,
+      kind: "preset",
+    });
+    assert.equal(
+      (await request("GET", `/namespaces/${namespaceId}/presets/${preset.data.id}`)).status,
+      404,
+    );
 
     // Seed the server-owned resource through the administrator session so the
     // scoped CLI credential exercises only its granted Agent operations.
@@ -551,19 +617,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       for (const key of ["", "forged-key", `${issued.data.key}tampered`]) {
         const invalidHeaders = { "x-api-key": key, cookie: session.cookie };
         assert.equal((await request("GET", path, { headers: invalidHeaders })).status, 401);
-        assert.equal(
-          (await request("POST", "/api/auth/service-keys", { headers: invalidHeaders, body }))
-            .status,
-          401,
-        );
-        assert.equal(
-          (
-            await request("DELETE", `/api/auth/service-keys/${issued.data.id}`, {
-              headers: invalidHeaders,
-            })
-          ).status,
-          401,
-        );
+        await assertServiceKeyManagementDenied(invalidHeaders, issued, 401);
       }
       assert.equal((await request("GET", path, { headers: {} })).status, 401);
       assert.equal(
@@ -575,8 +629,18 @@ test("service API keys authenticate scoped automation without replacing sessions
   );
 
   await t.test("Namespace boundaries and exact IAM permissions remain authoritative", async () => {
-    assert.equal((await request("GET", `/namespaces/${tenantB.data.id}`, { headers })).status, 403);
-    assert.equal((await request("GET", "/installation", { headers })).status, 403);
+    // The key's fixed Namespace refuses every other route before IAM is asked, and the
+    // refusal is audited against the key's service principal.
+    for (const other of [`/namespaces/${tenantB.data.id}`, "/installation"]) {
+      const eventsBefore = auditSink.events.length;
+      const denied = await request("GET", other, { headers });
+      assert.equal(denied.status, 403);
+      assert.equal(denied.error.message, "The admitted Namespace does not match.");
+      assert.equal(auditSink.events.length, eventsBefore + 1);
+      const audit = auditSink.events.at(-1);
+      assert.equal(audit.kind, "authorization_denial");
+      assert.equal(audit.actorId, principal.id);
+    }
     assert.equal((await request("DELETE", path, { headers })).status, 403);
     // Removing a grant is immediately visible without reissuing the credential.
     const bindingIndex = policy.bindings.findIndex((entry) => entry.id === "service-automation");
@@ -601,11 +665,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       subjectId: principal.id,
       roleId: seed.bindings[0].roleId,
     });
-    assert.equal((await request("POST", "/api/auth/service-keys", { headers, body })).status, 403);
-    assert.equal(
-      (await request("DELETE", `/api/auth/service-keys/${issued.data.id}`, { headers })).status,
-      403,
-    );
+    await assertServiceKeyManagementDenied(headers, issued, 403);
     policy.bindings.pop();
   });
 
@@ -643,19 +703,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       assert.equal((await request("GET", path, { headers: keyHeaders })).status, 403);
       // A reader key cannot borrow the human cookie's Installation authority.
       const managementHeaders = { ...keyHeaders, cookie: session.cookie };
-      assert.equal(
-        (await request("POST", "/api/auth/service-keys", { headers: managementHeaders, body }))
-          .status,
-        403,
-      );
-      assert.equal(
-        (
-          await request("DELETE", `/api/auth/service-keys/${created.data.id}`, {
-            headers: managementHeaders,
-          })
-        ).status,
-        403,
-      );
+      await assertServiceKeyManagementDenied(managementHeaders, created, 403);
       // Installation administer alone cannot issue a key that reaches the
       // Namespace grants the issuer itself lacks.
       const exactAdminBinding = {
@@ -701,19 +749,7 @@ test("service API keys authenticate scoped automation without replacing sessions
         ).status,
         200,
       );
-      assert.equal(
-        (await request("POST", "/api/auth/service-keys", { headers: managementHeaders, body }))
-          .status,
-        401,
-      );
-      assert.equal(
-        (
-          await request("DELETE", `/api/auth/service-keys/${child.data.id}`, {
-            headers: managementHeaders,
-          })
-        ).status,
-        401,
-      );
+      await assertServiceKeyManagementDenied(managementHeaders, child, 401);
 
       // Management rechecks IAM: neither a removed grant nor a deny Restriction
       // can be bypassed by retaining a valid administrator credential.
@@ -729,19 +765,7 @@ test("service API keys authenticate scoped automation without replacing sessions
             effect: "deny",
           });
         }
-        assert.equal(
-          (await request("POST", "/api/auth/service-keys", { headers: replacementHeaders, body }))
-            .status,
-          403,
-        );
-        assert.equal(
-          (
-            await request("DELETE", `/api/auth/service-keys/${child.data.id}`, {
-              headers: replacementHeaders,
-            })
-          ).status,
-          403,
-        );
+        await assertServiceKeyManagementDenied(replacementHeaders, child, 403);
       }
       policy.restrictions.pop();
       for (const key of [child.data, replacement.data]) {
@@ -850,6 +874,23 @@ test("service API keys authenticate scoped automation without replacing sessions
     },
   );
 
+  await t.test("a requested lifetime sets the key's expiry", async () => {
+    const before = Date.now();
+    const shortLived = await request("POST", "/api/auth/service-keys", {
+      body: { ...body, expiresIn: 86400 },
+    });
+    assert.equal(shortLived.status, 201);
+    assertIssuedLifetime(shortLived, before, 86400);
+    assert.equal(
+      (await request("GET", path, { headers: { "x-api-key": shortLived.data.key } })).status,
+      200,
+    );
+    assert.equal(
+      (await request("DELETE", `/api/auth/service-keys/${shortLived.data.id}`)).status,
+      200,
+    );
+  });
+
   await t.test(
     "expired credentials and a removed IAM identity cannot authenticate an authorized request",
     async () => {
@@ -874,6 +915,91 @@ test("service API keys authenticate scoped automation without replacing sessions
       policy.bindings.push(binding);
     },
   );
+
+  await t.test("a key record altered after issuance fails closed", async () => {
+    const altered = await issue();
+    assert.equal(altered.status, 201);
+    const keyHeaders = { "x-api-key": altered.data.key };
+    const read = async () => (await request("GET", path, { headers: keyHeaders })).status;
+    assert.equal(await read(), 200);
+    const authContext = await auth.auth.$context;
+    const where = [{ field: "id", value: altered.data.id }];
+    const record = await authContext.adapter.findOne({ model: "apikey", where });
+    const { expiresAt, configId } = record;
+    const encoded = typeof record.metadata === "string";
+    const metadata = encoded ? JSON.parse(record.metadata) : record.metadata;
+    assert.equal(metadata.namespaceId, namespaceId);
+    const alter = ({ referenceId = record.referenceId, ...changes }) =>
+      authContext.adapter.update({
+        model: "apikey",
+        where,
+        update: {
+          referenceId,
+          metadata: encoded
+            ? JSON.stringify({ ...metadata, ...changes })
+            : { ...metadata, ...changes },
+        },
+      });
+    // Each altered subject below holds the same Namespace grant as the issued key.
+    const grant = (identity) => {
+      policy.identities.push(identity);
+      policy.bindings.push({
+        id: `altered-${identity.id}`,
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: identity.id,
+        roleId: "tenant-automation",
+      });
+    };
+    const agentPrincipal = {
+      kind: "service_principal",
+      id: `sp_${randomUUID()}`,
+      namespaceId,
+      agentId: `agt_${randomUUID()}`,
+    };
+    const unscopedPrincipal = { kind: "service_principal", id: `sp_${randomUUID()}` };
+    grant(agentPrincipal);
+    grant(unscopedPrincipal);
+    try {
+      // Another Installation's key is not a credential here at all.
+      await alter({ installationId: `ins_${randomUUID()}` });
+      assert.equal(await read(), 401);
+      // An Agent's own service principal never acts through a service key.
+      await alter({ referenceId: agentPrincipal.id });
+      assert.equal(await read(), 403);
+      // A Namespace key cannot name an Installation-scoped service principal.
+      await alter({ referenceId: unscopedPrincipal.id });
+      assert.equal(await read(), 403);
+      // A record without a service principal or without an expiry is not a credential: the
+      // caller is unauthenticated (401), not facing a dependency outage (503).
+      await alter({ referenceId: "" });
+      assert.equal(await read(), 401);
+      await alter({});
+      await authContext.adapter.update({ model: "apikey", where, update: { expiresAt: null } });
+      assert.equal(await read(), 401);
+      await authContext.adapter.update({ model: "apikey", where, update: { expiresAt } });
+      assert.equal(await read(), 200);
+      // Another key configuration's record is neither a credential nor revocable here.
+      await authContext.adapter.update({ model: "apikey", where, update: { configId: "default" } });
+      assert.equal(await read(), 401);
+      assert.equal(
+        (await request("DELETE", `/api/auth/service-keys/${altered.data.id}`)).status,
+        404,
+      );
+      await authContext.adapter.update({ model: "apikey", where, update: { configId } });
+      assert.equal(await read(), 200);
+    } finally {
+      await authContext.adapter.update({ model: "apikey", where, update: { expiresAt, configId } });
+      await alter({});
+      for (const identity of [agentPrincipal, unscopedPrincipal]) {
+        policy.identities.splice(policy.identities.indexOf(identity), 1);
+        policy.bindings.splice(
+          policy.bindings.findIndex((binding) => binding.subjectId === identity.id),
+          1,
+        );
+      }
+    }
+  });
 
   await t.test(
     "HTTP revocation rejects the key, preserves sessions, and never exposes the credential",
@@ -1065,6 +1191,45 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   assert.equal(coverageDenial.reasonCode, "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED");
   assert.match(coverageDenial.decisionReason, /every grant of the target ServicePrincipal/);
   assert.equal(coverageDenial.details.servicePrincipalId, bootstrapService.id);
+
+  // The administrator Role grants Agent administer but not read_logs. Administer already
+  // admits log reads, so it covers a principal that was delegated read_logs on an Agent.
+  const logReader = {
+    kind: "service_principal",
+    id: `spn_${randomUUID()}`,
+    namespaceId: namespace.data.id,
+  };
+  policy.identities.push(logReader);
+  policy.roles.push({
+    id: "agent-log-reader",
+    namespaceId: namespace.data.id,
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "read_logs", resourceKind: "agent" },
+    ],
+  });
+  policy.bindings.push({
+    id: "agent-log-reader-binding",
+    namespaceId: namespace.data.id,
+    subjectKind: "identity",
+    subjectId: logReader.id,
+    roleId: "agent-log-reader",
+    resourceKind: "agent",
+    resourceId: `agt_${randomUUID()}`,
+  });
+  const logReaderKey = await request("POST", "/api/auth/service-keys", {
+    headers: asAdmin,
+    body: { servicePrincipalId: logReader.id, namespaceId: namespace.data.id, name: "logs" },
+  });
+  assert.equal(logReaderKey.status, 201, JSON.stringify(logReaderKey));
+  assert.equal(
+    (
+      await request("DELETE", `/api/auth/service-keys/${logReaderKey.data.id}`, {
+        headers: asAdmin,
+      })
+    ).status,
+    200,
+  );
 
   // Revocation needs the same authority as issuance.
   const revokePath = `/api/auth/service-keys/${bootstrapKey.data.id}`;

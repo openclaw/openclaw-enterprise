@@ -54,9 +54,15 @@ test(
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
     t.after(() => pool.end());
-    for (const [name, state] of [
-      ["memory", new InMemoryPlatformState()],
-      ["postgres", new PostgresPlatformState(pool)],
+    // The memory store refuses a fence of an open attempt itself; PostgreSQL's receipt trigger
+    // refuses it (23514), which the store reports as an ownership or state violation.
+    for (const [name, state, fenceRefusal] of [
+      ["memory", new InMemoryPlatformState(), /The broker receipt transition is invalid/],
+      [
+        "postgres",
+        new PostgresPlatformState(pool),
+        /The resource violates its exact platform ownership or state/,
+      ],
     ]) {
       await t.test(name, async () => {
         const generation = randomUUID();
@@ -112,7 +118,11 @@ test(
         );
         // A worker that already recorded the session keeps the reservation unfenced.
         const opened = await reserve("open");
-        await assert.rejects(fence(opened));
+        await assert.rejects(fence(opened), (error) => {
+          assert.equal(error.name, "ScopeViolationError");
+          assert.match(error.message, fenceRefusal);
+          return true;
+        });
         assert.equal(
           (await state.read((view) => view.repositorySessions.findBrokerReceipt(opened))).state,
           "reserved",

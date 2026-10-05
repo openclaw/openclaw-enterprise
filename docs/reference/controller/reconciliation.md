@@ -205,7 +205,8 @@ credential rejection fails the deployment earlier with
 CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures a runtime holds
 until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, and
-`RUNTIME_STARTUP_FAILED`. A Sandbox Driver that cannot run
+`RUNTIME_STARTUP_FAILED`. A dedicated gateway that refuses its own in-Pod CLI as
+unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`. See the

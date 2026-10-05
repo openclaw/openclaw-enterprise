@@ -42,6 +42,7 @@ import {
   PostgresPlatformState,
   PostgresWorkQueue,
   OpenClawController,
+  ActivationFailedError,
   ActivationPendingError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
@@ -2709,6 +2710,16 @@ export class ControllerWorker {
           ) {
             throw error;
           }
+          // As for a lost repository credential authority, this ends a maintenance
+          // claim's chain too: the revision cannot activate without a new one.
+          if (error instanceof ActivationFailedError) {
+            await this.finalizeRevision(
+              claim,
+              { outcome: "permanent", code: error.code },
+              revisionFailureLogFields(error),
+            );
+            return;
+          }
           const pending = activationPendingResult(error);
           await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
             ...(pending.dependencyFailure === undefined
@@ -2750,7 +2761,8 @@ export class ControllerWorker {
       }
       if (
         error instanceof RepositoryCredentialAuthorityError ||
-        error instanceof SandboxRevisionUnsupportedError
+        error instanceof SandboxRevisionUnsupportedError ||
+        error instanceof ActivationFailedError
       ) {
         result = { outcome: "permanent", code: error.code };
       } else if (error instanceof TransientDependencyError) {
@@ -3160,6 +3172,7 @@ export class ControllerWorker {
     }
     // Consecutive short effects can each finish before their timer fires while
     // the whole sequence outlives the lease. Renew before every external effect.
+    const firstRenewal = performance.now();
     if ((await this.queue.heartbeat(claim)) === undefined) {
       throw new WorkClaimLostError();
     }
@@ -3171,6 +3184,17 @@ export class ControllerWorker {
       lost = true;
       operation.abort(new WorkClaimLostError());
     };
+    // A renewal that is never answered (a silent connection) waits for the
+    // database timeout, long after the lease. Another worker may own the claim
+    // by then, so stop when the last confirmed lease runs out. Measured from
+    // when the renewal was sent, this is never later than the stored expiry.
+    let lapse: ReturnType<typeof setTimeout> | undefined;
+    const confirmLease = (renewedAt: number) => {
+      clearTimeout(lapse);
+      lapse = setTimeout(abandon, renewedAt + this.leaseDurationMs - performance.now());
+      lapse.unref();
+    };
+    confirmLease(firstRenewal);
     this.abort.signal.addEventListener("abort", abandon, { once: true });
     if (this.abort.signal.aborted) {
       abandon();
@@ -3178,9 +3202,11 @@ export class ControllerWorker {
     const heartbeat = setInterval(
       () => {
         pending = pending.then(async () => {
+          const renewedAt = performance.now();
           if ((await this.queue.heartbeat(claim)) === undefined) {
             abandon();
           } else if (!lost) {
+            confirmLease(renewedAt);
             this.progress();
             void this.health(false);
           }
@@ -3208,6 +3234,7 @@ export class ControllerWorker {
       clearInterval(heartbeat);
       this.abort.signal.removeEventListener("abort", abandon);
       await pending.catch(() => {});
+      clearTimeout(lapse);
       if (lost) {
         throw new WorkClaimLostError();
       }
@@ -3451,7 +3478,9 @@ export class ControllerWorker {
         }
         await this.finalizeRevision(
           claim,
-          activationPendingResult(error),
+          error instanceof ActivationFailedError
+            ? { outcome: "permanent", code: error.code }
+            : activationPendingResult(error),
           revisionFailureLogFields(error),
         );
         return;

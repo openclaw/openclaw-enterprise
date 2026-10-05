@@ -15,10 +15,15 @@
   },
   "files": [
     {
-      "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
+      "path": "tests/integration/kubelet-volume-refresh-k3d.test.mjs",
       "expectedTests": [
-        "real Kubernetes Compute reads plugin runtime status from the exact gateway Pod",
-        "real Kubernetes Compute reports plugin install warnings and disables failed plugin config"
+        "optional Secret and ConfigMap volumes populate in running Pods within the measured kubelet refresh bounds"
+      ]
+    },
+    {
+      "path": "tests/integration/kubernetes-compute-driver-real.test.mjs",
+      "expectedTests": [
+        "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion"
       ]
     }
   ]

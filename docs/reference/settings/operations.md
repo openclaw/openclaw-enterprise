@@ -83,8 +83,11 @@ has 38 through `0037_human_authentication`; `preNamespaceDeletionTakeover` has
 `0041_restriction_read_logs`; `preCredentialWithdrawals` has 43 through
 `0042_oauth_harness_auth`; `preBrokerReceiptFence` has 44 through
 `0043_credential_withdrawals`; `preModelProbeFailureCause` has 45 through
-`0045_repository_broker_receipt_fence`. `completed` is the current canonical
-history with all receipts, including `0046_model_probe_failure_cause`.
+`0045_repository_broker_receipt_fence`; `preProvisioningConfigurationRelease`
+has 46 through `0046_model_probe_failure_cause`;
+`preAdministratorCredentialSourceGrants` has 47 through
+`0047_provisioning_configuration_release`. `completed` is the current canonical
+history with all receipts, including `0048_administrator_credential_source_grants`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and

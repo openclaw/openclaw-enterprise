@@ -130,7 +130,13 @@ returning it:
 Other structured output, including Codex JSON-RPC protocol traffic, oversized
 lines and malformed lines that start like a JSON object or array, is
 **withheld**: the page shows a count, never content. A pretty-printed
-(multi-line) JSON value becomes one withheld row.
+(multi-line) JSON value becomes one withheld row. Each row names its reason
+code, as `occ agent logs` does: `unrecognised_structured` (structured output
+OCC does not keep), `malformed` (JSON split across lines, as Codex prints
+it, JSON that does not parse, or JSON nested too deeply) or `oversized`.
+The console and `occ agent logs` show an invisible or direction-changing
+character in retained text, such as a bidirectional override, as an escape like
+`\u202e`, so a line cannot reorder or hide what you read.
 
 Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
@@ -176,9 +182,9 @@ A page never silently skips output; it labels each gap:
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
 line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
-10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). The rate limit
-and operator switch run before
-[authorization](../../reference/security.md#console-and-api-runtime-log-reads).
+10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
+after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
+so a caller without the grants always gets `403`.
 
 Kubernetes keeps only each container's current and previous instance, nothing
 from deleted Pods; for

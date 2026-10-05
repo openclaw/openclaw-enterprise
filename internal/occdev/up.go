@@ -501,8 +501,8 @@ func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url 
 }
 
 func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, namespaceID string, timeout time.Duration) error {
-	return poll(ctx, timeout, func(context.Context) (bool, error) {
-		value, err := client.GetNamespace(namespaceID)
+	return poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		value, err := client.WithContext(ctx).GetNamespace(namespaceID)
 		if err != nil {
 			return false, nil
 		}

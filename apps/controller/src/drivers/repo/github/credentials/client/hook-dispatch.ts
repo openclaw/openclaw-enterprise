@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { allowsPushRef } from "../../../credentials/client-contracts.ts";
+import { allowsPushRef, readPushedBranchRef } from "../../../credentials/client-contracts.ts";
 import { readClientConfiguration } from "./config.ts";
 import {
   inheritedRepositoryBinding,
@@ -40,7 +40,8 @@ function setting(name: string): string | undefined {
   return output.slice(0, -1) || undefined;
 }
 
-async function checkPush(destination: string, input: Buffer): Promise<boolean> {
+/** True when the push may proceed, or the refusal message the hook prints. */
+async function checkPush(destination: string, input: Buffer): Promise<true | string> {
   if (!destination.startsWith("https://")) {
     return true;
   }
@@ -83,7 +84,9 @@ async function checkPush(destination: string, input: Buffer): Promise<boolean> {
     return true;
   }
   requireCurrentBinding(binding);
-  const lines = input.toString("utf8").split("\n");
+  // Read as latin1 so each byte is one character; the remote ref is then decoded as
+  // strict UTF-8 with the gateway's rules, so both refuse the same refs.
+  const lines = input.toString("latin1").split("\n");
   if (lines.pop() !== "") {
     throw new Error("invalid-pre-push-input");
   }
@@ -95,8 +98,14 @@ async function checkPush(destination: string, input: Buffer): Promise<boolean> {
     if (!fields) {
       throw new Error("invalid-pre-push-input");
     }
-    if (!allowsPushRef(binding.client.pushRefAllowlist, fields[3]!)) {
-      return false;
+    const read = readPushedBranchRef(Buffer.from(fields[3]!, "latin1"));
+    if (!("ref" in read)) {
+      // The reason names a code point, never the raw name, so the terminal shows no
+      // invisible or direction-changing character.
+      return `repository-push-ref-not-allowed: ${read.refused}`;
+    }
+    if (!allowsPushRef(binding.client.pushRefAllowlist, read.ref)) {
+      return "repository-push-ref-not-allowed";
     }
   }
   return true;
@@ -176,8 +185,9 @@ async function run(): Promise<number> {
       throw new Error("invalid-pre-push-input");
     }
     input = await readPushInput();
-    if (!(await checkPush(args[1]!, input))) {
-      process.stderr.write("repository-push-ref-not-allowed\n");
+    const verdict = await checkPush(args[1]!, input);
+    if (verdict !== true) {
+      process.stderr.write(verdict + "\n");
       return 1;
     }
   }

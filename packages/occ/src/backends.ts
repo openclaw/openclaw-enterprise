@@ -2,7 +2,6 @@ import { isAbsolute } from "node:path";
 import type {
   Driver,
   BackendDefinition,
-  BackendRef,
   DriverCapability,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";

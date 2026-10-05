@@ -8,16 +8,16 @@ installed version, run `occ --help` or add `--help` to a command.
 
 Command-line flags override the corresponding environment variables.
 
-| Flag                 | Environment variable   | What it controls                                                                                                                 |
-| -------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment.          |
-| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                              |
-| `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
-| `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                |
-| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                       |
-| `--output`, `-o`     | —                      | Output format: `table` (default), `json`, or `yaml`.                                                                             |
-| `--help`, `-h`       | —                      | Prints help for the command.                                                                                                     |
-| `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                         |
+| Flag                 | Environment variable   | What it controls                                                                                                                           |
+| -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment.                    |
+| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                                        |
+| `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
+| `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                          |
+| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                                 |
+| `--output`, `-o`     | —                      | Output format: `table` (default), `json`, or `yaml`.                                                                                       |
+| `--help`, `-h`       | —                      | Prints help for the command.                                                                                                               |
+| `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
 
 The service-key JSON must contain a nonempty `data.key` with no line breaks.
 The client sends it as `x-api-key` and does not follow redirects. Use a trusted
@@ -53,6 +53,9 @@ input is not supported. The server validates document fields against the
 | `occ secret get ID`                                    | Reads Secret metadata, never its value.                                                                                                                          |
 | `occ secret update ID --file FILE`                     | Replaces the Secret value; consumers require explicit redeployment.                                                                                              |
 | `occ secret delete ID`                                 | Deletes an unreferenced Namespace Secret.                                                                                                                        |
+| `occ preset list`                                      | Lists the Namespace's [Presets](presets.md) the caller can read: ID, name, and creation time.                                                                    |
+| `occ preset get ID`                                    | Reads a Preset; `-o json` or `-o yaml` includes its template.                                                                                                    |
+| `occ preset delete ID`                                 | Deletes a Preset and its exact-resource AccessBindings. Agents and Configurations created from it are unchanged.                                                 |
 | `occ credential-source create --file FILE`             | Registers a Secret with the selected Credential Gateway. See [credential sources](credential-sources.md#register-a-source).                                      |
 | `occ credential-source list`                           | Lists credential sources without live gateway status.                                                                                                            |
 | `occ credential-source get ID`                         | Reads a credential source and its live gateway status, never its value.                                                                                          |
@@ -83,7 +86,8 @@ input is not supported. The server validates document fields against the
 | `occ agent logs ID --source SOURCE`                    | Prints one redacted page of container output, or follows it. See [runtime logs](#runtime-status-and-logs).                                                       |
 
 Use the [HTTP API](api.md) to work with ServiceAccounts and configured
-Backends; the CLI has no commands for these. Neither the CLI nor the HTTP API
+Backends, and to create or update [Presets](presets.md#crud-and-permissions);
+the CLI has no commands for these. Neither the CLI nor the HTTP API
 offers Configuration listing. An accepted deploy returns a revision; `agent get`
 shows desired state, `LIFECYCLE` (`active` or `deleting`), and the selected
 revision, not runtime health. Run `occ agent deployment-status ID` for the
@@ -134,7 +138,9 @@ audited.
 
 Text output prints `TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value` per line.
 Gap and withheld records are printed to stderr as `notice:` lines; in JSON mode
-they are also records on stdout. With `--follow`, the CLI waits for
+they are also records on stdout. Text lines and notices show an invisible or
+control character, such as a bidirectional override, as an escape like
+`\u202e`; a field value holding one is quoted. JSON records are unchanged. With `--follow`, the CLI waits for
 `Retry-After` after a `429`, retries after a `504`, starts a new audited view
 when the cursor is rejected, and exits cleanly on Ctrl-C. `501`, `503` and
 permission errors end the command with a nonzero exit. `--follow` cannot be
@@ -149,13 +155,16 @@ occ agent logs agt_... --source gateway --follow -o json | jq -r .message
 ## Output and errors
 
 Table output is meant for people; it prints `-` for unset fields and `No
-resources found.` for an empty list. JSON and YAML print the resource or array
+resources found.` for an empty list. A cell holding an invisible or control
+character, such as a bidirectional override in a name, is printed quoted with
+that character escaped; so is a value that starts with `"`. JSON and YAML print the exact resource or array
 without the HTTP envelope. Deleting a Configuration prints
 `Deleted configuration ID.` in table mode; structured output contains
 `deleted`, `kind`, and `id`.
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
-the status and, when present, the API error code and message. It does not print
+the status and, when present, the API error code and message, and the
+`Retry-After` delay in seconds. It does not print
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
@@ -177,3 +186,6 @@ printed by startup so it selects the same profile and state directory.
 The explicitly selected Kubernetes-only profile rejects Compose options. Use
 `scripts/dev-up` and `scripts/dev-down` as the common entry points for every
 profile; the Compute and Sandbox Driver settings select the implementation.
+When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
+script's status (`2` for a usage or configuration error) and prints nothing
+beyond the script's own message.

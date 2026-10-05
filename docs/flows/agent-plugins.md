@@ -41,7 +41,8 @@ graph TD
   D6 -->|unsupported| D7["Return unavailable capability"]
   D6 -->|Secret reference| D3["Read owned current value"]
   D6 -->|transient token or no credential| D4["Call selected PluginDriver"]
-  D3 -->|Create Agent| D4
+  D3 -->|Create Agent| E4["Recheck Agent create and Secret operate"]
+  E4 --> D4
   D3 -->|Existing Agent| E3["Recheck grants and binding"]
   E3 --> D4
   D4 --> D5["Return safe catalog metadata"]
@@ -69,7 +70,8 @@ graph TD
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
 transient PATs, same-Namespace Secrets, or supported credential-free access.
 OCC checks Namespace Agent `create` and caller Secret `operate` before Driver
-support; unsupported discovery reads no Secret. A `secretRef` or `oauthLogin` in
+support, and again after the Secret read, before the Driver call; unsupported
+discovery reads no Secret. A `secretRef` or `oauthLogin` in
 another Namespace, here or in existing-Agent discovery, fails with
 `400 INVALID_REQUEST` before any Secret check; a Secret the Namespace does not
 hold is `404`.
@@ -298,6 +300,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-04 05:00: Recheck Create Agent discovery grants after the Secret read. (bughunt-11)
 
 - 2026-10-01 00:57: Reconcile peer recovery with current runtime. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - e57e777238104b1de0d3bee5c6c631722c4af575)
 

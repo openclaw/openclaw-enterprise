@@ -1,7 +1,6 @@
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { request } from "node:http";
 import { createServer as createNetServer, connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
@@ -34,6 +33,7 @@ import {
   appModule,
   appRoot,
   appExtension,
+  controlRequest,
   createServiceConfiguration,
   eventually,
 } from "../fixtures/repository-credentials/service.mjs";
@@ -42,39 +42,12 @@ import {
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
-function control(socketPath, method, path, value, extra = {}) {
-  const body = value === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(value));
-  return new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        socketPath,
-        method,
-        path,
-        headers: {
-          host: "localhost",
-          ...(path === "/v1/sessions" ? { "x-admission-id": `${Date.now()}-${randomUUID()}` } : {}),
-          "content-type": "application/json",
-          "content-length": body.length,
-          ...extra,
-        },
-        agent: false,
-      },
-      (incoming) => {
-        const chunks = [];
-        incoming.on("data", (chunk) => chunks.push(chunk));
-        incoming.once("error", reject);
-        incoming.once("end", () =>
-          resolve({
-            status: incoming.statusCode,
-            body: JSON.parse(Buffer.concat(chunks).toString()),
-          }),
-        );
-      },
-    );
-    outgoing.once("error", reject);
-    outgoing.end(body);
+// Session opens need an admission id; a fresh one per call unless the test names it.
+const control = (socketPath, method, path, value, extra = {}) =>
+  controlRequest(socketPath, method, path, value, {
+    ...(path === "/v1/sessions" ? { "x-admission-id": `${Date.now()}-${randomUUID()}` } : {}),
+    ...extra,
   });
-}
 
 // The relay consumes the real listener's response but disconnects its caller,
 // reproducing ambiguous loss after admission without replacing control behavior.
@@ -893,6 +866,49 @@ test(
     );
   },
 );
+
+test("control refuses loose requests before acting on them", { timeout: 15000 }, async (t) => {
+  const fixture = await boundControlFixture(t);
+  const { input, send, freshId, clock, namespaceId } = fixture;
+  const socket = fixture.config.gateway.controlSocket;
+  const refused = { status: 400, body: { error: "invalid-request" } };
+  const plainText = { "content-type": "text/plain" };
+  const id = freshId();
+  await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+  const body = { ...input, durableAdmission: true };
+  assert.deepEqual(
+    await control(socket, "POST", "/v1/sessions", body, { ...plainText, "x-admission-id": id }),
+    refused,
+  );
+  // The refused request reserved nothing: the same admission id still creates the session.
+  const created = await send(input, id);
+  assert.equal(created.status, 201);
+  const sessionId = created.body.session.sessionId;
+
+  // An empty list starts no background lookup; it is the well-formed baseline.
+  const lookup = { namespaceId, repositoryRefs: [] };
+  const describe = (value, headers) =>
+    control(socket, "POST", "/v1/repository-descriptions", value, headers);
+  assert.equal((await describe(lookup)).status, 200);
+  assert.deepEqual(await describe(lookup, plainText), refused);
+  assert.deepEqual(await describe({ ...lookup, extra: true }), refused);
+  for (const value of [[namespaceId], 7]) {
+    assert.deepEqual(await describe({ ...lookup, namespaceId: value }), refused);
+  }
+
+  // Reads and close carry no body. The request head refuses a GET body and the handler a
+  // close body; neither changes the session.
+  for (const [method, path] of [
+    ["GET", "/healthz"],
+    ["GET", "/v1/capabilities"],
+    ["GET", `/v1/sessions/${sessionId}`],
+    ["POST", `/v1/sessions/${sessionId}/close`],
+  ]) {
+    assert.deepEqual(await control(socket, method, path, {}), refused, `${method} ${path}`);
+  }
+  await clock.advance(0);
+  assert.equal(fixture.service.status(sessionId).state, "OPEN");
+});
 
 async function holdControlRequest(t, target) {
   const directory = await temporaryDirectory(t, "rcs-held-");

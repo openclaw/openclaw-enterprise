@@ -3,20 +3,21 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { passwordFailureBudget } from "../../apps/controller/src/auth/admission.ts";
 import {
   assertReservedLane,
-  bootstrapProductionInstallation,
+  attachProvider,
+  authRowCounts,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   fakeGoogle,
   githubSignIn,
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
-  installationRoles,
+  onboardPasswordAccounts,
   passwordSignIn,
   readAccount,
   signedInHeaders,
@@ -38,6 +39,12 @@ const secrets = {
   "occ-github-login/client-id": "google-suite-github-client-id",
   "occ-github-login/client-secret": "google-suite-github-client-secret",
 };
+// The production slow lane with its floor capped at 2 s instead of 8 s, as in
+// postgres-password-sign-in-limit. This suite spends password budgets but does not measure
+// pacing, and each paced attempt waits its floor in real time: the reserved-lane check and
+// the admin sign-ins after it reach the 4 s and 8 s floors otherwise.
+const slowLane = { floorMs: passwordFailureBudget.slow.floorMs, maxFloorMs: 2000 };
+
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const googleProviderId = `google:${digest(googleClientId)}`;
 const githubProviderId = `github:${digest("google-suite-github-client-id")}`;
@@ -67,72 +74,42 @@ test(
       hd: hostedDomain,
     });
     const address = clientAddresses("198.19");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Password onboarding on the default install, before Google is configured.
+    const { admin, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    // Password onboarding on the default install, before Google is configured.
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      passwordSlowLaneFloors: slowLane,
+      remoteAddress: address(),
+      accounts: {
+        member: { email: `google-member@${hostedDomain}` },
+        disabled: { email: `google-disabled@${hostedDomain}` },
+        both: { email: `google-both@${hostedDomain}` },
+      },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const accounts = {};
-    for (const [name, role] of [
-      ["member", roles.reader],
-      ["disabled", roles.reader],
-      ["both", roles.reader],
-    ]) {
-      const email = `google-${name}@${hostedDomain}`;
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: role.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      accounts[name] = { id: created.json().data.id, email, password };
-    }
     const { member, disabled, both } = accounts;
-    await app.close();
 
     // A Google-only upgrade: no OCC_AUTH_GITHUB_CLIENT_*, hosted domain restricted.
     app = await composeProductionSignIn(t, {
       databaseUrl,
+      passwordSlowLaneFloors: slowLane,
       settings: googleUpgradeSettings(admin.id, [hostedDomain]),
       secrets,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
+    let adminHeaders = await signedInHeaders(app, origin, admin, address());
 
-    const counts = async () =>
-      (
-        await pool.query(
-          `SELECT (SELECT count(*)::int FROM occ."user") AS users,
-                  (SELECT count(*)::int FROM occ.account) AS methods,
-                  (SELECT count(*)::int FROM occ.session) AS sessions`,
-        )
-      ).rows[0];
+    const counts = () => authRowCounts(pool);
     const denials = async (reason) =>
       (await state.transact((unit) => unit.audit.list())).filter(
         ({ action, outcome, reasonCode }) =>
           action === "authentication.login" && outcome === "denied" && reasonCode === reason,
       ).length;
     const attach = async (userId, provider, subject) => {
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/providers/${provider}`,
-        headers: adminHeaders,
-        payload: {
-          subject,
-          expectedVersion: (await readAccount(app, adminHeaders, userId)).version,
-        },
-      });
+      const response = await attachProvider(app, adminHeaders, userId, provider, subject);
       assert.equal(response.statusCode, 200, response.body);
       return response;
     };
@@ -499,6 +476,7 @@ test(
       await startFakeGitHub(t);
       app = await composeProductionSignIn(t, {
         databaseUrl,
+        passwordSlowLaneFloors: slowLane,
         settings: {
           ...githubUpgradeSettings(admin.id),
           ...googleUpgradeSettings(admin.id, [hostedDomain]),

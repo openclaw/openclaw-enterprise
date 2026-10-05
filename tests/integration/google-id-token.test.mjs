@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import {
   exchangeGoogleSubject,
@@ -7,29 +7,20 @@ import {
   googleNonce,
   verifyGoogleIdToken,
 } from "../../apps/controller/src/auth/google.ts";
+import { idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
 
+// verifyGoogleIdToken delegates every generic ID-token check to verifyIdToken, which
+// oidc-id-token.test.mjs pins. This file covers only what Google adds: its issuer
+// spellings, the hosted-domain restriction, its nonce and its fixed endpoints.
 const clientId = "fixture-client.apps.googleusercontent.com";
 const nonce = googleNonce("test-only-authentication-secret", "s".repeat(43));
 const now = Date.UTC(2030, 0, 1);
 const seconds = Math.floor(now / 1000);
 
-function keyPair(kid) {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  return {
-    kid,
-    privateKey,
-    jwk: { ...publicKey.export({ format: "jwk" }), kid, alg: "RS256", use: "sig" },
-  };
-}
-const current = keyPair("current-kid");
-const other = keyPair("other-kid");
+const current = rsaSigningKey("current-kid");
+const other = rsaSigningKey("other-kid");
 const jwks = { keys: [other.jwk, current.jwk] };
-
-function encode(value) {
-  return Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString(
-    "base64url",
-  );
-}
+const sign = idTokenSigner(current);
 
 function claims(overrides = {}) {
   return {
@@ -47,16 +38,8 @@ function claims(overrides = {}) {
   };
 }
 
-function token(
-  payload = claims(),
-  {
-    header = { alg: "RS256", kid: current.kid, typ: "JWT" },
-    key = current.privateKey,
-    algorithm = "sha256",
-  } = {},
-) {
-  const input = `${encode(header)}.${encode(payload)}`;
-  return `${input}.${sign(algorithm, Buffer.from(input), key).toString("base64url")}`;
+function token(payload = claims(), options) {
+  return sign(payload, options);
 }
 
 function verified(value, expected = {}) {
@@ -72,31 +55,16 @@ function verified(value, expected = {}) {
 
 test("valid Google ID token yields the sub claim, never the email", () => {
   assert.equal(verified(token()), "110169484474386276334");
-  assert.equal(verified(token(claims({ iss: "accounts.google.com" }))), "110169484474386276334");
-  assert.equal(
-    verified(token(claims({ aud: [clientId], azp: clientId }))),
-    "110169484474386276334",
-  );
-  assert.equal(verified(token(claims({ azp: undefined }))), "110169484474386276334");
-  assert.equal(verified(token(claims({ sub: "~".repeat(255) }))), "~".repeat(255));
 });
 
-test("audience and issuer mismatches are rejected", () => {
-  assert.equal(verified(token(claims({ aud: "other-client" }))), undefined);
-  assert.equal(verified(token(claims({ aud: [clientId, "other"], azp: undefined }))), undefined);
-  // The client is the only trusted audience, so an extra one is refused even with azp.
-  assert.equal(verified(token(claims({ aud: [clientId, "other"], azp: clientId }))), undefined);
-  assert.equal(verified(token(claims({ aud: [clientId], azp: "other" }))), undefined);
-  assert.equal(verified(token(claims({ azp: "other" }))), undefined);
+test("only Google's two issuer spellings are accepted", () => {
+  assert.equal(verified(token(claims({ iss: "accounts.google.com" }))), "110169484474386276334");
   assert.equal(verified(token(claims({ iss: "https://evil.example.test" }))), undefined);
   assert.equal(verified(token(claims({ iss: "http://accounts.google.com" }))), undefined);
   assert.equal(verified(token(claims({ iss: undefined }))), undefined);
 });
 
-test("nonce must match the attempt", () => {
-  assert.equal(verified(token(claims({ nonce: "other" }))), undefined);
-  assert.equal(verified(token(claims({ nonce: undefined }))), undefined);
-  assert.equal(verified(token(claims({ nonce: "" })), { nonce: "" }), undefined);
+test("the nonce is derived from the attempt state", () => {
   assert.notEqual(googleNonce("test-only-authentication-secret", "t".repeat(43)), nonce);
   assert.equal(
     nonce,
@@ -104,59 +72,6 @@ test("nonce must match the attempt", () => {
       .update(`oce-google-nonce\0${"s".repeat(43)}`)
       .digest("base64url"),
   );
-});
-
-test("time claims are enforced", () => {
-  assert.equal(verified(token(claims({ exp: seconds }))), undefined);
-  assert.equal(verified(token(claims({ exp: seconds - 1 }))), undefined);
-  assert.equal(verified(token(claims({ exp: undefined }))), undefined);
-  assert.equal(verified(token(claims({ iat: seconds + 61 }))), undefined);
-  assert.equal(verified(token(claims({ iat: seconds - 3601 }))), undefined);
-  assert.equal(verified(token(claims({ iat: String(seconds) }))), undefined);
-  assert.equal(verified(token(claims({ iat: seconds + 60 }))), "110169484474386276334");
-});
-
-test("only RS256 signatures from the published key verify", () => {
-  const payload = claims();
-  const unsigned = `${encode({ alg: "none", kid: current.kid })}.${encode(payload)}.`;
-  assert.equal(verified(unsigned), undefined);
-  assert.equal(verified(`${unsigned}AA`), undefined);
-  const hsInput = `${encode({ alg: "HS256", kid: current.kid })}.${encode(payload)}`;
-  const hs = createHmac("sha256", current.jwk.n).update(hsInput).digest("base64url");
-  assert.equal(verified(`${hsInput}.${hs}`), undefined);
-  assert.equal(
-    verified(token(payload, { header: { alg: "RS512", kid: current.kid }, algorithm: "sha512" })),
-    undefined,
-  );
-  assert.equal(verified(token(payload, { header: { alg: "RS256", kid: "unknown" } })), undefined);
-  assert.equal(verified(token(payload, { header: { alg: "RS256" } })), undefined);
-  assert.equal(
-    verified(token(payload, { header: { alg: "RS256", kid: current.kid }, key: other.privateKey })),
-    undefined,
-  );
-  const [header, , signature] = token(payload).split(".");
-  assert.equal(verified(`${header}.${encode(claims({ sub: "1" }))}.${signature}`), undefined);
-  assert.equal(
-    verified(token(payload), { jwks: { keys: [{ ...current.jwk, alg: "RS512" }] } }),
-    undefined,
-  );
-  assert.equal(
-    verified(token(payload), { jwks: { keys: [{ ...current.jwk, use: "enc" }] } }),
-    undefined,
-  );
-  assert.equal(verified(token(payload), { jwks: {} }), undefined);
-  assert.equal(verified(token(payload), { jwks: null }), undefined);
-});
-
-test("malformed tokens are rejected", () => {
-  const valid = token();
-  assert.equal(verified(`${valid}.AAAA`), undefined);
-  assert.equal(verified(valid.split(".").slice(0, 2).join(".")), undefined);
-  const [header, payload, signature] = valid.split(".");
-  assert.equal(verified(`${header}.${payload}.${signature}=`), undefined);
-  assert.equal(verified(`${header}.${payload.slice(0, -1)}+.${signature}`), undefined);
-  assert.equal(verified(`${encode("not json")}.${payload}.${signature}`), undefined);
-  assert.equal(verified(""), undefined);
 });
 
 test("hosted-domain restriction requires hd and a verified email", () => {
@@ -175,14 +90,6 @@ test("hosted-domain restriction requires hd and a verified email", () => {
     verified(token(claims({ hd: undefined, email_verified: false }))),
     "110169484474386276334",
   );
-});
-
-test("subject must be 1-255 printable ASCII characters", () => {
-  assert.equal(verified(token(claims({ sub: undefined }))), undefined);
-  assert.equal(verified(token(claims({ sub: "" }))), undefined);
-  assert.equal(verified(token(claims({ sub: "1".repeat(256) }))), undefined);
-  assert.equal(verified(token(claims({ sub: "has space" }))), undefined);
-  assert.equal(verified(token(claims({ sub: 110169484474386 }))), undefined);
 });
 
 test("Google configuration is both-or-neither with validated domains", () => {

@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -19,31 +19,16 @@ import {
   runBootstrapInstallation,
 } from "./bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { createReadyComputeDriver } from "./development.mjs";
+import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
 // Authentication, State, IAM, audit and Fastify are the production implementations.
 function passiveComputeDriver(id) {
-  return {
-    id,
-    capability: "compute",
+  return createReadyComputeDriver(id, {
     implementation: "sign-in-proof-memory-compute",
     async preflight() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
+  });
 }
 
 /** Runs the chart's initialization Job command and returns the generated administrator password. */
@@ -219,7 +204,7 @@ function resolveSettings(settings, secrets) {
  */
 export async function composeProductionSignIn(
   context,
-  { databaseUrl, settings, secrets, logger, passwordSlowLaneFloors },
+  { databaseUrl, settings, secrets, logger, metrics, passwordSlowLaneFloors },
 ) {
   const environment = resolveSettings(settings, secrets);
   // The chart mounts the gateway service key Secret at this path; use a private file.
@@ -258,10 +243,12 @@ export async function composeProductionSignIn(
         }
       : {}),
     ...(logger === undefined ? {} : { logger }),
+    ...(metrics === undefined ? {} : { metrics }),
     ...(passwordSlowLaneFloors === undefined ? {} : { passwordSlowLaneFloors }),
     drivers: {
       installation,
       defaultPresets: runtime.defaultPresets,
+      bundledPresetVersions: runtime.bundledPresetVersions,
       computeDriver: passiveComputeDriver(installation.drivers.compute.id),
       configurationDriver: createTestConfigurationDriver({
         id: installation.drivers.configuration.id,
@@ -333,16 +320,37 @@ export async function installationRoles(state, pool) {
 }
 
 /**
- * A local stand-in for github.com and api.github.com. The controller's fixed provider
- * endpoints are redirected here by mocking fetch, as postgres-github-sign-in.test.mjs does.
- * The authorization code names the GitHub subject: `subject-<id>`. Modes: "up", "error"
- * (503) and "hang" (never answers).
+ * Listens `server` on loopback and, for the rest of test `t`, mocks fetch so the controller's
+ * fixed github.com and api.github.com endpoints reach it; other origins pass through. The
+ * caller owns closing `server`. Returns the server's origin.
+ */
+export async function serveAsGitHub(t, server) {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const providerOrigin = `http://127.0.0.1:${server.address().port}`;
+  const originalFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin === "https://github.com" || url.origin === "https://api.github.com") {
+      return originalFetch(new URL(url.pathname + url.search, providerOrigin), init);
+    }
+    return originalFetch(input, init);
+  });
+  return providerOrigin;
+}
+
+/**
+ * A local stand-in for github.com and api.github.com, served through `serveAsGitHub`.
+ * The authorization code names the GitHub subject: `subject-<id>`; its login is
+ * `fixture-<id>`. Modes: "up", "error" (503) and "hang" (never answers). Set
+ * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
+ * "active", "pending" or an HTTP status; `fixture.paths` records each request path.
  */
 export async function startFakeGitHub(t) {
   const server = createServer();
-  const fixture = { mode: "up", requests: 0 };
+  const fixture = { mode: "up", requests: 0, paths: [], membership: undefined };
   server.on("request", async (request, response) => {
     fixture.requests += 1;
+    fixture.paths.push(request.url);
     if (fixture.mode === "hang") {
       return;
     }
@@ -368,6 +376,7 @@ export async function startFakeGitHub(t) {
         ),
       );
     } else if (request.url === "/user") {
+      // Strict on purpose: suites rely on this 401 to catch a wrong Authorization header.
       const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
       if (subject === null) {
         response.writeHead(401);
@@ -375,21 +384,21 @@ export async function startFakeGitHub(t) {
         return;
       }
       response.end(JSON.stringify({ id: Number(subject[1]), login: `fixture-${subject[1]}` }));
+    } else if (fixture.membership !== undefined) {
+      const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
+      const answer = subject === null ? 401 : fixture.membership(request.url, Number(subject[1]));
+      if (typeof answer === "number") {
+        response.writeHead(answer);
+        response.end("{}");
+        return;
+      }
+      response.end(JSON.stringify({ state: answer, role: "member" }));
     } else {
       response.writeHead(404);
       response.end("{}");
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const providerOrigin = `http://127.0.0.1:${server.address().port}`;
-  const originalFetch = globalThis.fetch;
-  t.mock.method(globalThis, "fetch", (input, init) => {
-    const url = new URL(input instanceof Request ? input.url : input);
-    if (url.origin === "https://github.com" || url.origin === "https://api.github.com") {
-      return originalFetch(new URL(url.pathname + url.search, providerOrigin), init);
-    }
-    return originalFetch(input, init);
-  });
+  await serveAsGitHub(t, server);
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -431,10 +440,10 @@ export async function githubSignIn(app, origin, subject, remoteAddress = "192.0.
  * and "error" (503).
  */
 export function fakeGoogle(t, { clientId, clientSecret, hd } = {}) {
-  const kid = "fixture-google-kid";
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const foreign = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
-  const { n, e } = publicKey.export({ format: "jwk" });
+  const published = rsaSigningKey("fixture-google-kid");
+  const signToken = idTokenSigner(published);
+  // An unpublished key: its token's header still names the published kid, so it does not verify.
+  const foreign = rsaSigningKey(published.kid);
   const codes = new Map();
   const fixture = {
     mode: "up",
@@ -452,7 +461,7 @@ export function fakeGoogle(t, { clientId, clientSecret, hd } = {}) {
       scopes_supported: ["openid", "email", "profile"],
       code_challenge_methods_supported: ["plain", "S256"],
     }),
-    jwks: Object.freeze({ keys: [{ kid, kty: "RSA", alg: "RS256", use: "sig", n, e }] }),
+    jwks: Object.freeze({ keys: [published.jwk] }),
     authorize(url, { subject, claims = {}, key = "published" }) {
       const parameters = new URL(url).searchParams;
       const code = `fixture-google-code-${randomBytes(12).toString("base64url")}`;
@@ -477,10 +486,7 @@ export function fakeGoogle(t, { clientId, clientSecret, hd } = {}) {
       exp: now + 3600,
       ...claims,
     };
-    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    const input = `${encode({ alg: "RS256", kid, typ: "JWT" })}.${encode(payload)}`;
-    const signer = key === "foreign" ? foreign : privateKey;
-    return `${input}.${sign("sha256", Buffer.from(input), signer).toString("base64url")}`;
+    return signToken(payload, key === "foreign" ? { key: foreign.privateKey } : {});
   }
   const json = (status, body) =>
     new Response(JSON.stringify(body), {
@@ -591,14 +597,9 @@ export function fakeOidc(
   t,
   { clientId, clientSecret, issuer = fixtureOidcIssuer, tokenAuth = "client_secret_post" } = {},
 ) {
-  const keyPair = (kid) => {
-    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-    const { n, e } = publicKey.export({ format: "jwk" });
-    return { kid, privateKey, jwk: { kid, kty: "RSA", alg: "RS256", use: "sig", n, e } };
-  };
   let generation = 0;
-  let key = keyPair(`fixture-oidc-kid-${generation}`);
-  const foreign = keyPair("fixture-oidc-foreign");
+  let key = rsaSigningKey(`fixture-oidc-kid-${generation}`);
+  const foreign = rsaSigningKey("fixture-oidc-foreign");
   const codes = new Map();
   const fixture = {
     mode: "up",
@@ -612,7 +613,7 @@ export function fakeOidc(
     },
     rotate() {
       generation += 1;
-      key = keyPair(`fixture-oidc-kid-${generation}`);
+      key = rsaSigningKey(`fixture-oidc-kid-${generation}`);
     },
     authorize(url, { subject, claims = {}, key: signer = "published", codeLength = 0 }) {
       const request = Object.fromEntries(new URL(url).searchParams);
@@ -634,10 +635,7 @@ export function fakeOidc(
       exp: now + 3600,
       ...claims,
     };
-    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    const used = signer === "foreign" ? foreign : issuedWith;
-    const input = `${encode({ alg: "RS256", kid: used.kid, typ: "JWT" })}.${encode(payload)}`;
-    return `${input}.${sign("sha256", Buffer.from(input), used.privateKey).toString("base64url")}`;
+    return idTokenSigner(signer === "foreign" ? foreign : issuedWith)(payload);
   }
   const json = (status, body) =>
     new Response(JSON.stringify(body), {
@@ -726,6 +724,101 @@ export async function oidcSignIn(app, origin, idp, authorization, remoteAddress 
     headers: { cookie: bindingCookie },
   });
   return { start, callback, attemptId, url, state, bindingCookie };
+}
+
+/**
+ * Creates a password account through the administrator route, bound to `roleId` when given.
+ * Returns `{ id, email, password }`, which signs in with passwordSignIn.
+ */
+export async function createAccount(app, headers, { email, password, roleId }) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/auth/accounts",
+    headers,
+    payload: { email, password, ...(roleId === undefined ? {} : { roleId }) },
+  });
+  if (response.statusCode !== 201) {
+    throw new Error(`Account creation failed with ${response.statusCode}: ${response.body}`);
+  }
+  return { id: response.json().data.id, email, password };
+}
+
+/**
+ * The password onboarding each external sign-in proof starts from. Bootstraps a production
+ * Installation, composes its default password install, signs the recovery administrator in
+ * (from `remoteAddress` when given) and creates one password account per `accounts` entry,
+ * then closes that app. `accounts` maps a name to its email and its Installation Role from
+ * installationRoles: "reader" (the default) or "admin". Every account uses `password`.
+ * Returns `{ admin: { email, password, id }, roles, accounts: { [name]: { id, email, password } } }`.
+ */
+export async function onboardPasswordAccounts(
+  context,
+  {
+    databaseUrl,
+    state,
+    pool,
+    email,
+    authSecret,
+    secrets,
+    password,
+    accounts = {},
+    remoteAddress,
+    passwordSlowLaneFloors,
+  },
+) {
+  const admin = {
+    email,
+    password: await bootstrapProductionInstallation(context, { databaseUrl, email, authSecret }),
+  };
+  const roles = await installationRoles(state, pool);
+  const app = await composeProductionSignIn(context, {
+    databaseUrl,
+    settings: defaultInstallSettings,
+    secrets,
+    passwordSlowLaneFloors,
+  });
+  try {
+    const headers = await signedInHeaders(app, consoleOrigin, admin, remoteAddress);
+    admin.id = (await currentSession(app, headers.cookie)).user.id;
+    const created = {};
+    for (const [name, account] of Object.entries(accounts)) {
+      const roleName = account.role ?? "reader";
+      const role = Object.hasOwn(roles, roleName) ? roles[roleName] : undefined;
+      if (role === undefined) {
+        throw new Error(`Unknown Installation Role ${account.role} for ${name}.`);
+      }
+      created[name] = await createAccount(app, headers, {
+        email: account.email,
+        password,
+        roleId: role.id,
+      });
+    }
+    return { admin, roles, accounts: created };
+  } finally {
+    await app.close();
+  }
+}
+
+/** Attaches a provider subject to an account at its current version; returns the response. */
+export async function attachProvider(app, headers, userId, provider, subject) {
+  const { version } = await readAccount(app, headers, userId);
+  return app.inject({
+    method: "POST",
+    url: `/api/auth/accounts/${userId}/providers/${provider}`,
+    headers,
+    payload: { subject, expectedVersion: version },
+  });
+}
+
+/** Rows that sign-in creates: users, their sign-in methods (occ.account) and sessions. */
+export async function authRowCounts(pool) {
+  return (
+    await pool.query(
+      `SELECT (SELECT count(*)::int FROM occ."user") AS users,
+              (SELECT count(*)::int FROM occ.account) AS methods,
+              (SELECT count(*)::int FROM occ.session) AS sessions`,
+    )
+  ).rows[0];
 }
 
 /** The guarded account read an administrator uses for expectedVersion. */

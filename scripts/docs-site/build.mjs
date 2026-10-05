@@ -9,7 +9,7 @@ import {
   parseFrontmatter,
   resolveDocsFragment,
 } from "./vendor/docs-markdown.mjs";
-import { githubAnchors } from "./github-anchors.mjs";
+import { createGithubAnchorReader } from "./github-anchors.mjs";
 import { publicMarkdown } from "./public-markdown.mjs";
 
 if (process.argv.slice(2).some((arg) => arg !== "--check")) {
@@ -25,6 +25,7 @@ const themeBootstrap =
   '<script>try{const theme=localStorage.getItem("enterprise-docs-theme");if(theme==="light"||theme==="dark"){document.documentElement.dataset.theme=theme}}catch{}</script>';
 const config = JSON.parse(fs.readFileSync(path.join(docs, "docs.json"), "utf8"));
 const md = createMarkdownRenderer();
+const githubAnchors = createGithubAnchorReader(md);
 const pages = new Map();
 const unpublished = new Set();
 const escape = (value) => md.utils.escapeHtml(String(value));
@@ -247,11 +248,7 @@ function resolveLink(page, href) {
   if (target.startsWith(docs + path.sep)) {
     return "/" + docSource.split("/").map(encodeURIComponent).join("/") + url.search + url.hash;
   }
-  if (
-    url.hash &&
-    target.endsWith(".md") &&
-    !resolveDocsFragment(url.hash, githubAnchors(target, md))
-  ) {
+  if (url.hash && target.endsWith(".md") && !resolveDocsFragment(url.hash, githubAnchors(target))) {
     throw new Error(page.source + ": missing heading in " + href);
   }
   return (

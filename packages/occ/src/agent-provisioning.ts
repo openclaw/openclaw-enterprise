@@ -62,12 +62,6 @@ export interface ProvisionAgentResult {
   readonly provisioning: Readonly<AgentProvisioningProgress>;
 }
 
-export interface AgentProvisioningPlan {
-  readonly configuration: AgentProvisioningConfigurationInput;
-  readonly harnessAuth: HarnessAuthBinding | null;
-  readonly executionMode: HarnessExecutionMode;
-}
-
 function configurationDocument(value: unknown): OpenClawConfigurationDocument {
   const record = asRecord(value);
   if (record === undefined) {
