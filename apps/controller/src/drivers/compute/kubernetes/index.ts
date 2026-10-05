@@ -2436,9 +2436,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   getAgentRuntimeAccess(revision: AgentRevision, principalId: string, runtimeRole: string) {
     const endpoint = this.getGatewayEndpoint(revision);
-    if (!/^prn_[A-Za-z0-9-]{1,196}$/u.test(principalId)) {
-      return undefined;
-    }
     const humanEndpoint = endpoint === undefined ? undefined : new URL(endpoint);
     if (humanEndpoint !== undefined) {
       humanEndpoint.pathname = this.gatewayRoutePath(revision, "people");
