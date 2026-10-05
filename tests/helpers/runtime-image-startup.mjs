@@ -255,7 +255,7 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
 
 const manualReviewedCodexSeccompProfileSha256 =
   "71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f";
-const reviewedCodexSeccompProfileFilePattern = /^codex-0\.158\.0-([a-f0-9]{64})\.json$/;
+const reviewedCodexSeccompProfileFilePattern = /^codex-0\.160\.0-([a-f0-9]{64})\.json$/;
 
 async function ciPreparedCodexSeccompProfile(ciStatePath) {
   if (ciStatePath === undefined || ciStatePath.length === 0) {
@@ -318,7 +318,7 @@ export async function reviewedCodexSeccompSecurityOptions({
   const expected = basename(profile).match(reviewedCodexSeccompProfileFilePattern)?.[1];
   assert.ok(
     expected,
-    "OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-0.158.0-<profile-sha256>.json.",
+    "OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-0.160.0-<profile-sha256>.json.",
   );
 
   let contents;
@@ -335,7 +335,7 @@ export async function reviewedCodexSeccompSecurityOptions({
   assert.equal(
     actual,
     expected,
-    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex 0.158.0 profile filename digest ${expected}.`,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex 0.160.0 profile filename digest ${expected}.`,
   );
 
   const prepared = await ciPreparedCodexSeccompProfile(ciStatePath);

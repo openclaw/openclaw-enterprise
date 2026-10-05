@@ -79,7 +79,7 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
 
 // Model egress comes only from the credential source's OpenShell profile, bound to this binary.
 export const OPENSHELL_CODEX_BINARY =
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.158.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.160.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
 
 export function createOpenShellInstallationConfiguration({
   authentication,

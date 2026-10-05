@@ -62,7 +62,7 @@ OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
 Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.158.0`. If the node's `RuntimeDefault`
+imported runtime image and Codex `0.160.0`. If the node's `RuntimeDefault`
 blocks it, the launcher derives the
 [reviewed compatibility profile](codex-sandbox.md) from that node's actual
 policy, installs it only on the owned k3d node, and verifies workspace and

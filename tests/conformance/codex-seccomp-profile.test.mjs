@@ -38,7 +38,7 @@ async function writeJson(path, value) {
 }
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
-  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.158.0" });
+  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.160.0" });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
   assert.deepEqual(profile.architectures, runtimeDefaultBaseline.architectures);
@@ -160,7 +160,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.158.0",
+      "0.160.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -178,7 +178,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.158.0");
+  assert.equal(provenance.codexVersion, "0.160.0");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -191,7 +191,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.158.0",
+      "0.160.0",
       "--out",
       profilePath,
       "--provenance-out",
