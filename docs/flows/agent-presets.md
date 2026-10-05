@@ -147,13 +147,11 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets (the list requires Namespace read), then reads the selected resource once with
-`revalidate: false`: the snapshot becomes a local draft, not an ongoing page
-dependency. The
-**Start with default Preset** button uses the listed `default-codex` ID through
-that same exact-resource read. It applies variable-free templates immediately;
-customized variable definitions retain the ordinary chooser. If that chooser is
-restored, it preserves the shortcut origin for the eventual form. Missing defaults or
+lists readable Presets with Namespace read, then reads the selected resource once
+with `revalidate: false` for an independent draft.
+**Start with default Preset** reads the listed `default-codex`, applying
+variable-free templates immediately. Variables use the chooser; restoration
+retains the shortcut origin. Missing defaults or
 failed list/read requests cannot open a hidden hardcoded starter. Other readable
 Presets remain selectable. The separate **Start without Preset** action opens
 the ordinary form without reading a Namespace Preset; it does not automatically
