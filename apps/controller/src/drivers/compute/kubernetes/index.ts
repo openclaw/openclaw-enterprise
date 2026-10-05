@@ -9267,16 +9267,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (route !== undefined) {
       await this.reconcile(route, ownership, namespace);
     }
-    if (configuredRuntimeRoles(revision.configuration).length > 0) {
+    const gateway = await this.getOwned("Deployment", name, namespace, ownership);
+    if (asRecord(asRecord(revision.configuration.gateway)?.roles) !== undefined) {
       const peopleRoute = this.gatewayRoute(revision, ownership, namespace, service, "people");
       if (peopleRoute !== undefined) {
+        // A candidate may prepare while its predecessor still serves. Keep the
+        // human endpoint owned by that Gateway until activation replaces it.
+        if (gateway !== undefined) {
+          peopleRoute.metadata.annotations = {
+            ...peopleRoute.metadata.annotations,
+            [AGENT_REVISION_ID_ANNOTATION]: required(
+              gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION],
+              "Serving Gateway revision ID",
+            ),
+            [AGENT_REVISION_ANNOTATION]: required(
+              gateway.metadata.annotations?.[AGENT_REVISION_ANNOTATION],
+              "Serving Gateway revision",
+            ),
+          };
+        }
         await this.reconcile(peopleRoute, ownership, namespace);
       }
     }
     if (this.options.runtime === undefined || revision.harness.mode !== "dedicated") {
       return;
     }
-    const gateway = await this.getOwned("Deployment", name, namespace, ownership);
     if (gateway === undefined) {
       return;
     }

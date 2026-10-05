@@ -10294,6 +10294,7 @@ test("retirement preserves active storage and node routing and deletes exact own
   route.metadata.resourceVersion = "route-version-2";
   let observedRoute = route;
   const nodeResources = new Map();
+  const peopleResources = new Map();
   const claims = [
     driver.gatewayPrivateStateClaim(agentId, ownership, { name: namespace, plane: "execution" }),
     driver.harnessWorkspaceClaim(agentId, ownership, {
@@ -10373,6 +10374,9 @@ test("retirement preserves active storage and node routing and deletes exact own
     },
     objects: {
       async read({ kind, metadata }) {
+        if (metadata.name === `${gatewayName}-people`) {
+          return peopleResources.has(kind) ? structuredClone(peopleResources.get(kind)) : missing();
+        }
         if (metadata.name === `${gatewayName}-node`) {
           const resource = nodeResources.get(kind);
           if (resource === undefined) {
@@ -10393,6 +10397,13 @@ test("retirement preserves active storage and node routing and deletes exact own
         return structuredClone(observedRoute);
       },
       async patch(body) {
+        if (body.metadata.name === `${gatewayName}-people`) {
+          peopleResources.set(body.kind, {
+            ...structuredClone(body),
+            metadata: { ...body.metadata, uid: "people-route-uid", resourceVersion: "1" },
+          });
+          return;
+        }
         if (body.metadata.name === gatewayName) {
           observedRoute = {
             ...structuredClone(body),
@@ -10416,6 +10427,7 @@ test("retirement preserves active storage and node routing and deletes exact own
         body,
       ) {
         deletions.push([spec.kind, { spec, body }]);
+        if (spec.metadata.name === `${gatewayName}-people`) peopleResources.delete(spec.kind);
       },
     },
   });
@@ -10628,6 +10640,68 @@ test("retirement preserves active storage and node routing and deletes exact own
       ["HTTPRoute", `${gatewayName}-node`, "HTTPRoute-node-uid"],
       ["SecurityPolicy", `${gatewayName}-node`, "SecurityPolicy-node-uid"],
     ],
+  );
+  // A role-free successor does not acquire the predecessor's human route.
+  // Retirement must remove it before preserving the replacement's Gateway.
+  deletions.length = 0;
+  observedGateway = structuredClone(gateway);
+  observedService = gatewayService;
+  observedServiceAccount = gatewayAccount;
+  observedGateway.metadata.annotations["openclaw.dev/agent-revision"] = String(active.revision);
+  const administratorConfiguration = nativeRolesGateway(
+    active.configuration,
+    "https://native.example.test",
+  );
+  administratorConfiguration.gateway.roles = {
+    default: ADMINISTRATOR_RUNTIME_ROLE,
+    definitions: {
+      [ADMINISTRATOR_RUNTIME_ROLE]: {
+        sessions: { others: "write" },
+        agents: "*",
+        scopes: ["operator.admin"],
+      },
+    },
+  };
+  const roleful = {
+    ...active,
+    configuration: nativeRolesGateway(active.configuration, "https://native.example.test"),
+  };
+  await driver.reconcileGatewayRoute(roleful, ownership, { name: namespace, plane: "execution" });
+  assert.equal(
+    peopleResources.get("HTTPRoute").metadata.annotations["openclaw.dev/agent-revision-id"],
+    active.id,
+  );
+  const rolefulCandidate = { ...candidate, configuration: roleful.configuration };
+  await driver.reconcileGatewayRoute(rolefulCandidate, ownership, {
+    name: namespace,
+    plane: "execution",
+  });
+  assert.equal(
+    peopleResources.get("HTTPRoute").metadata.annotations["openclaw.dev/agent-revision-id"],
+    active.id,
+  );
+  await driver.removeRetiredGateway(rolefulCandidate, {
+    name: harnessNamespace,
+    plane: "execution",
+  });
+  assert.equal(
+    peopleResources.size,
+    1,
+    "a failed candidate must not withdraw the serving revision's human route",
+  );
+  assert.deepEqual(deletions, []);
+  observedGateway.metadata.annotations["openclaw.dev/agent-revision-id"] = candidate.id;
+  observedGateway.metadata.annotations["openclaw.dev/agent-revision"] = String(candidate.revision);
+  await driver.reconcileGatewayRoute(candidate, ownership, { name: namespace, plane: "execution" });
+  assert.equal(
+    peopleResources.get("HTTPRoute").metadata.annotations["openclaw.dev/agent-revision-id"],
+    active.id,
+  );
+  await driver.removeRetiredGateway(roleful, { name: harnessNamespace, plane: "execution" });
+  assert.equal(peopleResources.size, 0);
+  assert.deepEqual(
+    deletions.map(([kind, { spec, body }]) => [kind, spec.metadata.name, body.preconditions.uid]),
+    [["HTTPRoute", `${gatewayName}-people`, "people-route-uid"]],
   );
 });
 

@@ -151,7 +151,7 @@ The proxy requires an exact, non-null Agent `Origin`, sanitizes the request and 
 `apps/controller/src/drivers/compute/kubernetes/runtime-access.ts:humanRuntimeAccess`
 `deploy/runtime/openclaw-trusted-proxy-role.patch`
 
-Kubernetes offers `platform-administrator` alongside configured roles. Migration converts effective human Agent `administer` grants into explicit `use` assignments; IAM never falls back to old grants after removal. For a role-free Gateway, only this explicit administrator assignment retains the existing service transport and shared profile. With roles configured, the Driver supplies its reserved administrator policy or the selected configured policy over `/people/namespaces/<namespaceId>/agents/<agentId>`, with `oce:<Principal ID>` and a policy digest. Service traffic uses the disjoint `/namespaces` route. OCC replaces browser authority headers.
+Kubernetes offers `platform-administrator` alongside configured roles. Migration converts effective human Agent `administer` grants into explicit `use` assignments; IAM never falls back to old grants after removal. For a role-free Gateway, only this explicit administrator assignment retains the existing service transport and shared profile. With roles configured, the Driver supplies its reserved administrator policy or the selected configured policy over `/people/namespaces/<namespaceId>/agents/<agentId>`, with `oce:<Principal ID>` and a policy digest. The human route retains the serving Gateway’s revision ownership during preparation, so failed-candidate retirement preserves access. A role-free replacement leaves the old route for predecessor retirement to remove. Service traffic uses the disjoint `/namespaces` route. OCC replaces browser authority headers.
 
 The Driver declares the managed `oce:` prefix and exact `occ-workspace-files` identity in trusted-proxy configuration. The Gateway verifies authentication and the role digest, rejects undeclared identities and profiles linked to multiple managed identities, then commits the role through native identity authority before admission. HTTP authorization checks the same policy. Role publication retires earlier authority with `401`; a new request uses the committed role. OCC never replays it. OpenClaw enforces its configured permissions. Backend service connections retain `oce-service`; independently authenticated local owners retain their existing access.
 
@@ -212,7 +212,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
-- 2026-10-05: Preserve explicit administrator entry during upgrade and explain access configuration failures. (authoring-run/fabe27b6-d360-4a29-8a8c-17547858f84a - 379dc56084c92d7847849f2b3f96ddc0eccc17d8)
+- 2026-10-05: Preserve explicit administrator entry during upgrade explain access configuration failures, and retain serving-route ownership during preparation. (authoring-run/fabe27b6-d360-4a29-8a8c-17547858f84a - 379dc56084c92d7847849f2b3f96ddc0eccc17d8)
 
 - 2026-10-04 07:30: Only a missing active revision reports `unavailable`; IAM and other dependency outages return `503`, and close or refuse proxied requests as `dependency_failure`. (bh11-native-status)
 
