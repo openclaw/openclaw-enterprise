@@ -8,6 +8,7 @@ import {
 import { randomBytes, X509Certificate } from "node:crypto";
 import {
   agentRuntimeRoles,
+  hasRuntimeRoleConfiguration,
   humanRuntimeAccess,
   managedRuntimeRoles,
   RUNTIME_ROLE_HEADER,
@@ -2446,7 +2447,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         configuration: this.kubernetesGatewayConfigurationDocument(revision.configuration),
       },
       runtimeRole === ADMINISTRATOR_RUNTIME_ROLE &&
-        asRecord(revision.configuration.gateway)?.roles === undefined
+        !hasRuntimeRoleConfiguration(revision.configuration)
         ? endpoint
         : humanEndpoint?.toString(),
       principalId,
@@ -9274,7 +9275,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       await this.reconcile(route, ownership, namespace);
     }
     const gateway = await this.getOwned("Deployment", name, namespace, ownership);
-    if (asRecord(asRecord(revision.configuration.gateway)?.roles) !== undefined) {
+    if (hasRuntimeRoleConfiguration(revision.configuration)) {
       const peopleRoute = this.gatewayRoute(revision, ownership, namespace, service, "people");
       if (peopleRoute !== undefined) {
         // A candidate may prepare while its predecessor still serves. Keep the

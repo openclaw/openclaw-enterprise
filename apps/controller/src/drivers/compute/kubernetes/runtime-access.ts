@@ -22,6 +22,11 @@ export const RUNTIME_SERVICE_POLICY = Object.freeze({
   scopes: ["operator.admin"],
 });
 
+export function hasRuntimeRoleConfiguration(configuration: OpenClawConfigurationDocument): boolean {
+  // A malformed declaration must not select the shared administrator transport.
+  return asRecord(configuration.gateway)?.roles !== undefined;
+}
+
 export function runtimeRolePolicyHash(value: unknown): string {
   const canonical = (input: unknown): unknown =>
     Array.isArray(input)
@@ -130,7 +135,8 @@ export function humanRuntimeAccess(
     return { reason: "role_unavailable" };
   }
   const sharedAdministrator =
-    gateway?.roles === undefined && runtimeRole === ADMINISTRATOR_RUNTIME_ROLE;
+    !hasRuntimeRoleConfiguration(revision.configuration) &&
+    runtimeRole === ADMINISTRATOR_RUNTIME_ROLE;
   if (
     auth?.mode !== "trusted-proxy" ||
     proxy?.userHeader !== "x-occ-identity" ||

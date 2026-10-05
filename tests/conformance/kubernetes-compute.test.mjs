@@ -3099,6 +3099,19 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       headers: { "x-occ-identity": "occ-workspace-files", "x-openclaw-scopes": "operator.admin" },
     },
   );
+  // A malformed declaration is not a role-free Gateway and must not grant legacy administrator entry.
+  for (const roles of [null, [], false, "administrator"]) {
+    const malformedRevision = structuredClone(administratorRevision);
+    malformedRevision.configuration.gateway.roles = roles;
+    assert.deepEqual(
+      driver.getAgentRuntimeAccess(
+        malformedRevision,
+        "prn_00000000-0000-4000-8000-000000000003",
+        ADMINISTRATOR_RUNTIME_ROLE,
+      ),
+      { reason: "transport_unsupported" },
+    );
+  }
   assert.ok(
     driver
       .listAgentRuntimeRoles(revision.configuration)
