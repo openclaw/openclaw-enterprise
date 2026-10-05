@@ -16,6 +16,12 @@ export function link(label, target, context) {
   return node;
 }
 
+// A Namespace that is still provisioning (or failed to) refuses Agent, Configuration and
+// deployment writes with NAMESPACE_NOT_READY; "conflicts with the saved state" would send the
+// operator to the wrong place.
+export const NAMESPACE_NOT_READY_MESSAGE =
+  "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
+
 export function message(error, mutation = false) {
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const field = {
@@ -34,6 +40,9 @@ export function message(error, mutation = false) {
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";
+  }
+  if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
+    return NAMESPACE_NOT_READY_MESSAGE;
   }
   if (error.status === 409) {
     return "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";

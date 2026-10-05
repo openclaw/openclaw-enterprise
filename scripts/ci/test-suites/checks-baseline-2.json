@@ -4,22 +4,6 @@
   },
   "files": [
     {
-      "path": "tests/integration/dev-up.test.mjs",
-      "expectedTests": [
-        "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
-        "dev-up preserves a selected custom runtime image and skips the quickstart build",
-        "dev-up applies per-image overrides on top of the shared runtime image",
-        "Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell",
-        "Kubernetes dev-up rejects an unsupported control-plane selection",
-        "dev-up rejects a public controller port rendered by real Compose",
-        "dev-up refuses an existing key destination before invoking Compose",
-        "dev-up fails closed when bootstrap exits unsuccessfully",
-        "dev-up fails closed when the worker exits before readiness",
-        "dev-up preserves a copied key when the authenticated installation check is rejected",
-        "dev-up rejects an authenticated installation response for a different Installation"
-      ]
-    },
-    {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
     },
     {
@@ -39,9 +23,6 @@
     },
     {
       "path": "tests/integration/ci-runner.test.mjs"
-    },
-    {
-      "path": "tests/integration/ci-impact.test.mjs"
     },
     {
       "path": "tests/integration/ci-impact-gate.test.mjs"
@@ -105,9 +86,6 @@
       "path": "tests/integration/ssh-compute-startup.test.mjs"
     },
     {
-      "path": "tests/conformance/plugin-compute.test.mjs"
-    },
-    {
       "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
     },
     {
@@ -121,6 +99,12 @@
     },
     {
       "path": "tests/conformance/slack-channel-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-reset.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
     },
     {
       "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
@@ -201,9 +185,6 @@
       "path": "tests/integration/repository-credentials-config.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-github-token.test.mjs"
-    },
-    {
       "path": "tests/integration/repository-credentials-http.test.mjs"
     },
     {
@@ -223,9 +204,6 @@
     },
     {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
-    },
-    {
-      "path": "tests/integration/repository-credentials-client-config.test.mjs"
     },
     {
       "path": "tests/integration/repository-credentials-router.test.mjs"
@@ -305,9 +283,6 @@
         "repository source obeys its dependency policy with exact current exceptions",
         "repository policy allows a public root and rejects a new HTTP Driver import"
       ]
-    },
-    {
-      "path": "tests/integration/github-login-transport.test.mjs"
     },
     {
       "path": "tests/integration/google-id-token.test.mjs"

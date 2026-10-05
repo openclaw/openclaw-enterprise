@@ -4,12 +4,11 @@ import test from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
+  attachProvider,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
@@ -17,9 +16,9 @@ import {
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
-  installationRoles,
   oidcSignIn,
   oidcUpgradeSettings,
+  onboardPasswordAccounts,
   passwordSignIn,
   readAccount,
   signedInHeaders,
@@ -91,32 +90,21 @@ test(
     });
     const idp = fakeOidc(t, { clientId: oidcClientId, clientSecret: oidcClientSecret });
     const address = clientAddresses("198.23");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    const {
+      admin,
+      accounts: { member },
+    } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: { member: { email: "session-provider-member@example.test" } },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const member = { email: "session-provider-member@example.test", password };
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: adminHeaders,
-      payload: { ...member, roleId: roles.reader.id },
-    });
-    assert.equal(created.statusCode, 201, created.body);
-    member.id = created.json().data.id;
-    await app.close();
-    app = undefined;
+    let adminHeaders;
 
     async function restart(options = {}, overrides = {}) {
       await app?.close();
@@ -197,15 +185,13 @@ test(
       await restart();
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       for (const provider of ["github", "google", "oidc"]) {
-        const attached = await app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${member.id}/providers/${provider}`,
-          headers: adminHeaders,
-          payload: {
-            subject: subjects[provider],
-            expectedVersion: (await readAccount(app, adminHeaders, member.id)).version,
-          },
-        });
+        const attached = await attachProvider(
+          app,
+          adminHeaders,
+          member.id,
+          provider,
+          subjects[provider],
+        );
         assert.equal(attached.statusCode, 200, attached.body);
       }
       const methods = (await readAccount(app, adminHeaders, member.id)).methods

@@ -117,8 +117,14 @@ export interface RequestPlan {
   readonly limits: ExchangeLimits;
   readonly responsePolicy: ResponsePolicy;
   /** When set, the complete request body is buffered and must pass before dispatch. */
-  readonly inputPolicy?: (body: Uint8Array) => boolean;
+  readonly inputPolicy?: (body: Uint8Array) => InputVerdict;
 }
+/**
+ * `true` admits the body; `false` refuses it as 400 `unsupported-request`; a refusal
+ * object answers with its own status, stable code and service-owned message instead.
+ */
+export type InputVerdict =
+  boolean | Readonly<{ status: 400 | 413; code: string; message?: string }>;
 export interface PrivateUpstreamRequest {
   readonly plan: RequestPlan;
   readonly headers: HeaderFields;

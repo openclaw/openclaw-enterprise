@@ -1,4 +1,4 @@
-import type { AuditEvent, ComputeDriver } from "@openclaw-enterprise/contracts";
+import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
   validatePersistedNativeIAMState,
@@ -253,6 +253,8 @@ export async function composeProduction(config: ProductionConfig) {
       recordOperations: true,
       backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
+      bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
+      refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
       loggingLevel: config.drivers.installation.logging.level,
       ...(installation.runtime === undefined
         ? {}
@@ -298,11 +300,19 @@ export async function composeProduction(config: ProductionConfig) {
       controller.selectDriver("repo", repoDriver.id);
     }
     await controller.validateBackendConfiguration();
+    if (config.logger !== undefined) {
+      for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
+        emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });
+      }
+    }
     await initializeInstallationPresets(
       controller,
       iamDriver,
       iamState.identities,
       config.drivers.defaultPresets ?? [],
+      config.logger === undefined
+        ? undefined
+        : (warning) => emitOccLogEvent(config.logger!, warning),
     );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;

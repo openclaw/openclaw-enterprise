@@ -7,57 +7,6 @@ import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
-async function ensureInstallation(state, createDevelopmentIAMState, createAuthPrincipalSeed) {
-  const existing = await state.loadInstallation();
-  if (existing !== undefined) {
-    return existing;
-  }
-
-  const installation = {
-    id: `ins_${randomUUID()}`,
-    name: "Controller worker stale-claim integration",
-    createdAt: new Date().toISOString(),
-  };
-  state.setBootstrapNativeIAM(
-    createDevelopmentIAMState(
-      createAuthPrincipalSeed(
-        installation.id,
-        "worker-stale-claim-integration",
-        {
-          id: `account-worker-${randomUUID()}`,
-        },
-        { grant: "administrator" },
-      ),
-    ),
-  );
-  await state.transact((unit) => unit.installations.createInstallation(installation));
-  return installation;
-}
-
-function authorizedPrincipal(iam) {
-  const grants = new Set(
-    iam.roles
-      .filter(({ permissions }) =>
-        permissions.some(
-          ({ action, resourceKind }) => action === "create" && resourceKind === "namespace",
-        ),
-      )
-      .map(({ id }) => id),
-  );
-  return iam.identities.find(
-    ({ id, kind }) =>
-      kind === "principal" &&
-      iam.bindings.some(
-        (binding) =>
-          binding.subjectKind === "identity" &&
-          binding.subjectId === id &&
-          binding.namespaceId === undefined &&
-          binding.resourceKind === undefined &&
-          grants.has(binding.roleId),
-      ),
-  );
-}
-
 // A TCP relay between one pool and PostgreSQL. `silence()` keeps every connection open but
 // forwards nothing, like a failover or partition that drops packets without a reset: queries
 // are sent and never answered. `reset()` closes every connection.
@@ -119,29 +68,23 @@ test(
       { Pool },
       { createControllerWorker },
       { createDevelopmentComputeDriver },
-      { createAuthPrincipalSeed },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { createDevelopmentIAMState },
+      { authorizedPrincipal, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
-      import("../../packages/iam/src/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
-      import("../helpers/development-iam-state.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
 
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const workerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const state = new PostgresPlatformState(observerPool);
-    const installation = await ensureInstallation(
-      state,
-      createDevelopmentIAMState,
-      createAuthPrincipalSeed,
-    );
-    const actor = authorizedPrincipal(await state.loadNativeIAMState());
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
     assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
 
     const namespace = {
@@ -304,19 +247,17 @@ test(
       { createControllerWorker, workerDatabasePoolOptions },
       { currentComputeAbortSignal },
       { createDevelopmentComputeDriver },
-      { createAuthPrincipalSeed },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { createDevelopmentIAMState },
+      { authorizedPrincipal, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../../apps/controller/src/drivers/compute/operation-context.ts"),
       import("../helpers/development.mjs"),
-      import("../../packages/iam/src/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
-      import("../helpers/development-iam-state.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
 
     const leaseDurationMs = 1_500;
@@ -329,12 +270,8 @@ test(
       ...workerDatabasePoolOptions(60_000),
     });
     const state = new PostgresPlatformState(observerPool);
-    const installation = await ensureInstallation(
-      state,
-      createDevelopmentIAMState,
-      createAuthPrincipalSeed,
-    );
-    const actor = authorizedPrincipal(await state.loadNativeIAMState());
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
     assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
 
     const namespace = {
@@ -461,19 +398,17 @@ test(
       { createControllerWorker },
       { createDevelopmentComputeDriver },
       { DEVELOPMENT_HARNESS_DESCRIPTOR },
-      { createAuthPrincipalSeed },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { createDevelopmentIAMState },
+      { authorizedPrincipal, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/composition/production-harness.ts"),
-      import("../../packages/iam/src/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
-      import("../helpers/development-iam-state.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
 
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
@@ -482,12 +417,8 @@ test(
     const recoveredWorkerPool = new Pool({ connectionString: databaseUrl, max: 4 });
     const state = new PostgresPlatformState(observerPool);
     const releasePreparation = Promise.withResolvers();
-    const installation = await ensureInstallation(
-      state,
-      createDevelopmentIAMState,
-      createAuthPrincipalSeed,
-    );
-    const actor = authorizedPrincipal(await state.loadNativeIAMState());
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
     assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
 
     let worker;

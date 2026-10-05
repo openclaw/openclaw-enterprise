@@ -84,6 +84,7 @@ OCC_TEST_PRODUCTION_IMAGE="$OCC_IMAGE_CHECK_CONTROLLER" \
 OCC_TEST_RUNTIME_IMAGE="$OCC_IMAGE_CHECK_RUNTIME" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
@@ -103,6 +104,7 @@ docker build -f deploy/runtime/Dockerfile \
   --tag openclaw-enterprise-runtime:test .
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
   node --test tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
@@ -223,23 +225,29 @@ reconciliation, runtime image execution, or a model turn.
 ## Runtime image startup test environment
 
 [`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs)
-verifies a locally available OpenClaw runtime image before Docker Compose or
-Kubernetes execution. It starts task-owned containers with the Docker Compute
+and [`runtime-image-startup-probe.test.mjs`](../../tests/integration/runtime-image-startup-probe.test.mjs)
+verify a locally available OpenClaw runtime image before Docker Compose or
+Kubernetes execution. They start task-owned containers with the Docker Compute
 Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed `/home/node` and `/tmp`. Host Node.js 24+ is required to run the
-test.
+tests.
 
-| Variable                         | Requirement or default                                                                                                                 |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `OCC_TEST_RUNTIME_IMAGE`         | Local runtime image tag or digest reference; unset skips.                                                                              |
-| `OCC_TEST_CODEX_SECCOMP_PROFILE` | Optional reviewed Codex Localhost seccomp profile path; required on Docker engines whose default seccomp blocks Codex sandbox startup. |
-| `OCC_DOCKER_BIN`                 | Optional Docker executable path; defaults to `docker`.                                                                                 |
+| Variable                         | Requirement or default                                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_TEST_RUNTIME_IMAGE`         | Local runtime image tag or digest reference; unset skips.                                                                                    |
+| `OCC_TEST_CODEX_SECCOMP_PROFILE` | Reviewed Codex Localhost seccomp profile path; required for Codex sandbox cases in CI and on Docker engines whose default seccomp blocks it. |
+| `OCC_DOCKER_BIN`                 | Optional Docker executable path; defaults to `docker`.                                                                                       |
 
 This check proves an embedded OpenClaw gateway reaches `/readyz` from a fresh
 runtime home, the bundled Codex plugin can be discovered without missing
 package dependencies, and, when the reviewed Codex seccomp profile is supplied,
 the native Codex command execution path enforces the repository broker private
-endpoint policy. It does not prove Docker Compose orchestration, Kubernetes
+endpoint policy. A case that runs the Codex sandbox takes its Docker options from
+`reviewedCodexSeccompSecurityOptions` in `tests/helpers/runtime-image-startup.mjs`.
+In CI, or when `OPENCLAW_ENTERPRISE_CI_STATE` is set, it fails without the
+profile instead of falling back to Docker's default seccomp, and
+`tests/integration/ci-prepare.test.mjs` fails when a lane runs such a file
+without preparing and requiring the profile. It does not prove Docker Compose orchestration, Kubernetes
 reconciliation, model credentials, or a model turn. When the suite runs from
 inside another container that talks to a host Docker daemon, mount the repository
 and the fixture temp directory at the same absolute host paths and set `TMPDIR`

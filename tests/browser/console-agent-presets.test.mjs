@@ -947,6 +947,12 @@ test("Plugin approval choices explain unsupported provider modes and preserve th
   await dialog.getByRole("button", { name: "Configured plugins", exact: true }).click();
   await dialog.getByRole("button", { name: "occ-plugin:diffs", exact: true }).click();
   const approval = dialog.getByLabel("occ-plugin:diffs require approval for", { exact: true });
+  // Every mode stays disabled until the provider's capabilities load; the hint shows they have.
+  await dialog
+    .getByText("This plugin provider does not support: Every action, Write actions.", {
+      exact: true,
+    })
+    .waitFor();
   assert.equal(await approval.inputValue(), "write_actions");
   assert.deepEqual(
     await approval
@@ -960,11 +966,6 @@ test("Plugin approval choices explain unsupported provider modes and preserve th
       ["none", false],
     ],
   );
-  await dialog
-    .getByText("This plugin provider does not support: Every action, Write actions.", {
-      exact: true,
-    })
-    .waitFor();
   assert.equal(
     await approval.locator("option:checked").textContent(),
     "Write actions (unsupported)",

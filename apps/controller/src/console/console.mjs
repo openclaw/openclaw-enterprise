@@ -15,6 +15,8 @@ let namespaceId = null;
 let observabilityUrl = null;
 // Session owner whose Installation-admin observability read has settled.
 let observabilityOwner = null;
+// The Installation-access probe still being answered, for the session owner that sent it.
+let installationAccessProbe = null;
 // Whether that owner administers the Installation: true, false, or null when unknown.
 let installationAdmin = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
@@ -148,6 +150,17 @@ function providerFailure(label) {
       : `Could not sign in with ${label}. Try again, or ask an administrator to attach your ${label} identity to your account.`;
 }
 
+// GitHub sign-in refused by the organization and team allowlist (RFC-0061). The controller
+// sends only these reasons; anything else keeps the generic provider message.
+const githubMembershipFailures = {
+  membership: (password) =>
+    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access${password ? " or use your password" : ""}.`,
+  "membership-unavailable": (password) =>
+    password
+      ? "Could not check your GitHub organization membership. Try again later or use your password."
+      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+};
+
 function pinSessionKey(value) {
   pinnedSessionKey = typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -190,6 +203,48 @@ function recalledInstallationAccess(owner) {
     // Unreadable tab storage falls back to a fresh probe.
   }
   return null;
+}
+
+// One probe per session owner, shared by every page load until it settles. A navigation
+// joins the probe in flight instead of aborting it and asking again: the API has usually
+// already answered, and audited a denial, by then. A settled answer is kept even when the
+// view that asked is gone, as long as the same session owner is signed in.
+function probeInstallationAccess(owner) {
+  if (owner && installationAccessProbe?.owner === owner) {
+    return installationAccessProbe.answer;
+  }
+  const probe = { owner };
+  probe.answer = request("/observability", { outlivesView: true })
+    .then(
+      (data) => ({
+        url: typeof data?.url === "string" ? data.url : null,
+        admin: true,
+        settled: true,
+      }),
+      (error) => {
+        if (error.status === 401) {
+          throw error;
+        }
+        const denied = error.status === 403;
+        return { url: null, admin: denied ? false : null, settled: denied };
+      },
+    )
+    .then((answer) => {
+      if (owner && answer.settled && sessionOwnerKey(session) === owner) {
+        observabilityUrl = answer.url;
+        installationAdmin = answer.admin;
+        observabilityOwner = owner;
+        rememberInstallationAccess(owner, answer.admin, answer.url);
+      }
+      return answer;
+    })
+    .finally(() => {
+      if (installationAccessProbe === probe) {
+        installationAccessProbe = null;
+      }
+    });
+  installationAccessProbe = owner ? probe : null;
+  return probe.answer;
 }
 
 function forgetInstallationAccess() {
@@ -496,6 +551,7 @@ function clearPrivate() {
   namespaceId = null;
   observabilityUrl = null;
   observabilityOwner = null;
+  installationAccessProbe = null;
   installationAdmin = null;
   clearRetainedViews();
 }
@@ -776,6 +832,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   const providerError = Object.hasOwn(externalProviders, authError ?? "")
     ? externalProviders[authError]
     : null;
+  const authReason = current.url.searchParams.get("authReason");
+  const membershipFailure =
+    authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
+      ? githubMembershipFailures[authReason]
+      : null;
   const externalAttempt = takeExternalAttempt();
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
@@ -821,7 +882,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             : pageUrl(current.target, current.namespace);
       showLogin(
         providerError !== null
-          ? providerFailure(providerError.label)
+          ? (membershipFailure ?? providerFailure(providerError.label))
           : current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
@@ -866,20 +927,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         ? null
         : recalled
           ? { ...recalled, settled: true }
-          : request("/observability").then(
-              (data) => ({
-                url: typeof data?.url === "string" ? data.url : null,
-                admin: true,
-                settled: true,
-              }),
-              (error) => {
-                if (error.status === 401) {
-                  throw error;
-                }
-                const denied = error.status === 403;
-                return { url: null, admin: denied ? false : null, settled: denied };
-              },
-            ),
+          : probeInstallationAccess(owner),
     ]);
     if (!lifetime.isCurrent(active)) {
       return;
@@ -894,9 +942,6 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityUrl = observability.url;
       installationAdmin = observability.admin;
       observabilityOwner = observability.settled ? owner : null;
-      if (owner && observability.settled && !recalled) {
-        rememberInstallationAccess(owner, observability.admin, observability.url);
-      }
     }
     namespaceId =
       current.namespace ??

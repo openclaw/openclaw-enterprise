@@ -20,7 +20,11 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
+import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
 
 const administrator = "principal-configuration-administrator";
 const deployOnly = "principal-configuration-deploy-only";
@@ -30,58 +34,24 @@ const installation = Object.freeze({
   createdAt: "2026-08-19T00:00:00.000Z",
 });
 async function fixture(options = {}) {
-  const permissions = [
-    { action: "create", resourceKind: "secret" },
-    { action: "operate", resourceKind: "secret" },
-    { action: "create", resourceKind: "namespace" },
-    { action: "read", resourceKind: "namespace" },
-    { action: "delete", resourceKind: "namespace" },
-    { action: "create", resourceKind: "configuration" },
-    { action: "read", resourceKind: "configuration" },
-    { action: "update", resourceKind: "configuration" },
-    { action: "delete", resourceKind: "configuration" },
-    { action: "create", resourceKind: "agent" },
-    { action: "read", resourceKind: "agent" },
-    { action: "update", resourceKind: "agent" },
-    { action: "deploy", resourceKind: "agent" },
-    { action: "read", resourceKind: "agent_revision" },
-    { action: "read", resourceKind: "installation" },
-  ];
-  const iamState = {
-    identities: [administrator, deployOnly].map((id) => ({
-      kind: "principal",
-      id,
-      issuer: "configuration-conformance",
-      subject: id,
-    })),
-    groups: [],
-    memberships: [],
-    roles: [
-      { id: "configuration-administrator-role", permissions },
-      {
-        id: "configuration-deploy-only-role",
-        permissions: [
-          { action: "deploy", resourceKind: "agent" },
-          { action: "operate", resourceKind: "secret" },
-        ],
-      },
-    ],
-    bindings: [
-      {
-        id: "configuration-administrator-binding",
-        subjectKind: "identity",
-        subjectId: administrator,
-        roleId: "configuration-administrator-role",
-      },
-      {
-        id: "configuration-deploy-only-binding",
-        subjectKind: "identity",
-        subjectId: deployOnly,
-        roleId: "configuration-deploy-only-role",
-      },
-    ],
-    restrictions: [],
-  };
+  const iamState = principalIAMState([administrator, deployOnly], "configuration-conformance");
+  grantRole(iamState, administrator, {
+    id: "configuration-administrator-role",
+    bindingId: "configuration-administrator-binding",
+    permissions: {
+      secret: ["create", "operate"],
+      namespace: ["create", "read", "delete"],
+      configuration: ["create", "read", "update", "delete"],
+      agent: ["create", "read", "update", "deploy"],
+      agent_revision: ["read"],
+      installation: ["read"],
+    },
+  });
+  grantRole(iamState, deployOnly, {
+    id: "configuration-deploy-only-role",
+    bindingId: "configuration-deploy-only-binding",
+    permissions: { agent: ["deploy"], secret: ["operate"] },
+  });
   const iam = new NativeIAMDriver(
     { loadNativeIAMState: async () => iamState },
     { id: "configuration-occ-iam" },
@@ -95,10 +65,7 @@ async function fixture(options = {}) {
   const state = new InMemoryPlatformState();
   const controller = new OpenClawController(installation, { state, ...options });
   const secretDriver = createTestSecretDriver();
-  for (const driver of [iam, compute, configurationDriver, secretDriver]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  registerAndSelectDrivers(controller, [iam, compute, configurationDriver, secretDriver]);
   const namespace = await controller.createNamespace(administrator, {
     name: "Configuration conformance tenant",
   });
@@ -147,14 +114,11 @@ async function fixture(options = {}) {
       id: `harness-role-${target.id}`,
       permissions: [{ action: "operate", resourceKind: "secret" }],
     });
-    iamState.bindings.push({
+    bindRole(iamState, target.servicePrincipalId, {
       id: `harness-binding-${target.id}`,
-      subjectKind: "identity",
-      subjectId: target.servicePrincipalId,
       roleId: `harness-role-${target.id}`,
       namespaceId: namespace.id,
-      resourceKind: "secret",
-      resourceId: secret.id,
+      resource: { kind: "secret", id: secret.id },
     });
     return controller.updateAgent(administrator, {
       namespaceId: namespace.id,
@@ -172,6 +136,7 @@ async function fixture(options = {}) {
     configurationDriver,
     controller,
     iam,
+    iamState,
     namespace,
     state,
   };
@@ -1029,6 +994,50 @@ test("Agent deployment separately authorizes its exact Configuration", async () 
     },
   );
   assert.deepEqual(await controller.listRevisions(administrator, namespace.id, agent.id), []);
+});
+
+test("Agent creation and update separately authorize their exact Configuration", async () => {
+  const { agent, configuration, controller, iamState, namespace } = await fixture();
+  const deniedRead = (error) => {
+    assert.ok(error instanceof AuthorizationDeniedError);
+    assert.deepEqual(error.authorization, {
+      action: "read",
+      resource: { kind: "configuration", id: configuration.id, namespaceId: namespace.id },
+    });
+    return true;
+  };
+  const create = () =>
+    controller.createAgent(administrator, {
+      namespaceId: namespace.id,
+      name: "Configuration read probe",
+      configurationId: configuration.id,
+    });
+  const update = () =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+    });
+
+  // Agent create and update grants do not imply reading the Configuration they select.
+  iamState.restrictions.push({
+    id: "deny-configuration-read",
+    namespaceId: namespace.id,
+    action: "read",
+    resourceKind: "configuration",
+    resourceId: configuration.id,
+    effect: "deny",
+  });
+  await assert.rejects(create(), deniedRead);
+  await assert.rejects(update(), deniedRead);
+  assert.deepEqual(
+    (await controller.listAgents(administrator, namespace.id)).map(({ id }) => id),
+    [agent.id],
+  );
+
+  iamState.restrictions.pop();
+  assert.equal((await create()).configurationId, configuration.id);
+  assert.equal((await update()).configurationId, configuration.id);
 });
 
 test("Namespace deletion refuses an otherwise agent-free Namespace with Configuration", async () => {

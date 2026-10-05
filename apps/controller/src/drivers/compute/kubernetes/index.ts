@@ -707,6 +707,26 @@ function runtimeEventContainer(fieldPath: unknown): string | null {
     : null;
 }
 
+// The scheduler's PVC bind lost an optimistic-concurrency race (usually with the PV
+// controller) and retried: a fresh Agent's workspace claim often shows this once. Only
+// this exact message, and only once the Pod has a node, is dropped from runtime status;
+// every other FailedScheduling Event is kept.
+const SETTLED_VOLUME_BINDING_CONFLICT =
+  /^running PreBind plugin "VolumeBinding": Operation cannot be fulfilled on persistentvolumeclaims "[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?": the object has been modified; please apply your changes to the latest version and try again$/;
+
+function settledSchedulingConflict(
+  event: Record<string, unknown> | undefined,
+  scheduled: boolean,
+): boolean {
+  return (
+    scheduled &&
+    event?.type === "Warning" &&
+    event.reason === "FailedScheduling" &&
+    typeof event.message === "string" &&
+    SETTLED_VOLUME_BINDING_CONFLICT.test(event.message)
+  );
+}
+
 const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 const AGENT_TRANSPORT_PORT = 18_790;
@@ -2587,7 +2607,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
           const events =
             options.events === false
               ? []
-              : await this.runtimeLogStep(signal, () => this.runtimePodEvents(target, status.uid));
+              : await this.runtimeLogStep(signal, () =>
+                  this.runtimePodEvents(
+                    target,
+                    status.uid,
+                    isNonEmptyString(asRecord(pod.spec)?.nodeName),
+                  ),
+                );
           return { ...status, events };
         }),
       );
@@ -2811,6 +2837,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async runtimePodEvents(
     namespace: KubernetesNamespaceAddress,
     podUid: string,
+    scheduled: boolean,
   ): Promise<readonly AgentRuntimeEvent[]> {
     const clients = await this.clients(namespace.plane);
     const list = asRecord(
@@ -2835,7 +2862,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           involved?.uid === podUid &&
           involved.kind === "Pod" &&
           (involved.namespace === undefined || involved.namespace === namespace.name) &&
-          (event?.type === "Normal" || event?.type === "Warning")
+          (event?.type === "Normal" || event?.type === "Warning") &&
+          !settledSchedulingConflict(event, scheduled)
         );
       })
       .map((event) => {
@@ -5376,24 +5404,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
       { mutating: true },
     );
-  }
-
-  private async gatewayRouteForRevision(
-    name: string,
-    ownership: Ownership,
-    namespace: KubernetesNamespaceAddress,
-    revisionId: string,
-  ): Promise<ManagedKubernetesObject<"HTTPRoute"> | undefined> {
-    if (this.options.gatewayRouting === undefined) {
-      return undefined;
-    }
-    const existing = await this.getOwned("HTTPRoute", name, namespace, ownership);
-    if (existing === undefined) {
-      return undefined;
-    }
-    return existing.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revisionId
-      ? existing
-      : undefined;
   }
 
   private async deleteNamedRuntimeResources(

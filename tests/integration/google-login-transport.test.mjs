@@ -15,6 +15,7 @@ import {
   loginSecret as secret,
   redirectProviderFetch,
   startProviderServer,
+  testOversizedProviderBodies,
   until,
 } from "../helpers/human-login-transport.mjs";
 
@@ -330,36 +331,19 @@ test(
         assert.deepEqual(login.subjects, []);
         assertNoSecrets(login);
       });
-
-      for (const declared of [false, true]) {
-        await t.test(
-          `${endpoint} cancels oversized ${declared ? "declared" : "chunked"} bodies`,
-          async () => {
-            const login = loginFixture();
-            const valid = provider();
-            let closed = false;
-            serve = (request, response) => {
-              if (request.url !== endpoint) {
-                return valid(request, response);
-              }
-              response.on("close", () => {
-                closed = true;
-              });
-              if (declared) {
-                response.setHeader("content-length", String(128 * 1024));
-              }
-              response.write("x".repeat(64 * 1024 + 1));
-              // Leave the stream open: rejection must cancel it without waiting for EOF.
-            };
-            const started = performance.now();
-            await expectDenied(await login.callback());
-            assert.ok(performance.now() - started < 2_000);
-            await until(() => closed);
-            assert.deepEqual(login.subjects, []);
-          },
-        );
-      }
     }
+
+    await testOversizedProviderBodies(t, {
+      endpoints: [
+        ["/token", "token"],
+        ["/oauth2/v3/certs", "jwks"],
+      ],
+      serve: (handler) => {
+        serve = handler;
+      },
+      provider,
+      login: loginFixture,
+    });
 
     await t.test("certificate body reads use the remaining overall deadline", async () => {
       // The production deadline is 10 s; a shorter one keeps the stalled read short.

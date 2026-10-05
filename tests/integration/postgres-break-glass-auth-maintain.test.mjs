@@ -8,7 +8,7 @@ import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
 import {
-  bootstrapProductionInstallation,
+  attachProvider,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -16,9 +16,8 @@ import {
   defaultInstallSettings,
   githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
+  onboardPasswordAccounts,
   passwordSignIn,
-  readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
@@ -75,6 +74,37 @@ async function withPool(work) {
   }
 }
 
+// A running controller that has run no query for 10 s holds no database connection:
+// its pool closes idle clients (pg's default idleTimeoutMillis), and the maintenance
+// guard, which lists connected clients, then cannot see it. /readyz runs SELECT 1 on
+// the controller's own pool, so probing it keeps the controller connected however
+// long each maintenance command takes. Returns a stop function.
+async function keepControllerConnected(app) {
+  const probe = async () => {
+    const ready = await app.inject({ url: "/readyz" });
+    assert.equal(ready.statusCode, 200, ready.body);
+  };
+  await probe();
+  let failure;
+  let running;
+  const timer = setInterval(() => {
+    running ??= probe()
+      .catch((error) => {
+        failure ??= error;
+      })
+      .finally(() => {
+        running = undefined;
+      });
+  }, 500);
+  return async () => {
+    clearInterval(timer);
+    await running;
+    if (failure !== undefined) {
+      throw failure;
+    }
+  };
+}
+
 // Break-glass when the recovery password is lost: with the API stopped, auth:maintain
 // resets it (GitHub may be down), and deactivation returns the Installation to the
 // password-only default, which then starts without any GitHub configuration.
@@ -94,48 +124,29 @@ test(
     const github = await startFakeGitHub(t);
     const address = clientAddresses();
     const directory = await privateBootstrapDirectory(t, "openclaw-break-glass-");
-    const adminPassword = await bootstrapProductionInstallation(t, {
-      databaseUrl,
-      email: adminEmail,
-      authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await withPool((pool, state) => installationRoles(state, pool));
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
-      secrets,
-    });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: adminHeaders,
-      payload: { email: "break-glass-member@example.test", password, roleId: roles.reader.id },
-    });
-    assert.equal(created.statusCode, 201, created.body);
-    const member = {
-      id: created.json().data.id,
-      email: "break-glass-member@example.test",
-      password,
-    };
-    await app.close();
+    const {
+      admin,
+      accounts: { member },
+    } = await withPool((pool, state) =>
+      onboardPasswordAccounts(t, {
+        databaseUrl,
+        state,
+        pool,
+        email: adminEmail,
+        authSecret,
+        secrets,
+        password,
+        remoteAddress: address(),
+        accounts: { member: { email: "break-glass-member@example.test" } },
+      }),
+    );
     app = await composeProductionSignIn(t, {
       databaseUrl,
       settings: githubUpgradeSettings(admin.id),
       secrets,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
-    const attached = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${member.id}/providers/github`,
-      headers: adminHeaders,
-      payload: {
-        subject: memberSubject,
-        expectedVersion: (await readAccount(app, adminHeaders, member.id)).version,
-      },
-    });
+    const adminHeaders = await signedInHeaders(app, origin, admin, address());
+    const attached = await attachProvider(app, adminHeaders, member.id, "github", memberSubject);
     assert.equal(attached.statusCode, 200, attached.body);
     assert.equal(
       (await githubSignIn(app, origin, memberSubject, address())).callback.headers.location,
@@ -149,14 +160,19 @@ test(
       assert.equal(status.code, 0, status.stderr);
       assert.equal(status.output.profile, "guarded");
       assert.equal(status.output.designation.userId, admin.id);
-      for (const args of [
-        ["reset-recovery-password", "--password-file", passwordFile, "--writers-stopped"],
-        ["deactivate", "--writers-stopped"],
-      ]) {
-        const refused = await maintain(args);
-        assert.equal(refused.code, 2, `${args[0]}: ${refused.stderr}`);
-        assert.equal(refused.output.event, "auth-maintain.writers-running");
-        assert.ok(refused.output.backends.some(({ user }) => user === "occ_app"));
+      const stopProbing = await keepControllerConnected(app);
+      try {
+        for (const args of [
+          ["reset-recovery-password", "--password-file", passwordFile, "--writers-stopped"],
+          ["deactivate", "--writers-stopped"],
+        ]) {
+          const refused = await maintain(args);
+          assert.equal(refused.code, 2, `${args[0]}: ${refused.stderr}`);
+          assert.equal(refused.output.event, "auth-maintain.writers-running");
+          assert.ok(refused.output.backends.some(({ user }) => user === "occ_app"));
+        }
+      } finally {
+        await stopProbing();
       }
       assert.equal(
         (await currentSession(app, adminHeaders.cookie)).user.id,

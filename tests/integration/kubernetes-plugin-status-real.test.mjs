@@ -291,10 +291,9 @@ async function createStatusCandidate(label, context) {
       "--ignore-not-found=true",
       "--wait=true",
     );
+    // Nothing reads this namespace again and a failed wait was ignored, so
+    // let the namespace controller finish without holding the case open.
     await kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false");
-    await kubectl("wait", "--for=delete", `namespace/${namespaceName}`, "--timeout=30s").catch(
-      () => {},
-    );
   });
   return {
     driver,

@@ -196,7 +196,7 @@ export const occApiRoutes = [
         { namespaceId: NamespaceId, secretId: SecretId },
         { additionalProperties: false },
       ),
-      response: { 204: Type.Null(), 501: ErrorResponseRef, ...createErrors },
+      response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
     },
   },
   {
@@ -258,7 +258,7 @@ export const occApiRoutes = [
         { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
         { additionalProperties: false },
       ),
-      response: { 204: Type.Null(), 501: ErrorResponseRef, ...createErrors },
+      response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
     },
   },
 
@@ -890,7 +890,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: CredentialSourceParams,
       body: UpdateCredentialSourceBody,
-      response: { 200: CredentialSourceResponseRef, ...mutationErrors },
+      response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
   {
@@ -1145,7 +1145,7 @@ export const occApiRoutes = [
       response: {
         200: AgentPluginPolicyCapabilitiesResponse,
         501: ErrorResponseRef,
-        ...createErrors,
+        ...mutationErrors,
       },
     },
   },

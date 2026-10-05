@@ -34,9 +34,12 @@ import {
   type OidcLoginConfiguration,
 } from "./oidc.ts";
 import {
+  ProviderUnavailableError,
   providerExchangeFailure,
   providerJSON,
+  providerMembership,
   rejected,
+  type MembershipEndpoint,
   type ProviderExchange,
   type ProviderFailure,
 } from "./provider-transport.ts";
@@ -48,10 +51,42 @@ import {
   knownDeviceFromCookieHeader,
 } from "./known-device.ts";
 
-export interface GitHubLoginConfiguration {
+/**
+ * RFC-0061: the GitHub organizations and `org/team` slugs whose active members may sign in
+ * with GitHub. Lowercased, without duplicates, present only when non-empty; absent means any
+ * attached GitHub identity may sign in.
+ */
+export interface GitHubMembershipAllowlist {
+  readonly allowedOrgs?: readonly string[];
+  readonly allowedTeams?: readonly string[];
+}
+
+export interface GitHubLoginConfiguration extends GitHubMembershipAllowlist {
   readonly clientId: string;
   readonly clientSecret: string;
   readonly recoveryUserId: string;
+}
+
+// GitHub organization logins (letters, digits, hyphens; up to 39) and team slugs. Every
+// entry costs one or two GitHub requests per sign-in within the shared deadline.
+const organizationPattern = /^[a-z0-9][a-z0-9-]{0,38}$/;
+const teamSlugPattern = /^[a-z0-9][a-z0-9_-]{0,99}$/;
+const allowlistLimit = 10;
+
+function allowlistEntries(
+  value: string | undefined,
+  name: string,
+  valid: (entry: string) => boolean,
+  shape: string,
+): string[] {
+  if (value === undefined || value.trim().length === 0) {
+    return [];
+  }
+  const entries = value.split(",").map((entry) => entry.trim().toLowerCase());
+  if (entries.some((entry) => !valid(entry))) {
+    throw new Error(`${name} must be a comma-separated list of ${shape}.`);
+  }
+  return [...new Set(entries)];
 }
 
 export function githubLoginConfiguration(
@@ -60,8 +95,31 @@ export function githubLoginConfiguration(
   const clientId = environment.OCC_AUTH_GITHUB_CLIENT_ID;
   const clientSecret = environment.OCC_AUTH_GITHUB_CLIENT_SECRET;
   const recoveryUserId = environment.OCC_AUTH_GITHUB_RECOVERY_USER_ID;
+  const allowedOrgs = allowlistEntries(
+    environment.OCC_AUTH_GITHUB_ALLOWED_ORGS,
+    "OCC_AUTH_GITHUB_ALLOWED_ORGS",
+    (entry) => organizationPattern.test(entry),
+    "GitHub organization logins",
+  );
+  const allowedTeams = allowlistEntries(
+    environment.OCC_AUTH_GITHUB_ALLOWED_TEAMS,
+    "OCC_AUTH_GITHUB_ALLOWED_TEAMS",
+    (entry) => {
+      const parts = entry.split("/");
+      return (
+        parts.length === 2 && organizationPattern.test(parts[0]!) && teamSlugPattern.test(parts[1]!)
+      );
+    },
+    "org/team-slug entries",
+  );
   // The recovery user ID alone may belong to another provider; see humanLoginConfiguration.
-  if (clientId === undefined && clientSecret === undefined) {
+  // An allowlist without the client is a configuration error, never a silent no-op.
+  if (
+    clientId === undefined &&
+    clientSecret === undefined &&
+    allowedOrgs.length === 0 &&
+    allowedTeams.length === 0
+  ) {
     return undefined;
   }
   if (
@@ -74,7 +132,18 @@ export function githubLoginConfiguration(
   ) {
     throw new Error("GitHub sign-in requires client ID, client secret and recovery user ID.");
   }
-  return { clientId, clientSecret, recoveryUserId };
+  if (allowedOrgs.length + allowedTeams.length > allowlistLimit) {
+    throw new Error(
+      `OCC_AUTH_GITHUB_ALLOWED_ORGS and OCC_AUTH_GITHUB_ALLOWED_TEAMS list at most ${allowlistLimit} entries together.`,
+    );
+  }
+  return {
+    clientId,
+    clientSecret,
+    recoveryUserId,
+    ...(allowedOrgs.length === 0 ? {} : { allowedOrgs }),
+    ...(allowedTeams.length === 0 ? {} : { allowedTeams }),
+  };
 }
 
 interface ProviderClient {
@@ -82,9 +151,11 @@ interface ProviderClient {
   readonly clientSecret: string;
 }
 
+type GitHubClient = ProviderClient & GitHubMembershipAllowlist;
+
 export interface HumanLoginProviders {
   readonly recoveryUserId: string;
-  readonly github?: ProviderClient;
+  readonly github?: GitHubClient;
   readonly google?: GoogleLoginConfiguration;
   readonly oidc?: OidcLoginConfiguration;
   /** `recovery-only` admits only the recovery account's password; absent admits every one. */
@@ -120,8 +191,119 @@ function secret(): string {
 const tokenEndpoint = "https://github.com/login/oauth/access_token";
 const profileEndpoint = "https://api.github.com/user";
 
+// The audited callback denials whose code the controller turns into a Console reason.
+export const MEMBERSHIP_DENIALS = ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_UNAVAILABLE"] as const;
+type MembershipDenial = (typeof MEMBERSHIP_DENIALS)[number];
+
+// GitHub logins are letters, digits and hyphens; older accounts may break today's hyphen rules.
+const loginPattern = /^[A-Za-z0-9-]{1,39}$/;
+
+function organizationMembershipEndpoint(organization: string): MembershipEndpoint {
+  return `https://api.github.com/user/memberships/orgs/${encodeURIComponent(organization)}` as MembershipEndpoint;
+}
+
+function teamMembershipEndpoint(
+  organization: string,
+  team: string,
+  login: string,
+): MembershipEndpoint {
+  return `https://api.github.com/orgs/${encodeURIComponent(organization)}/teams/${encodeURIComponent(team)}/memberships/${encodeURIComponent(login)}` as MembershipEndpoint;
+}
+
+function membershipFailure(error: unknown, signal: AbortSignal): ProviderFailure {
+  if (error instanceof ProviderUnavailableError) {
+    return error.failure;
+  }
+  return { step: "membership", cause: signal.aborted ? "timeout" : "network" };
+}
+
+/**
+ * RFC-0061: whether the person holding `headers`' user token is an active member of a listed
+ * organization or team. Organizations are read first, in order; a team is read only for an
+ * active member of its organization, so a non-member's team answer never needs interpreting.
+ * The first match admits, even after another lookup failed. No match with a failed lookup is
+ * unavailability, never "not a member".
+ */
+async function githubMembership(
+  allowlist: GitHubMembershipAllowlist,
+  headers: Readonly<Record<string, string>>,
+  login: unknown,
+  signal: AbortSignal,
+): Promise<{ readonly admitted: boolean; readonly failure?: ProviderFailure }> {
+  const organizations = new Map<string, boolean | ProviderUnavailableError>();
+  let failure: ProviderFailure | undefined;
+  async function activeIn(organization: string): Promise<boolean> {
+    let known = organizations.get(organization);
+    if (known === undefined) {
+      try {
+        known = await providerMembership(
+          organizationMembershipEndpoint(organization),
+          { headers },
+          signal,
+        );
+      } catch (error) {
+        known = new ProviderUnavailableError(membershipFailure(error, signal));
+      }
+      organizations.set(organization, known);
+    }
+    if (known instanceof ProviderUnavailableError) {
+      throw known;
+    }
+    return known;
+  }
+  // Past the shared deadline every lookup would fail at once; record the timeout and stop.
+  function expired(): boolean {
+    if (signal.aborted) {
+      failure ??= { step: "membership", cause: "timeout" };
+    }
+    return signal.aborted;
+  }
+  for (const organization of allowlist.allowedOrgs ?? []) {
+    if (expired()) {
+      break;
+    }
+    try {
+      if (await activeIn(organization)) {
+        return { admitted: true };
+      }
+    } catch (error) {
+      failure ??= membershipFailure(error, signal);
+    }
+  }
+  for (const entry of allowlist.allowedTeams ?? []) {
+    if (expired()) {
+      break;
+    }
+    const [organization, team] = entry.split("/") as [string, string];
+    try {
+      if (!(await activeIn(organization))) {
+        continue;
+      }
+      if (typeof login !== "string" || !loginPattern.test(login)) {
+        throw new ProviderUnavailableError({ step: "membership", cause: "malformed_response" });
+      }
+      if (
+        await providerMembership(
+          teamMembershipEndpoint(organization, team, login),
+          { headers },
+          signal,
+        )
+      ) {
+        return { admitted: true };
+      }
+    } catch (error) {
+      failure ??= membershipFailure(error, signal);
+    }
+  }
+  return failure === undefined ? { admitted: false } : { admitted: false, failure };
+}
+
+function hasAllowlist(config: GitHubMembershipAllowlist): boolean {
+  return (config.allowedOrgs?.length ?? 0) + (config.allowedTeams?.length ?? 0) > 0;
+}
+
 async function exchangeGithubSubject(
-  config: ProviderClient,
+  config: GitHubClient,
   code: string,
   codeVerifier: string,
   redirectURI: string,
@@ -151,22 +333,25 @@ async function exchangeGithubSubject(
     if (typeof tokens.accessToken !== "string" || !tokens.accessToken) {
       throw rejected();
     }
-    const profile = await providerJSON(
-      profileEndpoint,
-      {
-        headers: {
-          authorization: `Bearer ${tokens.accessToken}`,
-          "User-Agent": "OpenClaw-Enterprise",
-          accept: "application/vnd.github+json",
-        },
-      },
-      controller.signal,
-      "profile",
-    );
+    const headers = {
+      authorization: `Bearer ${tokens.accessToken}`,
+      "User-Agent": "OpenClaw-Enterprise",
+      accept: "application/vnd.github+json",
+    };
+    const profile = await providerJSON(profileEndpoint, { headers }, controller.signal, "profile");
     controller.signal.throwIfAborted();
     const subject = githubSubject(profile.id);
     if (!subject) {
       throw rejected();
+    }
+    if (hasAllowlist(config)) {
+      // Before the account lookup: a refusal says nothing about which OCE accounts exist.
+      const membership = await githubMembership(config, headers, profile.login, controller.signal);
+      if (!membership.admitted) {
+        return membership.failure === undefined
+          ? { denial: "MEMBERSHIP_REQUIRED", subject }
+          : { denial: "MEMBERSHIP_UNAVAILABLE", subject, failure: membership.failure };
+      }
     }
     return { subject };
   } catch (error) {
@@ -208,7 +393,7 @@ export function googleProviderId(config: Pick<GoogleLoginConfiguration, "clientI
 }
 
 function githubProvider(
-  config: ProviderClient,
+  config: GitHubClient,
   baseURL: string,
   deadlineMs: number | undefined,
 ): ExternalProvider {
@@ -400,6 +585,20 @@ export function createHumanLogin(
   ): Promise<never> {
     await state.recordDenied(reason, provider);
     throw rejected();
+  }
+
+  // A GitHub allowlist refusal names the authenticated subject in the audit and its reason in
+  // the response code, which the controller turns into the Console's advice.
+  async function refuseMembership(
+    provider: ExternalProviderName,
+    reason: MembershipDenial,
+    subject: string,
+  ): Promise<never> {
+    await state.recordDenied(reason, provider, { subject });
+    throw APIError.fromStatus("UNAUTHORIZED", {
+      message: "Authentication was not accepted.",
+      code: reason,
+    });
   }
 
   // A malformed, unknown, replayed or expired attempt proves nothing about its sender, who
@@ -637,8 +836,17 @@ export function createHumanLogin(
                 stateValue,
               );
               if ("denial" in exchange) {
-                if (exchange.denial === "PROVIDER_UNAVAILABLE") {
+                if (
+                  exchange.denial === "PROVIDER_UNAVAILABLE" ||
+                  exchange.denial === "MEMBERSHIP_UNAVAILABLE"
+                ) {
                   providerUnavailable(provider, name, exchange.failure);
+                }
+                if (
+                  exchange.denial === "MEMBERSHIP_REQUIRED" ||
+                  exchange.denial === "MEMBERSHIP_UNAVAILABLE"
+                ) {
+                  return refuseMembership(name, exchange.denial, exchange.subject);
                 }
                 return rejectExternal(name, exchange.denial);
               }

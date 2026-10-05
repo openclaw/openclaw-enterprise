@@ -12,7 +12,9 @@ import {
   createTestAuthPrincipal,
 } from "./auth-session.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { grantRole } from "./iam-grants.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 export const runtimeLogPodUid = "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01";
@@ -46,30 +48,13 @@ export function createRuntimeLogComputeDriver(options = {}) {
     ...options.state,
   };
   const podName = (revision) => `gateway-${revision.id.slice(4, 12)}-0`;
-  return {
-    id: options.id ?? "runtime-log-compute",
-    capability: "compute",
+  return createReadyComputeDriver(options.id ?? "runtime-log-compute", {
     implementation: "in-memory-runtime-log-test",
     ...(options.runtimeLogging === undefined ? {} : { runtimeLogging: options.runtimeLogging }),
     calls,
     state,
     podName,
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
     ...(options.sandboxNamespace === undefined
       ? {}
       : {
@@ -235,7 +220,7 @@ export function createRuntimeLogComputeDriver(options = {}) {
             };
           },
         }),
-  };
+  });
 }
 
 /**
@@ -358,19 +343,11 @@ export async function createRuntimeLogFixture(options = {}) {
       namespaceId: namespace.data.id,
       agentId: agent.data.id,
     });
-    policy.roles.push({
+    grantRole(policy, `service-agent-${agent.data.id}`, {
       id: `auth-${agent.data.id}`,
       namespaceId: namespace.data.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    policy.bindings.push({
-      id: `auth-${agent.data.id}`,
-      namespaceId: namespace.data.id,
-      subjectKind: "identity",
-      subjectId: `service-agent-${agent.data.id}`,
-      roleId: `auth-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: secret.data.id },
     });
     const deployed = await request(
       "POST",
@@ -387,6 +364,19 @@ export async function createRuntimeLogFixture(options = {}) {
     };
   }
 
+  /** One single-permission Role bound to the exact Agent (or its revision). */
+  function grantExact(subjectId, id, grant, { namespace, agent, revisionId }) {
+    grantRole(policy, subjectId, {
+      id,
+      namespaceId: namespace.id,
+      permissions: [{ action: grant.action, resourceKind: grant.resourceKind }],
+      resource: {
+        kind: grant.resourceKind,
+        id: grant.resourceKind === "agent_revision" ? revisionId : agent.id,
+      },
+    });
+  }
+
   /** A signed-in human principal holding exactly the listed Agent-scoped actions. */
   async function createPrincipal(label, { namespace, agent, revisionId }, grants) {
     const credentials = {
@@ -400,20 +390,7 @@ export async function createRuntimeLogFixture(options = {}) {
     const bindingIds = [];
     for (const grant of grants) {
       const id = `${label}-${grant.resourceKind}-${grant.action}-${randomUUID().slice(0, 8)}`;
-      policy.roles.push({
-        id,
-        namespaceId: namespace.id,
-        permissions: [{ action: grant.action, resourceKind: grant.resourceKind }],
-      });
-      policy.bindings.push({
-        id,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: id,
-        resourceKind: grant.resourceKind,
-        resourceId: grant.resourceKind === "agent_revision" ? revisionId : agent.id,
-      });
+      grantExact(principal.id, id, grant, { namespace, agent, revisionId });
       bindingIds.push(id);
     }
     return {
@@ -444,20 +421,7 @@ export async function createRuntimeLogFixture(options = {}) {
     policy.identities.push(principal);
     for (const grant of grants) {
       const id = `${principal.id}-${grant.resourceKind}-${grant.action}`;
-      policy.roles.push({
-        id,
-        namespaceId: namespace.id,
-        permissions: [{ action: grant.action, resourceKind: grant.resourceKind }],
-      });
-      policy.bindings.push({
-        id,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: id,
-        resourceKind: grant.resourceKind,
-        resourceId: grant.resourceKind === "agent_revision" ? revisionId : agent.id,
-      });
+      grantExact(principal.id, id, grant, { namespace, agent, revisionId });
     }
     const key = await admin.auth.createServiceKey({ principal, name: label });
     return { principal, serviceKey: key.key };

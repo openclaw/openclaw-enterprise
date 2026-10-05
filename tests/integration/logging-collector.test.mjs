@@ -245,6 +245,9 @@ test(
     const namespaceId = `ns_${randomUUID()}`;
     const agentId = `agt_${randomUUID()}`;
     const revisionId = `rev_${randomUUID()}`;
+    const presetNamespaceId = `ns_${randomUUID()}`;
+    const presetId = `pre_${randomUUID()}`;
+    const restrictionUuid = randomUUID();
     const canaries = ["password", "token", "prompt", "tool-output", "email", "session"].map(
       (kind) => `CANARY_${kind}_${fixture.suffix}`,
     );
@@ -375,6 +378,42 @@ test(
         JSON.stringify({
           event: "authentication.provider-unavailable-warning",
           severity: "WARN",
+          provider: "github",
+          providerId: `github:providerkey${fixture.suffix}`,
+          step: "membership",
+          cause: "http_status",
+          status: 403,
+          ...payload,
+        }),
+        JSON.stringify({
+          event: "presets.default-refresh-skipped",
+          severity: "WARN",
+          namespaceId: presetNamespaceId,
+          presetId,
+          presetName: `presetname${fixture.suffix}`,
+          reason: `refusalreason${fixture.suffix}`,
+          restrictionIds: [`res_${restrictionUuid}`],
+          ...payload,
+        }),
+        JSON.stringify({
+          event: "presets.default-create-skipped",
+          severity: "WARN",
+          namespaceId: presetNamespaceId,
+          presetName: `presetname${fixture.suffix}`,
+          reason: `refusalreason${fixture.suffix}`,
+          restrictionIds: [`res_${restrictionUuid}`],
+          ...payload,
+        }),
+        JSON.stringify({
+          event: "presets.bundled-default-shadowed",
+          severity: "WARN",
+          presetName: `presetname${fixture.suffix}`,
+          presetFile: `/etc/occ/presets/presetfile${fixture.suffix}.json`,
+          ...payload,
+        }),
+        JSON.stringify({
+          event: "authentication.provider-unavailable-warning",
+          severity: "WARN",
           provider: "google",
           providerId: `google:providerkey${fixture.suffix}`,
           step: "token",
@@ -396,13 +435,16 @@ test(
       "{invalid json",
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
-    await waitFor(async () => (await records()).length >= 8);
+    await waitFor(async () => (await records()).length >= 12);
     const initial = await records();
-    assert.equal(initial.length, 8, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 12, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
       "authentication.provider-unavailable-warning",
+      "presets.bundled-default-shadowed",
+      "presets.default-create-skipped",
+      "presets.default-refresh-skipped",
     ];
     for (const { resource, record } of initial) {
       assert.ok(record.timeUnixNano, "OTLP record has an Engine timestamp");
@@ -418,6 +460,10 @@ test(
     }
     assert.deepEqual(initial.map(({ resource }) => resource["service.name"]).sort(), [
       "codex-app-server",
+      "occ-api",
+      "occ-api",
+      "occ-api",
+      "occ-api",
       "occ-api",
       "occ-api",
       "occ-api",
@@ -478,6 +524,14 @@ test(
       {
         "event.name": "authentication.provider-unavailable-warning",
         "log.iostream": "stdout",
+        "occ.sign_in.provider": "github",
+        "occ.sign_in.step": "membership",
+        "occ.sign_in.cause": "http_status",
+        "occ.sign_in.status": "403",
+      },
+      {
+        "event.name": "authentication.provider-unavailable-warning",
+        "log.iostream": "stdout",
         "occ.sign_in.provider": "google",
         "occ.sign_in.step": "token",
         "occ.sign_in.cause": "client_rejected",
@@ -491,8 +545,47 @@ test(
         "occ.sign_in.cause": "connect_refused",
       },
     ]);
+    // A refused default-Preset refresh keeps the Namespace and Preset IDs; the Preset name,
+    // the refusal text and the Restriction IDs stay in local logs.
+    const skipped = initial.find(
+      ({ record }) => record.body.stringValue === "presets.default-refresh-skipped",
+    );
+    assert.equal(skipped.record.severityText, "WARN");
+    assert.deepEqual(attributes(skipped.record.attributes), {
+      "event.name": "presets.default-refresh-skipped",
+      "log.iostream": "stdout",
+      "occ.namespace.id": presetNamespaceId,
+      "occ.preset.id": presetId,
+    });
+    // A default creation a Restriction refused keeps only its Namespace ID.
+    const uncreated = initial.find(
+      ({ record }) => record.body.stringValue === "presets.default-create-skipped",
+    );
+    assert.equal(uncreated.record.severityText, "WARN");
+    assert.deepEqual(attributes(uncreated.record.attributes), {
+      "event.name": "presets.default-create-skipped",
+      "log.iostream": "stdout",
+      "occ.namespace.id": presetNamespaceId,
+    });
+    // A bundled default an operator file shadowed carries no IDs: its name and file stay local.
+    const shadowed = initial.find(
+      ({ record }) => record.body.stringValue === "presets.bundled-default-shadowed",
+    );
+    assert.equal(shadowed.record.severityText, "WARN");
+    assert.deepEqual(attributes(shadowed.record.attributes), {
+      "event.name": "presets.bundled-default-shadowed",
+      "log.iostream": "stdout",
+    });
     const serialized = JSON.stringify(initial);
     assert.equal(serialized.includes("compute.preflight-warning-unreviewed"), false);
+    for (const local of [
+      `presetname${fixture.suffix}`,
+      `presetfile${fixture.suffix}`,
+      `refusalreason${fixture.suffix}`,
+      restrictionUuid,
+    ]) {
+      assert.equal(serialized.includes(local), false, local);
+    }
     assert.equal(serialized.includes(`limitkey${fixture.suffix}`), false);
     assert.equal(serialized.includes(`providerkey${fixture.suffix}`), false);
     for (const value of [...canaries, "forged-service", "forged-agent"]) {

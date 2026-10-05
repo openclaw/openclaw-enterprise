@@ -1,4 +1,9 @@
-import type { Denied, RequestHead, RequestPlan } from "../../credentials/backend-contracts.ts";
+import type {
+  Denied,
+  InputVerdict,
+  RequestHead,
+  RequestPlan,
+} from "../../credentials/backend-contracts.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import type { GitHubTokenProfile } from "./types.ts";
 import { allowsGraphqlInput, allowsReadOnlyGraphqlInput } from "./graphql-input.ts";
@@ -36,7 +41,7 @@ interface PlanDependencies {
   readonly route: RoutePolicy["route"];
   readonly responsePolicy: ReturnType<typeof createResponsePolicy>;
   readonly graphqlInput: (body: Uint8Array) => boolean;
-  readonly receivePackInput: ((body: Uint8Array) => boolean) | undefined;
+  readonly receivePackInput: ((body: Uint8Array) => InputVerdict) | undefined;
 }
 
 function inputLimit(kind: Route["kind"], limits: ServiceLimits): number {

@@ -76,12 +76,16 @@ func New(out, errOut io.Writer) *cobra.Command {
 		},
 		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
 			app.ctx = command.Context()
+			if printsTextOnly(command) {
+				return nil
+			}
 			return app.validateOptions(command)
 		},
 	}
 	command.SetOut(out)
 	command.SetErr(errOut)
 	command.SetVersionTemplate("occ {{.Version}}\n")
+	command.SetHelpFunc(helpWithOutputFormats(command.HelpFunc()))
 
 	flags := command.PersistentFlags()
 	flags.StringVar(&app.url, "url", os.Getenv("OCC_URL"), "OCC endpoint URL")
@@ -107,7 +111,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		&app.namespace,
 		"namespace",
 		os.Getenv("OCC_NAMESPACE"),
-		"Namespace scope for Configuration, Secret, credential source, IAM, and Agent operations",
+		"Namespace scope for Configuration, Secret, Preset, credential source, IAM, and Agent operations",
 	)
 	flags.StringVarP(&app.output, "output", "o", "table", "Output format: table, json, or yaml")
 
@@ -117,10 +121,17 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.iamCommand(),
 		app.configurationCommand(),
 		app.secretCommand(),
+		app.presetCommand(),
 		app.credentialSourceCommand(),
 		app.agentCommand(),
 		developmentCommand(),
 	)
+	command.InitDefaultHelpCmd()
+	for _, child := range command.Commands() {
+		if child.Name() == "help" {
+			child.Run, child.RunE = nil, helpTopic
+		}
+	}
 	return command
 }
 
@@ -594,6 +605,63 @@ func (app *application) secretCommand() *cobra.Command {
 	return command
 }
 
+func (app *application) presetCommand() *cobra.Command {
+	command := commandGroup("preset", "Manage Agent Presets in the selected Namespace")
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List readable Presets",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			presets, err := client.ListPresets(namespace)
+			if err != nil {
+				return err
+			}
+			return app.printPreset(presets, true)
+		},
+	}
+
+	get := &cobra.Command{
+		Use:   "get ID",
+		Short: "Show a Preset; -o json or -o yaml includes its template",
+		Args:  idArgs(presetIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			preset, err := client.GetPreset(namespace, args[0])
+			if err != nil {
+				return err
+			}
+			return app.printPreset(preset, false)
+		},
+	}
+
+	deleteCommand := &cobra.Command{
+		Use:   "delete ID",
+		Short: "Delete a Preset; Agents and Configurations created from it are unchanged",
+		Args:  idArgs(presetIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			if err := client.DeletePreset(namespace, args[0]); err != nil {
+				return err
+			}
+			return app.printDeletion("preset", args[0])
+		},
+	}
+
+	command.AddCommand(list, get, deleteCommand)
+	return command
+}
+
 func (app *application) credentialSourceCommand() *cobra.Command {
 	command := commandGroup(
 		"credential-source",
@@ -1037,7 +1105,7 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		fmt.Fprintf(notices, "agent %s has no active revision; using latest revision %s\n", agentID, latest)
+		noticef(notices, "agent %s has no active revision; using latest revision %s", agentID, latest)
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while
@@ -1046,22 +1114,22 @@ func (app *application) agentRevision(
 	probe := newerRevisionWithPods(client, namespace, agentID, active)
 	switch {
 	case probe.hasPods:
-		fmt.Fprintf(
+		noticef(
 			notices,
-			"notice: reading revision %s, newer than the active revision %s and not yet active; pass --revision %s for the active revision\n",
+			"notice: reading revision %s, newer than the active revision %s and not yet active; pass --revision %s for the active revision",
 			probe.latest, active, active,
 		)
 		return probe.latest, probe.description, nil
 	case probe.err != nil:
 		// The runtime probe needs more permission than reading logs, so a log
 		// reader may be refused here yet allowed to read the newer revision.
-		fmt.Fprintf(
+		noticef(
 			notices,
-			"notice: reading the active revision %s; a newer revision %s exists but its runtime could not be read (%v); pass --revision %s to read it\n",
+			"notice: reading the active revision %s; a newer revision %s exists but its runtime could not be read (%v); pass --revision %s to read it",
 			active, probe.latest, probe.err, probe.latest,
 		)
 	default:
-		fmt.Fprintf(notices, "notice: reading the active revision %s\n", active)
+		noticef(notices, "notice: reading the active revision %s", active)
 	}
 	return active, nil, nil
 }
@@ -1331,14 +1399,81 @@ func (app *application) agentRuntimeCredentialsCommand() *cobra.Command {
 	return command
 }
 
+// helpOnlyAnnotation marks a command whose only action is printing its help.
+const helpOnlyAnnotation = "occ/help-only"
+
 func commandGroup(use, short string) *cobra.Command {
 	return &cobra.Command{
-		Use:   use,
-		Short: short,
-		Args:  cobra.NoArgs,
+		Use:         use,
+		Short:       short,
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{helpOnlyAnnotation: "true"},
 		RunE: func(command *cobra.Command, _ []string) error {
 			return command.Help()
 		},
+	}
+}
+
+// printsTextOnly reports commands that never call OCC: the root and command
+// groups, which print their help, the help command, and shell completion. An
+// invalid OCC_TIMEOUT_SECONDS or -o must not stop them.
+func printsTextOnly(command *cobra.Command) bool {
+	if !command.HasParent() || command.Annotations[helpOnlyAnnotation] != "" {
+		return true
+	}
+	if command.Parent() != command.Root() {
+		// Cobra's "completion bash" and its siblings.
+		return command.Parent().Name() == "completion" && command.Parent().Parent() == command.Root()
+	}
+	switch command.Name() {
+	case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+		return true
+	}
+	return false
+}
+
+// helpTopic is the help command's action. Cobra's own prints the closest
+// command's help and exits 0 for a mistyped topic; this one fails instead.
+func helpTopic(command *cobra.Command, args []string) error {
+	target, rest, err := command.Root().Find(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 0 {
+		message := fmt.Sprintf("unknown help topic %q", strings.Join(args, " "))
+		if target.SuggestionsMinimumDistance <= 0 {
+			target.SuggestionsMinimumDistance = 2 // cobra's default for unknown commands
+		}
+		if suggestions := target.SuggestionsFor(rest[0]); len(suggestions) > 0 {
+			topic := append(strings.Fields(target.CommandPath())[1:], suggestions[0])
+			return fmt.Errorf("%s; did you mean %q?", message, strings.Join(topic, " "))
+		}
+		return fmt.Errorf("%s; run \"occ help\" for the command list", message)
+	}
+	if target.Context() == nil {
+		target.SetContext(command.Context())
+	}
+	target.InitDefaultHelpFlag()
+	target.InitDefaultVersionFlag()
+	return target.Help()
+}
+
+// helpWithOutputFormats makes help for a command with its own -o formats (see
+// outputFormatsAnnotation) describe those formats instead of the global ones.
+func helpWithOutputFormats(help func(*cobra.Command, []string)) func(*cobra.Command, []string) {
+	return func(command *cobra.Command, args []string) {
+		annotated, ok := command.Annotations[outputFormatsAnnotation]
+		flag := command.Root().PersistentFlags().Lookup("output")
+		if !ok || flag == nil {
+			help(command, args)
+			return
+		}
+		formats := strings.Split(annotated, ",")
+		usage, defValue := flag.Usage, flag.DefValue
+		flag.Usage = "Output format: " + strings.Join(formats, ", ")
+		flag.DefValue = formats[0]
+		defer func() { flag.Usage, flag.DefValue = usage, defValue }()
+		help(command, args)
 	}
 }
 

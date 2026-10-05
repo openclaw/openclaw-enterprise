@@ -67,6 +67,11 @@ graph TD
 loads the singleton Installation. Existing Installations only verify the
 configured administrator's immutable account/IAM identity: no key issuance,
 output changes, or identity/grant repair, including Installations predating service-administrator bootstrap.
+`verifiedWithoutAuth` first runs the same check before loading Better Auth: plain
+SQL for the administrator's `occ."user"` row, then the same IAM state and
+administrator Principal check. Success logs `installation.already-bootstrapped`
+with `step: "fast-path"`. Any miss or error runs the full Better Auth check, which
+succeeds or fails exactly as before. The base URL is checked first on both paths.
 
 For fresh setup, production creates a Better Auth account with a random password;
 development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
@@ -199,7 +204,11 @@ it. A malformed, unbound, replayed, or expired callback is refused by
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
 Denials after `consumeAttempt` matches are audited as
 [`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-or `EXTERNAL_IDENTITY_REJECTED`;
+or `EXTERNAL_IDENTITY_REJECTED`; with GitHub's
+[allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
+`apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
+lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`, whose response code the
+callback route turns into the Console's `authReason`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
 
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
@@ -295,8 +304,9 @@ Account creation issues no session and infers no grants.
 - `node --test tests/integration/postgres-bootstrap-failures.test.mjs` with
   `OCC_BOOTSTRAP_FAILURE_DATABASE_URL` exercises concurrent production attempts
   and preserves both environment modes' credentials when a test fault discards the
-  acknowledgement after a real COMMIT. The suite resets a dedicated loopback
-  database.
+  acknowledgement after a real COMMIT. It also proves that a complete Installation
+  takes the fast path and that each missing invariant takes the full path. The
+  suite resets a dedicated loopback database.
 - Verify copied output is `0600` without printing it; use a key-authenticated
   `GET /installation` and Namespace create/read to check current authority.
   A `401` indicates credential rejection; `403` indicates identity/scope/policy
@@ -322,6 +332,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-04 21:00: Verify an existing Installation with SQL before loading Better Auth. (fix/bootstrap-fast-path)
 
 - 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
 

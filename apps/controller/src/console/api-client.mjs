@@ -8,6 +8,8 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       expectedStatus,
       includeMeta = false,
       responseType = "json",
+      // A session-scoped read that a later view joins instead of aborting it.
+      outlivesView = false,
     } = {},
   ) {
     const active = lifetime.capture();
@@ -23,7 +25,7 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       credentials: "same-origin",
       cache: "no-store",
       signal: AbortSignal.any([
-        lifetime.signal,
+        ...(outlivesView ? [] : [lifetime.signal]),
         ...(signal ? [signal] : []),
         AbortSignal.timeout(15_000),
       ]),

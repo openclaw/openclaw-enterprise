@@ -18,8 +18,8 @@ backend: []
 # Omitted or false disables seeding; existing Presets are retained.
 presets:
   includeDefaults: true
-  # Optional: load the SWE Agent preset, or mount your own JSON beside this YAML.
-  # Relative paths resolve beside installation.yaml; mount files for API and worker.
+  # Optional: load the SWE Agent preset. The Helm chart mounts only this YAML, so list
+  # Preset JSON shipped in the controller image (/app/deploy/presets/) by absolute path.
   # files:
   #   - /app/deploy/presets/swe-preset.json # SWE Agent
 

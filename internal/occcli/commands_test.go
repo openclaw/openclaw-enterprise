@@ -39,6 +39,11 @@ func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		_, _ = writer.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"not found"}}`))
 		return
 	}
+	if data == "" {
+		// An empty response stands for a bodyless 204, as OCC answers a delete.
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
 	writer.Header().Set("content-type", "application/json")
 	_, _ = writer.Write([]byte(`{"data":` + data + `,"meta":{"requestId":"req_test"}}`))
 }
@@ -95,6 +100,7 @@ func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
 		{[]string{"--namespace", "default", "agent", "list"}, "occ namespace list"},
 		{[]string{"namespace", "get", "default"}, "occ namespace list"},
 		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, "occ secret list"},
+		{[]string{"--namespace", testNamespaceID, "preset", "delete", "default-codex"}, "occ preset list"},
 		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, "occ agent revisions"},
 		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, "occ credential-source list"},
 		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_1"}, "occ agent list"},
@@ -120,6 +126,49 @@ func TestSecretListShowsNamespaceSecrets(t *testing.T) {
 	}
 	if !strings.Contains(out, "model-key") {
 		t.Fatalf("expected the Secret in the list:\n%s", out)
+	}
+}
+
+func TestPresetCommandsListShowAndDeleteNamespacePresets(t *testing.T) {
+	const presetID = "pre_66666666-6666-4666-8666-666666666666"
+	collection := "/namespaces/" + testNamespaceID + "/presets"
+	preset := `{"id":"` + presetID + `","namespaceId":"` + testNamespaceID + `","name":"default-codex",` +
+		`"template":{"agent":{"name":"{{ vars.name }}"}},"createdAt":"2026-09-30T00:00:00.000Z"}`
+	responses := map[string]string{
+		"GET " + collection:                     "[" + preset + "]",
+		"GET " + collection + "/" + presetID:    preset,
+		"DELETE " + collection + "/" + presetID: "",
+	}
+
+	out, requested, err := runOCC(t, responses, "--namespace", testNamespaceID, "preset", "list")
+	if err != nil {
+		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || !slices.Equal(strings.Fields(lines[0]), []string{"ID", "NAME", "CREATED"}) ||
+		!slices.Equal(strings.Fields(lines[1]), []string{presetID, "default-codex", "2026-09-30T00:00:00.000Z"}) {
+		t.Fatalf("unexpected Preset table:\n%s", out)
+	}
+
+	// Structured output is the whole Preset, template included.
+	out, _, err = runOCC(t, responses, "--namespace", testNamespaceID, "-o", "json", "preset", "get", presetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shown map[string]any
+	if err := json.Unmarshal([]byte(out), &shown); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if template, _ := shown["template"].(map[string]any); shown["id"] != presetID || template["agent"] == nil {
+		t.Fatalf("expected the Preset with its template, got %v", shown)
+	}
+
+	out, requested, err = runOCC(t, responses, "--namespace", testNamespaceID, "preset", "delete", presetID)
+	if err != nil {
+		t.Fatalf("%v (requests %v)", err, requested)
+	}
+	if out != "Deleted preset "+presetID+".\n" || !slices.Equal(requested, []string{"DELETE " + collection + "/" + presetID}) {
+		t.Fatalf("delete printed %q after %v", out, requested)
 	}
 }
 

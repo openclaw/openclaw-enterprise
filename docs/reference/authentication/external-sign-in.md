@@ -35,7 +35,9 @@ Set all three API-process variables; partial configuration fails startup:
 | `OCC_AUTH_GITHUB_RECOVERY_USER_ID` | Local password administrator seeding the first recovery designation.    |
 
 Helm renders them from `auth.github` and `auth.recoveryUserId`; see
-[production settings](../settings/production.md#github-sign-in-and-trusted-proxies).
+[production settings](../settings/production.md#github-sign-in-and-trusted-proxies). An
+optional [organization and team allowlist](#organization-and-team-allowlist) limits sign-in
+to members.
 
 Use the repository integration's GitHub App. Register `OCC_AUTH_BASE_URL` +
 `/api/auth/providers/github/callback` as its callback. Login receives the
@@ -44,7 +46,8 @@ the private key stays with the existing repository credential consumer.
 
 OCE requests no OAuth scopes. [App permissions and user access](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-login-with-github-button-with-a-github-app#specify-additional-parameters)
 govern the bearer token, which may carry repository authority; `read:user` would
-not restrict it. Login uses only [`GET /user`](https://docs.github.com/en/rest/users/users#get-the-authenticated-user),
+not restrict it. Login uses only [`GET /user`](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
+(and, with an [allowlist](#organization-and-team-allowlist), the membership lookups),
 then discards tokens, expiry, and scope data. It performs no refresh, creates no
 repository grants, and gives no provider credentials to repository consumers or Agents.
 
@@ -68,10 +71,11 @@ assigned."), as account creation does. Email association, signup, identity
 transfer, and self-service linking are rejected. For unknown identities, follow the
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
-OCE does not check GitHub organization or team membership: any attached GitHub user
-ID signs in. OCE does not learn when someone leaves the organization or GitHub
-suspends them: someone who left can still sign in, and live sessions continue until
-they expire (at most 8 hours). Offboarding also means acting in OCE
+Without an [allowlist](#organization-and-team-allowlist), OCE does not check GitHub
+organization or team membership: any attached GitHub user ID signs in. Either way, OCE
+does not learn when someone leaves the organization or GitHub suspends them: without
+an allowlist someone who left can still sign in, and live sessions continue until they
+expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
 access and its sessions, or detach its GitHub method to end GitHub sign-in and those
 sessions; revoke ends sessions but allows a fresh sign-in.
@@ -108,11 +112,60 @@ or `temporarily_unavailable`), or its token endpoint refuses the configured clie
 and registered callback), the denial is audited as `PROVIDER_UNAVAILABLE` and the API
 logs one `authentication.provider-unavailable-warning` at WARN. It carries `provider`
 (`github`, `google`, or `oidc`), the provider instance `providerId`, `step`
-(`authorization`, `token`, `jwks`, or `profile`), a bounded `cause` (`connect_refused`,
+(`authorization`, `token`, `jwks`, `profile`, or `membership`), a bounded `cause` (`connect_refused`,
 `dns`, `timeout`, `tls`, `connection_reset`, `network`, `redirect`, `http_status`,
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
 authorization codes, tokens, response bodies, or user data. A rejected identity logs nothing.
+
+### Organization and team allowlist
+
+`OCC_AUTH_GITHUB_ALLOWED_ORGS` (Helm `auth.github.allowedOrgs`) lists GitHub organization
+logins, and `OCC_AUTH_GITHUB_ALLOWED_TEAMS` (`auth.github.allowedTeams`) lists `org/team-slug`
+entries, whose active members may use GitHub sign-in. Both are empty by default,
+which admits any attached identity as above. Entries are lowercased, at most 10 in total;
+other values, or either list without the GitHub client, fail startup. Helm refuses invalid
+entries, and either list without `auth.github.enabled`, at render time; the installation
+profile wants them lowercase.
+
+With a list, the callback reads membership with the user token after `GET /user` and before
+the account lookup, so a refusal reveals nothing about OCE accounts. It reads
+[`GET /user/memberships/orgs/{org}`](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user)
+for each organization, then, for each team whose organization membership is active,
+[`GET /orgs/{org}/teams/{team}/memberships/{login}`](https://docs.github.com/en/rest/teams/members#get-team-membership-for-a-user)
+(child-team members count). Only `state: active` matches; a pending invitation does not. The
+first match admits, even after another lookup failed. The lookups share the 10-second
+deadline and refuse redirects.
+
+The GitHub App needs the organization permission **Members: read**, accepted by the owner of
+each listed organization, and an installation on each one. Members: read is read-only, and
+also lets the App's installation token list those organizations' members and teams. No OAuth
+scope is requested.
+
+| Outcome                                     | Audit `reasonCode`       | Console (`authReason`)   |
+| ------------------------------------------- | ------------------------ | ------------------------ |
+| Not an active member of any entry           | `MEMBERSHIP_REQUIRED`    | `membership`             |
+| No match, and a lookup GitHub didn't answer | `MEMBERSHIP_UNAVAILABLE` | `membership-unavailable` |
+
+Both are `authentication.login` denials whose `details` carry `provider: github` and the
+numeric GitHub `subject`. The callback returns to
+`/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
+`MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
+malformed answer, and any status other than `200` or `404`. It fails closed and logs
+`authentication.provider-unavailable-warning` with `step: membership`. A `403` there usually
+means configuration: the organization blocked the App, its owner has not accepted Members:
+read, or SAML SSO wants a session the user lacks.
+
+GitHub may answer `404`, not `403`, for an organization where the App is not installed, a
+misspelled organization or team slug, or (unverified) an unauthorized SAML session. That
+refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known members are
+refused, check the slugs, that the App is installed on each listed organization, and that its
+owner accepted Members: read.
+
+Membership is checked only at sign-in. Turning the list on applies from the next sign-in
+after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
+them to apply it at once. Removing someone from the organization or team stops their next
+GitHub sign-in but not a live session; disable or detach in OCE to end it.
 
 ## Recovery-only password sign-in
 

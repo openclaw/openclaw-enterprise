@@ -417,6 +417,11 @@ test(
           target.version,
         );
         assert.equal(await peer.currentSession(oldSession.token), undefined);
+        // Attach deletes the account's sessions; the version bump alone leaves stale rows.
+        assert.equal(
+          (await pool.query("SELECT 1 FROM occ.session WHERE id = $1", [oldSession.id])).rowCount,
+          0,
+        );
         await assert.rejects(
           persistence.issueSession(passwordProof, sessionRecord(person.id)),
           /no longer current/,
@@ -477,6 +482,24 @@ test(
         assert.equal(await persistence.snapshotExternal(providerId, "missing"), undefined);
       },
     );
+
+    await context.test("an external subject resolves only under its own provider", async () => {
+      // attachExternal and snapshotExternal do not consult the configured provider list;
+      // only issuance and session reads do, so an unconfigured second provider is enough here.
+      const secondProvider = `second-${suffix}`;
+      await persistence.attachExternal(
+        early.id,
+        secondProvider,
+        subject,
+        admin,
+        (await persistence.readAccount(early.id, admin)).version,
+      );
+      assert.equal((await persistence.snapshotExternal(providerId, subject))?.user.id, person.id);
+      assert.equal(
+        (await persistence.snapshotExternal(secondProvider, subject))?.user.id,
+        early.id,
+      );
+    });
 
     await context.test(
       "attempts require the exact browser and destination and are consumed once across controllers",
@@ -651,6 +674,11 @@ test(
         fresh.proof.methodId,
         fresh.proof.passwordHash,
       ]);
+      // The original hash is back, but under a new method version: the proof stays stale.
+      await assert.rejects(
+        persistence.issueSession(fresh.proof, sessionRecord(person.id)),
+        /no longer current/,
+      );
     });
 
     await context.test("the shared user lock serializes issuance before revocation", async () => {

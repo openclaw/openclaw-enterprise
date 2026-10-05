@@ -98,6 +98,19 @@ sibling sessions remain outside its mounts. Actual Git and pinned `gh` use the
 service against a controlled provider. This proves the tested ordinary-container
 custody boundary, without a network-confinement or live-GitHub claim.
 
+A second case runs the same sequence against the
+[development token authority](../reference/repository-credentials/development-token.md):
+the trusted provider container writes a random static token to the service's
+input mount, and the service starts with `--development-authority`. The host
+compares the probe snapshot, Git configuration (with and without the session
+launcher), client and service logs and full `docker inspect` output against the
+token and patterns derived from it (its random body, its base64 form and the
+encoded Git credential). Nothing derived from the token is passed into the client
+container. Positive controls show that the probe sees the selected session's bearer
+and that the compared patterns include the token the service read. The case also
+checks that nothing was issued and that closing the session never revokes the
+owner's token.
+
 Omitting both selectors skips this case; selecting only one fails. Selected
 images, Docker and other required prerequisites must be available. Record the
 exact images, case results and cleanup outcome separately from the combined

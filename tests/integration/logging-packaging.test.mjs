@@ -37,8 +37,15 @@ function hasLoopbackPort(service, target, published) {
 }
 
 function globExpression(pattern) {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*");
+  // filelog's `*` never crosses a path separator.
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*");
   return new RegExp(`^${escaped}$`);
+}
+
+// A Job's Pod gets `generateName: <job>-`; the API server cuts that prefix to
+// 58 characters (names.MaxGeneratedNameLength) before adding 5 random ones.
+function jobPodName(jobName) {
+  return `${`${jobName}-`.slice(0, 58)}x7k2q`;
 }
 
 const helmTooling = await chartTooling();
@@ -167,14 +174,54 @@ test(
       new URL("../../deploy/logging/kubernetes.yaml", import.meta.url),
       "utf8",
     );
-    const initializerGlob = "/var/log/pods/*_*-initialization-*_*/*/*.log";
     assert.match(kubernetesCollectorConfig, /occ\.component.+initialization/);
-    assert.ok(kubernetesCollectorConfig.includes(`      - ${initializerGlob}`));
-    assert.ok(
-      globExpression(initializerGlob).test(
-        `/var/log/pods/openclaw-system_${initialization.metadata.name}-abcde_fixture/bootstrap/0.log`,
-      ),
+    const [{ receivers }] = await objects(kubernetesCollectorConfig);
+    const includes = receivers.filelog.include.map(globExpression);
+    const excludes = receivers.filelog.exclude.map(globExpression);
+    const collected = (path) =>
+      includes.some((include) => include.test(path)) &&
+      !excludes.some((exclude) => exclude.test(path));
+    const initializationContainers = [
+      ...initialization.spec.template.spec.initContainers,
+      ...initialization.spec.template.spec.containers,
+    ].map(({ name }) => name);
+    assert.deepEqual(initializationContainers, ["migration", "bootstrap"]);
+    const initializationLogs = (jobName) =>
+      initializationContainers.map(
+        (container) =>
+          `/var/log/pods/openclaw-system_${jobPodName(jobName)}_0b5c7e1e-2f4a-4c1e-9d8b-3a6f5e4d2c10/${container}/0.log`,
+      );
+    for (const path of initializationLogs(initialization.metadata.name)) {
+      assert.ok(collected(path), path);
+    }
+    // Helm allows release names up to 53 characters; past 42 the generated Pod
+    // name loses part of `-initialization-`. The Job name is checked both as
+    // rendered today and cut to 63 characters.
+    for (let length = 1; length <= 53; length += 1) {
+      const jobName = `${"r".repeat(length)}-initialization`;
+      for (const name of new Set([jobName, jobName.slice(0, 63).replace(/-+$/, "")])) {
+        for (const path of initializationLogs(name)) {
+          assert.ok(collected(path), `release length ${length}: ${path}`);
+        }
+      }
+    }
+    const longRelease = await render(loggingValues, { release: "r".repeat(53) });
+    const longInitialization = (await objects(longRelease.stdout)).find(
+      (object) =>
+        object.kind === "Job" &&
+        object.metadata.labels?.["app.kubernetes.io/component"] === "initialization",
     );
+    for (const path of initializationLogs(longInitialization.metadata.name.slice(0, 63))) {
+      assert.ok(collected(path), path);
+    }
+    // Other workloads' containers stay out, and the Collector never reads itself.
+    for (const path of [
+      "/var/log/pods/openclaw-system_openclaw-enterprise-collector-x7k2q_uid/collector/0.log",
+      "/var/log/pods/other_postgres-initdb-x7k2q_uid/postgres/0.log",
+      "/var/log/pods/other_keycloak-7d9f_uid/bootstrap/0.log",
+    ]) {
+      assert.equal(collected(path), false, path);
+    }
 
     const metadataRole = rendered.find(
       ({ kind, metadata }) =>

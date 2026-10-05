@@ -80,7 +80,10 @@ reads, so a denial is always audited and never spends a token.
 lists Pods by the exact Agent, revision and workload-role labels: dedicated
 Gateways in the control-plane Gateway namespace, Harnesses and embedded Gateways
 in the tenant namespace on the execution plane. It lists Events by
-`involvedObject.uid`, keeps only that Pod's Events, caps them at 100 and takes each
+`involvedObject.uid`, keeps only that Pod's Events, drops the scheduler's
+`FailedScheduling` retry after a lost PVC update race (`running PreBind plugin
+"VolumeBinding": Operation cannot be fulfilled on persistentvolumeclaims ...: the
+object has been modified ...`) once the Pod has a node, caps them at 100 and takes each
 Event's `container` from `involvedObject.fieldPath` (`spec.containers{name}` or
 the init or ephemeral form; `null` for Pod-level Events such as `Scheduled`). A log
 read passes `{ source, events: false }`, so it lists only that source's Pods and

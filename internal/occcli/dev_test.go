@@ -3,6 +3,7 @@ package occcli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,9 @@ func TestDevUpInterruptLetsTheStartupScriptCleanUp(t *testing.T) {
 	repository := t.TempDir()
 	marker := filepath.Join(repository, "trap-ran")
 	started := filepath.Join(repository, "started")
-	script := "trap 'touch \"$TRAP_MARKER\"' EXIT\n: >\"$STARTED_MARKER\"\nsleep 30 >/dev/null 2>&1\n"
+	// The TERM trap exits 143, a plain status like a script that handles the
+	// signal, so an interrupt must not be mistaken for the script's own failure.
+	script := "trap 'touch \"$TRAP_MARKER\"' EXIT\ntrap 'kill $!; exit 143' TERM\n: >\"$STARTED_MARKER\"\nsleep 30 >/dev/null 2>&1 &\nwait $!\n"
 	for path, contents := range map[string]string{
 		"go.mod":         "module github.com/openclaw/openclaw-enterprise\n",
 		"compose.yaml":   "services: {}\n",
@@ -51,8 +54,14 @@ func TestDevUpInterruptLetsTheStartupScriptCleanUp(t *testing.T) {
 	command := New(&bytes.Buffer{}, &bytes.Buffer{})
 	command.SetArgs([]string{"dev", "up"})
 	begin := time.Now()
-	if err := command.ExecuteContext(ctx); err == nil {
+	err := command.ExecuteContext(ctx)
+	if err == nil {
 		t.Fatal("interrupted occ dev up exited successfully")
+	}
+	// An interrupt is reported as one, not as the script's own exit status.
+	var status *ExitStatusError
+	if errors.As(err, &status) {
+		t.Fatalf("interrupted occ dev up passed on the script status %d", status.Code)
 	}
 	if elapsed := time.Since(begin); elapsed > 25*time.Second {
 		t.Fatalf("occ dev up took %s to stop after the interrupt", elapsed)

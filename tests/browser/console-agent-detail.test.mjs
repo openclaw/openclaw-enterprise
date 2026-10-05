@@ -37,6 +37,7 @@ import {
   waitForCondition,
   waitForIdleFetches,
   waitForInputValue,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -1594,6 +1595,61 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   await page.getByRole("dialog", { name: "Create harness authentication Secret" }).waitFor();
 });
 
+test("a Secret created before the picker's Secret list arrives stays staged and listed", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slow Secret list", { ready: true });
+  const original = await fixture.createSecret(namespace.id, "Original binding", "original-value");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Slow List Agent",
+    nativeValues("slow-secret-list", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const secretsPath = `/namespaces/${namespace.id}/secrets`;
+  // The API answers the list read; the page sees that answer only after the create.
+  let releaseList;
+  const listGate = new Promise((resolve) => {
+    releaseList = resolve;
+  });
+  t.after(releaseList);
+  let listReads = 0;
+  await page.route(`${fixture.origin}${secretsPath}`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    listReads += 1;
+    const response = await route.fetch();
+    await listGate;
+    await route.fulfill({ response });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+  await apiKeySecret.fill("no matching create target");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
+  await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  const staged = page.getByText("Secret binding staged. Save changes to apply it.");
+  await staged.waitFor();
+  assert.ok(listReads > 0);
+  releaseList();
+  // Every held list read and the create have now reached the page's own code.
+  await waitForSettledFetches(page, secretsPath, listReads + 1);
+  assert.equal(await staged.count(), 1);
+  const created = (await fixture.request("GET", secretsPath)).data.find(
+    (secret) => secret.name === "Created while loading",
+  );
+  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(created));
+  await apiKeySecret.fill("Created while");
+  await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
+});
+
 test("Agent credential Secret picker searches, validates, and preserves duplicate create input", async (t) => {
   const secretDriver = createTestSecretDriver();
   const fixture = await createConsoleAppFixture(t, { secretDriver });
@@ -1715,7 +1771,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await page.route(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
   await dialog.getByLabel("Name", { exact: true }).fill("Namespace not ready picker Secret");
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog.getByRole("alert").filter({ hasText: "not ready for Secret creation" }).waitFor();
+  await dialog.getByRole("alert").filter({ hasText: "cannot store Secrets yet" }).waitFor();
   assert.equal(
     await dialog.getByLabel("Name", { exact: true }).inputValue(),
     "Namespace not ready picker Secret",
@@ -3964,6 +4020,7 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
       .filter((event) => event.kind === "authorization_denial" && event.action === action).length;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  await trackSettledFetches(page);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, detail, viewer.credentials);
   const unavailable = page.getByRole("heading", { name: "Configuration unavailable" });
@@ -3971,7 +4028,9 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const nativeAdminPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
   const reads = (path) => requests.filter((request) => request.path === path).length;
-  await waitForCondition(() => reads(nativeAdminPath) === 1, "native admin status read");
+  // The tab remembers a denial only once the page has read it; a reload drops a pending read.
+  await waitForSettledFetches(page, nativeAdminPath, 1);
+  assert.equal(reads(nativeAdminPath), 1);
   assert.equal(reads(configurationPath), 1);
 
   // Each denied read is an audited authorization denial; reloading the view does not repeat it.

@@ -465,6 +465,69 @@ test("Saved Agent plugin discovery rechecks Secret authority after the backend r
   );
 });
 
+test("Saved Agent plugin discovery rechecks the caller's Secret authority after the backend read", async (t) => {
+  const fixture = await createFixture(t);
+  const { agent, secret, path } = await createSavedAgent(fixture);
+  const actor = await fixture.createAccountWithPolicy("saved-plugin-revoked-editor", () => {});
+  const session = await fixture.signIn(actor.credentials);
+  const agentRole = {
+    id: `agent-plugin-editor-${randomUUID()}`,
+    namespaceId: fixture.namespace.id,
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "update", resourceKind: "agent" },
+    ],
+  };
+  const secretRole = {
+    id: `agent-plugin-source-${randomUUID()}`,
+    namespaceId: fixture.namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  };
+  fixture.policy.roles.push(agentRole, secretRole);
+  const actorSecretBinding = {
+    id: `binding-${secretRole.id}`,
+    namespaceId: fixture.namespace.id,
+    subjectKind: "identity",
+    subjectId: actor.principal.id,
+    roleId: secretRole.id,
+    resourceKind: "secret",
+    resourceId: secret.id,
+  };
+  fixture.policy.bindings.push(
+    {
+      id: `binding-${agentRole.id}`,
+      namespaceId: fixture.namespace.id,
+      subjectKind: "identity",
+      subjectId: actor.principal.id,
+      roleId: agentRole.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    },
+    actorSecretBinding,
+  );
+  const withValue = fixture.secretDriver.withValue.bind(fixture.secretDriver);
+  let secretReads = 0;
+  fixture.secretDriver.withValue = (source, use) =>
+    withValue(source, (value) => {
+      secretReads++;
+      // Revoke only the caller's Secret grant after the backend yields the value; the
+      // Agent's own grant stays, so only the caller's re-check can refuse.
+      fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(actorSecretBinding), 1);
+      return use(value);
+    });
+
+  const denied = await fixture.request("POST", path, { session, body: {} });
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  assert.equal(denied.body.error.code, "FORBIDDEN");
+  assert.equal(secretReads, 1);
+  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(fixture.auditSink.events.at(-1).authorization, {
+    principalId: actor.principal.id,
+    action: "operate",
+    resource: secret.ref,
+  });
+});
+
 test("Saved Agent plugin discovery denies unauthorized callers before reporting Driver support", async (t) => {
   const fixture = await createFixture(t, { supported: false });
   const { path } = await createSavedAgent(fixture);

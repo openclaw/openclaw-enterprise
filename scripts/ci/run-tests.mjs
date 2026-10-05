@@ -19,7 +19,7 @@ function usage() {
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -884,10 +884,32 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
   }
 }
 
-async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath) {
+// A verified test-only selection aggregates only its lanes, all from the group.
+function selectedLaneNames(groupLanes, selection, issues) {
+  let lanes;
+  try {
+    lanes = JSON.parse(selection);
+  } catch {
+    lanes = null;
+  }
+  if (
+    !Array.isArray(lanes) ||
+    lanes.length === 0 ||
+    new Set(lanes).size !== lanes.length ||
+    !lanes.every((lane) => typeof lane === "string" && groupLanes.includes(lane))
+  ) {
+    issues.push(
+      issue("invalid-lane-selection", "selected lanes must be distinct lanes of the target"),
+    );
+    return null;
+  }
+  return groupLanes.filter((lane) => lanes.includes(lane));
+}
+
+async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, selection) {
   const source = sourceEvidence(root);
   const issues = [...manifest.issues, ...source.issues];
-  const laneNames = laneNamesForTarget(manifest, groupName);
+  let laneNames = laneNamesForTarget(manifest, groupName);
   const lanes = [];
   const currentSha = source.sha;
 
@@ -897,6 +919,8 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath) 
         target: groupName,
       }),
     );
+  } else if (selection !== undefined) {
+    laneNames = selectedLaneNames(laneNames, selection, issues);
   }
 
   let needs = null;
@@ -1042,6 +1066,7 @@ async function main() {
     groupName,
     resolve(root, options["results-dir"]),
     options.needs ? resolve(root, options.needs) : null,
+    options.lanes,
   );
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;

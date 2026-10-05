@@ -154,7 +154,7 @@ async function exportEnvironment(values) {
 // images
 
 function cacheArguments(role) {
-  // Restore only: the Images and Packaging lane owns the hosted cache exports.
+  // Restore only: main's cache is written by the warm workflow and main pushes.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
     !process.env.ACTIONS_RUNTIME_TOKEN ||

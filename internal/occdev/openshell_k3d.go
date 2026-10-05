@@ -114,8 +114,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
 	}
-	if !namespaceName.MatchString(state.PlatformNamespace) {
-		return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_NAMESPACE %q: the name must match %s", state.PlatformNamespace, namespaceName)
+	if !namespaceName.MatchString(state.PlatformNamespace) || len(state.PlatformNamespace) > 63 {
+		return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_NAMESPACE %q: the name must match %s and be at most 63 characters", state.PlatformNamespace, namespaceName)
 	}
 	if state.KeyOwned {
 		state.KeyPath = filepath.Join(directory, "initial-admin-service-key.json")

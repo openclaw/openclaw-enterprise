@@ -145,7 +145,7 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 41) {
         return "preRestrictionReadLogs";
       }
-      if (receipts.length === 47) {
+      if (receipts.length === 48) {
         return "preRuntimeRoles";
       }
       if (receipts.length === 42) {
@@ -162,6 +162,9 @@ function classifyReceipts(receipts, manifest) {
       }
       if (receipts.length === 46) {
         return "preProvisioningConfigurationRelease";
+      }
+      if (receipts.length === 47) {
+        return "preAdministratorCredentialSourceGrants";
       }
       return "providerCompleted";
     }
@@ -228,7 +231,7 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 41) {
     return "preRestrictionReadLogs";
   }
-  if (receipts.length === 47) {
+  if (receipts.length === 48) {
     return "preRuntimeRoles";
   }
   if (receipts.length === 42) {
@@ -245,6 +248,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 46) {
     return "preProvisioningConfigurationRelease";
+  }
+  if (receipts.length === 47) {
+    return "preAdministratorCredentialSourceGrants";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

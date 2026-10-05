@@ -20,6 +20,8 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { registerAndSelectDrivers } from "../helpers/development.mjs";
+import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 
 const installation = {
@@ -51,20 +53,12 @@ function createIAMDriver({ identities = [], roles = [], bindings = [], restricti
     roles: [
       {
         id: "role-admin",
-        permissions: [
-          { action: "create", resourceKind: "namespace" },
-          { action: "read", resourceKind: "namespace" },
-          { action: "delete", resourceKind: "namespace" },
-          { action: "create", resourceKind: "configuration" },
-          { action: "read", resourceKind: "configuration" },
-          { action: "create", resourceKind: "secret" },
-          { action: "operate", resourceKind: "secret" },
-          { action: "create", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent" },
-          { action: "update", resourceKind: "agent" },
-          { action: "deploy", resourceKind: "agent" },
-          { action: "operate", resourceKind: "agent" },
-        ],
+        permissions: permissionsFor({
+          namespace: ["create", "read", "delete"],
+          configuration: ["create", "read"],
+          secret: ["create", "operate"],
+          agent: ["create", "read", "update", "deploy", "operate"],
+        }),
       },
       { id: "role-harness-secret", permissions: [{ action: "operate", resourceKind: "secret" }] },
       ...roles,
@@ -181,15 +175,12 @@ function createController(iam = createIAMDriver(), options = {}) {
             : `${kind}-${++nextIdentifier}`,
   });
   const drivers = createDrivers(iam);
-  for (const driver of [
+  registerAndSelectDrivers(controller, [
     drivers.iam,
     drivers.compute,
     drivers.configuration,
     createTestSecretDriver(),
-  ]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  ]);
   return { controller, ...drivers };
 }
 
@@ -206,14 +197,11 @@ async function bindHarnessAuth(controller, agent) {
     namespaceId: agent.namespaceId,
     agentId: agent.id,
   });
-  iamState.bindings.push({
+  bindRole(iamState, agent.servicePrincipalId, {
     id: `harness-secret-${agent.id}`,
-    namespaceId: agent.namespaceId,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
     roleId: "role-harness-secret",
-    resourceKind: "secret",
-    resourceId: secret.id,
+    namespaceId: agent.namespaceId,
+    resource: { kind: "secret", id: secret.id },
   });
   await controller.updateAgent("principal-admin", {
     namespaceId: agent.namespaceId,
@@ -1360,10 +1348,12 @@ test("the controller fails closed until an authoritative IAM Driver is selected"
 
 test("an authorization callback cannot bypass the selected IAM Driver", async () => {
   const controller = new OpenClawController(installation, {
+    // Well-formed apart from naming another Driver, so only the Driver check refuses it.
     authorize: async () => ({
       allowed: true,
       reason: "An untrusted callback attempted to grant access.",
       driverId: "unregistered-iam",
+      evidence: { groupIds: [], bindingIds: [], roleIds: [], restrictionIds: [] },
     }),
   });
 
@@ -1377,10 +1367,10 @@ test("an authorization callback cannot bypass the selected IAM Driver", async ()
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
 
-  await assert.rejects(
-    controller.createNamespace("principal-admin", { name: "Wrong authority" }),
-    AuthorizationDeniedError,
-  );
+  await assert.rejects(controller.createNamespace("principal-admin", { name: "Wrong authority" }), {
+    name: "DependencyUnavailableError",
+    message: /belongs to another Driver/,
+  });
   assert.deepEqual(controller.pendingOperations(), []);
 });
 

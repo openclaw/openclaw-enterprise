@@ -714,6 +714,25 @@ test(
     assert.match(manifests, /name: OCC_AUTH_GITHUB_CLIENT_ID/);
     assert.match(manifests, /name: OCC_AUTH_GITHUB_RECOVERY_USER_ID\n\s+value: "recovery-admin_1"/);
     assert.match(manifests, /name: OCC_AUTH_TRUSTED_PROXY_CIDRS\n\s+value: "10\.42\.0\.0\/16"/);
+    assert.doesNotMatch(manifests, /OCC_AUTH_GITHUB_ALLOWED_/);
+    const allowlisted = render(
+      "openclaw",
+      externalSignInInput({
+        trustedProxy,
+        github: { allowedOrgs: ["acme"], allowedTeams: ["other/platform"] },
+      }),
+    );
+    assert.equal(allowlisted.summary.ok, true, allowlisted.preflight.errors.join("\n"));
+    assert.match(
+      allowlisted.values,
+      /allowedOrgs:\n {6}- acme\n {4}allowedTeams:\n {6}- other\/platform/,
+    );
+    const allowlistManifests = helmTemplate(allowlisted);
+    assert.match(allowlistManifests, /name: OCC_AUTH_GITHUB_ALLOWED_ORGS\n\s+value: "acme"/);
+    assert.match(
+      allowlistManifests,
+      /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
+    );
     // Password sign-in stays open to every account unless recovery-only is chosen.
     assert.doesNotMatch(github.values, /passwordSignIn/);
     assert.doesNotMatch(manifests, /OCC_AUTH_PASSWORD_SIGN_IN/);
@@ -805,6 +824,18 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", () => {
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ github: { allowedTeams: ["platform"] } }),
+    /controlPlane.github.allowedTeams\[0\] must be a lowercase org\/team-slug entry/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({
+      github: { allowedOrgs: Array.from({ length: 11 }, (_, index) => `org${index}`) },
+    }),
+    /allowedOrgs and allowedTeams list at most 10 entries together/,
+  );
   assertPreflightFailure(
     "openclaw",
     externalSignInInput({ recoveryUserId: undefined }),

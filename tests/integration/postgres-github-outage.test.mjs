@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import test from "node:test";
 import pg from "pg";
 import {
@@ -7,15 +6,17 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
+  attachProvider,
+  authRowCounts,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
+  githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
+  onboardPasswordAccounts,
   passwordSignIn,
   signedInHeaders,
+  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
@@ -42,118 +43,51 @@ test(
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
-    const provider = createServer();
-    let mode = "up";
     let app;
     t.after(async () => {
       await app?.close();
-      provider.closeAllConnections();
-      await new Promise((resolve) => provider.close(resolve));
       await pool.end();
     });
-    provider.on("request", async (request, response) => {
-      if (mode === "hang") {
-        return; // Never answers; the controller's shared provider deadline must end the wait.
-      }
-      if (mode === "error") {
-        response.writeHead(503, { "content-type": "application/json" });
-        response.end("{}");
-        return;
-      }
-      for await (const chunk of request) {
-        void chunk;
-      }
-      response.setHeader("content-type", "application/json");
-      if (request.url === "/login/oauth/access_token") {
-        response.end(JSON.stringify({ access_token: "ghu_outage_fixture", token_type: "bearer" }));
-      } else if (request.url === "/user") {
-        response.end(JSON.stringify({ id: memberSubject, login: "outage-member" }));
-      } else {
-        response.writeHead(404);
-        response.end();
-      }
-    });
-    await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-    const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
-    const originalFetch = globalThis.fetch;
-    t.mock.method(globalThis, "fetch", (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input);
-      if (url.origin === "https://github.com" || url.origin === "https://api.github.com") {
-        return originalFetch(new URL(url.pathname + url.search, providerOrigin), init);
-      }
-      return originalFetch(input, init);
-    });
+    // In "hang" mode the provider never answers; the controller's shared provider deadline
+    // must end the wait.
+    const provider = await startFakeGitHub(t);
 
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Password onboarding on the default install, then the GitHub upgrade. Members read the
+    // Installation but do not administer it, so a spent email refuses them.
+    const { admin, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
+      secrets,
+      password,
+      accounts: {
+        member: { email: "outage-member@example.test" },
+        other: { email: "outage-other@example.test" },
+        resetMember: { email: "outage-reset@example.test" },
+        disabledMember: { email: "outage-disabled@example.test" },
+      },
     });
-    const admin = { email: adminEmail, password: adminPassword };
-    // Members read the Installation but do not administer it, so a spent email refuses them.
-    const { reader: readerRole } = await installationRoles(state, pool);
-
-    // Password onboarding on the default install, then the GitHub upgrade.
+    const { member, other, resetMember, disabledMember } = accounts;
     app = await composeProductionSignIn(t, {
       databaseUrl,
-      settings: defaultInstallSettings,
+      settings: githubUpgradeSettings(admin.id),
       secrets,
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin);
-    const adminId = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const members = [];
-    for (const email of [
-      "outage-member@example.test",
-      "outage-other@example.test",
-      "outage-reset@example.test",
-      "outage-disabled@example.test",
-    ]) {
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: readerRole.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      members.push({ id: created.json().data.id, email, password });
-    }
-    const [member, other, resetMember, disabledMember] = members;
-    await app.close();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(adminId),
-      secrets,
-    });
-    adminHeaders = await signedInHeaders(app, origin, admin);
-    const account = await app.inject({
-      url: `/api/auth/accounts/${member.id}`,
-      headers: adminHeaders,
-    });
-    const attached = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${member.id}/providers/github`,
-      headers: adminHeaders,
-      payload: { subject: String(memberSubject), expectedVersion: account.json().data.version },
-    });
+    const adminHeaders = await signedInHeaders(app, origin, admin);
+    const attached = await attachProvider(
+      app,
+      adminHeaders,
+      member.id,
+      "github",
+      String(memberSubject),
+    );
     assert.equal(attached.statusCode, 200, attached.body);
 
-    async function githubSignIn(remoteAddress = "192.0.2.50") {
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/github/start",
-        remoteAddress,
-        headers: { origin },
-      });
-      assert.equal(start.statusCode, 200, start.body);
-      const attemptState = new URL(start.json().data.url).searchParams.get("state");
-      return app.inject({
-        url: `/api/auth/providers/github/callback?state=${attemptState}&code=outage-code`,
-        remoteAddress,
-        headers: { cookie: cookieHeaderFromSetCookie(start.headers["set-cookie"]) },
-      });
-    }
-    const sessionCount = async () =>
-      (await pool.query("SELECT count(*)::int AS count FROM occ.session")).rows[0].count;
+    const memberGitHubSignIn = async (remoteAddress) =>
+      (await githubSignIn(app, origin, memberSubject, remoteAddress)).callback;
+    const sessionCount = async () => (await authRowCounts(pool)).sessions;
     async function assertFailedClosed(callback, sessionsBefore) {
       assert.equal(callback.statusCode, 302);
       assert.equal(callback.headers.location, "/console/?authError=github");
@@ -162,16 +96,16 @@ test(
     }
 
     await t.test("the fixture provider signs the attached account in while up", async () => {
-      const callback = await githubSignIn();
+      const callback = await memberGitHubSignIn();
       assert.equal(callback.headers.location, "/console/", callback.body);
       const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
       assert.equal((await currentSession(app, cookie)).user.id, member.id);
     });
 
     await t.test("provider 5xx fails closed; password sign-in keeps working", async () => {
-      mode = "error";
+      provider.mode = "error";
       const before = await sessionCount();
-      await assertFailedClosed(await githubSignIn(), before);
+      await assertFailedClosed(await memberGitHubSignIn(), before);
       const signedIn = await passwordSignIn(app, origin, member);
       assert.equal(signedIn.statusCode, 200, signedIn.body);
       const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
@@ -188,10 +122,10 @@ test(
     await t.test(
       "a hung provider fails closed at the deadline without blocking passwords",
       async () => {
-        mode = "hang";
+        provider.mode = "hang";
         const before = await sessionCount();
         const started = performance.now();
-        const pending = githubSignIn();
+        const pending = memberGitHubSignIn();
         // Password sign-in proceeds while the provider exchange is stalled.
         const signedIn = await passwordSignIn(app, origin, member, "192.0.2.51");
         assert.equal(signedIn.statusCode, 200, signedIn.body);
@@ -205,7 +139,7 @@ test(
     const wrong = "outage-wrong-password";
 
     await t.test("successful password sign-ins spend no budget during an outage", async () => {
-      mode = "error";
+      provider.mode = "error";
       // Only failed sign-ins count: more successes in one minute than the ten-failure budget
       // from one address all sign in.
       for (let index = 0; index < 12; index += 1) {
@@ -213,7 +147,7 @@ test(
         assert.equal(signedIn.statusCode, 200, signedIn.body);
       }
       assert.equal(
-        (await githubSignIn("203.0.113.10")).headers.location,
+        (await memberGitHubSignIn("203.0.113.10")).headers.location,
         "/console/?authError=github",
       );
     });
@@ -237,7 +171,7 @@ test(
         assert.equal(signedIn.statusCode, 200, signedIn.body);
         // External start has no per-minute budget to spend, and junk callbacks without the
         // browser's attempt cookie spend only their own key, never a real browser's.
-        mode = "up";
+        provider.mode = "up";
         for (let index = 0; index < 35; index += 1) {
           const start = await app.inject({
             method: "POST",
@@ -254,14 +188,14 @@ test(
           });
           assert.equal(junk.headers.location, "/console/?authError=github");
         }
-        const callback = await githubSignIn(ingress);
+        const callback = await memberGitHubSignIn(ingress);
         assert.equal(callback.headers.location, "/console/", callback.body);
       },
     );
 
     await t.test("GitHub sign-in recovers without a restart", async () => {
-      mode = "up";
-      const callback = await githubSignIn("192.0.2.60");
+      provider.mode = "up";
+      const callback = await memberGitHubSignIn("192.0.2.60");
       assert.equal(callback.headers.location, "/console/", callback.body);
     });
 
@@ -282,8 +216,8 @@ test(
         payload: { email: account.email, password: account.password },
       });
     await t.test("a GitHub sign-in marks the browser for password fallback", async () => {
-      mode = "up";
-      const callback = await githubSignIn("192.0.2.61");
+      provider.mode = "up";
+      const callback = await memberGitHubSignIn("192.0.2.61");
       assert.equal(callback.headers.location, "/console/", callback.body);
       const setCookie = [callback.headers["set-cookie"]]
         .flat()
@@ -407,13 +341,13 @@ test(
       assert.equal(
         (await currentSession(app, cookieHeaderFromSetCookie(slowed.headers["set-cookie"]))).user
           .id,
-        adminId,
+        admin.id,
       );
       // The browser that signed in before spends its own lane instead.
       const known = await signInWith(device, admin, "192.0.2.64");
       assert.equal(known.statusCode, 200, known.body);
       const cookie = cookieHeaderFromSetCookie(known.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, adminId);
+      assert.equal((await currentSession(app, cookie)).user.id, admin.id);
     });
 
     // A known-device entry is bound to the account's password and enabled state: a password

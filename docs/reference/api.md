@@ -26,6 +26,13 @@ See [authentication](authentication.md) for supported credentials and their scop
 
 Non-success JSON responses use the following envelope.
 Each operation lists its supported status codes.
+A NUL character or an unpaired UTF-16 surrogate in any request body string,
+object key or path parameter is refused with `400 INVALID_REQUEST`.
+Operations that take a request body list `413` and `415`. Any request whose
+declared body size exceeds the route's limit is refused with
+`413 PAYLOAD_TOO_LARGE`, and any POST, PUT, PATCH or DELETE request with a
+body that is not JSON with `415 UNSUPPORTED_MEDIA_TYPE`, even on an
+operation that takes no body.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
@@ -1886,8 +1893,6 @@ Experimental: Discard a local device login without upstream revocation
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `501` | Not Implemented |
 | `503` | Service Unavailable |
@@ -2918,8 +2923,6 @@ Experimental: Discard a local device login without upstream revocation
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `501` | Not Implemented |
 | `503` | Service Unavailable |
@@ -3151,8 +3154,6 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `501` | Not Implemented |
 | `503` | Service Unavailable |
@@ -4582,6 +4583,8 @@ Push current or replacement Secret values to the Credential Gateway copy
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 

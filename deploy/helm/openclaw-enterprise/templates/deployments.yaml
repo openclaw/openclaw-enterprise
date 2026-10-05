@@ -228,6 +228,14 @@ spec:
             {{- if $.Values.auth.github.enabled }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_ID" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientIdKey) | nindent 12 }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_SECRET" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientSecretKey) | nindent 12 }}
+            {{- if $.Values.auth.github.allowedOrgs }}
+            - name: OCC_AUTH_GITHUB_ALLOWED_ORGS
+              value: {{ join "," $.Values.auth.github.allowedOrgs | quote }}
+            {{- end }}
+            {{- if $.Values.auth.github.allowedTeams }}
+            - name: OCC_AUTH_GITHUB_ALLOWED_TEAMS
+              value: {{ join "," $.Values.auth.github.allowedTeams | quote }}
+            {{- end }}
             {{- end }}
             {{- if and $.Values.auth.google $.Values.auth.google.enabled }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GOOGLE_CLIENT_ID" "secretName" $.Values.auth.google.secretName "key" $.Values.auth.google.clientIdKey) | nindent 12 }}
@@ -379,12 +387,14 @@ spec:
               port: http
           # Liveness starts only once the API answers, so a slow boot (module loading,
           # database, Kubernetes preflight) gets 2 min before the kubelet restarts it.
+          # Readiness also waits for the first success: a 1 s period lets the API take
+          # traffic about when it listens rather than at a later probe tick.
           startupProbe:
             httpGet:
               path: /healthz
               port: http
-            periodSeconds: 5
-            failureThreshold: 24
+            periodSeconds: 1
+            failureThreshold: 120
           {{- else }}
           readinessProbe:
             exec:

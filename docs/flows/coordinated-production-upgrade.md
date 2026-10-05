@@ -83,7 +83,17 @@ durability, or disposal. The
 helper also preserves the live broker hostname; broker restart recovery remains
 an operator task in the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
-The script renders the chart and performs a server-side Helm dry run. It saves
+The script renders the chart and performs a server-side Helm dry run. Then
+[`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
+copies each rendered API and worker Pod template (selected controller image, env,
+mounts, service account) into a one-shot Pod whose Installation volume reads a
+temporary Secret holding the candidate. The Pod runs `loadStartupConfigurationSnapshot`
+and `loadInstallationConfiguration`, which resolve Drivers and Preset files
+without the database. A failure, a stuck image pull, or the timeout stops
+preparation before any writer stops. The script first reads both Pods and saves
+each status and log, so every failing component is reported; then the exit trap
+deletes the Pods and Secret.
+It saves
 candidate inputs, inventory, target identity, and parameter hashes in the
 private evidence directory before marking preparation complete. A per-directory
 lock prevents two helpers from using that record at once. The operator must
@@ -183,7 +193,8 @@ access, and required restore behavior.
 
 ## Debugging and Verification
 
-- Inspect `server-dry-run.txt` for chart or admission failures before mutation.
+- Inspect `server-dry-run.txt` for chart or admission failures before mutation,
+  and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
 - For OCC rollout failures, inspect `helm-upgrade.txt`, initialization Job logs,
   and API and worker rollout status.
 - For runtime failures, inspect `dispatch/*.error`, revision history, and
@@ -212,6 +223,10 @@ access, and required restore behavior.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 06:00: Save and report every preflight Pod's result before cleanup, not only the first failure.
+
+- 2026-10-05 04:00: Load the candidate Installation with the selected controller image in one-shot Pods before quiescence.
 
 - 2026-09-28 12:36: Qualify the selected repository image pair and verify deployed identities and capability. (01a0e6ca-95a4-7e80-aab8-38c5e92a53da - 374dfd4c58587f64d859d4aa4fdaf446b158402a)
 

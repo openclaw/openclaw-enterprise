@@ -1,7 +1,8 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 
-// Fixtures for ID-token verifier tests: RSA signing keys published as JWKs, and compact
-// JWS tokens whose header, payload, key and digest a test can each choose independently.
+// RSA signing keys published as JWKs, and compact JWS tokens whose header, payload, key and
+// digest a test can each choose independently. Used by the ID-token verifier tests and by
+// the fake Google and OIDC providers in human-login-transport.mjs and production-sign-in.mjs.
 
 export function rsaSigningKey(kid, modulusLength = 2048) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength });

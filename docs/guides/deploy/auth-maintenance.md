@@ -3,8 +3,9 @@
 Use `pnpm auth:maintain` when external sign-in (GitHub, Google, or OIDC) needs a change the online API
 cannot make: the recovery administrator is locked out, an account was never
 enrolled, sessions must be ended at once, or the Installation must return to
-password-only sign-in. The command ships in the controller image and connects
-with the migration credential, never the application credential.
+password-only sign-in. `purge-sessions` also works on a password-only
+Installation. The command ships in the controller image and connects with the
+migration credential, never the application credential.
 
 The [authentication reference](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
 owns the profile's rules; this page is the operator procedure.

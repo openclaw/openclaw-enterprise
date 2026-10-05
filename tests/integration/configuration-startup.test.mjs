@@ -954,6 +954,50 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
   }
 });
 
+test("an Installation Preset file named like a bundled default replaces that default", async (t) => {
+  // default-codex became a bundled default after operators could already name a file
+  // default-codex. Startup must keep the operator's file instead of refusing to start.
+  const operatorCodex = {
+    name: "default-codex",
+    template: { agent: { name: "Operator Codex", executionMode: "dedicated" } },
+  };
+  const configuration = installation();
+  configuration.presets = { includeDefaults: true, files: ["presets/codex.json"] };
+  const path = await fixture(t, configuration);
+  await mkdir(join(dirname(path), "presets"), { recursive: true });
+  const presetPath = join(dirname(path), "presets", "codex.json");
+  await writeFile(presetPath, JSON.stringify(operatorCodex));
+  const runtime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), [
+    "Standard Codex",
+    "Standard OpenClaw",
+    "default-codex",
+  ]);
+  assert.deepEqual(
+    runtime.defaultPresets.find((preset) => preset.name === "default-codex").template,
+    operatorCodex.template,
+  );
+  // The resolved path names the file the operator must keep or rename.
+  assert.deepEqual(runtime.shadowedDefaultPresets, [
+    { presetName: "default-codex", presetFile: presetPath },
+  ]);
+  // Without includeDefaults nothing is shadowed: the file is an ordinary default.
+  configuration.presets.includeDefaults = false;
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const filesOnly = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.deepEqual(
+    filesOnly.defaultPresets.map((preset) => preset.name),
+    ["default-codex"],
+  );
+  assert.deepEqual(filesOnly.shadowedDefaultPresets, []);
+});
+
 test("Installation Preset JSON files resolve beside startup YAML and fail closed", async (t) => {
   const validPreset = {
     name: "from-file",
@@ -1016,19 +1060,26 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
     [
       "duplicate.json",
       JSON.stringify({ name: "Standard Codex", template: {} }),
-      /configured more than once/,
+      /Default Preset Standard Codex is configured more than once: .*duplicate\.json and .*duplicate-b\.json/,
     ],
   ]) {
     const configuration = installation();
+    // Two operator files may not share a name, even one that shadows a bundled default.
     configuration.presets = {
       includeDefaults: filename === "duplicate.json",
-      files: [`cases/${filename}`],
+      files:
+        filename === "duplicate.json"
+          ? [`cases/${filename}`, "cases/duplicate-b.json"]
+          : [`cases/${filename}`],
     };
     const path = await fixture(t, configuration);
     const directory = dirname(path);
     await mkdir(join(directory, "cases"), { recursive: true });
     if (contents !== undefined) {
       await writeFile(join(directory, "cases", filename), contents);
+    }
+    if (filename === "duplicate.json") {
+      await writeFile(join(directory, "cases", "duplicate-b.json"), contents);
     }
     await assert.rejects(
       loadInstallationConfiguration({
@@ -1037,5 +1088,64 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
       }),
       expected,
     );
+  }
+});
+
+test("API and worker name a Preset file failure in their startup error code", async (t) => {
+  // An operator who lists a file the image lacks, or a broken one, needs a cause rather
+  // than STARTUP_FAILED. The file path and the loader message stay out of the log.
+  const duplicate = JSON.stringify({ name: "twice", template: {} });
+  for (const [filename, contents, files] of [
+    ["missing.json", undefined],
+    [
+      "invalid-template.json",
+      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
+    ],
+    ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
+    ["not-a-list.json", undefined, "cases/not-a-list.json"],
+  ]) {
+    const configuration = installation();
+    configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
+    const path = await fixture(t, configuration);
+    await mkdir(join(dirname(path), "cases"), { recursive: true });
+    if (contents !== undefined) {
+      await writeFile(join(dirname(path), "cases", filename), contents);
+      await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
+    }
+    const shared = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    };
+    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...shared,
+        OCC_HOST: "192.0.2.10",
+        OCC_PORT: "8080",
+        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+        OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(server.status, 1, filename);
+    const apiDiagnostic = startupDiagnostic(server.stderr, "startup-error");
+    assert.equal(apiDiagnostic.code, "PRESET_FILE_INVALID", filename);
+    assert.equal(apiDiagnostic.message, undefined);
+    assert.ok(!server.stderr.includes(dirname(path)), server.stderr);
+
+    const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
+      cwd: process.cwd(),
+      env: shared,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(worker.status, 1, filename);
+    const workerDiagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
+    assert.equal(workerDiagnostic.code, "PRESET_FILE_INVALID", filename);
+    assert.equal(workerDiagnostic.message, undefined);
+    assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
   }
 });

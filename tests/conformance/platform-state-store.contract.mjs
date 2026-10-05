@@ -1333,6 +1333,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
 
   await verifyDeletedResourceAccessBindingContract(store, revision);
   await verifyDuplicateNameContract(store);
+  await verifyNameLengthContract(store);
 
   return {
     installation,
@@ -1454,6 +1455,82 @@ async function verifyDuplicateNameContract(store) {
     ),
     (error) => error.name === "ResourceConflictError",
   );
+}
+
+// Names hold up to 200 characters counted as code points, as the API contract and
+// PostgreSQL char_length count them: a name of astral characters (two UTF-16 code units
+// each) is accepted at 200 by both adapters, and a Secret, ServiceAccount or credential
+// source name is refused at 201 (the memory adapter has no Preset name length check).
+async function verifyNameLengthContract(store) {
+  const createdAt = new Date().toISOString();
+  // 190 emoji and a 10-character unique suffix: 200 code points, 390 UTF-16 code units.
+  const nameOf = (count) => "\u{1F600}".repeat(count) + randomUUID().slice(0, 10);
+  const namespace = { id: identifier("ns"), name: nameOf(190), status: "ready", createdAt };
+  const secret = (name) => ({
+    id: identifier("sec"),
+    namespaceId: namespace.id,
+    name,
+    driverId: "secret-contract",
+    backendRef: { namespaceName: "contract", name: "long-names", key: "value", uid: randomUUID() },
+    createdAt,
+  });
+  const account = (name) => ({ id: identifier("sa"), namespaceId: namespace.id, name });
+  const source = (name) => ({
+    id: identifier("cs"),
+    namespaceId: namespace.id,
+    name,
+    type: "openai",
+    config: { base_url: "https://api.openai.com/v1" },
+    secrets: {},
+    driverId: "credential-gateway-contract",
+    state: "ready",
+    createdAt,
+  });
+  const preset = (name) => ({
+    id: identifier("pre"),
+    namespaceId: namespace.id,
+    name,
+    createdAt,
+    template: { variables: {}, configuration: { values: {} } },
+  });
+  const accepted = { secret: secret(nameOf(190)), account: account(nameOf(190)) };
+  accepted.source = source(nameOf(190));
+  accepted.preset = preset(nameOf(190));
+  await store.transact(async (transaction) => {
+    await transaction.namespaces.createNamespace(namespace);
+    await transaction.secrets.createSecret(accepted.secret);
+    await transaction.serviceAccounts.createServiceAccount(accepted.account);
+    await transaction.credentialSources.createCredentialSource(accepted.source);
+    await transaction.presets.createPreset(accepted.preset);
+  });
+  await store.read(async (transaction) => {
+    assert.equal(
+      (await transaction.secrets.findSecret(namespace.id, accepted.secret.id))?.name,
+      accepted.secret.name,
+    );
+    assert.equal(
+      (await transaction.serviceAccounts.findServiceAccount(namespace.id, accepted.account.id))
+        ?.name,
+      accepted.account.name,
+    );
+    assert.equal(
+      (await transaction.credentialSources.findCredentialSource(namespace.id, accepted.source.id))
+        ?.name,
+      accepted.source.name,
+    );
+    assert.equal(
+      (await transaction.presets.findPreset(namespace.id, accepted.preset.id))?.name,
+      accepted.preset.name,
+    );
+  });
+
+  for (const write of [
+    (transaction) => transaction.secrets.createSecret(secret(nameOf(191))),
+    (transaction) => transaction.serviceAccounts.createServiceAccount(account(nameOf(191))),
+    (transaction) => transaction.credentialSources.createCredentialSource(source(nameOf(191))),
+  ]) {
+    await assert.rejects(store.transact(write), { name: "ScopeViolationError" });
+  }
 }
 
 // Deleting a Configuration, Preset, Secret, credential source or ServiceAccount

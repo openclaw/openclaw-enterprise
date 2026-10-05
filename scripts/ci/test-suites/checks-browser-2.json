@@ -1,0 +1,37 @@
+{
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "files": [
+    {
+      "path": "tests/browser/console-agents.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-codex-oauth.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-draft-guards.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-state.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-presets.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-channels.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-create-agent-provisioning-400.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-repository-dedicated.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-runtime-credentials.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-impact.test.mjs"
+    }
+  ]
+}

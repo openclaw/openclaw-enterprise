@@ -783,6 +783,11 @@ const historySelectors = [
 const requiresHistoryPostgres = {
   skip: historySelectors.every((value) => value === undefined) && requiresOwnedPostgres.skip,
 };
+// The subtests of these cases run four at a time (`void context.test`): each owns its
+// database and migration subprocesses, the migration lock is a per-database advisory
+// lock, and every fixture changes only that database's catalogs and ACLs, never roles.
+// node:test still waits for every subtest and fails the parent if one fails.
+const concurrentHistoryPostgres = { ...requiresHistoryPostgres, concurrency: 4 };
 
 async function migrationHistoryFixture() {
   if (historySelectors.every((value) => value === undefined)) {
@@ -1440,11 +1445,11 @@ async function canonicalData(db) {
 
 test(
   "Canonical migration commands preserve main data and serialize fresh/repeat runners",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const schemas of [false, true]) {
-      await context.test(
+      void context.test(
         `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "fresh", { schemas });
@@ -1496,9 +1501,10 @@ test(
       [44, "preBrokerReceiptFence"],
       [45, "preModelProbeFailureCause"],
       [46, "preProvisioningConfigurationRelease"],
-      [47, "preRuntimeRoles"],
+      [47, "preAdministratorCredentialSourceGrants"],
+      [48, "preRuntimeRoles"],
     ]) {
-      await context.test(`populated canonical ${history}`, async (child) => {
+      void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         await seedCanonicalData(db, { preset: prefix >= 25 });
         const before = await canonicalData(db);
@@ -1732,7 +1738,7 @@ test(
 
 test(
   "Canonical migration completes a Provider lineage after later canonical migrations",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [prefix, history] of [
@@ -1751,9 +1757,10 @@ test(
       [44, "preBrokerReceiptFence"],
       [45, "preModelProbeFailureCause"],
       [46, "preProvisioningConfigurationRelease"],
-      [47, "preRuntimeRoles"],
+      [47, "preAdministratorCredentialSourceGrants"],
+      [48, "preRuntimeRoles"],
     ]) {
-      await context.test(history, async (child) => {
+      void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
         await installProviderCompletedHistory(db);
         // Stock Drizzle appends later canonical migrations while retaining Provider fingerprints.
@@ -1800,7 +1807,7 @@ test(
 
 test(
   "Canonical migration rollback preserves receipts and retries through the other command",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [prefix, history] of [
@@ -1827,9 +1834,10 @@ test(
       [44, "preBrokerReceiptFence"],
       [45, "preModelProbeFailureCause"],
       [46, "preProvisioningConfigurationRelease"],
-      [47, "preRuntimeRoles"],
+      [47, "preAdministratorCredentialSourceGrants"],
+      [48, "preRuntimeRoles"],
     ]) {
-      await context.test(`prefix ${prefix} transaction`, async (child) => {
+      void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
           await seedCanonicalData(db, { preset: prefix >= 25 });
@@ -1876,7 +1884,7 @@ test(
 
 test(
   "Canonical migration refuses unexplained histories before mutation",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     const manifest = JSON.parse(
@@ -1907,7 +1915,7 @@ test(
       ["ledger-grant", 25, "GRANT SELECT ON drizzle.__drizzle_migrations TO occ_app"],
     ];
     for (const [label, prefix, sql] of cases) {
-      await context.test(label, async (child) => {
+      void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "refuse", { prefix });
         if (sql) {
           await db.migrator.query(sql);
@@ -1915,7 +1923,7 @@ test(
         await assertHistoryRefused(db);
       });
     }
-    await context.test("published premerge credential history", async (child) => {
+    void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(
         await readFile(join(migrationsDirectory, "meta/_journal.json"), "utf8"),
@@ -1938,7 +1946,7 @@ test(
       assert.deepEqual(await canonicalData(db), before);
     });
     for (const slot of [30, 31, 34, 35, 36]) {
-      await context.test(
+      void context.test(
         `unpublished authentication at occupied migration slot ${slot}`,
         async (child) => {
           const db = await historyDatabase(child, fixture, "oldauth");
@@ -1963,7 +1971,7 @@ test(
         },
       );
     }
-    await context.test("application credential", async (child) => {
+    void context.test("application credential", async (child) => {
       const db = await historyDatabase(child, fixture, "app");
       const before = await historySnapshot(db);
       const url = new URL(db.migrationUrl);
@@ -1980,7 +1988,7 @@ test(
 
 test(
   "Canonical migration refuses empty default ACLs on installed histories",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const history of ["main", "completed"]) {
@@ -1990,7 +1998,7 @@ test(
         ["TABLES", "r"],
         ["SEQUENCES", "S"],
       ]) {
-        await context.test(`${history} ${kind}`, async (child) => {
+        void context.test(`${history} ${kind}`, async (child) => {
           const db = await historyDatabase(child, fixture, "defaults", { prefix: 25 });
           await seedCanonicalData(db, { preset: true });
           if (history === "completed") {
@@ -2029,7 +2037,7 @@ test(
 
 test(
   "Canonical initial schemas admit only finite owner ACL states",
-  requiresHistoryPostgres,
+  concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     for (const [label, setup] of [
@@ -2040,7 +2048,7 @@ test(
         "CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; GRANT CREATE,USAGE ON SCHEMA occ,drizzle TO occ_migrator",
       ],
     ]) {
-      await context.test(label, async (child) => {
+      void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "initial", { schemas: false });
         await db.migrator.query(setup);
         assert.deepEqual(await runHistoryMigration(db, "production"), {
@@ -2087,7 +2095,7 @@ test(
           `CREATE TEXT SEARCH DICTIONARY ${schema}.unexpected (TEMPLATE=pg_catalog.simple)`,
         ],
       ]) {
-        await context.test(`${schema} ${label}`, async (child) => {
+        void context.test(`${schema} ${label}`, async (child) => {
           const db = await historyDatabase(child, fixture, "acl");
           await historyAdmin(db, db.name, setup);
           await assertHistoryRefused(db);
@@ -2107,7 +2115,7 @@ test(
       ["database-create", (name) => `REVOKE CREATE ON DATABASE ${name} FROM occ_migrator`],
       ["application-create", (name) => `GRANT CREATE ON DATABASE ${name} TO occ_app`],
     ]) {
-      await context.test(label, async (child) => {
+      void context.test(label, async (child) => {
         const db = await historyDatabase(child, fixture, "roles");
         await historyAdmin(db, db.name, setup(db.name));
         await assertHistoryRefused(db);
@@ -2403,7 +2411,7 @@ test(
     let pool;
     context.after(async () => pool?.end());
     const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
-      prefix: 47,
+      prefix: 48,
     });
     const namespaceId = await seedCanonicalData(db, { preset: true });
     const agentId = (
@@ -2527,7 +2535,7 @@ test(
       context,
       await migrationHistoryFixture(),
       "runtime_denied",
-      { prefix: 47 },
+      { prefix: 48 },
     );
     const deniedNamespace = await seedCanonicalData(denied, { preset: true });
     await denied.app.query(
@@ -2555,5 +2563,211 @@ test(
       ).rows[0].count,
       0,
     );
+  },
+);
+
+test(
+  "Credential source grant migration upgrades only unchanged built-in administrators",
+  requiresOwnedPostgres,
+  async (context) => {
+    const fixture = await ownedPostgres();
+    const database = `openclaw_cs_grants_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+    const databaseCommand = (sql, target = "postgres") =>
+      runCommand(fixture, "docker", [
+        ...fixture.composeArgs,
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "postgres",
+        "-d",
+        target,
+        "-c",
+        sql,
+      ]);
+    let pool;
+    context.after(async () => {
+      try {
+        await pool?.end();
+      } finally {
+        await databaseCommand(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+      }
+    });
+    await databaseCommand(`CREATE DATABASE ${database}`);
+    await databaseCommand(
+      `GRANT CREATE ON DATABASE ${database} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      database,
+    );
+    const migrationUrl = new URL(fixture.migrationUrl);
+    migrationUrl.pathname = `/${database}`;
+    pool = new pg.Pool({ connectionString: migrationUrl.toString(), max: 1 });
+    const migration = "0048_administrator_credential_source_grants.sql";
+    const priorMigrations = (await readdir(migrationsDirectory))
+      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name < migration)
+      .sort();
+    assert.equal(priorMigrations.at(-1), "0047_provisioning_configuration_release.sql");
+    for (const name of priorMigrations) {
+      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
+    }
+
+    // Freeze the historical seeds: future seed edits must not alter this upgrade fixture.
+    const permissions = (entries) =>
+      entries.flatMap(([resourceKind, actions]) =>
+        actions.map((action) => ({ action, resourceKind })),
+      );
+    const presetSeed = permissions([
+      ["installation", ["administer", "read"]],
+      ["namespace", ["create", "read", "delete"]],
+      ["configuration", ["create", "read", "update", "delete"]],
+      ["service_account", ["create", "read", "update", "delete"]],
+      ["secret", ["create", "read", "update", "delete"]],
+      ["preset", ["create", "read", "update", "delete"]],
+      ["secret", ["operate"]],
+      ["agent", ["create", "read", "update", "delete", "deploy", "operate", "administer"]],
+      ["agent_revision", ["read"]],
+    ]);
+    // The 2026-09-28 release seed: credential sources without update.
+    const releaseSeed = [
+      ...presetSeed.slice(0, -8),
+      ...permissions([["credential_source", ["create", "read", "delete", "operate"]]]),
+      ...presetSeed.slice(-8),
+    ];
+    const currentGrants = permissions([
+      ["credential_source", ["create", "read", "update", "delete", "operate"]],
+    ]);
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    await pool.query("INSERT INTO occ.installation VALUES ($1, 'Upgrade', now())", [
+      installationId,
+    ]);
+    await pool.query(
+      "INSERT INTO occ.namespaces (id, name, status, created_at) VALUES ($1, 'Upgrade', 'ready', now())",
+      [namespaceId],
+    );
+    const role = (overrides = {}) => ({
+      id: `role_admin_${randomUUID()}`,
+      namespace_id: null,
+      name: "Installation administrator",
+      permissions: releaseSeed,
+      ...overrides,
+    });
+    const release = role();
+    const reordered = role({ permissions: [...releaseSeed].reverse() });
+    const preCredentialSources = role({ permissions: presetSeed });
+    const reduced = role({ permissions: releaseSeed.slice(1) });
+    const current = role({ permissions: [...releaseSeed, currentGrants[2]] });
+    const roles = [
+      release,
+      reordered,
+      preCredentialSources,
+      reduced,
+      current,
+      role({ permissions: [...releaseSeed, { action: "update", resourceKind: "namespace" }] }),
+      role({ name: "Custom administrator" }),
+      role({ id: `role_${randomUUID()}` }),
+      role({ namespace_id: namespaceId }),
+    ];
+    for (const entry of roles) {
+      await pool.query("INSERT INTO occ.iam_roles VALUES ($1, $2, $3, $4::jsonb)", [
+        entry.id,
+        entry.namespace_id,
+        entry.name,
+        JSON.stringify(entry.permissions),
+      ]);
+    }
+    const principals = [];
+    for (const entry of [release, preCredentialSources, reduced]) {
+      const principalId = `prn_${randomUUID()}`;
+      principals.push(principalId);
+      await pool.query(
+        "INSERT INTO occ.iam_identities (id, kind, issuer, subject) VALUES ($1, 'principal', 'upgrade', $1)",
+        [principalId],
+      );
+      await pool.query(
+        "INSERT INTO occ.iam_access_bindings (id, identity_subject_id, role_id) VALUES ($1, $2, $3)",
+        [`binding_admin_${randomUUID()}`, principalId, entry.id],
+      );
+    }
+    const before = (
+      await pool.query("SELECT permissions FROM occ.iam_roles WHERE id = $1", [release.id])
+    ).rows[0].permissions;
+    assert.equal(
+      before.some(
+        ({ action, resourceKind }) => action === "update" && resourceKind === "credential_source",
+      ),
+      false,
+    );
+    assert.equal(
+      before.some(
+        ({ action, resourceKind }) => action === "read" && resourceKind === "credential_source",
+      ),
+      true,
+    );
+    assert.equal(
+      (
+        await pool.query("SELECT permissions FROM occ.iam_roles WHERE id = $1", [
+          preCredentialSources.id,
+        ])
+      ).rows[0].permissions.some(
+        ({ action, resourceKind }) => action === "read" && resourceKind === "credential_source",
+      ),
+      false,
+    );
+
+    // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
+    const sql = await readFile(join(migrationsDirectory, migration), "utf8");
+    await pool.query(sql);
+    const upgraded = new Map([
+      [release.id, [currentGrants[2]]],
+      [reordered.id, [currentGrants[2]]],
+      [preCredentialSources.id, currentGrants],
+    ]);
+    const expected = (entry) => ({
+      ...entry,
+      permissions: [...entry.permissions, ...(upgraded.get(entry.id) ?? [])],
+    });
+    for (const entry of roles) {
+      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
+        .rows[0];
+      assert.deepEqual(actual, expected(entry));
+    }
+    // A repeated run changes nothing: every upgraded Role now matches the current seed.
+    await pool.query(sql);
+    for (const entry of roles) {
+      const actual = (await pool.query("SELECT * FROM occ.iam_roles WHERE id = $1", [entry.id]))
+        .rows[0];
+      assert.deepEqual(actual, expected(entry));
+    }
+    // Preserve the historical row assertions above; current IAM adapters need the current schema.
+    const remainingMigrations = (await readdir(migrationsDirectory))
+      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name > migration)
+      .sort();
+    for (const name of remainingMigrations) {
+      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
+    }
+    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const sourceId = `cs_${randomUUID()}`;
+    const authorize = async (principalId, action) =>
+      (
+        await iam.authorize({
+          principalId,
+          action,
+          resource: {
+            kind: "credential_source",
+            id: action === "create" ? namespaceId : sourceId,
+            namespaceId,
+          },
+        })
+      ).allowed;
+    for (const { action } of currentGrants) {
+      assert.equal(await authorize(principals[0], action), true);
+      assert.equal(await authorize(principals[1], action), true);
+    }
+    assert.equal(await authorize(principals[2], "update"), false);
+    assert.equal(await authorize(principals[2], "read"), true);
   },
 );

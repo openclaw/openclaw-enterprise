@@ -228,25 +228,39 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
     .getByText("ChatGPT login ready. Credentials are stored on the server.", { exact: true })
     .waitFor();
   const releaseDiscard = Promise.withResolvers();
+  const slowDiscard = Promise.withResolvers();
   await page.route("**/device-authorizations/*", async (route) => {
-    if (route.request().method() === "DELETE") {
-      await releaseDiscard.promise;
+    if (route.request().method() !== "DELETE") {
+      await route.fallback();
+      return;
     }
-    await route.fallback();
+    await releaseDiscard.promise;
+    // The test sends the held request itself. The save reloads the view, which aborts the
+    // Console's fetch of it: a response arriving after that abort is never reported to the page,
+    // and a request still held at the abort never reaches the server, though a browser that
+    // sent it at the click would have delivered it.
+    let response;
+    try {
+      response = await route.fetch();
+    } catch (error) {
+      slowDiscard.reject(error);
+      return;
+    }
+    slowDiscard.resolve(response.status());
+    await route.fulfill({ response });
   });
-  const slowDiscard = page.waitForResponse(
-    (response) =>
-      response.request().method() === "DELETE" &&
-      response.url().includes("/device-authorizations/"),
+  const discardSent = page.waitForRequest(
+    (request) => request.method() === "DELETE" && request.url().includes("/device-authorizations/"),
   );
   await page.getByRole("button", { name: "Discard staged login", exact: true }).click();
+  await discardSent;
   const racedSave = page.waitForResponse(
     (response) => response.url().endsWith(agentPath) && response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
-  assert.equal((await slowDiscard).status(), 204);
+  assert.equal(await slowDiscard.promise, 204);
   assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, replaced);
   assert.doesNotMatch(
     JSON.stringify(requests),

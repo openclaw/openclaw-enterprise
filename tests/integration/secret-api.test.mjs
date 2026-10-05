@@ -14,9 +14,11 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
@@ -39,29 +41,6 @@ function bodyAtJsonLimit(limit, buildBody) {
   const body = buildBody(value);
   assert.equal(jsonBodyBytes(body), limit);
   return { body, value };
-}
-
-function createTestComputeDriver() {
-  return {
-    id: "compute-secret-api",
-    capability: "compute",
-    implementation: "deterministic-test",
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
 }
 
 async function createFixture(options = {}) {
@@ -111,7 +90,7 @@ async function createFixture(options = {}) {
             },
           }),
       iamDriver,
-      computeDriver: options.computeDriver ?? createTestComputeDriver(),
+      computeDriver: options.computeDriver ?? createReadyComputeDriver("compute-secret-api"),
       configurationDriver: createTestConfigurationDriver({ id: "configuration-secret-api" }),
       secretDriver,
       resolveHarness: resolveApprovedDevelopmentHarness,
@@ -214,7 +193,7 @@ function createModelDiscoveryFixture() {
   const native = createTestKubernetesComputeDriver("compute-model-discovery");
   return createFixture({
     computeDriver: {
-      ...createTestComputeDriver(),
+      ...createReadyComputeDriver("compute-secret-api"),
       discoverHarnessModels: native.discoverHarnessModels,
     },
   });
@@ -389,17 +368,11 @@ test("Agent model discovery requires namespace Agent-create permission before pr
   const fixture = await createModelDiscoveryFixture();
   const namespace = await bootstrapNamespace(fixture);
   const { principal: reader, app: readerApp } = await fixture.createPrincipal("model-reader");
-  fixture.state.roles.push({
+  grantRole(fixture.state, reader.id, {
     id: "role-model-reader",
+    bindingId: "binding-model-reader",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-model-reader",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-model-reader",
+    permissions: { namespace: ["read"] },
   });
   const transport = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
   const apiKey = `denied-discovery-key-${randomUUID()}`;
@@ -771,17 +744,11 @@ test("Secret API denial and storage failures return value-free errors", async ()
   assert.equal(created.status, 201);
 
   const { principal: reader, app: readerApp } = await fixture.createPrincipal("secret-reader");
-  fixture.state.roles.push({
+  grantRole(fixture.state, reader.id, {
     id: "role-secret-reader-without-secret",
+    bindingId: "binding-secret-reader-without-secret",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "namespace" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-secret-reader-without-secret",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-secret-reader-without-secret",
+    permissions: { namespace: ["read"] },
   });
 
   const denied = await request(
@@ -837,7 +804,7 @@ for (const [model, method, executionMode] of [
     const fixture = await createFixture({
       recordOperations: true,
       computeDriver: {
-        ...createTestComputeDriver(),
+        ...createReadyComputeDriver("compute-secret-api"),
         validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
       },
     });
@@ -941,19 +908,11 @@ for (const [model, method, executionMode] of [
     assert.deepEqual(agentDenial.details.resource, key.data.ref);
     assert.equal(agentDenial.details.iamEvidence, undefined);
     assert.equal(agentDenial.details.servicePrincipalEvidence.identityId, servicePrincipalId);
-    fixture.state.roles.push({
+    grantRole(fixture.state, servicePrincipalId, {
       id: "harness-key-delivery",
       namespaceId: namespace.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    fixture.state.bindings.push({
-      id: "harness-key-delivery",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: servicePrincipalId,
-      roleId: "harness-key-delivery",
-      resourceKind: "secret",
-      resourceId: key.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: key.data.id },
     });
     const admitted = await request(fixture.app, "POST", `${path}/deploy`);
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
@@ -1012,36 +971,17 @@ test("Changing Harness Secret bindings requires grants on both removed and repla
     200,
   );
   const { principal, app } = await fixture.createPrincipal("harness-editor");
-  fixture.state.roles.push({
+  grantRole(fixture.state, principal.id, {
     id: "harness-editor",
     namespaceId: namespace.id,
-    permissions: [
-      { action: "update", resourceKind: "agent" },
-      { action: "read", resourceKind: "configuration" },
-    ],
+    permissions: { agent: ["update"], configuration: ["read"] },
   });
-  fixture.state.bindings.push({
-    id: "harness-editor",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "harness-editor",
-  });
-  fixture.state.roles.push({
+  const { binding: grant } = grantRole(fixture.state, principal.id, {
     id: "harness-source",
     namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: secrets[0].id },
   });
-  const grant = {
-    id: "harness-source",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "harness-source",
-    resourceKind: "secret",
-    resourceId: secrets[0].id,
-  };
-  fixture.state.bindings.push(grant);
   const patch = (harnessAuth) =>
     request(app, "PATCH", path, { body: { configurationId: configuration.id, harnessAuth } });
   assert.equal((await patch(replacement)).status, 403); // Missing replacement authority.

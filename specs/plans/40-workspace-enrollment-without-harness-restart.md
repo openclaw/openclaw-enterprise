@@ -74,7 +74,7 @@ For this PR, the user approved deferring plugin-enabled acceptance and comparati
 
 The permanent Kubernetes regression retains its API-key authentication and recovery assertions. Run the plugin-enabled acceptance proof separately with the supported `codex_pat` binding: API-key login exposes a different native plugin marketplace. Keep the production enrollment path and observation logic identical, and require successful plugin initialization without deployment warnings.
 
-Keep the existing [native pairing/reconnect integration](../../tests/integration/runtime-image-startup.test.mjs) and its [direct-CLI fixture](../../tests/fixtures/runtime-workspace-node.mjs) unchanged. They do not exercise the supervisor's file delivery; no new delayed-file or expiry-specific case belongs there.
+Keep the existing [native pairing/reconnect integration](../../tests/integration/runtime-image-startup-probe.test.mjs) and its [direct-CLI fixture](../../tests/fixtures/runtime-workspace-node.mjs) unchanged. They do not exercise the supervisor's file delivery; no new delayed-file or expiry-specific case belongs there.
 
 Compare repeated baseline and candidate deployments with the same cluster, images, configuration, and model credentials. Record warm/cold conditions, sample count, median/range, first Harness readiness, Secret creation, file visibility, node connection, and overall readiness.
 

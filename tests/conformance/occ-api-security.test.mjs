@@ -1,23 +1,15 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp } from "../../apps/controller/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   createRuntimeLogCursorCodec,
-  InMemoryPlatformState,
-  OpenClawController,
   RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   administerGrants,
@@ -25,11 +17,15 @@ import {
   createRuntimeLogFixture,
   operateGrants,
 } from "../helpers/runtime-logs.mjs";
+import {
+  createTenantReaderFixture,
+  tenantANamespaceId,
+  tenantRequest as request,
+} from "../helpers/tenant-reader-app.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const bootstrapDefaultNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
-const tenantANamespaceId = "ns_00000000-0000-4000-8000-000000000002";
 
 const permissions = [
   { action: "administer", resourceKind: "installation" },
@@ -49,211 +45,24 @@ const permissions = [
   { action: "administer", resourceKind: "agent" },
 ];
 
-async function createFixture(options = {}) {
-  const adminAuth = await createTestAuthPrincipal({
+function createFixture(options = {}) {
+  return createTenantReaderFixture({
     installationId,
-    name: "Security Administrator",
-  });
-  const administrator = adminAuth.seed.principal;
-  const readerEmail = `tenant-a-reader-${randomUUID()}@example.com`;
-  const readerPassword = `generated-password-${randomUUID()}`;
-  const readerAccount = await adminAuth.auth.createAccount({
-    email: readerEmail,
-    password: readerPassword,
-    name: "Tenant A Reader",
-  });
-  const readerSeed = adminAuth.auth.principalSeed(readerAccount, { grant: "none" });
-  const tenantAReader = readerSeed.principal;
-  const identities = options.identities ?? [administrator, tenantAReader];
-  const identityIds = new Set(identities.map(({ id }) => id));
-  const state = {
-    identities,
-    groups: [],
-    memberships: [],
-    roles: [
-      {
-        id: "role-administrator",
-        permissions: [...permissions],
-      },
-      {
-        id: "role-tenant-a-reader",
-        namespaceId: tenantANamespaceId,
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "read", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent_revision" },
-        ],
-      },
-    ],
-    bindings: [
-      {
-        id: "binding-administrator",
-        subjectKind: "identity",
-        subjectId: administrator.id,
-        roleId: "role-administrator",
-      },
-      {
-        id: "binding-tenant-a-reader",
-        namespaceId: tenantANamespaceId,
-        subjectKind: "identity",
-        subjectId: tenantAReader.id,
-        roleId: "role-tenant-a-reader",
-      },
-    ].filter(({ subjectId }) => identityIds.has(subjectId)),
-    restrictions: options.restrictions ?? [],
-  };
-  const iamDriver = new NativeIAMDriver(
-    { loadNativeIAMState: async () => state },
-    { id: "iam-security" },
-  );
-  const computeDriver = {
-    id: "compute-security",
-    capability: "compute",
-    implementation: "deterministic-test",
-    async ensureNamespace(namespace) {
-      return {
-        namespaceId: namespace.id,
-        namespaceReady: true,
-      };
-    },
-    async deleteNamespace(namespace) {
-      return {
-        namespaceId: namespace.id,
-        namespaceDeleted: true,
-      };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
-  const auditSink = new InMemoryAuditSink();
-  const configurationDriver = createTestConfigurationDriver({ id: "configuration-security" });
-  const sessions = new Map();
-  let controller;
-  let sequence = 0;
-  let configurationSequence = 0;
-
-  function createApp(principal = administrator, overrides = {}, factory = createControllerApp) {
-    const app = factory({
-      ...(controller
-        ? { controller }
-        : {
-            createController(installation) {
-              controller = new OpenClawController(installation, {
-                state: new InMemoryPlatformState({ auditSink }),
-                recordOperations: true,
-                createId(kind) {
-                  if (kind === "configuration") {
-                    configurationSequence += 1;
-                    return `cfg_10000000-0000-4000-8000-${String(configurationSequence).padStart(12, "0")}`;
-                  }
-                  sequence += 1;
-                  const prefix = {
-                    namespace: "ns",
-                    agent: "agt",
-                    agent_revision: "rev",
-                  }[kind];
-                  return `${prefix}_00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
-                },
-              });
-              return controller;
-            },
-          }),
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      resolveHarness: resolveApprovedDevelopmentHarness,
-      auditSink,
-      development: {
-        enabled: true,
-        installationId,
-        ...overrides.development,
-      },
-      auth: adminAuth.auth,
+    label: "security",
+    administratorName: "Security Administrator",
+    readerName: "Tenant A Reader",
+    administratorPermissions: permissions,
+    computeDriver: createReadyComputeDriver("compute-security"),
+    recordOperations: true,
+    appOptions: (overrides) => ({
       ...(overrides.maxBodyBytes === undefined ? {} : { maxBodyBytes: overrides.maxBodyBytes }),
       ...(overrides.gatewayRequestTimeoutMs === undefined
         ? {}
         : { gatewayRequestTimeoutMs: overrides.gatewayRequestTimeoutMs }),
       ...(overrides.publicOrigin === undefined ? {} : { publicOrigin: overrides.publicOrigin }),
-    });
-    app.defaultSession = sessions.get(principal.id);
-    return app;
-  }
-
-  const app = createApp(administrator, options);
-  sessions.set(administrator.id, await signInToControllerApp(app, adminAuth));
-  sessions.set(
-    tenantAReader.id,
-    await signInToControllerApp(app, { email: readerEmail, password: readerPassword }),
-  );
-  app.defaultSession = sessions.get(administrator.id);
-
-  return {
-    app,
-    administrator,
-    tenantAReader,
-    auditSink,
-    createApp,
-    auth: adminAuth.auth,
-    iamDriver,
-    state,
-    get controller() {
-      return controller;
-    },
-  };
-}
-
-async function request(app, pathname, options = {}) {
-  const headers = new Headers(
-    options.identity === false ? {} : authenticatedHeaders(options.session ?? app.defaultSession),
-  );
-
-  for (const [name, value] of Object.entries(options.headers ?? {})) {
-    if (value === null) {
-      headers.delete(name);
-    } else {
-      headers.set(name, value);
-    }
-  }
-
-  const hasBody = Object.hasOwn(options, "body");
-  if (hasBody && !headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
-  const body = hasBody
-    ? typeof options.body === "string"
-      ? options.body
-      : JSON.stringify(options.body)
-    : undefined;
-  const response = await app.fetch(
-    new Request(new URL(pathname, options.origin ?? "http://127.0.0.1"), {
-      method: options.method ?? (hasBody ? "POST" : "GET"),
-      headers,
-      ...(body === undefined ? {} : { body }),
     }),
-  );
-  const contentType = response.headers.get("content-type");
-  assert.match(contentType ?? "", /^application\/json\b/i);
-  const payload = await response.json();
-  assert.match(
-    payload.meta?.requestId ?? "",
-    /^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
-
-  if (response.ok) {
-    assert.ok(Object.hasOwn(payload, "data"));
-  } else {
-    assert.equal(typeof payload.error?.code, "string");
-    assert.equal(typeof payload.error?.message, "string");
-  }
-
-  return { response, payload };
+    options,
+  });
 }
 
 async function bootstrap(fixture) {
@@ -517,6 +326,35 @@ test("development admission fails closed outside explicit loopback-only developm
   }
 });
 
+test("a trusted development CIDR admits its own range and nothing else", async (t) => {
+  const development = { trustedCidrs: ["10.89.0.0/16"] };
+  const fixture = await createFixture({ development });
+  await bootstrap(fixture);
+  // app.fetch always injects from 127.0.0.1; Fastify inject can name the peer address.
+  const app = fixture.createApp(fixture.administrator, { development }, createFastifyApp);
+  t.after(() => app.close());
+  const list = (remoteAddress) =>
+    app.inject({
+      url: "/namespaces",
+      remoteAddress,
+      headers: authenticatedHeaders(fixture.app.defaultSession),
+    });
+  for (const admitted of ["127.0.0.1", "10.89.0.1", "10.89.255.254", "::ffff:10.89.3.4"]) {
+    assert.equal((await list(admitted)).statusCode, 200, admitted);
+  }
+  for (const refused of [
+    "10.90.0.1",
+    "10.88.255.255",
+    "192.0.2.10",
+    "fd00::1",
+    "::ffff:10.90.0.1",
+  ]) {
+    const response = await list(refused);
+    assert.equal(response.statusCode, 403, refused);
+    assert.match(response.json().error.message, /restricted to direct loopback requests/, refused);
+  }
+});
+
 test("spoofed bearer evidence is denied without audit writes and admitted unknown identities are audited", async () => {
   const fixture = await createFixture();
   await bootstrap(fixture);
@@ -694,6 +532,39 @@ test("bootstrap fails closed when default Namespace creation is denied and later
   await bootstrappedDefaultNamespace(fixture);
 });
 
+test("bootstrap without Installation administer is refused and audited", async () => {
+  const restrictions = [
+    {
+      id: "restriction-no-installation-administer",
+      action: "administer",
+      resourceKind: "installation",
+      effect: "deny",
+    },
+  ];
+  const fixture = await createFixture({ restrictions });
+
+  const eventsBefore = fixture.auditSink.events.length;
+  const denied = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Refused Installation" },
+  });
+  assert.equal(denied.response.status, 403);
+  assert.equal(denied.payload.error.code, "FORBIDDEN");
+  assert.equal(fixture.controller, undefined);
+  assert.equal(fixture.auditSink.events.length, eventsBefore + 1);
+  const deniedEvent = fixture.auditSink.events.at(-1);
+  assert.equal(deniedEvent.kind, "authorization_denial");
+  assert.equal(deniedEvent.actorId, fixture.administrator.id);
+  assert.deepEqual(deniedEvent.details.iamEvidence.restrictionIds, [
+    "restriction-no-installation-administer",
+  ]);
+
+  restrictions.length = 0;
+  const bootstrapped = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Allowed Installation" },
+  });
+  assert.equal(bootstrapped.response.status, 201);
+});
+
 test("concurrent streaming bootstrap creates one audited Installation", async () => {
   const fixture = await createFixture();
   let releaseBodies;
@@ -818,6 +689,146 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     ).length,
     0,
   );
+});
+
+test("NUL characters and unpaired surrogates are refused in bodies and path parameters", async () => {
+  // PostgreSQL text and jsonb cannot store either one: they answered 500 or 503 there, while
+  // the in-memory State accepted them. A lone surrogate in a name was stored as U+FFFD.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Unstorable text tenant");
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const nul = ["a NUL character", "INVALID_FORMAT"];
+  const surrogate = ["an unpaired UTF-16 surrogate", "INVALID_VALUE"];
+  // A deep body inside the 64 KiB limit; its detail path keeps whole leading segments.
+  const deep = 30_000;
+  const deepPath = `/values/x${"/0".repeat((512 - "/values/x".length) >> 1)}`;
+  const cases = [
+    ["/namespaces", '{"name":"lone \\ud800 surrogate"}', "/name", surrogate],
+    ["/namespaces", '{"name":"trailing \\udc00"}', "/name", surrogate],
+    [configurations, '{"kind":"agent","values":{"x":"a\\u0000b"}}', "/values/x", nul],
+    [configurations, '{"kind":"agent","values":{"a\\u0000~/":"x"}}', "/values/a?~0~1", nul],
+    [configurations, '{"kind":"agent","values":{"\\udbff":"x"}}', "/values/?", surrogate],
+    // The first offender in document order is named.
+    [
+      configurations,
+      '{"kind":"agent","values":{"first":["ok","\\ud800"],"second":"\\u0000"}}',
+      "/values/first/1",
+      surrogate,
+    ],
+    // Keys and values share document order.
+    [configurations, '{"kind":"agent","values":{"a":"\\u0000","b\\ud800":1}}', "/values/a", nul],
+    // A first segment too long for the 512-character detail path is cut, not dropped.
+    [configurations, `{"${"k".repeat(600)}\\u0000":1}`, `/${"k".repeat(511)}`, nul],
+    [
+      configurations,
+      `{"kind":"agent","values":{"x":${"[".repeat(deep)}"\\u0000"${"]".repeat(deep)}}}`,
+      deepPath,
+      nul,
+    ],
+  ];
+  for (const [pathname, body, path, [problem, code]] of cases) {
+    const result = await request(fixture.app, pathname, { body });
+    assert.equal(result.response.status, 400, body.slice(0, 80));
+    assert.equal(result.payload.error.code, "INVALID_REQUEST");
+    assert.deepEqual(result.payload.error.details, [{ path, code }]);
+    const expected = `The request does not match the operation contract: body ${path} contains ${problem}.`;
+    // The deep path is cut to the 256-character message cap.
+    assert.equal(
+      result.payload.error.message,
+      expected.length <= 256 ? expected : `${expected.slice(0, 255)}…`,
+    );
+  }
+  // A surrogate pair is one well-formed character.
+  const paired = await request(fixture.app, "/namespaces", { body: { name: "Paired \u{1F600}" } });
+  assert.equal(paired.response.status, 201);
+
+  const role = await request(fixture.app, `/namespaces/${namespace.id}/iam/roles/role%00x`);
+  assert.equal(role.response.status, 400);
+  assert.deepEqual(role.payload.error.details, [{ path: "/roleId", code: "INVALID_FORMAT" }]);
+  assert.equal(
+    role.payload.error.message,
+    "The request does not match the operation contract: params /roleId contains a NUL character.",
+  );
+
+  const namespaces = await request(fixture.app, "/namespaces");
+  assert.deepEqual(
+    namespaces.payload.data.map(({ name }) => name),
+    ["default", "Unstorable text tenant", "Paired \u{1F600}"],
+  );
+  assert.equal(
+    fixture.auditSink.events.filter(
+      (event) => event.kind === "mutation" && event.resource.kind === "configuration",
+    ).length,
+    0,
+  );
+});
+
+test("router failures answer the error envelope without echoing the path", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Router failure tenant");
+  const roles = `/namespaces/${namespace.id}/iam/roles`;
+  const contract = "The request does not match the operation contract";
+  for (const [pathname, status, code, message] of [
+    // Fastify answered these itself: its own body naming FST_ERR_* and the submitted path,
+    // no meta.requestId, x-request-id, cache-control or nosniff, and 414 for a long parameter.
+    [
+      "/namespaces/%ZZ",
+      400,
+      "INVALID_REQUEST",
+      "The request path has a malformed percent-encoding.",
+    ],
+    [
+      `${roles}/role%ED%A0%80x`,
+      400,
+      "INVALID_REQUEST",
+      "The request path has a malformed percent-encoding.",
+    ],
+    [
+      `${roles}/${"r".repeat(401)}`,
+      400,
+      "INVALID_REQUEST",
+      `${contract}: a path parameter is too long.`,
+    ],
+    // Role IDs may hold 200 characters, so a long one reaches the route.
+    [
+      `${roles}/${"r".repeat(200)}`,
+      404,
+      "NOT_FOUND",
+      "The requested platform resource was not found.",
+    ],
+    [
+      `${roles}/${"%F0%9F%98%80".repeat(200)}`,
+      404,
+      "NOT_FOUND",
+      "The requested platform resource was not found.",
+    ],
+  ]) {
+    const { response, payload } = await request(fixture.app, pathname);
+    assert.equal(response.status, status, pathname.slice(0, 80));
+    assert.deepEqual(payload.error, { code, message });
+    assert.deepEqual(Object.keys(payload).sort(), ["error", "meta"]);
+    assert.doesNotMatch(JSON.stringify(payload), /FST_ERR|%ZZ|%ED|rrrr/);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  }
+});
+
+test("names are measured in characters, not UTF-16 code units", async () => {
+  // 200 emoji fit the 200-character contract (and PostgreSQL char_length), but each is two
+  // UTF-16 code units; the controller answered 404 NOT_FOUND for such a Namespace or Agent.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const name = "\u{1F600}".repeat(200);
+  const namespace = await createNamespace(fixture, name);
+  assert.equal(namespace.name, name);
+  const agent = await createAgent(fixture, namespace, name);
+  assert.equal(agent.name, name);
+
+  const tooLong = await request(fixture.app, "/namespaces", { body: { name: `${name}x` } });
+  assert.equal(tooLong.response.status, 400);
+  assert.deepEqual(tooLong.payload.error.details, [{ path: "/name", code: "TOO_LONG" }]);
 });
 
 test("exact Namespace ownership prevents cross-tenant access and resource traversal", async () => {
@@ -995,6 +1006,33 @@ test("a caller without a grant gets the same audited denial whether or not the t
     }
   }
   assert.deepEqual(leaks, []);
+});
+
+test("a denial whose audit cannot be written answers 503, not 403", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  await createNamespace(fixture, "Tenant A");
+  const namespace = await createNamespace(fixture, "Tenant B");
+  const readerApp = fixture.createApp(fixture.tenantAReader);
+  const read = () => request(readerApp, `/namespaces/${namespace.id}`);
+
+  const append = fixture.auditSink.append;
+  fixture.auditSink.append = async (event) => {
+    if (event.kind === "authorization_denial") {
+      throw new Error("audit sink unavailable");
+    }
+    return append.call(fixture.auditSink, event);
+  };
+  try {
+    const unaudited = await read();
+    assert.equal(unaudited.response.status, 503);
+    assert.equal(unaudited.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  } finally {
+    fixture.auditSink.append = append;
+  }
+  const audited = await read();
+  assert.equal(audited.response.status, 403);
+  assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
 });
 
 test("Namespace deletion authorizes the exact target and rejects nonempty resources", async () => {

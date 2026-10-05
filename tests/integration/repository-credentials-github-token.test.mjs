@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { connect } from "node:net";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
@@ -64,12 +66,12 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-async function startTokenService(t) {
+async function startTokenService(t, limits = {}, configuration = {}) {
   const resources = createResourceScope();
   t.after(() => resources.close());
   const clock = createControlledClock();
   const tls = await createTlsMaterial(resources);
-  const base = await createServiceConfiguration(resources);
+  const base = await createServiceConfiguration(resources, limits);
   const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
   const github = await startGitHubFixture(resources, { clock, tls });
   const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
@@ -80,6 +82,7 @@ async function startTokenService(t) {
     config,
     clock,
     token,
+    configuration,
     trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
   });
   const { service, listeners } = await startServiceListeners(resources, {
@@ -209,4 +212,229 @@ test("development token git-read sessions are refused receive-pack before any ac
     fixture.git.trace.some((entry) => entry.path.endsWith("/git-receive-pack")),
     false,
   );
+});
+
+test("an oversized development token push is answered 413 before the token is used", async (t) => {
+  const pushLimit = 1048576;
+  const fixture = await startTokenService(t, { gitPushInputBytes: pushLimit });
+  const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-write" });
+  const gitCommand = await stockGit(t, fixture, opened);
+  const checkout = join(await temporaryDirectory(t, "repository-token-large-"), "checkout");
+  await gitCommand(["clone", opened.client.gitRemote, checkout]);
+  await gitCommand(["config", "user.name", "Agent fixture"], { cwd: checkout });
+  await gitCommand(["config", "user.email", "agent@example.test"], { cwd: checkout });
+  // Incompressible content keeps the pack larger than the limit.
+  await writeFile(join(checkout, "large.bin"), randomBytes(8 * pushLimit));
+  await gitCommand(["add", "large.bin"], { cwd: checkout });
+  await gitCommand(["commit", "-m", "Large change"], { cwd: checkout });
+  // Git streams a chunked body above http.postBuffer and declares a length below it.
+  for (const postBuffer of ["1048576", String(64 * pushLimit)]) {
+    const traced = fixture.git.trace.length;
+    const refused = await gitCommand(
+      ["-c", `http.postBuffer=${postBuffer}`, "push", "origin", "HEAD:refs/heads/agent/large"],
+      { cwd: checkout, allowFailure: true },
+    );
+    assert.notEqual(refused.code, 0, postBuffer);
+    // The client reads the refusal instead of a connection reset.
+    assert.match(refused.stderr, /\b413\b/, postBuffer);
+    assert.doesNotMatch(refused.stderr, /reset by peer/, postBuffer);
+    // Only Git's 4-byte auth probe (sent before a chunked body) may reach upstream.
+    assert.deepEqual(
+      fixture.git.trace
+        .slice(traced)
+        .filter((entry) => entry.path.endsWith("/git-receive-pack"))
+        .filter((entry) => entry.contentLength !== "4"),
+      [],
+      postBuffer,
+    );
+  }
+  await assert.rejects(fixture.git.ref("refs/heads/agent/large"));
+});
+
+async function committedCheckout(t, fixture, opened, label) {
+  const gitCommand = await stockGit(t, fixture, opened);
+  const checkout = join(await temporaryDirectory(t, `repository-token-${label}-`), "checkout");
+  await gitCommand(["clone", opened.client.gitRemote, checkout]);
+  await gitCommand(["config", "user.name", "Agent fixture"], { cwd: checkout });
+  await gitCommand(["config", "user.email", "agent@example.test"], { cwd: checkout });
+  await writeFile(join(checkout, "change.txt"), `${label}\n`);
+  await gitCommand(["add", "change.txt"], { cwd: checkout });
+  await gitCommand(["commit", "-m", label], { cwd: checkout });
+  const commit = (await gitCommand(["rev-parse", "HEAD"], { cwd: checkout })).stdout.trim();
+  return { gitCommand, checkout, commit };
+}
+
+// One receive-pack POST with a raw body, authenticated as Git authenticates to the gateway.
+function rawGatewayPost(fixture, target, body) {
+  const basic = Buffer.from(`gateway-session:${fixture.opened.bearer}`).toString("base64");
+  return new Promise((resolve, reject) => {
+    const outgoing = httpsRequest(
+      {
+        hostname: "127.0.0.1",
+        port: fixture.listeners.address.port,
+        path: target,
+        method: "POST",
+        ca: fixture.tls.ca,
+        headers: {
+          host: new URL(fixture.config.gateway.publicOrigin).host,
+          authorization: `Basic ${basic}`,
+          "content-type": "application/x-git-receive-pack-request",
+          accept: "application/x-git-receive-pack-result",
+          "content-length": body.length,
+        },
+      },
+      (incoming) => {
+        const chunks = [];
+        incoming.on("data", (chunk) => chunks.push(chunk));
+        incoming.once("end", () =>
+          resolve({ status: incoming.statusCode, body: Buffer.concat(chunks).toString() }),
+        );
+        incoming.once("error", reject);
+      },
+    );
+    outgoing.setTimeout(10000, () => outgoing.destroy(new Error("fixture request timeout")));
+    outgoing.once("error", reject);
+    outgoing.end(body);
+  });
+}
+
+const receivePacks = (fixture) =>
+  fixture.git.trace.filter((entry) => entry.path.endsWith("/git-receive-pack")).length;
+
+test("development token pushes admit UTF-8 branch names and match the allowlist byte for byte", async (t) => {
+  const composed = "refs/heads/caf\u00e9";
+  const fixture = await startTokenService(
+    t,
+    {},
+    {
+      pushRefAllowlist: ["refs/heads/agent/*", composed],
+    },
+  );
+  const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-write" });
+  assert.deepEqual(opened.client.pushRefAllowlist, ["refs/heads/agent/*", composed]);
+  const { gitCommand, checkout, commit } = await committedCheckout(t, fixture, opened, "utf8");
+
+  // Composed (NFC) names pass the client hook and the gateway, under a prefix or exactly.
+  for (const ref of ["refs/heads/agent/caf\u00e9", composed]) {
+    await gitCommand(["push", "origin", `HEAD:${ref}`], { cwd: checkout });
+    assert.equal(await fixture.git.ref(ref), commit, ref);
+  }
+
+  // The decomposed (NFD) spelling renders the same but is other bytes: both layers refuse it.
+  const lookalike = "refs/heads/cafe\u0301";
+  const before = receivePacks(fixture);
+  const hooked = await gitCommand(["push", "origin", `HEAD:${lookalike}`], {
+    cwd: checkout,
+    allowFailure: true,
+  });
+  assert.notEqual(hooked.code, 0);
+  assert.match(hooked.stderr, /repository-push-ref-not-allowed/);
+  const bypassed = await gitCommand(["push", "--no-verify", "origin", `HEAD:${lookalike}`], {
+    cwd: checkout,
+    allowFailure: true,
+  });
+  assert.notEqual(bypassed.code, 0);
+  assert.match(bypassed.stderr, /\b400\b/);
+  await assert.rejects(fixture.git.ref(lookalike));
+
+  // Git accepts a refname that is not UTF-8 (argv cannot carry it, so a shell spells it).
+  // Under an allowed prefix, the client hook and the gateway still refuse it.
+  const shell = (verify) =>
+    gitCommand(
+      [
+        "-c",
+        "alias.raw-push=!f() { git push $1 origin \"HEAD:refs/heads/agent/$(printf '\\377')\"; }; f",
+        "raw-push",
+        verify,
+      ],
+      { cwd: checkout, allowFailure: true },
+    );
+  const invalidHooked = await shell("--verify");
+  assert.notEqual(invalidHooked.code, 0);
+  assert.match(invalidHooked.stderr, /repository-push-ref-not-allowed/);
+  const invalidBypassed = await shell("--no-verify");
+  assert.notEqual(invalidBypassed.code, 0);
+  assert.match(invalidBypassed.stderr, /\b400\b/);
+
+  // Git accepts invisible and direction-changing characters in a name; under an allowed
+  // prefix both layers refuse them (Trojan Source). The hook names the code point.
+  for (const [code, character] of [
+    ["U+202E", "\u202e"],
+    ["U+200B", "\u200b"],
+    ["U+FEFF", "\ufeff"],
+    ["U+2028", "\u2028"],
+  ]) {
+    const ref = `refs/heads/agent/a${character}b`;
+    const refusedByHook = await gitCommand(["push", "origin", `HEAD:${ref}`], {
+      cwd: checkout,
+      allowFailure: true,
+    });
+    assert.notEqual(refusedByHook.code, 0, code);
+    assert.ok(
+      refusedByHook.stderr.includes(
+        `repository-push-ref-not-allowed: the ref name contains ${code}, an invisible or direction-changing character`,
+      ),
+      refusedByHook.stderr,
+    );
+    const refusedByGateway = await gitCommand(["push", "--no-verify", "origin", `HEAD:${ref}`], {
+      cwd: checkout,
+      allowFailure: true,
+    });
+    assert.notEqual(refusedByGateway.code, 0, code);
+    assert.match(refusedByGateway.stderr, /\b400\b/, code);
+    await assert.rejects(fixture.git.ref(ref), code);
+  }
+
+  // Git refuses a control byte itself, before any request.
+  const control = await gitCommand(
+    ["push", "--no-verify", "origin", "HEAD:refs/heads/agent/caf\u0001"],
+    { cwd: checkout, allowFailure: true },
+  );
+  assert.notEqual(control.code, 0);
+  // The refused --no-verify pushes reached only the gateway; nothing refused went upstream.
+  assert.equal(receivePacks(fixture), before);
+  assert.deepEqual(fixture.github.errors, []);
+});
+
+test("a development token push of more than 256 refs is refused with its own code", async (t) => {
+  const fixture = await startTokenService(t);
+  const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-write" });
+  const { gitCommand, checkout, commit } = await committedCheckout(t, fixture, opened, "many");
+  const refspecs = (count) =>
+    Array.from({ length: count }, (_, index) => `HEAD:refs/heads/agent/many-${index}`);
+  const before = receivePacks(fixture);
+  const refused = await gitCommand(["push", "origin", ...refspecs(257)], {
+    cwd: checkout,
+    allowFailure: true,
+  });
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /\b413\b/);
+  assert.equal(receivePacks(fixture), before);
+  await assert.rejects(fixture.git.ref("refs/heads/agent/many-0"));
+
+  // The JSON answer names the limit for clients that read it.
+  const lines = refspecs(257).map(
+    (_, index) => `${"0".repeat(40)} ${commit} refs/heads/agent/many-${index}`,
+  );
+  lines[0] += "\0report-status";
+  const pktLine = (line) => {
+    const payload = Buffer.from(line);
+    return Buffer.concat([
+      Buffer.from((payload.length + 4).toString(16).padStart(4, "0")),
+      payload,
+    ]);
+  };
+  const answer = await rawGatewayPost(
+    { ...fixture, opened },
+    new URL(opened.client.gitRemote).pathname.replace(/\/?$/, "") + "/git-receive-pack",
+    Buffer.concat([...lines.map(pktLine), Buffer.from("0000")]),
+  );
+  assert.equal(answer.status, 413);
+  assert.deepEqual(JSON.parse(answer.body), {
+    error: {
+      code: "push-ref-limit-exceeded",
+      message: "A push may update at most 256 refs. Push the refs in smaller batches.",
+    },
+  });
+  assert.equal(receivePacks(fixture), before);
 });

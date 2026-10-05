@@ -109,6 +109,15 @@ foreign, malformed, or duplicated key returns `401`, and such a sign-out neither
 revokes nor clears the cookie. Without the header, requests are unchanged. Console
 pins each tab's key this way.
 
+Password-only sessions expire seven days after sign-in; use does not extend
+them. With GitHub, Google or OIDC sign-in enabled, every session expires after
+eight hours ([session controls](authentication/external-sign-in.md#session-and-recovery-controls)).
+Password-only has no online way to end another account's session: removing its
+IAM bindings and Group memberships refuses permissioned requests from the next
+one (native admin WebSockets within about 25 s), and `purge-sessions --user
+<userId> --writers-stopped` ([stopped maintenance](../guides/deploy/auth-maintenance.md#choose-the-operation))
+ends it.
+
 Sign-in takes `{"email": "...", "password": "..."}`. The session arrives only
 through `Set-Cookie`.
 

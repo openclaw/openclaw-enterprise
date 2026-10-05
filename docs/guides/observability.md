@@ -201,7 +201,9 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system apply -f -
 ```
 
-Review the `deploy/logging/` diff between the two revisions first.
+Review the `deploy/logging/` diff between the two revisions first. The restart
+re-sends every collected Pod log still on each node, so expect duplicate records in the
+backend (see [production readiness](#production-readiness)).
 `scripts/upgrade-production-images` compares both files with its checkout and
 stops before any change when they differ. Pass `--collector-config-reviewed`
 only to keep a reviewed custom configuration.
@@ -283,8 +285,12 @@ to assign alert recipients and response procedures alongside these collection ch
   `occ_otelcol_data` volume and bounded runtime log caches; its push-based
   Fluent Forward receiver has no file offsets. Kubernetes keeps file offsets
   and exporter queues in `/var/lib/otelcol` on bounded `emptyDir` storage,
-  which survives container restart but is lost on Pod or node replacement. An
-  outage can lose operational logs without blocking OCC work. Audit records are
+  which survives container restart but is lost on Pod or node replacement. A
+  replaced Collector Pod, including after the `rollout restart` an upgrade
+  refresh needs, reads every collected Pod log still on its node from the
+  beginning, so the backend receives duplicates of records it already has, with
+  their original timestamps. An outage can lose operational logs without
+  blocking OCC work. Audit records are
   stored separately in PostgreSQL.
 
 ## Troubleshooting

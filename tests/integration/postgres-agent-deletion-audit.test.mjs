@@ -1,149 +1,22 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
 
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import {
-  ensureDevelopmentBootstrap,
-  privateBootstrapDirectory,
-} from "../helpers/bootstrap-installation.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const adminEmail = "postgres-admin@openclaw.local";
-const adminPassword = "postgres-development-password";
 const authSecret = "agent-deletion-audit-postgres-auth-secret-minimum-32";
 const byId = (left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-
-async function ensureBootstrap(t) {
-  const observer = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-  t.after(() => observer.end());
-  if ((await new PostgresPlatformState(observer).loadInstallation()) !== undefined) {
-    return;
-  }
-  await ensureDevelopmentBootstrap(t, {
-    databaseUrl,
-    directory: await privateBootstrapDirectory(t, "openclaw-agent-deletion-audit-pg-"),
-    email: adminEmail,
-    password: adminPassword,
-    authSecret,
-    authBaseURL: "http://127.0.0.1",
-    installationName: "Agent deletion audit PostgreSQL test",
-  });
-}
 
 test(
   "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes",
   requiresPostgres,
   async (t) => {
-    await ensureBootstrap(t);
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-    t.after(() => pool.end());
-    const state = new PostgresPlatformState(pool);
-    const installation = await state.loadInstallation();
-    assert.ok(installation);
-    const auth = await createPostgresControllerAuth({
-      mode: "development",
-      installationId: installation.id,
-      baseURL: "http://127.0.0.1",
-      secret: authSecret,
-      pool,
+    const { pool, principal, inject, deployAgent } = await createPostgresAgentApp(t, {
+      label: "agent-deletion-audit",
+      authSecret,
     });
-    const iamDriver = new NativeIAMDriver(state, { id: "agent-deletion-audit-pg-iam" });
-    const computeDriver = createRuntimeLogComputeDriver({ id: "agent-deletion-audit-pg-compute" });
-    const configurationDriver = createTestConfigurationDriver({
-      id: "agent-deletion-audit-pg-config",
-    });
-    const secretDriver = createTestSecretDriver({ id: "agent-deletion-audit-pg-secret" });
-    const controller = new OpenClawController(installation, { state, recordOperations: false });
-    for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
-    const app = createFastifyApp({
-      controller,
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      secretDriver,
-      resolveHarness: resolveApprovedHarness,
-      auditSink: state.auditSink,
-      auth,
-      development: { enabled: false },
-    });
-    t.after(() => app.close());
-    const signIn = await app.inject({
-      method: "POST",
-      url: "/api/auth/sign-in/email",
-      headers: { host: "127.0.0.1", "content-type": "application/json" },
-      payload: JSON.stringify({ email: adminEmail, password: adminPassword }),
-    });
-    assert.equal(signIn.statusCode, 200, signIn.body);
-    const setCookie = signIn.headers["set-cookie"];
-    const session = {
-      origin: "http://127.0.0.1",
-      cookie: cookieHeaderFromSetCookie(Array.isArray(setCookie) ? setCookie : [setCookie]),
-    };
-    const request = async (method, url, body) => {
-      const response = await app.inject({
-        method,
-        url,
-        headers: {
-          host: "127.0.0.1",
-          ...authenticatedHeaders(session),
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
-      });
-      return { status: response.statusCode, body: response.body, json: () => response.json() };
-    };
-    const account = await pool.query(`SELECT id FROM occ."user" WHERE email = $1`, [adminEmail]);
-    const principal = (await state.loadNativeIAMState()).identities.find(
-      (identity) => identity.kind === "principal" && identity.subject === account.rows[0].id,
-    );
-    assert.ok(principal);
-
-    const created = await request("POST", "/namespaces", {
-      name: `Agent deletion audit ${randomUUID()}`,
-    });
-    assert.equal(created.status, 201, created.body);
-    const namespace = created.json().data;
-    await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
-    const configuration = await request("POST", `/namespaces/${namespace.id}/configurations`, {
-      kind: "agent",
-      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
-    });
-    assert.equal(configuration.status, 201, configuration.body);
-    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
-      name: `Agent deletion audit key ${randomUUID()}`,
-      value: `test-key-${randomUUID()}`,
-    });
-    assert.equal(secret.status, 201, secret.body);
-    const secretRef = secret.json().data.ref;
-    const createdAgent = await request("POST", `/namespaces/${namespace.id}/agents`, {
-      name: `Agent deletion audit ${randomUUID()}`,
-      configurationId: configuration.json().data.id,
-      harnessAuth: { method: "api_key", source: secretRef },
-    });
-    assert.equal(createdAgent.status, 201, createdAgent.body);
-    const agent = createdAgent.json().data;
-    // The Agent's ServicePrincipal is the subject of this Secret binding.
-    await grantAgentSecretOperate(pool, agent, secretRef.id);
-    const revision = await controller.deployAgent(
-      principal.id,
-      { namespaceId: namespace.id, agentId: agent.id },
-      resolveApprovedHarness,
-    );
+    const { namespace, secretRef, agent, revision } = await deployAgent("Agent deletion audit");
     const servicePrincipalId = (
       await pool.query(
         "SELECT service_principal_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
@@ -152,14 +25,14 @@ test(
     ).rows[0].service_principal_id;
 
     const policyPath = `/namespaces/${namespace.id}/iam`;
-    const role = await request("POST", `${policyPath}/roles`, {
+    const role = await inject("POST", `${policyPath}/roles`, {
       permissions: [
         { action: "read", resourceKind: "agent" },
         { action: "read", resourceKind: "agent_revision" },
         { action: "read", resourceKind: "secret" },
       ],
     });
-    assert.equal(role.status, 201, role.body);
+    assert.equal(role.statusCode, 201, role.body);
     const bindingBody = (subjectId, resourceKind, resourceId) => ({
       subjectKind: "identity",
       subjectId,
@@ -168,8 +41,8 @@ test(
       resourceId,
     });
     const bind = async (...args) => {
-      const binding = await request("POST", `${policyPath}/access-bindings`, bindingBody(...args));
-      assert.equal(binding.status, 201, binding.body);
+      const binding = await inject("POST", `${policyPath}/access-bindings`, bindingBody(...args));
+      assert.equal(binding.statusCode, 201, binding.body);
       return binding.json().data;
     };
     await bind(principal.id, "agent", agent.id);
@@ -268,8 +141,8 @@ test(
       false,
     );
 
-    const deleting = await request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
-    assert.equal(deleting.status, 202, deleting.body);
+    const deleting = await inject("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.equal(deleting.statusCode, 202, deleting.body);
     const event = await pool.query(
       `SELECT details FROM occ.audit_events
        WHERE action = 'openclaw.agents.delete' AND resource_id = $1`,
@@ -303,12 +176,12 @@ test(
         ],
       ],
     ]) {
-      const refused = await request(
+      const refused = await inject(
         "POST",
         `${policyPath}/access-bindings`,
         bindingBody(subjectId, resourceKind, resourceId),
       );
-      assert.equal(refused.status, 400, `${resourceKind} ${subjectId}: ${refused.body}`);
+      assert.equal(refused.statusCode, 400, `${resourceKind} ${subjectId}: ${refused.body}`);
       assert.equal(refused.json().error.message, message, resourceKind);
       assert.equal(refused.json().error.details[0].path, path, resourceKind);
     }

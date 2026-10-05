@@ -83,7 +83,9 @@ export type HumanAuthenticationDenial =
   | "INVALID_CREDENTIALS"
   | "EXTERNAL_IDENTITY_REJECTED"
   | "SESSION_REJECTED"
-  | "PROVIDER_UNAVAILABLE";
+  | "PROVIDER_UNAVAILABLE"
+  | "MEMBERSHIP_REQUIRED"
+  | "MEMBERSHIP_UNAVAILABLE";
 
 /** A duplicate account email; the caller maps it to its own conflict response. */
 export class UserAlreadyExistsError extends ResourceConflictError {
@@ -1245,19 +1247,32 @@ export class PostgresHumanAuthentication {
     });
   }
 
-  /** `provider` names the external sign-in provider whose callback was refused. */
+  /**
+   * `provider` names the external sign-in provider whose callback was refused. A GitHub
+   * membership denial (RFC-0061) also records the numeric GitHub `subject` that provider
+   * authenticated, so an administrator can tell whose sign-in the allowlist refused.
+   */
   async recordDenied(
     reason: HumanAuthenticationDenial,
     provider?: "github" | "google" | "oidc",
+    identity?: { readonly subject: string },
   ): Promise<void> {
+    const membership = reason === "MEMBERSHIP_REQUIRED" || reason === "MEMBERSHIP_UNAVAILABLE";
+    const githubSubject =
+      provider === "github" &&
+      typeof identity?.subject === "string" &&
+      /^[1-9][0-9]{0,19}$/.test(identity.subject);
     if (
       ![
         "INVALID_CREDENTIALS",
         "EXTERNAL_IDENTITY_REJECTED",
         "SESSION_REJECTED",
         "PROVIDER_UNAVAILABLE",
+        "MEMBERSHIP_REQUIRED",
+        "MEMBERSHIP_UNAVAILABLE",
       ].includes(reason) ||
-      (provider !== undefined && !["github", "google", "oidc"].includes(provider))
+      (provider !== undefined && !["github", "google", "oidc"].includes(provider)) ||
+      (membership ? !githubSubject : identity !== undefined)
     ) {
       throw new ScopeViolationError("The authentication denial classification is invalid.");
     }
@@ -1273,7 +1288,12 @@ export class PostgresHumanAuthentication {
         resource: { kind: "installation", id: this.installationId },
         outcome: "denied",
         reasonCode: reason,
-        ...(provider === undefined ? {} : { details: { provider } }),
+        ...(provider === undefined
+          ? {}
+          : {
+              details:
+                identity === undefined ? { provider } : { provider, subject: identity.subject },
+            }),
       }),
     );
   }

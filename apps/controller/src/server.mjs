@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import {
+  PresetFileError,
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "./composition/installation-config.ts";
@@ -18,6 +19,9 @@ const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
+  if (error instanceof PresetFileError) {
+    return "PRESET_FILE_INVALID";
+  }
   const message = error instanceof Error ? error.message : "";
   if (/OCC_AUTH_SECRET/.test(message)) {
     return "AUTH_SECRET_INVALID";

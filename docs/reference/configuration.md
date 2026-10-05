@@ -36,7 +36,9 @@ owns the installed IAM, Compute, and Configuration selection contract. The
 [Backend reference](backends.md) defines the optional `backend` array and its
 required related Driver membership. Backend configuration never enters native
 Agent Configuration documents. The optional `presets.includeDefaults` boolean
-adds bundled Agent Presets to Namespaces; it defaults to `false`. See
+adds bundled Agent Presets to Namespaces; it defaults to `false`. A
+`presets.files` entry named like a bundled default replaces that default with a
+startup warning. See
 [Preset initialization](presets.md#installation-defaults) for permissions,
 restart behavior, and preservation of existing copies.
 

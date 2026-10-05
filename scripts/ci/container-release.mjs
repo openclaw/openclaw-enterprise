@@ -473,11 +473,19 @@ async function smoke(directory, env) {
       });
     }
     console.log(`Smoke ${env.IMAGE} ${env.PLATFORM} @ ${descriptor.digest}`);
+    // CI runs the runtime startup tests in two lanes; the release smoke runs
+    // both files, one at a time as in CI, since some cases measure timing.
     execFileSync(
       process.execPath,
       [
         "--test",
-        `tests/integration/${env.IMAGE === "controller" ? "production" : "runtime"}-image-startup.test.mjs`,
+        "--test-concurrency=1",
+        ...(env.IMAGE === "controller"
+          ? ["tests/integration/production-image-startup.test.mjs"]
+          : [
+              "tests/integration/runtime-image-startup.test.mjs",
+              "tests/integration/runtime-image-startup-probe.test.mjs",
+            ]),
       ],
       {
         env: {

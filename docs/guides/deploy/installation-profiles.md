@@ -200,7 +200,9 @@ as behind a source-preserving NLB, needs none.
 ```
 
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
-and `egressCidrs`; `oidc` also accepts `tokenAuth` and `displayName`;
+and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
+([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
+`oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 
 If you opt in to repositories, add the broker inputs:

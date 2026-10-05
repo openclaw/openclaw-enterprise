@@ -10,6 +10,7 @@ import {
   validateGatewayApiKeyPath,
   validateWorkspaceFilesApiKeyPath,
 } from "../../apps/controller/src/composition/workspace-files.ts";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -46,29 +47,7 @@ async function rotateProjectedSecretKey(projected, contents) {
   await rename(join(projected.directory, "..data_tmp"), join(projected.directory, "..data"));
 }
 
-function computeDriver(overrides = {}) {
-  return {
-    id: "compute-workspace-files",
-    capability: "compute",
-    implementation: "deterministic-test",
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-    ...overrides,
-  };
-}
+const computeDriver = (overrides) => createReadyComputeDriver("compute-workspace-files", overrides);
 
 function startupDiagnostic(stderr) {
   const diagnostic = stderr

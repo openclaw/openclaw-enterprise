@@ -382,7 +382,15 @@
       "idx": 47,
       "version": "7",
       "when": 1787000000048,
-      "tag": "0048_agent_runtime_roles",
+      "tag": "0048_administrator_credential_source_grants",
+      "breakpoints": true,
+      "sha256": "90e15104a8bf967a6a25e455e6c40b0f7201aacdce004f7565fea8991a3e11b4"
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787000000049,
+      "tag": "0049_agent_runtime_roles",
       "breakpoints": true,
       "sha256": "207a4304b2447ada5936ec66c555ab4e501068a8a411689423ad8837714f6c27"
     }
@@ -398,18 +406,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -442,6 +440,7 @@
     "preBrokerReceiptFence": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539",
     "preModelProbeFailureCause": "038d68892adeb6cf41001617b9ec55ca8a32115c04cfa487f0674b3756294bc2",
     "preProvisioningConfigurationRelease": "3db47081c1e1f671c51aff211ae1fe560dfffe1f80b2176d16b76838cf8f3b30",
+    "preAdministratorCredentialSourceGrants": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516",
     "preRuntimeRoles": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516"
   },
   "ledgerCatalogs": {

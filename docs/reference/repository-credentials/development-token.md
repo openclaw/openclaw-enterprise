@@ -31,6 +31,16 @@ each push in memory to inspect it. The
 [development example](../../../deploy/examples/repository-credentials/service-config.development-token.json)
 uses four hours and 64 MiB.
 
+A push larger than `limits.gitPushInputBytes` is refused before the token is used
+for it: the gateway answers `413` `limit-exceeded`, the oversized body never reaches
+GitHub, and Git prints `error: RPC failed; HTTP 413`. (Before a chunked upload Git
+sends a 4-byte authentication probe, which does go to GitHub with the token.) This holds whether Git declares the size
+(`Content-Length`, below `http.postBuffer`) or streams it chunked; the gateway stops
+buffering at the limit and discards the rest of the upload for at most
+`limits.stallMs` so the client reads the answer. Budget about twice the push size of
+memory per concurrent push while it is buffered (measured: a 60 MB push peaked at
+about 117 MiB). Push larger changes with the App authority, or split them.
+
 | Backend field                                                       | Rule                                                                                   |
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `providerInstanceId`, `configVersion`, `repositoryId`, `repository` | As for the App backend; one repository per service.                                    |
@@ -84,7 +94,16 @@ A static token cannot be narrowed per session, so the gateway enforces scope:
 - **Pushes** are checked at the gateway. Before any byte goes upstream, the
   gateway reads the receive-pack commands and refuses the whole push with 400 if
   any ref fails the allowlist. Bypassing or replacing the client hook does not
-  change the result. Signed pushes (`push-cert`) are refused.
+  change the result. Signed pushes (`push-cert`) are refused. UTF-8 branch names
+  Git accepts are matched byte for byte, as described in the
+  [guardrail](push-ref-guardrail.md#matching-and-delivery). Names with invisible
+  or direction-changing characters are refused.
+- **At most 256 refs per push.** A push that updates, creates or deletes more
+  refs is refused before the token is used, even when every ref is allowed. The
+  gateway answers `413` with the error code `push-ref-limit-exceeded` and the
+  message "A push may update at most 256 refs. Push the refs in smaller
+  batches." Git shows only `error: RPC failed; HTTP 413`, as for an oversized
+  push. Push the refs in batches of 256 or fewer.
 - `git-read` never reaches receive-pack.
 
 Upstream sees every action as the token owner. A leaked session bearer reaches

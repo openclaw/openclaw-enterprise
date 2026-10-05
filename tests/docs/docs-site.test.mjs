@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
-
-const root = fileURLToPath(new URL("../../", import.meta.url));
+import {
+  buildDocs,
+  createDocsFixture,
+  repositoryRoot as root,
+  writeComputeMatrixReadme,
+  writeDocsConfig,
+} from "../helpers/docs-site.mjs";
 
 async function markdownFiles(directory) {
   const result = [];
@@ -95,37 +99,15 @@ test("docs build renders every authored page and preserves repository ownership"
 });
 
 test("docs validation rejects broken links, anchors and navigation through the CLI", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-check-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
-  await mkdir(join(fixture, "docs/assets"), { recursive: true });
-  await copyFile(
-    join(root, "docs/assets/lobster-mech-transparent.png"),
-    join(fixture, "docs/assets/lobster-mech-transparent.png"),
-  );
-  const config = {
-    name: "OpenClaw Enterprise",
-    navigation: {
-      languages: [
-        {
-          language: "en",
-          tabs: [
-            { tab: "Documentation", groups: [{ group: "Start", pages: ["README", "example"] }] },
-          ],
-        },
-      ],
-    },
-  };
-  await writeFile(join(fixture, "docs/docs.json"), JSON.stringify(config));
+  const { directory: fixture, config } = await createDocsFixture(t, "enterprise-docs-check-", {
+    pages: ["README", "example"],
+    logo: true,
+  });
   await writeFile(
     join(fixture, "docs/example.md"),
     "---\ntitle: Example\n---\n# Example\n\n## Local heading\n\n[Home](README.md)\n",
   );
-  const validate = () =>
-    spawnSync(process.execPath, [join(root, "scripts/docs-site/build.mjs"), "--check"], {
-      cwd: fixture,
-      encoding: "utf8",
-      timeout: 30_000,
-    });
+  const validate = () => buildDocs(fixture, "--check");
   await writeFile(
     join(fixture, "docs/README.md"),
     "# Home\n\n[Example](example.md#local-heading)\n",
@@ -167,38 +149,27 @@ test("docs validation rejects broken links, anchors and navigation through the C
     assert.match(result.stderr + result.stdout, /missing/);
   }
   await writeFile(join(fixture, "docs/README.md"), "# Home\n");
-  config.navigation.languages[0].tabs[0].groups[0].pages.push("absent");
-  await writeFile(join(fixture, "docs/docs.json"), JSON.stringify(config));
+  const pages = config.navigation.languages[0].tabs[0].groups[0].pages;
+  pages.push("absent");
+  await writeDocsConfig(fixture, config);
   result = validate();
   assert.notEqual(result.status, 0, "Build accepted a missing navigation page");
   assert.match(result.stderr + result.stdout, /absent/);
+  // The reverse: an authored page that navigation never lists.
+  pages.pop();
+  await writeDocsConfig(fixture, config);
+  await writeFile(join(fixture, "docs/orphan.md"), "# Orphan\n");
+  result = validate();
+  assert.notEqual(result.status, 0, "Build accepted a page outside navigation");
+  assert.match(result.stderr + result.stdout, /Page missing from navigation: orphan\.md/);
 });
 
 test("docs validation checks Markdown links in deploy example YAML comments", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-yaml-links-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-yaml-links-");
   await mkdir(join(fixture, "deploy/examples/production"), { recursive: true });
-  await mkdir(join(fixture, "docs"), { recursive: true });
-  const config = {
-    name: "OpenClaw Enterprise",
-    navigation: {
-      languages: [
-        {
-          language: "en",
-          tabs: [{ tab: "Documentation", groups: [{ group: "Start", pages: ["README"] }] }],
-        },
-      ],
-    },
-  };
-  await writeFile(join(fixture, "docs/docs.json"), JSON.stringify(config));
   await writeFile(join(fixture, "docs/README.md"), "# Home\n\n## Installation setup\n");
   const installation = join(fixture, "deploy/examples/production/installation.yaml");
-  const validate = () =>
-    spawnSync(process.execPath, [join(root, "scripts/docs-site/build.mjs"), "--check"], {
-      cwd: fixture,
-      encoding: "utf8",
-      timeout: 30_000,
-    });
+  const validate = () => buildDocs(fixture, "--check");
 
   await writeFile(
     installation,
@@ -314,39 +285,13 @@ function matrixFixtureData() {
 }
 
 test("docs build renders a ComputeDriver matrix block and rejects stale fallback", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-docs-compute-matrix-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
-  await mkdir(join(fixture, "docs/assets"), { recursive: true });
-  await copyFile(
-    join(root, "docs/assets/lobster-mech-transparent.png"),
-    join(fixture, "docs/assets/lobster-mech-transparent.png"),
-  );
-  await writeFile(
-    join(fixture, "docs/docs.json"),
-    JSON.stringify({
-      name: "OpenClaw Enterprise",
-      navigation: {
-        languages: [
-          {
-            language: "en",
-            tabs: [{ tab: "Documentation", groups: [{ group: "Start", pages: ["README"] }] }],
-          },
-        ],
-      },
-    }),
-  );
-  const matrix = matrixFixtureData();
-  await writeFile(join(fixture, "docs/assets/compute-driver-matrix.json"), JSON.stringify(matrix));
-  await writeFile(
-    join(fixture, "docs/README.md"),
-    ["# Matrix", "", renderMatrixMarkdown(matrix), ""].join("\n"),
-  );
-
-  const build = spawnSync(process.execPath, [join(root, "scripts/docs-site/build.mjs")], {
-    cwd: fixture,
-    encoding: "utf8",
-    timeout: 30_000,
+  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-compute-matrix-", {
+    logo: true,
   });
+  const matrix = matrixFixtureData();
+  await writeComputeMatrixReadme(fixture, matrix);
+
+  const build = buildDocs(fixture);
   assert.equal(build.status, 0, build.stderr || build.stdout);
   const html = await readFile(join(fixture, "dist/docs/index.html"), "utf8");
   assert.match(html, /data-compute-matrix/);
@@ -364,15 +309,7 @@ test("docs build renders a ComputeDriver matrix block and rejects stale fallback
       "",
     ].join("\n"),
   );
-  const stale = spawnSync(
-    process.execPath,
-    [join(root, "scripts/docs-site/build.mjs"), "--check"],
-    {
-      cwd: fixture,
-      encoding: "utf8",
-      timeout: 30_000,
-    },
-  );
+  const stale = buildDocs(fixture, "--check");
   assert.notEqual(stale.status, 0, "Build accepted a stale ComputeDriver matrix fallback");
   assert.match(stale.stderr + stale.stdout, /compute-matrix fallback is stale/);
 });

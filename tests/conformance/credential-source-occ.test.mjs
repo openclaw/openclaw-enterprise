@@ -310,6 +310,7 @@ async function fixture(options = {}) {
     dedicatedAgent,
     gateway,
     grantAgentSourceOperate,
+    iamState,
     makeReady,
     modelSecret,
     namespace,
@@ -1241,4 +1242,51 @@ test("a selected Credential Gateway rejects Secret-backed Harness authentication
     ),
     /requires credential-source Harness authentication/,
   );
+});
+
+test("binding a credential source as Harness authentication requires operate on it", async () => {
+  const { controller, dedicatedAgent, iamState, makeReady, modelSecret, namespace } =
+    await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const agent = await dedicatedAgent();
+  const bindSource = () =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+    });
+  // The administrator may update the Agent but is denied operate on this one source.
+  iamState.restrictions.push({
+    id: "deny-source-operate",
+    namespaceId: namespace.id,
+    action: "operate",
+    resourceKind: "credential_source",
+    resourceId: source.id,
+    effect: "deny",
+  });
+  await assert.rejects(bindSource(), (error) => {
+    assert.ok(error instanceof AuthorizationDeniedError);
+    assert.deepEqual(error.authorization, {
+      action: "operate",
+      resource: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
+    });
+    return true;
+  });
+  assert.equal(
+    (await controller.getAgent(administrator, namespace.id, agent.id)).harnessAuth ?? null,
+    agent.harnessAuth ?? null,
+  );
+  iamState.restrictions.pop();
+  assert.deepEqual((await bindSource()).harnessAuth, {
+    method: "credential_source",
+    sourceId: source.id,
+  });
 });

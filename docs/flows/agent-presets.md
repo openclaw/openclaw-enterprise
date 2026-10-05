@@ -26,6 +26,8 @@ continues through [revision admission](configuration-driver/persistence-and-revi
   collection and exact-resource operations in a Namespace.
 - [OCC Preset methods](../../packages/occ/src/index.ts): `createPreset`,
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
+- [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
+  `get`, and `delete` over the same routes; create and update stay HTTP-only.
 - [Console selector](../../apps/controller/src/console/agents/presets.mjs):
   `createPresetFields` requires a selected Namespace and an authenticated user.
   Saving also needs the existing Configuration, Agent, and credential grants.
@@ -73,27 +75,44 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 The loader validates the opt-in boolean and file list. It loads bundled JSON
 when enabled, resolves explicit JSON paths beside the startup YAML, validates
 each name/template definition, and rejects missing, malformed, invalid, or
-duplicate-name definitions before composition. API and worker share the startup
-snapshot and its source path; files are not watched. [Production composition](../../apps/controller/src/composition/production.ts)
+duplicate-name files before composition; a file named like a bundled default
+replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
+snapshot and source path (files are not watched), but only the API applies
+defaults and logs Preset warnings. [Production composition](../../apps/controller/src/composition/production.ts)
 and [development composition](../../apps/controller/src/composition/development-postgres.ts)
 pass generic definitions into `ControllerOptions.defaultPresets` and initialize
 defaults after selecting Configuration and IAM Drivers. They try each persisted
-Installation administrator in turn; one whose grant stops at the Installation
-cannot create Presets in a Namespace, so a Preset create denial moves on to the
-next, and startup fails only when none can seed. Native template contents
-remain in the application bundle; OCC owns generic Preset lifecycle. The
-[standard Codex artifact](../../deploy/presets/standard-codex.json) requests
-on-request approvals with the user as reviewer, cached hosted search, and the exact build hosts in the
-[standard Preset guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
-Seeding and rendering copy that native policy; the deployed Codex plugin owns
-its enforcement. Updating the bundle does not replace already installed copies.
+Installation administrator in turn, moving on when one cannot create a
+Namespace's Presets (say, its grant stops at the Installation); startup fails
+only when none can seed. Native template contents
+remain in the application bundle; OCC owns generic Preset lifecycle. Seeding and
+rendering copy the native policy of the [standard Codex artifact](../../deploy/presets/standard-codex.json)
+([build hosts](../guides/topics/standard-codex-preset.md#build-network-allowlist));
+the deployed Codex plugin enforces it. `loadBundledPresetVersions` also loads every shipped version
+listed in `deploy/presets/archive/versions.json`, whether or not defaults are
+enabled, into `ControllerOptions.bundledPresetVersions`. A conformance test in
+`tests/conformance/presets.test.mjs` fails when a bundled file changes without
+its previous version archived there.
 
 `packages/occ/src/index.ts:OpenClawController.initializeDefaultPresets`
 
 Initialization authorizes Installation administration, locks Namespaces in ID
 order in one transaction, and skips failed/deleting Namespaces. Missing names
 require Preset create permission and ordinary template/Driver validation before
-storage and mutation audit. Existing names are untouched. Any failure rolls back
+storage and mutation audit. A deny Restriction on a creation leaves the name
+missing with one `presets.default-create-skipped` warning; a missing grant
+still needs another administrator. While `includeDefaults` is enabled, an
+existing copy of a bundled default that still equals a superseded shipped version requires
+Preset update permission; its
+template is replaced in place and audited with `source: installation-defaults-refresh`.
+A refresh the policy refuses keeps the copy and logs one
+`presets.default-refresh-skipped` warning naming it and the reason. Startup
+first skips only refusals from a deny Restriction, which binds every
+administrator; only when no single administrator can then complete
+initialization does it skip every refused refresh. Removing the Restriction, or
+granting `preset:update` to an Installation administrator, lets the next startup
+refresh the copy.
+Other existing copies are untouched. Any other failure rolls back
 the transaction and prevents API startup. Namespace creation uses the same
 helper before queuing provisioning, so denied or invalid defaults also roll back
 the new Namespace. Disabling defaults leaves persisted copies alone.
@@ -276,6 +295,13 @@ or an immutable admitted revision.
 
 ## Changelog
 
+- 2026-10-05 05:30: Only the API logs Preset warnings.
+- 2026-10-05 03:30: A file named like a bundled default replaces it and warns.
+- 2026-10-05 02:30: Skip and warn on a default creation a deny Restriction refuses.
+- 2026-10-04 23:40: The bundled Collector exports the skipped-refresh warning with only its Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
+- 2026-10-04 23:30: A refused default refresh, such as one a Namespace deny Restriction on Preset update forbids, keeps the copy and logs a warning instead of stopping API startup.
+- 2026-10-04 22:00: Refresh superseded copies only when `includeDefaults` seeded them; a `presets.files` copy of a bundled file stays.
+- 2026-10-04 14:00: Refresh untouched copies of superseded bundled defaults at startup, and let any shipped version pass the Namespace deletion check.
 - 2026-10-03 20:30: Seed default Presets with the next Installation administrator when one cannot create them, so an upgrade that adds a default no longer stops API startup.
 - 2026-10-03 09:53: Exclude the selected Preset snapshot from replay after its values become an independent draft. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
 

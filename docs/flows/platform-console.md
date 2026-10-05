@@ -149,7 +149,10 @@ provider-error advice from "use your password" to asking an administrator. Pendi
 all; generations reject late redirects. With `sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
-`authError=<provider>` shows a generic, one-time error. The
+`authError=<provider>` shows a generic, one-time error; with `authError=github`, an
+`authReason` of `membership` or `membership-unavailable` explains a GitHub
+[allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
+refusal instead. The
 [authentication flow](local-password-authentication.md#3-construct-session-authentication)
 owns the server side.
 

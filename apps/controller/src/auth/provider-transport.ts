@@ -9,8 +9,9 @@ export function rejected(): APIError {
 const providerResponseLimit = 64 * 1024;
 
 // The provider step a failure happened at. `authorization` is the provider's own error
-// redirect to the callback; `profile` is GitHub's user lookup.
-export type ProviderStep = "authorization" | "token" | "jwks" | "profile";
+// redirect to the callback; `profile` is GitHub's user lookup; `membership` is GitHub's
+// organization or team membership lookup for the sign-in allowlist.
+export type ProviderStep = "authorization" | "token" | "jwks" | "profile" | "membership";
 
 /**
  * Why a provider gave no well-formed answer, from a fixed vocabulary. It is logged for
@@ -54,11 +55,18 @@ export class ProviderUnavailableError extends Error {
 export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE";
 
 // A code exchange yields the provider subject or the audited reason it did not. An
-// unavailable provider also says why, for the operator log.
+// unavailable provider also says why, for the operator log. The membership denials come only
+// from GitHub's sign-in allowlist, after the provider authenticated `subject`.
 export type ProviderExchange =
   | { readonly subject: string }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
-  | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure };
+  | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure }
+  | { readonly denial: "MEMBERSHIP_REQUIRED"; readonly subject: string }
+  | {
+      readonly denial: "MEMBERSHIP_UNAVAILABLE";
+      readonly subject: string;
+      readonly failure: ProviderFailure;
+    };
 
 export function providerExchangeFailure(error: unknown, signal: AbortSignal): ProviderExchange {
   if (error instanceof ProviderUnavailableError) {
@@ -151,6 +159,13 @@ declare const pinnedEndpoint: unique symbol;
  */
 export type PinnedEndpoint = string & { readonly [pinnedEndpoint]: true };
 
+declare const membershipEndpoint: unique symbol;
+/**
+ * A GitHub membership URL on https://api.github.com, built in github.ts only from a validated
+ * allowlist entry and the login GitHub's own profile answer returned, each URL-encoded.
+ */
+export type MembershipEndpoint = string & { readonly [membershipEndpoint]: true };
+
 // A provider's fixed requests share a deadline, including streaming body reads.
 // A well-formed 4xx answer is a rejection unless it refuses this client; every other failure
 // is unavailability.
@@ -170,6 +185,51 @@ export async function providerJSON(
     return await readProviderJSON(response, signal, step);
   } catch (error) {
     if (error instanceof APIError || error instanceof ProviderUnavailableError) {
+      throw error;
+    }
+    throw new ProviderUnavailableError(
+      error instanceof SyntaxError
+        ? { step, cause: "malformed_response" }
+        : transportFailure(error, step),
+    );
+  }
+}
+
+/**
+ * Reads one GitHub membership: `true` for `state: active`, `false` for a 404 (not affiliated)
+ * or `state: pending`. Anything else, including 401 and 403 (for example an organization that
+ * blocked the App, or a Members: read permission its owner has not accepted), is
+ * unavailability: the allowlist fails closed and the operator log says why. GitHub may also
+ * answer 404 for an organization without the App installed, which reads as "not a member".
+ */
+export async function providerMembership(
+  endpoint: MembershipEndpoint,
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const step = "membership";
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { ...init, signal, redirect: "error" });
+  } catch (error) {
+    throw new ProviderUnavailableError(transportFailure(error, step));
+  }
+  try {
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return false;
+    }
+    if (response.status !== 200 || !response.body) {
+      await response.body?.cancel();
+      throw new ProviderUnavailableError({ step, cause: "http_status", status: response.status });
+    }
+    const data = await readBoundedJSON(response, response.body, signal, step);
+    if (data.state === "active" || data.state === "pending") {
+      return data.state === "active";
+    }
+    throw new ProviderUnavailableError({ step, cause: "malformed_response" });
+  } catch (error) {
+    if (error instanceof ProviderUnavailableError) {
       throw error;
     }
     throw new ProviderUnavailableError(

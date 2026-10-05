@@ -3,15 +3,13 @@ import test from "node:test";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
+  onboardPasswordAccounts,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -46,30 +44,20 @@ test(
     });
     await startFakeGitHub(t);
     const address = clientAddresses("198.19");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    const {
+      admin,
+      accounts: { limited },
+    } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: { limited: { email: "scope-limited@example.test", role: "admin" } },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: adminHeaders,
-      payload: { email: "scope-limited@example.test", password, roleId: roles.admin.id },
-    });
-    assert.equal(created.statusCode, 201, created.body);
-    const limited = { id: created.json().data.id, email: "scope-limited@example.test", password };
-    await app.close();
 
     // Account creation binds the Role to the exact Installation only.
     const installation = await state.loadInstallation();
@@ -86,7 +74,7 @@ test(
       settings: githubUpgradeSettings(admin.id),
       secrets,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
+    const adminHeaders = await signedInHeaders(app, origin, admin, address());
     const limitedHeaders = await signedInHeaders(app, origin, limited, address());
     const post = (headers, url, payload) => app.inject({ method: "POST", url, headers, payload });
 

@@ -41,10 +41,15 @@ test("image lanes use separate cache scopes without exposing credentials or comp
   for (const [lane, role, writer] of [
     ["images-packaging", "controller", true],
     ["images-model-probes", "runtime", false],
+    ["images-runtime-startup", "runtime", false],
+    ["images-runtime-startup-2", "runtime", false],
   ]) {
     const statePath = join(directory, `${lane}.json`);
     const result = run(prepare, ["--lane", lane, "--state", statePath], {
       GITHUB_ACTIONS: "true",
+      // A main push, where Images and Packaging also writes; pull request runs
+      // only restore (ci-prepare.test.mjs covers each event).
+      GITHUB_EVENT_NAME: "push",
       GITHUB_RUN_ID: "12345",
       GITHUB_RUN_ATTEMPT: "2",
       OCC_CI_IMAGE_CACHE: "1",
@@ -54,6 +59,9 @@ test("image lanes use separate cache scopes without exposing credentials or comp
       OCC_YQ_BIN: "/usr/bin/true",
       OCC_DOCKER_BIN: docker,
       COMMANDS_PATH: commandsPath,
+      // Image Runtime Startup creates its k3d cluster while the image builds;
+      // a missing k3d stops that before any cluster is recorded or created.
+      OPENCLAW_CI_K3D_BIN: join(directory, "no-k3d"),
     });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /42/, result.stderr);

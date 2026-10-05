@@ -335,7 +335,15 @@ test("console shows the external observability link only to Installation adminis
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Logout" }).click();
+  // Navigating away before the sign-out request is answered aborts it, and the old session
+  // then opens the Console again instead of the login form.
+  await page.waitForURL(/\/console\/login$/);
+  // The shell renders before the probe is answered, so wait for the denial itself.
+  const limitedProbe = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/observability",
+  );
   await login(page, fixture, "/console/", limited.credentials);
+  assert.equal((await limitedProbe).status(), 403);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   // A denied read is audited, so navigation must not repeat it.
@@ -354,6 +362,49 @@ test("console shows the external observability link only to Installation adminis
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 2);
+});
+
+test("a navigation while the Installation-access probe is answered does not ask again", async (t) => {
+  // The API audits every denied probe, so the Console must not repeat one it already sent.
+  let answered = 0;
+  const fixture = await createConsoleAppFixture(t, {
+    observabilityUrl: "https://metrics.example.test/d/operations",
+    async onSend(request, _reply, payload) {
+      if (request.url === "/observability") {
+        answered += 1;
+      }
+      return payload;
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Probe access", { ready: true });
+  const limited = await fixture.createAccountWithPolicy("probe-limited", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-browser-probe-reader",
+      namespaceId: namespace.id,
+      permissions: [{ action: "read", resourceKind: "namespace" }],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-browser-probe-reader",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-browser-probe-reader",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  // The API has answered (and audited) the probe; its response reaches the page only later.
+  const probe = await holdRoute(t, page, "**/observability", (route, response) =>
+    route.fulfill({ response }),
+  );
+  await login(page, fixture, "/console/agents", limited.credentials);
+  await probe.waitForRelease();
+  await page.getByRole("link", { name: "Namespaces" }).click();
+  await page.waitForURL(/\/console\/namespaces/);
+  probe.release();
+  await page.getByRole("list", { name: "Namespaces" }).getByText("Probe access").waitFor();
+  assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
+  assert.equal(answered, 1);
 });
 
 test("console ignores stale collection successes and errors while switching Namespaces", async (t) => {
@@ -972,6 +1023,56 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Username").waitFor();
   await expectNoText(page, /Continue with Acme SSO/);
+});
+
+test("GitHub allowlist refusals tell the person why, and other reasons stay generic", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  let password = true;
+  // Discovery models GitHub sign-in with password sign-in for everyone, then recovery-only.
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { github: true, google: false, password, sessionBinding: true },
+        meta: { requestId: "browser-github-allowlist" },
+      }),
+    }),
+  );
+  const cases = [
+    [
+      "membership",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access or use your password.",
+      "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access.",
+    ],
+    [
+      "membership-unavailable",
+      "Could not check your GitHub organization membership. Try again later or use your password.",
+      "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+    ],
+    [
+      "toString",
+      "Could not sign in with GitHub. Try again or use your password.",
+      "Could not sign in with GitHub. Try again, or ask an administrator to attach your GitHub identity to your account.",
+    ],
+  ];
+  for (const [reason, withPassword, recoveryOnly] of cases) {
+    for (const [available, message] of [
+      [true, withPassword],
+      [false, recoveryOnly],
+    ]) {
+      password = available;
+      await page.goto(`${fixture.origin}/console/?authError=github&authReason=${reason}`);
+      await page.getByText(message, { exact: true }).waitFor();
+    }
+  }
+  // The reason applies only to GitHub's own error.
+  password = true;
+  await page.goto(`${fixture.origin}/console/?authError=google&authReason=membership`);
+  await page.getByRole("button", { name: "Login" }).waitFor();
+  await expectNoText(page, /organization/);
 });
 
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {

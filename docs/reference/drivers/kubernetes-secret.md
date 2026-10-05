@@ -111,7 +111,10 @@ const response = await fetch(url, {
   headers: { "x-api-key": key, "content-type": "application/json" },
   body: JSON.stringify({ name: "model-api-key", value }),
 });
-if (response.status !== 201) throw new Error(`Secret creation failed: HTTP ${response.status}`);
+if (response.status !== 201) {
+  const error = (await response.json().catch(() => null))?.error;
+  throw new Error(`Secret creation failed: HTTP ${response.status} ${error?.code ?? ""}: ${error?.message ?? ""}`);
+}
 console.log(JSON.stringify(await response.json()));
 JS
 ```
@@ -240,7 +243,7 @@ at the configured `OCC_URL`. Set `OCC_ORIGIN` to the configured Console origin
 from `OCC_AUTH_BASE_URL` (scheme, host, and optional port only):
 
 ```bash
-curl -fsS \
+curl --fail-with-body -sS \
   "$OCC_URL/namespaces/$NAMESPACE_ID/secrets/$SECRET_ID" \
   -X DELETE \
   -H "Origin: $OCC_ORIGIN" \
@@ -260,8 +263,10 @@ metadata cleanup after OCC verifies the stored backend identity.
 
 ## Troubleshooting
 
-- **Secret create returns `409`:** Wait until the platform Namespace is `ready`
-  and its backing Kubernetes namespace is bound to the exact Namespace ID.
+- **Secret create returns `409`:** For `RESOURCE_CONFLICT` with "A Secret with
+  this name already exists in this Namespace", choose another name or update the
+  existing Secret. For `NAMESPACE_NOT_READY`, wait until the platform Namespace is
+  `ready` and its backing Kubernetes namespace is bound to the exact Namespace ID.
 - **Secret operation returns `403`:** Verify OCC permission for the exact Secret
   or parent Namespace. For binding or Agent assignment, also verify caller
   `operate` on each exact Secret. For deployment, verify both the deploying actor

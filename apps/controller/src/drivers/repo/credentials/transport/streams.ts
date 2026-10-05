@@ -1,6 +1,5 @@
-import { Transform, Writable } from "node:stream";
+import { Transform } from "node:stream";
 import type { Readable, TransformCallback } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import type { Clock, ExchangeLimits } from "../backend-contracts.ts";
 
 export class ByteLimit extends Transform {
@@ -46,38 +45,67 @@ export function watchdog(
   };
 }
 
-/** Buffer one complete request body within the plan's input bounds before dispatch. */
-export async function readBoundedInput(
+/**
+ * Buffer one complete request body within the plan's input bounds before dispatch.
+ * It never destroys `source`: on "limit-exceeded" the caller can still answer on the
+ * same connection. Every other failure ("input-failed") leaves the caller to destroy it.
+ */
+export function readBoundedInput(
   source: Readable,
   limits: Pick<ExchangeLimits, "inputWireBytes" | "inputDecodedBytes" | "inputMs" | "stallMs">,
   clock: Clock,
   signal: AbortSignal,
 ): Promise<Buffer> {
-  const stop = new AbortController();
-  const cancel = () => stop.abort();
-  const stall = watchdog(clock, limits.stallMs, cancel);
-  const total = clock.schedule(limits.inputMs, cancel);
-  signal.addEventListener("abort", cancel, { once: true });
-  const parts: Buffer[] = [];
-  try {
-    if (signal.aborted) {
-      throw new Error("cancelled");
+  const maximum = Math.min(limits.inputWireBytes, limits.inputDecodedBytes);
+  return new Promise<Buffer>((resolve, reject) => {
+    const parts: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      stall.close();
+      total();
+      signal.removeEventListener("abort", failed);
+      source.off("data", data);
+      source.off("end", end);
+      source.off("error", failed);
+      source.off("close", closed);
+      source.pause();
+      if (error) {
+        parts.length = 0;
+        reject(error);
+      } else {
+        resolve(Buffer.concat(parts, bytes));
+      }
+    };
+    const failed = () => finish(new Error("input-failed"));
+    const data = (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > maximum) {
+        finish(new Error("limit-exceeded"));
+        return;
+      }
+      stall.reset();
+      parts.push(chunk);
+    };
+    const end = () => finish();
+    // "close" before "end" means the peer went away mid-body. Deferring only breaks the
+    // tie when both are queued; an abort usually arrives first through `signal`.
+    const closed = () => setImmediate(failed);
+    const stall = watchdog(clock, limits.stallMs, failed);
+    const total = clock.schedule(limits.inputMs, failed);
+    if (signal.aborted || source.readableEnded || source.destroyed) {
+      failed();
+      return;
     }
-    await pipeline(
-      source,
-      new ByteLimit(Math.min(limits.inputWireBytes, limits.inputDecodedBytes), stall.reset),
-      new Writable({
-        write(chunk: Buffer, _encoding, callback) {
-          parts.push(chunk);
-          callback();
-        },
-      }),
-      { signal: stop.signal },
-    );
-    return Buffer.concat(parts);
-  } finally {
-    stall.close();
-    total();
-    signal.removeEventListener("abort", cancel);
-  }
+    signal.addEventListener("abort", failed, { once: true });
+    source.on("data", data);
+    source.once("end", end);
+    source.once("error", failed);
+    source.once("close", closed);
+    source.resume();
+  });
 }

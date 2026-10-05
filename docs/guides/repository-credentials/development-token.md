@@ -82,9 +82,13 @@ $compose run --rm client /session gh api repos/OWNER/scratch-repo
 
 A push outside `pushRefAllowlist` fails twice over: the client hook refuses it
 first, and with `--no-verify` the gateway answers 400 before anything reaches
-GitHub. `gh api graphql` fails unless GraphQL is enabled for a fine-grained token,
-and even then mutations fail, including those behind `gh pr create`, `gh pr comment`
-and `gh pr edit`.
+GitHub. Both also refuse a branch name with an invisible or direction-changing
+character, such as U+202E or U+200B. One push may update at most 256 refs; a
+larger one (for example `git push --all` in a clone with many branches) gets
+`HTTP 413` with code `push-ref-limit-exceeded`, so push branches in smaller
+batches. `gh api graphql` fails unless GraphQL is enabled for a fine-grained
+token, and even then mutations fail, including those behind `gh pr create`,
+`gh pr comment` and `gh pr edit`.
 
 ## Close and clean up
 

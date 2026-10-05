@@ -21,7 +21,7 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { availablePort } from "./available-port.mjs";
+import { reservePort } from "./available-port.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -70,9 +70,17 @@ function computeDriver({
 
 export async function createConsoleAppFixture(t, options = {}) {
   const installationId = `ins_${randomUUID()}`;
-  const port = await availablePort();
+  // The ports are part of the origins the app is configured with, so hold them until the
+  // listeners bind them; a released probe port can be taken by another listener meanwhile.
+  const appPort = await reservePort();
+  t.after(appPort.release);
+  const port = appPort.port;
   const originHost = options.originHost ?? "127.0.0.1";
-  const browserPort = options.https === true ? await availablePort() : port;
+  const browserReservation = options.https === true ? await reservePort() : null;
+  if (browserReservation !== null) {
+    t.after(browserReservation.release);
+  }
+  const browserPort = browserReservation?.port ?? port;
   const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
@@ -226,6 +234,8 @@ export async function createConsoleAppFixture(t, options = {}) {
         recordOperations: options.recordOperations ?? false,
         backends,
         defaultPresets: options.defaultPresets ?? [],
+        bundledPresetVersions: options.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: options.refreshBundledDefaultPresets === true,
         ...(options.nativeWorkerSupport === undefined
           ? {}
           : { nativeWorkerSupport: options.nativeWorkerSupport }),
@@ -257,7 +267,8 @@ export async function createConsoleAppFixture(t, options = {}) {
   if (options.onSend) {
     app.addHook("onSend", options.onSend);
   }
-  await app.listen({ host: "127.0.0.1", port });
+  await app.listen({ host: "127.0.0.1", port, reusePort: appPort.reusePort });
+  await appPort.release();
   const cleanupBeforeAppClose = [];
   let appClosed = false;
 
@@ -348,8 +359,13 @@ export async function createConsoleAppFixture(t, options = {}) {
         ingress.close((error) => (error ? reject(error) : resolve())),
       );
     });
-    ingress.listen(browserPort, "127.0.0.1");
+    ingress.listen({
+      port: browserPort,
+      host: "127.0.0.1",
+      reusePort: browserReservation.reusePort,
+    });
     await once(ingress, "listening");
+    await browserReservation.release();
     const spki = createHash("sha256")
       .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
       .digest("base64");

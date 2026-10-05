@@ -358,6 +358,8 @@ function clientSelectors(source, diagnostics) {
 }
 
 const recoveryUserIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const githubOrganization = /^[a-z0-9][a-z0-9-]{0,38}$/;
+const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
@@ -386,6 +388,26 @@ function signInProvider(source, name, diagnostics) {
       description: "a lowercase DNS domain name such as example.com",
       nonempty: false,
     });
+  }
+  // GitHub's organization and team allowlist (RFC-0061), as the chart and API accept it.
+  if (source.allowedOrgs !== undefined) {
+    rendered.allowedOrgs = stringArray(source, [...path, "allowedOrgs"], diagnostics, {
+      validate: (value) => githubOrganization.test(value),
+      description: "a lowercase GitHub organization login such as acme",
+      nonempty: false,
+    });
+  }
+  if (source.allowedTeams !== undefined) {
+    rendered.allowedTeams = stringArray(source, [...path, "allowedTeams"], diagnostics, {
+      validate: (value) => githubTeam.test(value),
+      description: "a lowercase org/team-slug entry such as acme/platform",
+      nonempty: false,
+    });
+  }
+  if ((rendered.allowedOrgs?.length ?? 0) + (rendered.allowedTeams?.length ?? 0) > 10) {
+    diagnostics.errors.push(
+      "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
+    );
   }
   if (source.egressCidrs !== undefined) {
     rendered.egressCidrs = stringArray(source, [...path, "egressCidrs"], diagnostics, {
@@ -654,7 +676,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     github,
     "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "egressCidrs"],
+    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams", "egressCidrs"],
     diagnostics,
   );
   const google = section(controlPlane, "google", diagnostics, false);

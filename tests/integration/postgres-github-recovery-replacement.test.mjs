@@ -4,16 +4,14 @@ import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   assertReservedLane,
-  bootstrapProductionInstallation,
+  attachProvider,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
-  currentSession,
-  defaultInstallSettings,
   githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
   memoryLogger,
+  onboardPasswordAccounts,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -47,44 +45,30 @@ test(
     });
     await startFakeGitHub(t);
     const address = clientAddresses();
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    const {
+      admin,
+      accounts: { second, third, member },
+    } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: {
+        second: { email: "replacement-second@example.test", role: "admin" },
+        third: { email: "replacement-third@example.test", role: "admin" },
+        member: { email: "replacement-member@example.test" },
+      },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const accounts = {};
-    for (const [name, role] of [
-      ["second", roles.admin],
-      ["third", roles.admin],
-      ["member", roles.reader],
-    ]) {
-      const email = `replacement-${name}@example.test`;
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: role.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      accounts[name] = { id: created.json().data.id, email, password };
-    }
-    const { second, third, member } = accounts;
-    await app.close();
     app = await composeProductionSignIn(t, {
       databaseUrl,
       settings: githubUpgradeSettings(admin.id),
       secrets,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
+    let adminHeaders = await signedInHeaders(app, origin, admin, address());
     const readRecovery = async (headers) => {
       const response = await app.inject({ url: "/api/auth/recovery", headers });
       assert.equal(response.statusCode, 200, response.body);
@@ -98,15 +82,7 @@ test(
       );
 
     // The second administrator works through GitHub while it is up.
-    const attached = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${second.id}/providers/github`,
-      headers: adminHeaders,
-      payload: {
-        subject: secondSubject,
-        expectedVersion: (await readAccount(app, adminHeaders, second.id)).version,
-      },
-    });
+    const attached = await attachProvider(app, adminHeaders, second.id, "github", secondSubject);
     assert.equal(attached.statusCode, 200, attached.body);
     const { callback } = await githubSignIn(app, origin, secondSubject, address());
     assert.equal(callback.headers.location, "/console/", callback.body);

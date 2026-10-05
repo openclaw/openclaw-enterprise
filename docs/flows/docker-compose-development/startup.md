@@ -185,6 +185,12 @@ Compose service with Docker-compatible engine access.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
+Before tool discovery or state creation, `upK3d` requires the platform Namespace
+name to match a DNS label of at most 63 characters. Cleanup accepts the historical
+Namespace syntax in recorded state, including longer names, and deletes only the
+validated recorded cluster through its recorded engine endpoint. All other state
+validation and ownership checks still apply.
+
 Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
 without changing host DNS.
 Linux Docker's automatic host resolver selection ignores trailing nameserver

@@ -8032,18 +8032,6 @@
             },
             "description": "Default Response"
           },
-          "413": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "415": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -13795,18 +13783,6 @@
             },
             "description": "Default Response"
           },
-          "413": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "415": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
           "500": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -14526,18 +14502,6 @@
             "description": "Default Response"
           },
           "409": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "413": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },
@@ -18673,6 +18637,18 @@
             "description": "Default Response"
           },
           "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },

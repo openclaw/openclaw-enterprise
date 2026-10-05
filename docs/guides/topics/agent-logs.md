@@ -130,7 +130,13 @@ returning it:
 Other structured output, including Codex JSON-RPC protocol traffic, oversized
 lines and malformed lines that start like a JSON object or array, is
 **withheld**: the page shows a count, never content. A pretty-printed
-(multi-line) JSON value becomes one withheld row.
+(multi-line) JSON value becomes one withheld row. Each row names its reason
+code, as `occ agent logs` does: `unrecognised_structured` (structured output
+OCC does not keep), `malformed` (JSON split across lines, as Codex prints
+it, JSON that does not parse, or JSON nested too deeply) or `oversized`.
+The console and `occ agent logs` show an invisible or direction-changing
+character in retained text, such as a bidirectional override, as an escape like
+`\u202e`, so a line cannot reorder or hide what you read.
 
 Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,

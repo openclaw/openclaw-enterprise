@@ -6,8 +6,9 @@ disposable PostgreSQL databases. Start with the [shared requirements](README.md#
 ## Revision-worker tests
 
 The revision-worker suite allocates disposable databases under its run's
-owner so another test cannot consume its queue. Four cross-Namespace cases explicitly share
-a database within their test. Tests connect as `occ_app`; preparation
+owner so another test cannot consume its queue. It migrates one template database per
+file and gives each test a copy of it (`prepareFile({ template })`). Four cross-Namespace
+cases explicitly share a database within their test. Tests connect as `occ_app`; preparation
 uses the existing administrator and migrator paths. The suite rejects a standalone
 `OCC_TEST_DATABASE_URL` without prepared ownership before changing that database.
 Other suites keep the application-role URL setup below.
@@ -112,8 +113,9 @@ bootstrap needs its own URL:
 ```
 
 Omitting the general URL skips most persistence and
-queue cases. Use the prepared `postgres-application` lane above for its complete
-file selection. Broad `test:postgres`, `test:integration`, and `test` commands
+queue cases. For a lane's complete file selection, prepare and run it as above,
+substituting `postgres-platform` (platform state, wire-up), `postgres` (migration
+compatibility) or `postgres-auth` for `postgres-application`. Broad `test:postgres`, `test:integration`, and `test` commands
 include the revision-worker suite and its
 [prepared-ownership requirement](#revision-worker-tests).
 
@@ -213,7 +215,7 @@ The same composition covers the GitHub profile against the fixture provider:
   `OCC_AUTH_MAINTAIN_MIGRATION_DATABASE_URL`. With the API stopped,
   `auth:maintain` resets the recovery password and deactivates GitHub sign-in.
 
-`tests/integration/sign-in-chart-parity.test.mjs` (Images and Packaging lane, Helm and yq) checks
+`tests/integration/sign-in-chart-parity.test.mjs` (Repository Credentials lane, Helm and yq) checks
 that the chart renders exactly those settings, and that the API entrypoint
 accepts them for every trusted-proxy preset, with and without
 GitHub, and refuses what the chart refuses. Accepted settings stop at the

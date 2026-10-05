@@ -518,37 +518,41 @@ test("runtime credential POST keeps session CSRF and exact Agent read plus opera
   assert.equal(csrfRejected.body.error.code, "FORBIDDEN");
   assert.equal(fixture.computeDriver.calls.length, 0);
 
-  const { principal, session } = await fixture.createPrincipal(
-    "runtime-operator-without-read",
-    (limited) => {
+  // Each grant is required on its own: operate without read, then read without operate.
+  for (const [held, missing] of [
+    ["operate", "read"],
+    ["read", "operate"],
+  ]) {
+    const roleId = `runtime-${held}-without-${missing}`;
+    const { principal, session } = await fixture.createPrincipal(roleId, (limited) => {
       fixture.policy.roles.push({
-        id: "runtime-operate-without-read",
+        id: roleId,
         namespaceId: namespace.id,
-        permissions: [{ action: "operate", resourceKind: "agent" }],
+        permissions: [{ action: held, resourceKind: "agent" }],
       });
       fixture.policy.bindings.push({
-        id: "runtime-operate-without-read-binding",
+        id: `${roleId}-binding`,
         namespaceId: namespace.id,
         subjectKind: "identity",
         subjectId: limited.id,
-        roleId: "runtime-operate-without-read",
+        roleId,
       });
-    },
-  );
-  const denied = await fixture.request("POST", path, {
-    session,
-    body: {},
-  });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
-  assert.equal(fixture.computeDriver.calls.length, 0);
-  const denial = fixture.auditSink.events.at(-1);
-  assert.equal(denial.kind, "authorization_denial");
-  assert.deepEqual(denial.authorization, {
-    principalId: principal.id,
-    action: "read",
-    resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
-  });
+    });
+    const denied = await fixture.request("POST", path, {
+      session,
+      body: {},
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assert.equal(fixture.computeDriver.calls.length, 0);
+    const denial = fixture.auditSink.events.at(-1);
+    assert.equal(denial.kind, "authorization_denial");
+    assert.deepEqual(denial.authorization, {
+      principalId: principal.id,
+      action: missing,
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+    });
+  }
 });
 
 test("runtime credential API rejects unsupported initial provisioning states and request shapes", async (t) => {

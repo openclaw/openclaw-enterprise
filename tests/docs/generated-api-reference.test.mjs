@@ -86,6 +86,34 @@ test("generated API reference stays on the approved single page", async () => {
   }
 });
 
+test("every operation with a request body documents 413 and 415", async () => {
+  // The controller answers an oversized body 413 and a non-JSON media type 415 on every
+  // route that reads a body; updateCredentialSource documented neither. The /api/auth/*
+  // operations below have the same gap and are fixed separately; shrink this list then.
+  const authOperationsWithoutBodyErrors = [
+    "createAuthAccount",
+    "disableAuthAccount",
+    "enableAuthAccount",
+    "detachAuthMethod",
+    "attachGitHubIdentity",
+    "attachGoogleIdentity",
+    "attachOidcIdentity",
+    "revokeAuthAccountSessions",
+    "confirmGitHubSignIn",
+    "confirmGoogleSignIn",
+    "confirmOidcSignIn",
+    "replaceAuthRecovery",
+    "createServiceKey",
+    "signInEmail",
+  ];
+  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const missing = contractOperations(document)
+    .filter((operation) => operation.requestBody !== undefined)
+    .filter((operation) => !("413" in operation.responses && "415" in operation.responses))
+    .map((operation) => operation.operationId);
+  assert.deepEqual(missing.sort(), authOperationsWithoutBodyErrors.sort());
+});
+
 test("AccessBinding creation documents request body target read permissions", async () => {
   const document = JSON.parse(await readFile(contractPath, "utf8"));
   const operation =
@@ -194,4 +222,15 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
     result.stderr + result.stdout,
     /Unexpected generated API reference file: docs\/reference\/api\/unexpected-ci-check\.md/,
   );
+});
+
+test("operations without a request body do not list 413 or 415", async () => {
+  // The reference introduction says when any request answers 413 or 415; an operation
+  // lists them only when it takes a body. Three bodiless operations listed them.
+  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const listed = contractOperations(document)
+    .filter((operation) => operation.requestBody === undefined)
+    .filter((operation) => "413" in operation.responses || "415" in operation.responses)
+    .map((operation) => operation.operationId);
+  assert.deepEqual(listed, []);
 });

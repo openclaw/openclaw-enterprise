@@ -1,11 +1,12 @@
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
+import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { createServer, request as httpRequest } from "node:http";
+import { createServer } from "node:http";
 import { request } from "node:https";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -822,30 +823,14 @@ test(
     // An old Driver omits durableAdmission; the new broker rejects it before
     // contacting the receipt fixture, so a generic failure cannot qualify the pair.
     const input = { ...receipts[0].input, recoverOnly: true };
-    const body = JSON.stringify(input);
     const before = receipts.length;
-    const status = await new Promise((resolve, reject) => {
-      const outgoing = httpRequest(
-        {
-          socketPath: fixture.config.gateway.controlSocket,
-          path: "/v1/sessions",
-          method: "POST",
-          headers: {
-            host: "localhost",
-            "content-type": "application/json",
-            "content-length": Buffer.byteLength(body),
-            "x-admission-id": `${Date.now()}-${randomUUID()}`,
-          },
-        },
-        (incoming) => {
-          incoming.resume();
-          incoming.once("end", () => resolve(incoming.statusCode));
-          incoming.once("error", reject);
-        },
-      );
-      outgoing.once("error", reject);
-      outgoing.end(body);
-    });
+    const { status } = await controlRequest(
+      fixture.config.gateway.controlSocket,
+      "POST",
+      "/v1/sessions",
+      input,
+      { "x-admission-id": `${Date.now()}-${randomUUID()}` },
+    );
     assert.equal(status, 400);
     assert.equal(receipts.length, before);
     // An unavailable result alone cannot prove which request reached the

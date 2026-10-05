@@ -44,8 +44,8 @@ upstream main yet. This image's configuration validation rejects both keys, so
 its Gateway and Harness exit at startup rather than place sessions on the
 Gateway. `PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
 `packages/occ/src/native-worker-support.ts` records this, and admission refuses
-dedicated native OpenClaw while it is `false`. The images-packaging lane runs
-both entrypoints against this image and fails when the image disagrees with it.
+dedicated native OpenClaw while it is `false`. The images-runtime-startup lane
+runs both entrypoints against this image and fails when the image disagrees with it.
 
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -187,12 +187,13 @@ Then run the runtime startup smoke from the repository root with host Node.js
 [Image and Helm tests](../../docs/testing/images.md#runtime-image-startup-test-environment):
 
 ```bash
-node scripts/ci/prepare.mjs --lane images-packaging --state /tmp/images-packaging.json --github-env /tmp/images-packaging.env
+node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env
 set -a
-. /tmp/images-packaging.env
+. /tmp/images-runtime-startup.env
 set +a
-OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-packaging.json \
-  node --test tests/integration/runtime-image-startup.test.mjs
+OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
+  node --test tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.mjs
 ```
 
 The smoke starts task-owned containers with the Docker Compute Driver gateway

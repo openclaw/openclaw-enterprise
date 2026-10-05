@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"go.yaml.in/yaml/v3"
@@ -42,6 +45,15 @@ func (app *application) printSecret(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "name"},
+	})
+}
+
+// printPreset shows Preset identity in tables; structured output includes the template.
+func (app *application) printPreset(value any, collection bool) error {
+	return app.printItems(value, collection, []column{
+		{title: "ID", key: "id"},
+		{title: "NAME", key: "name"},
+		{title: "CREATED", key: "createdAt"},
 	})
 }
 
@@ -256,7 +268,7 @@ func printTable(out io.Writer, items []any, columns []column) error {
 		}
 		row := make([]string, len(columns))
 		for index, column := range columns {
-			row[index] = displayValue(resource[column.key])
+			row[index] = tableCell(resource[column.key])
 		}
 		if _, err := fmt.Fprintln(writer, strings.Join(row, "\t")); err != nil {
 			return err
@@ -279,6 +291,72 @@ func displayValue(value any) string {
 	return string(encoded)
 }
 
+// tableCell is displayValue with every non-graphic rune escaped. Names may hold
+// bidirectional overrides, zero-width or C1 control characters (the Name
+// contract rejects only C0 and DEL); printed raw they reorder or hide columns.
+// A string is Go-quoted, as is one that starts with a quote so that a quoted
+// cell always means escaping; a structured value keeps valid JSON \u escapes.
+func tableCell(value any) string {
+	text := displayValue(value)
+	_, isString := value.(string)
+	if isString && strings.HasPrefix(text, `"`) {
+		return strconv.QuoteToGraphic(text)
+	}
+	if strings.IndexFunc(text, isHiddenRune) < 0 {
+		return text
+	}
+	if isString {
+		return strconv.QuoteToGraphic(text)
+	}
+	var escaped strings.Builder
+	for _, character := range text {
+		if !isHiddenRune(character) {
+			escaped.WriteRune(character)
+			continue
+		}
+		for _, unit := range utf16.Encode([]rune{character}) {
+			fmt.Fprintf(&escaped, `\u%04x`, unit)
+		}
+	}
+	return escaped.String()
+}
+
+func isHiddenRune(character rune) bool {
+	return !unicode.IsGraphic(character)
+}
+
+// visibleText escapes every invisible or control character in text, and any
+// invalid UTF-8 byte, as a Go escape such as \u202e. OCC strips terminal
+// escapes and C0/C1 controls from runtime log text but not bidirectional,
+// zero-width or other format characters, which would reorder or hide what an
+// operator's terminal shows. Escaping, not dropping, keeps the evidence.
+func visibleText(text string) string {
+	if strings.IndexFunc(text, isHiddenRune) < 0 && utf8.ValidString(text) {
+		return text
+	}
+	var escaped strings.Builder
+	for index := 0; index < len(text); {
+		character, size := utf8.DecodeRuneInString(text[index:])
+		switch {
+		case character == utf8.RuneError && size == 1:
+			fmt.Fprintf(&escaped, `\x%02x`, text[index])
+		case isHiddenRune(character):
+			quoted := strconv.QuoteRuneToGraphic(character)
+			escaped.WriteString(quoted[1 : len(quoted)-1])
+		default:
+			escaped.WriteString(text[index : index+size])
+		}
+		index += size
+	}
+	return escaped.String()
+}
+
+// noticef prints one notice line to out with visibleText applied, since
+// notices carry server-provided revision IDs, reasons and error messages.
+func noticef(out io.Writer, format string, args ...any) {
+	fmt.Fprintln(out, visibleText(fmt.Sprintf(format, args...)))
+}
+
 type runtimeLogRecord struct {
 	Type      string         `json:"type"`
 	Time      *string        `json:"time"`
@@ -294,7 +372,7 @@ type runtimeLogRecord struct {
 
 func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, notices io.Writer) error {
 	if string(page.Stream) == "null" || len(page.Stream) == 0 {
-		fmt.Fprintf(notices, "notice: revision %s has no running Pod for source %s\n", page.RevisionID, page.Source)
+		noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
 	}
 	for _, raw := range page.Records {
 		var record runtimeLogRecord
@@ -307,9 +385,9 @@ func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, noti
 		}
 		switch record.Type {
 		case "gap":
-			fmt.Fprintf(notices, "notice: %s gap %s: %s\n", at, record.Reason, record.Remedy)
+			noticef(notices, "notice: %s gap %s: %s", at, record.Reason, record.Remedy)
 		case "withheld":
-			fmt.Fprintf(notices, "notice: %s %d lines withheld (%s)\n", at, record.Count, record.Reason)
+			noticef(notices, "notice: %s %d lines withheld (%s)", at, record.Count, record.Reason)
 		}
 		if app.output == "json" {
 			// NDJSON: one record per line, exactly as OCC returned it.
@@ -342,12 +420,17 @@ func runtimeLogLineText(at string, record runtimeLogRecord) string {
 	slices.Sort(names)
 	for _, name := range names {
 		value := displayValue(record.Fields[name])
-		if value == "" || strings.ContainsAny(value, " \t\"=") {
+		// Quote a value that is empty, holds a space (any Unicode space, which
+		// would read as a field break) or a separator, or holds anything
+		// strconv.Quote would escape.
+		if value == "" || strings.ContainsAny(value, "\"=") || !utf8.ValidString(value) ||
+			strings.ContainsFunc(value, func(character rune) bool { return character == ' ' || !strconv.IsPrint(character) }) {
 			value = strconv.Quote(value)
 		}
 		fmt.Fprintf(&text, " %s=%s", name, value)
 	}
-	return text.String()
+	// Quoted values are already escaped; this covers the message and the rest.
+	return visibleText(text.String())
 }
 
 func (app *application) printRuntime(description any) error {
