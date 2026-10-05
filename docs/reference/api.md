@@ -3028,6 +3028,7 @@ Resolve OpenClaw launch availability with an assigned runtime role
 | `data.activeRevisionId` | `string` | No | — |
 | `data.host` | `string` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.reason` | `"ui_configuration" or "role_unavailable" or "device_approval_required" or "transport_unsupported"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
 | `meta` | `object` | Yes | — |

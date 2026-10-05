@@ -85,7 +85,7 @@ The handler verifies the human session and Agent `use`, even when disabled. Enab
 
 A newer successor on a Compute Driver requiring stopped predecessors also produces `unavailable`: the worker removes the old workload before starting its replacement. A failed replacement leaves the old revision recorded as active without a serving workload. Both status and proxy admission check this boundary.
 
-OCC derives the native target from the active revision. A desired state other than `running` returns `stopped`. Compute qualifies trusted-proxy identity and role headers, enabled device approval, and approval scopes covering the selected role. If it cannot supply that descriptor or `nativeAdminConfigurationSupported` rejects `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the same derived target. A missing endpoint or one that is not a clean private `wss:` URL also returns `unsupported`. Only `available` carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits it from the browser response.
+OCC derives the native target from the active revision. A desired state other than `running` returns `stopped`. Compute qualifies trusted-proxy identity and role headers, enabled device approval, and approval scopes covering the selected role. If it cannot supply that descriptor or `nativeAdminConfigurationSupported` rejects `controlUi.enabled`, exact `allowedOrigins`, or host-header fallback/device-auth settings, the resolver returns `unsupported` with the derived target and a reason identifying UI configuration, missing role, insufficient device approval or unsupported transport. A missing endpoint or one that is not a clean private `wss:` URL also returns `unsupported`. Only `available` carries the private `gatewayBase`; `nativeAdminAvailabilityData` omits it from the browser response.
 
 ### 4. OCC derives the isolated Agent host
 
@@ -212,7 +212,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
-- 2026-10-05: Preserve explicit administrator entry during upgrade. (authoring-run/fabe27b6-d360-4a29-8a8c-17547858f84a - 379dc56084c92d7847849f2b3f96ddc0eccc17d8)
+- 2026-10-05: Preserve explicit administrator entry during upgrade and explain access configuration failures. (authoring-run/fabe27b6-d360-4a29-8a8c-17547858f84a - 379dc56084c92d7847849f2b3f96ddc0eccc17d8)
 
 - 2026-10-04 07:30: Only a missing active revision reports `unavailable`; IAM and other dependency outages return `503`, and close or refuse proxied requests as `dependency_failure`. (bh11-native-status)
 

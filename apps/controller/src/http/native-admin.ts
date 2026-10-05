@@ -2,6 +2,7 @@ import type { AuditEventFactory, AuditSink } from "@openclaw-enterprise/audit";
 import type {
   Agent,
   AgentRevision,
+  AgentRuntimeAccessUnavailableReason,
   AuthorizationEvidence,
   ComputeDriver,
   IAMDriver,
@@ -134,6 +135,15 @@ const nativeAdminStatusDataSchema = {
     status: {
       type: "string",
       enum: ["available", "disabled", "stopped", "unavailable", "unsupported"],
+    },
+    reason: {
+      type: "string",
+      enum: [
+        "ui_configuration",
+        "role_unavailable",
+        "device_approval_required",
+        "transport_unsupported",
+      ],
     },
     host: { type: "string" },
     origin: { type: "string", format: "uri" },
@@ -487,7 +497,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   };
   type NativeAdminAvailability =
     | { readonly status: "disabled" | "stopped" | "unavailable" }
-    | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
+    | ({ readonly status: "stopped" } & NativeAdminTargetStatus)
+    | ({
+        readonly status: "unsupported";
+        readonly reason: AgentRuntimeAccessUnavailableReason | "ui_configuration";
+      } & NativeAdminTargetStatus)
     | ({
         readonly status: "available";
         readonly gatewayBase: string;
@@ -563,7 +577,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      return { status: "unsupported", agent, revision, target };
+      return { status: "unsupported", reason: "ui_configuration", agent, revision, target };
     }
     let compute: ComputeDriver;
     try {
@@ -572,9 +586,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw dependencyUnavailable();
     }
     const access = compute.getAgentRuntimeAccess?.(revision, input.actorId, selection.runtimeRole);
+    if (access !== undefined && "reason" in access) {
+      return { status: "unsupported", reason: access.reason, agent, revision, target };
+    }
     const gatewayBase = nativeAdminGatewayHttpBase(access?.endpoint ?? "");
     if (gatewayBase === undefined) {
-      return { status: "unsupported", agent, revision, target };
+      return { status: "unsupported", reason: "transport_unsupported", agent, revision, target };
     }
     return {
       status: "available",
@@ -606,6 +623,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
     return {
       status: availability.status,
+      ...(availability.status === "unsupported" ? { reason: availability.reason } : {}),
       host: availability.target.host,
       origin: availability.target.origin,
       activeRevisionId: availability.revision.id,

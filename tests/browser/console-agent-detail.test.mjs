@@ -2696,7 +2696,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.getByRole("heading", { name: "OpenClaw" }).waitFor();
   await page
     .getByText(
-      "OpenClaw is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "OpenClaw’s UI is disabled or does not allow this Agent’s URL. Someone who can edit its Configuration can enable it and deploy a new version.",
     )
     .waitFor();
   assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
@@ -2948,7 +2948,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await activity.getByText("Recorded status: succeeded").waitFor();
   await card
     .getByText(
-      "OpenClaw is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
+      "OpenClaw’s UI is disabled or does not allow this Agent’s URL. Someone who can edit its Configuration can enable it and deploy a new version.",
     )
     .waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);

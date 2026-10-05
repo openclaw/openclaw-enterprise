@@ -1006,3 +1006,33 @@ test("the normal sharing API assigns any configured role, changes it atomically,
   );
   assert.equal((await nativeStatus(context)).status, 403);
 });
+
+test("native access explains UI, missing-role and pairing failures after deployment", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  const { fixture, namespace, agent, revision } = context;
+  let previousRevisionId = revision.id;
+  for (const reason of ["ui_configuration", "role_unavailable", "device_approval_required"]) {
+    const values = structuredClone(revision.configuration);
+    if (reason === "ui_configuration") {
+      values.gateway.controlUi.enabled = false;
+    }
+    if (reason === "role_unavailable") {
+      delete values.gateway.roles.definitions.administrator;
+    }
+    if (reason === "device_approval_required") {
+      values.gateway.auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read"];
+    }
+    await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
+    const deployed = await fixture.controller.deployAgent(
+      adminPrincipal(fixture).id,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    await fixture.activateRevision(namespace.id, agent.id, deployed.id, previousRevisionId);
+    previousRevisionId = deployed.id;
+    const result = await nativeStatus(context);
+    assert.equal(result.status, 200);
+    assert.equal(result.data.status, "unsupported");
+    assert.equal(result.data.reason, reason);
+  }
+});

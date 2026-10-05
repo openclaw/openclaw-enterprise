@@ -4,12 +4,21 @@ import { message } from "./list.mjs";
 const warning =
   "OpenClaw uses your assigned role to control conversations, tools and settings. Use OCE for durable configuration; native changes are not recorded in Agent versions and may be overwritten by deployment.";
 
-function unavailableText(status) {
+function unavailableText(status, reason) {
   switch (status) {
     case "stopped":
       return "Start this Agent before opening OpenClaw.";
     case "unsupported":
-      return "OpenClaw is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.";
+      switch (reason) {
+        case "ui_configuration":
+          return "OpenClaw’s UI is disabled or does not allow this Agent’s URL. Someone who can edit its Configuration can enable it and deploy a new version.";
+        case "role_unavailable":
+          return "Your assigned OpenClaw role is missing from this Agent’s current version. An administrator can change your assignment in Sharing or restore the role and deploy.";
+        case "device_approval_required":
+          return "OpenClaw browser pairing does not approve all permissions in your assigned role. Someone who can edit its Configuration can update device auto-approval and deploy a new version.";
+        default:
+          return "This Compute Driver does not provide supported OpenClaw browser access for this Agent.";
+      }
     case "unavailable":
       return "OpenClaw is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.";
     default:
@@ -84,7 +93,7 @@ export function renderRuntimeAccess(context, path) {
       } else if (current.status === "disabled" || current.status === "denied") {
         status.textContent = "";
       } else {
-        status.textContent = unavailableText(current.status);
+        status.textContent = unavailableText(current.status, current.reason);
       }
     } catch (cause) {
       if (!context.isCurrent()) {

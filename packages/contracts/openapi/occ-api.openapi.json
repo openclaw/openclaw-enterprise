@@ -14049,6 +14049,15 @@
                         "activeRevisionId": { "type": "string" },
                         "host": { "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "reason": {
+                          "enum": [
+                            "ui_configuration",
+                            "role_unavailable",
+                            "device_approval_required",
+                            "transport_unsupported"
+                          ],
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "available",

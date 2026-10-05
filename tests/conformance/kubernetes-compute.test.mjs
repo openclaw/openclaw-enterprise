@@ -3098,9 +3098,9 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.ok(
     driver.listAgentRuntimeRoles(revision).some((role) => role.id === ADMINISTRATOR_RUNTIME_ROLE),
   );
-  assert.equal(
+  assert.deepEqual(
     driver.getAgentRuntimeAccess(revision, "prn_00000000-0000-4000-8000-000000000003", "reviewer"),
-    undefined,
+    { reason: "role_unavailable" },
   );
 
   // Human ingress preserves only OCC's verified role descriptor; service ingress overwrites it.
@@ -3121,13 +3121,13 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     for (const { path } of rule.matches) {
       const servicePath = path.value.replace(/\/$/u, "");
       assert.notEqual(admittedHumanPath, servicePath);
-      assert.equal(`${admittedHumanPath}/`.startsWith(`${servicePath}/`), false);
+      assert.deepEqual(`${admittedHumanPath}/`.startsWith(`${servicePath}/`), false);
     }
   }
   const humanPath = `/people/namespaces/${tenant.id}/agents/${revision.agentId}`;
-  assert.equal(human.endpoint, `wss://${gatewayRouting.hostname}${humanPath}`);
-  assert.equal(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
-  assert.equal(human.headers["x-occ-role"], "researcher");
+  assert.deepEqual(human.endpoint, `wss://${gatewayRouting.hostname}${humanPath}`);
+  assert.deepEqual(human.headers["x-occ-identity"], "oce:prn_00000000-0000-4000-8000-000000000003");
+  assert.deepEqual(human.headers["x-occ-role"], "researcher");
   const managedConfiguration = driver.kubernetesGatewayConfigurationDocument(
     humanRevision.configuration,
   );
@@ -3177,18 +3177,18 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   ]) {
     const configuration = structuredClone(humanRevision.configuration);
     configuration.gateway.auth.trustedProxy.deviceAutoApprove = approval;
-    assert.equal(
+    assert.deepEqual(
       driver.getAgentRuntimeAccess(
         { ...humanRevision, configuration },
         "prn_00000000-0000-4000-8000-000000000003",
         "researcher",
       ),
-      undefined,
+      { reason: "device_approval_required" },
     );
   }
   const administratorOnly = structuredClone(humanRevision.configuration);
   administratorOnly.gateway.auth.trustedProxy.deviceAutoApprove.scopes = ["operator.admin"];
-  assert.equal(
+  assert.deepEqual(
     driver.getAgentRuntimeAccess(
       { ...humanRevision, configuration: administratorOnly },
       "prn_00000000-0000-4000-8000-000000000003",
@@ -3196,13 +3196,13 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     ).headers["x-openclaw-scopes"],
     "operator.admin",
   );
-  assert.equal(
+  assert.deepEqual(
     driver.getAgentRuntimeAccess(
       humanRevision,
       "prn_00000000-0000-4000-8000-000000000003",
       "oce-service",
     ),
-    undefined,
+    { reason: "role_unavailable" },
   );
   const humanRoute = driver.gatewayRoute(
     humanRevision,

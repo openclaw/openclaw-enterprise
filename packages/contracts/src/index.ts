@@ -848,6 +848,13 @@ export interface AgentRuntimeRole {
   readonly permissions: Readonly<Record<string, unknown>>;
 }
 
+export type AgentRuntimeAccessUnavailableReason =
+  "role_unavailable" | "device_approval_required" | "transport_unsupported";
+
+export interface AgentRuntimeAccessUnavailable {
+  readonly reason: AgentRuntimeAccessUnavailableReason;
+}
+
 export interface AgentRuntimeAccess {
   readonly endpoint: string;
   readonly headers: Readonly<Record<string, string>>;
@@ -1748,7 +1755,7 @@ export interface ComputeDriver extends Driver {
     revision: AgentRevision,
     principalId: string,
     runtimeRole: string,
-  ): AgentRuntimeAccess | undefined;
+  ): AgentRuntimeAccess | AgentRuntimeAccessUnavailable | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
   /**

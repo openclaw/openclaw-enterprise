@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
   AgentRuntimeAccess,
+  AgentRuntimeAccessUnavailable,
   AgentRuntimeRole,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
@@ -111,70 +112,59 @@ export function humanRuntimeAccess(
   endpoint: string | undefined,
   principalId: string,
   runtimeRole: string,
-): AgentRuntimeAccess | undefined {
+): AgentRuntimeAccess | AgentRuntimeAccessUnavailable {
+  if (endpoint === undefined || !/^prn_[A-Za-z0-9-]{1,196}$/u.test(principalId)) {
+    return { reason: "transport_unsupported" };
+  }
   const gateway = asRecord(revision.configuration.gateway);
   const auth = asRecord(gateway?.auth);
   const proxy = asRecord(auth?.trustedProxy);
-  // Preserve the pre-role administrator path for an explicit assignment. The
-  // original trusted-proxy and pairing requirements still apply.
-  if (gateway?.roles === undefined && runtimeRole === ADMINISTRATOR_RUNTIME_ROLE) {
-    const approval = asRecord(proxy?.deviceAutoApprove);
-    return endpoint !== undefined &&
-      auth?.mode === "trusted-proxy" &&
-      proxy?.userHeader === "x-occ-identity" &&
-      Array.isArray(proxy.allowUsers) &&
-      proxy.allowUsers.includes(RUNTIME_SERVICE_IDENTITY) &&
-      approval?.enabled === true &&
-      Array.isArray(approval.scopes) &&
-      approval.scopes.includes("operator.admin")
-      ? {
-          endpoint,
-          headers: {
-            "x-occ-identity": RUNTIME_SERVICE_IDENTITY,
-            "x-openclaw-scopes": "operator.admin",
-          },
-        }
-      : undefined;
-  }
   const role = agentRuntimeRoles(revision.configuration).find(
     (candidate) => candidate.id === runtimeRole,
   );
-  if (
-    endpoint === undefined ||
-    role === undefined ||
-    auth?.mode !== "trusted-proxy" ||
-    proxy?.userHeader !== "x-occ-identity" ||
-    proxy?.roleHeader !== RUNTIME_ROLE_HEADER ||
-    proxy.rolePolicyHashHeader !== RUNTIME_ROLE_POLICY_HEADER ||
-    !isDeepStrictEqual(proxy.managedIdentityPrefixes, [RUNTIME_PERSON_IDENTITY_PREFIX]) ||
-    !isDeepStrictEqual(proxy.managedIdentities, [RUNTIME_SERVICE_IDENTITY]) ||
-    !/^prn_[A-Za-z0-9-]{1,196}$/u.test(principalId)
-  ) {
-    return undefined;
+  if (role === undefined) {
+    return { reason: "role_unavailable" };
   }
   const scopes = role.permissions.scopes;
   if (!Array.isArray(scopes) || scopes.some((scope) => typeof scope !== "string")) {
-    return undefined;
+    return { reason: "role_unavailable" };
+  }
+  const sharedAdministrator =
+    gateway?.roles === undefined && runtimeRole === ADMINISTRATOR_RUNTIME_ROLE;
+  if (
+    auth?.mode !== "trusted-proxy" ||
+    proxy?.userHeader !== "x-occ-identity" ||
+    (sharedAdministrator
+      ? !Array.isArray(proxy.allowUsers) || !proxy.allowUsers.includes(RUNTIME_SERVICE_IDENTITY)
+      : proxy.roleHeader !== RUNTIME_ROLE_HEADER ||
+        proxy.rolePolicyHashHeader !== RUNTIME_ROLE_POLICY_HEADER ||
+        !isDeepStrictEqual(proxy.managedIdentityPrefixes, [RUNTIME_PERSON_IDENTITY_PREFIX]) ||
+        !isDeepStrictEqual(proxy.managedIdentities, [RUNTIME_SERVICE_IDENTITY]))
+  ) {
+    return { reason: "transport_unsupported" };
   }
   const approval = asRecord(proxy.deviceAutoApprove);
   const approvalScopes = approval?.scopes;
-  // Native first-device approval intersects scope names literally; an admin
-  // scope in this cap does not stand in for a limited role's read/write scopes.
+  // First-device approval intersects scope names literally; operator.admin in
+  // this ceiling does not substitute for a limited role's read/write scopes.
   if (
     approval?.enabled !== true ||
     !Array.isArray(approvalScopes) ||
     approvalScopes.some((scope) => typeof scope !== "string") ||
     scopes.some((scope) => !approvalScopes.includes(scope))
   ) {
-    return undefined;
+    return { reason: "device_approval_required" };
   }
+  // Only an explicit administrator assignment may retain the old shared profile.
   return {
     endpoint,
-    headers: {
-      "x-occ-identity": `${RUNTIME_PERSON_IDENTITY_PREFIX}${principalId}`,
-      [RUNTIME_ROLE_HEADER]: encodeURIComponent(runtimeRole),
-      [RUNTIME_ROLE_POLICY_HEADER]: runtimeRolePolicyHash(role.permissions),
-      "x-openclaw-scopes": scopes.join(","),
-    },
+    headers: sharedAdministrator
+      ? { "x-occ-identity": RUNTIME_SERVICE_IDENTITY, "x-openclaw-scopes": "operator.admin" }
+      : {
+          "x-occ-identity": `${RUNTIME_PERSON_IDENTITY_PREFIX}${principalId}`,
+          [RUNTIME_ROLE_HEADER]: encodeURIComponent(runtimeRole),
+          [RUNTIME_ROLE_POLICY_HEADER]: runtimeRolePolicyHash(role.permissions),
+          "x-openclaw-scopes": scopes.join(","),
+        },
   };
 }

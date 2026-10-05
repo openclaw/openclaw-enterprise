@@ -953,6 +953,9 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
+            ...(scenario.nativeAdminReason === undefined
+              ? {}
+              : { reason: scenario.nativeAdminReason }),
             url:
               (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
