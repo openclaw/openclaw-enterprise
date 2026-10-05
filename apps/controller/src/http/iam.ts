@@ -1,5 +1,6 @@
 import type {
   AccessBinding,
+  AgentRuntimeRoleCatalog,
   ResourceKind,
   ResourceRef,
   Role,
@@ -115,6 +116,12 @@ export const iamHandlers = {
         subjectId: body?.subjectId as string,
         roleId: body?.roleId as string,
         ...(body?.runtimeRole === undefined ? {} : { runtimeRole: body.runtimeRole as string }),
+        ...(body?.runtimeRoleConfiguration === undefined
+          ? {}
+          : {
+              runtimeRoleConfiguration:
+                body.runtimeRoleConfiguration as AgentRuntimeRoleCatalog["configuration"],
+            }),
         resourceKind: body?.resourceKind as ResourceKind,
         resourceId: body?.resourceId as string,
       });
@@ -149,6 +156,7 @@ export const iamHandlers = {
         namespaceId,
         params.bindingId as string,
         body?.runtimeRole as string,
+        body?.runtimeRoleConfiguration as AgentRuntimeRoleCatalog["configuration"],
       );
       await unit.audit.append(
         mutationEvent(bindingAuditResource(updated, namespaceId), bindingAuditDetails(updated)),

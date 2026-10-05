@@ -22,6 +22,7 @@ import type {
   AgentRuntimeDescription,
   ComputeAgentRevisionBinding,
   AgentRevision,
+  AgentRuntimeRoleCatalog,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
@@ -591,6 +592,7 @@ export interface CreateIAMAccessBindingInput {
   readonly subjectId: string;
   readonly roleId: string;
   readonly runtimeRole?: string;
+  readonly runtimeRoleConfiguration?: AgentRuntimeRoleCatalog["configuration"];
   readonly resourceKind: ResourceKind;
   readonly resourceId: string;
 }
@@ -1329,13 +1331,10 @@ export class OpenClawController {
       namespaceId: namespace.id,
     });
     await this.verifyNamespacePolicyResource(namespace.id, input.resourceKind, input.resourceId);
-    if (input.runtimeRole !== undefined) {
-      await this.assertAgentRuntimeRole(
-        principalId,
-        namespace.id,
-        input.resourceKind,
-        input.resourceId,
-        input.runtimeRole,
+    if (input.runtimeRole === undefined && input.runtimeRoleConfiguration !== undefined) {
+      throw new IAMPolicyValidationError(
+        "/runtimeRoleConfiguration",
+        "A Configuration precondition requires a runtime role.",
       );
     }
     const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
@@ -1346,6 +1345,16 @@ export class OpenClawController {
         id: input.resourceId,
         namespaceId: namespace.id,
       });
+      if (input.runtimeRole !== undefined) {
+        await this.assertAgentRuntimeRole(
+          state,
+          namespace.id,
+          input.resourceKind,
+          input.resourceId,
+          input.runtimeRole,
+          input.runtimeRoleConfiguration,
+        );
+      }
       const role = await this.iamPolicyOperation(() =>
         roles.getNamespaceRole!({ policy: state.iamPolicy }, namespace.id, input.roleId),
       );
@@ -1370,26 +1379,54 @@ export class OpenClawController {
     });
   }
 
-  async listAgentRuntimeRoles(principalId: string, namespaceId: string, agentId: string) {
+  async listAgentRuntimeRoles(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<AgentRuntimeRoleCatalog>> {
     await this.admitIAMPolicyOperation(principalId, namespaceId);
-    const { revision } = await this.getReadableActiveAgentRevision(
-      principalId,
-      namespaceId,
-      agentId,
-    );
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
     const compute = this.selectedDriver("compute");
     if (compute.listAgentRuntimeRoles === undefined) {
       throw new DependencyUnavailableError("The Compute Driver does not support runtime roles.");
     }
-    return compute.listAgentRuntimeRoles(revision);
+    return this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespaceId, agentId);
+      if (!agent) {
+        throw new ScopeViolationError("The exact Agent is unavailable.");
+      }
+      const configuration = await this.currentAgentConfiguration(state, namespace, agent);
+      const revision =
+        agent.activeRevisionId === undefined
+          ? undefined
+          : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
+      if (agent.activeRevisionId !== undefined && revision === undefined) {
+        throw new DependencyUnavailableError("The active Agent revision is unavailable.");
+      }
+      return immutableCopy({
+        configuration: { id: configuration.id, generation: configuration.generation },
+        roles: compute.listAgentRuntimeRoles!(configuration.values),
+        desiredRuntimeState: agent.desiredRuntimeState,
+        ...(revision === undefined
+          ? {}
+          : {
+              activeRevision: {
+                id: revision.id,
+                roles: compute.listAgentRuntimeRoles!(revision.configuration),
+              },
+            }),
+      });
+    });
   }
 
   private async assertAgentRuntimeRole(
-    principalId: string,
+    state: PlatformUnitOfWork,
     namespaceId: string,
     resourceKind: ResourceKind,
     resourceId: string,
     runtimeRole: string,
+    expectedConfiguration: AgentRuntimeRoleCatalog["configuration"] | undefined,
   ): Promise<void> {
     if (
       resourceKind !== "agent" ||
@@ -1397,14 +1434,45 @@ export class OpenClawController {
       runtimeRole !== runtimeRole.trim() ||
       runtimeRole.length > 128
     ) {
-      throw new ScopeViolationError(
+      throw new IAMPolicyValidationError(
+        "/runtimeRole",
         "A runtime role requires an exact Agent and a normalized role name.",
       );
     }
-    const roles = await this.listAgentRuntimeRoles(principalId, namespaceId, resourceId);
+    if (
+      !expectedConfiguration ||
+      !isNonEmptyString(expectedConfiguration.id) ||
+      !Number.isSafeInteger(expectedConfiguration.generation) ||
+      expectedConfiguration.generation < 1
+    ) {
+      throw new IAMPolicyValidationError(
+        "/runtimeRoleConfiguration",
+        "Review the current Configuration before assigning a runtime role.",
+      );
+    }
+    const namespace = await this.exactNamespace(state, namespaceId);
+    const agent = await state.agents.findAgent(namespaceId, resourceId);
+    if (!agent) {
+      throw new ScopeViolationError("The exact Agent is unavailable.");
+    }
+    const configuration = await this.currentAgentConfiguration(state, namespace, agent);
+    if (
+      configuration.id !== expectedConfiguration.id ||
+      configuration.generation !== expectedConfiguration.generation
+    ) {
+      throw new ResourceStateConflictError(
+        "The Agent Configuration changed. Refresh the role catalog before assigning access.",
+      );
+    }
+    const compute = this.selectedDriver("compute");
+    if (compute.listAgentRuntimeRoles === undefined) {
+      throw new DependencyUnavailableError("The Compute Driver does not support runtime roles.");
+    }
+    const roles = compute.listAgentRuntimeRoles(configuration.values);
     if (!roles.some((role) => role.id === runtimeRole)) {
-      throw new ScopeViolationError(
-        "The runtime role is not configured in the active Agent revision.",
+      throw new IAMPolicyValidationError(
+        "/runtimeRole",
+        "The runtime role is not in the saved Agent Configuration.",
       );
     }
   }
@@ -1414,6 +1482,7 @@ export class OpenClawController {
     namespaceId: string,
     bindingId: string,
     runtimeRole: string,
+    expectedConfiguration: AgentRuntimeRoleCatalog["configuration"],
   ): Promise<Readonly<AccessBinding>> {
     const binding = await this.getIAMAccessBinding(principalId, namespaceId, bindingId);
     if (
@@ -1423,13 +1492,6 @@ export class OpenClawController {
     ) {
       throw new ScopeViolationError("The AccessBinding is not a runtime assignment.");
     }
-    await this.assertAgentRuntimeRole(
-      principalId,
-      namespaceId,
-      "agent",
-      binding.resourceId,
-      runtimeRole,
-    );
     const driver = this.iamPolicyDriver("updateNamespaceRuntimeRole");
     return this.mutate(async (state) => {
       await this.holdIAMPolicyAuthority(state, principalId, namespaceId, {
@@ -1437,6 +1499,14 @@ export class OpenClawController {
         id: binding.resourceId!,
         namespaceId,
       });
+      await this.assertAgentRuntimeRole(
+        state,
+        namespaceId,
+        "agent",
+        binding.resourceId!,
+        runtimeRole,
+        expectedConfiguration,
+      );
       const updated = await this.iamPolicyOperation(() =>
         driver.updateNamespaceRuntimeRole!(
           { policy: state.iamPolicy },

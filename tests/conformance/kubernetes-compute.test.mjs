@@ -3096,7 +3096,9 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     },
   );
   assert.ok(
-    driver.listAgentRuntimeRoles(revision).some((role) => role.id === ADMINISTRATOR_RUNTIME_ROLE),
+    driver
+      .listAgentRuntimeRoles(revision.configuration)
+      .some((role) => role.id === ADMINISTRATOR_RUNTIME_ROLE),
   );
   assert.deepEqual(
     driver.getAgentRuntimeAccess(revision, "prn_00000000-0000-4000-8000-000000000003", "reviewer"),

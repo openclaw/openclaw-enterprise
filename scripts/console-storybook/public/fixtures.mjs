@@ -1222,34 +1222,48 @@ export function installFixture(scenario, evidence) {
           return response(status);
         }
         if (suffix === "/runtime-roles") {
-          return scenario.runtimeRolesUnavailable
-            ? error(503)
-            : response([
-                {
-                  id: "researcher",
-                  permissions: {
-                    sessions: { others: "none" },
-                    agents: ["main"],
-                    scopes: ["operator.read", "operator.write"],
-                  },
-                },
-                {
-                  id: "reviewer",
-                  permissions: {
-                    sessions: { others: "view" },
-                    agents: ["main"],
-                    scopes: ["operator.read"],
-                  },
-                },
-                {
-                  id: "administrator",
-                  permissions: {
-                    sessions: { others: "write" },
-                    agents: "*",
-                    scopes: ["operator.admin"],
-                  },
-                },
-              ]);
+          if (scenario.runtimeRolesUnavailable) {
+            return error(503);
+          }
+          const runtimeRoles = [
+            {
+              id: "researcher",
+              permissions: {
+                sessions: { others: "none" },
+                agents: ["main"],
+                scopes: ["operator.read", "operator.write"],
+              },
+            },
+            {
+              id: "reviewer",
+              permissions: {
+                sessions: { others: "view" },
+                agents: ["main"],
+                scopes: ["operator.read"],
+              },
+            },
+            {
+              id: "administrator",
+              permissions: {
+                sessions: { others: "write" },
+                agents: "*",
+                scopes: ["operator.admin"],
+              },
+            },
+          ];
+          const deployedRoles = structuredClone(runtimeRoles);
+          if (scenario.runtimeRolePolicyChanged) {
+            runtimeRoles[0].permissions.scopes = ["operator.read"];
+          }
+          const configuration = configs.get(saved.configurationId);
+          return response({
+            configuration: { id: configuration.id, generation: configuration.generation },
+            roles: runtimeRoles,
+            desiredRuntimeState: saved.desiredRuntimeState,
+            ...(saved.activeRevisionId
+              ? { activeRevision: { id: saved.activeRevisionId, roles: deployedRoles } }
+              : {}),
+          });
         }
         if (suffix.startsWith("/workspace/files/")) {
           const filename = decodeURIComponent(suffix.split("/").at(-1));
@@ -1282,7 +1296,8 @@ export function installFixture(scenario, evidence) {
           return response(bindings);
         }
         if (method === "POST") {
-          const binding = { ...body, id: `binding_${serial++}`, namespaceId };
+          const { runtimeRoleConfiguration: _runtimeRoleConfiguration, ...assignment } = body;
+          const binding = { ...assignment, id: `binding_${serial++}`, namespaceId };
           bindings.push(binding);
           return response(binding, 201);
         }

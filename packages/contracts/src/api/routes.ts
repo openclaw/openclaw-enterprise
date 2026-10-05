@@ -3,6 +3,8 @@ import { Type } from "typebox";
 import {
   AgentParams,
   AgentId,
+  AgentRuntimeRoleSchema,
+  RuntimeRoleConfiguration,
   NamespaceId,
   SecretId,
   AgentProvisioningParams,
@@ -39,6 +41,7 @@ import {
   NamedResourceBody,
   NamespaceParams,
   RevisionParams,
+  RevisionId,
   SecretParams,
   ServiceAccountParams,
   UpdateAgentBody,
@@ -630,18 +633,29 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "namespace_iam",
-    summary: "List assignable runtime roles from the active Agent revision",
+    summary: "List configured runtime roles and deployed permission summaries for an Agent",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
       response: {
         200: Type.Object({
-          data: Type.Array(
-            Type.Object({
-              id: Type.String(),
-              permissions: Type.Record(Type.String(), Type.Unknown()),
-            }),
+          data: Type.Object(
+            {
+              configuration: RuntimeRoleConfiguration,
+              roles: Type.Array(AgentRuntimeRoleSchema),
+              desiredRuntimeState: Type.Union([Type.Literal("running"), Type.Literal("stopped")]),
+              activeRevision: Type.Optional(
+                Type.Object(
+                  {
+                    id: RevisionId,
+                    roles: Type.Array(AgentRuntimeRoleSchema),
+                  },
+                  { additionalProperties: false },
+                ),
+              ),
+            },
+            { additionalProperties: false },
           ),
           meta: Type.Object({ requestId: Type.String() }),
         }),

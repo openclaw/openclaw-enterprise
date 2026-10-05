@@ -155,7 +155,7 @@ approvals, runtime images, and credential-service networking.
 
 ### Sharing
 
-Open **Change OpenClaw role** or **OpenClaw roles unavailable**.
+Open **Share before first deployment**, **Share while stopped**, **Configured and deployed role permissions**, **Change OpenClaw role**, or **OpenClaw roles unavailable**. Review both permission summaries, share an existing Principal, change its role and remove the direct assignment. These previews demonstrate simulated UI states; backend lifecycle and native admission need the integration suites.
 
 ### Return to loaded pages
 

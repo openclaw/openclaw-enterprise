@@ -86,7 +86,7 @@ Docker does not implement automatic private Agent routes.
 
 Prepare `gateway-routing`, then run `native-admin-k3d-real.test.mjs`. Its embedded sharing case checks
 human cookies, exact Agent grants, denied sibling/Configuration access, the
-Console launcher and installed model turns. Removing one binding must close that
+Console launcher and installed model turns. The native-browser case creates an assignment before role deployment, changes it after stop reconciliation clears the active revision, and verifies access after redeployment. Removing one binding must close that
 person's WebSockets within 30 seconds while another continues.
 This does not qualify account enrollment, per-chat authority, Git or OpenShell.
 

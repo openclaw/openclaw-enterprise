@@ -499,6 +499,16 @@ export const CreateIAMRoleBody = Type.Object(
   { additionalProperties: false },
 );
 
+export const RuntimeRoleConfiguration = Type.Object(
+  { id: ConfigurationId, generation: ConfigurationGeneration },
+  { additionalProperties: false },
+);
+
+export const AgentRuntimeRoleSchema = Type.Object(
+  { id: Type.String(), permissions: Type.Record(Type.String(), Type.Unknown()) },
+  { additionalProperties: false },
+);
+
 export const CreateIAMAccessBindingBody = Type.Object(
   {
     subjectKind: Type.Literal("identity"),
@@ -507,6 +517,7 @@ export const CreateIAMAccessBindingBody = Type.Object(
     runtimeRole: Type.Optional(
       Type.String({ minLength: 1, maxLength: 128, pattern: "^\\S(?:.*\\S)?$" }),
     ),
+    runtimeRoleConfiguration: Type.Optional(RuntimeRoleConfiguration),
     resourceKind: NamespacePolicyResourceKindSchema,
     resourceId: Type.String({ minLength: 1, maxLength: 200 }),
   },
@@ -514,7 +525,10 @@ export const CreateIAMAccessBindingBody = Type.Object(
 );
 
 export const UpdateIAMRuntimeRoleBody = Type.Object(
-  { runtimeRole: Type.String({ minLength: 1, maxLength: 128, pattern: "^\\S(?:.*\\S)?$" }) },
+  {
+    runtimeRole: Type.String({ minLength: 1, maxLength: 128, pattern: "^\\S(?:.*\\S)?$" }),
+    runtimeRoleConfiguration: RuntimeRoleConfiguration,
+  },
   { additionalProperties: false },
 );
 

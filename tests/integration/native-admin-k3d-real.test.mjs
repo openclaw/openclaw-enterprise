@@ -281,36 +281,6 @@ async function redeployWithNativeAdminAccess(
     },
   );
   assert.equal(patched.status, 200, JSON.stringify(patched.error));
-  const previousGatewayUid = topology.gatewayPod.metadata.uid;
-  const deployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
-  );
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
-  await waitFor(`native-admin revision ${deployed.data.id} activation`, async () => {
-    const observed = await topology.request(
-      "GET",
-      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
-    );
-    assert.equal(observed.status, 200);
-    return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
-  });
-  try {
-    await waitFor(`worker completion of native-admin revision ${deployed.data.id}`, () =>
-      topology.events.find(
-        (event) =>
-          event.event === "worker.completed" &&
-          event.revisionId === deployed.data.id &&
-          event.outcome === "success",
-      ),
-    );
-  } catch (cause) {
-    const events = topology.events
-      .filter((event) => event.revisionId === deployed.data.id)
-      .slice(-8)
-      .map(({ event, code, outcome, revisionId }) => ({ event, code, outcome, revisionId }));
-    throw new Error(`Native admin revision did not finish: ${JSON.stringify(events)}`, { cause });
-  }
   const identity = await topology.observerPool.query(
     `SELECT identity.id FROM occ.iam_identities identity
     JOIN occ."user" account ON identity.subject = account.id
@@ -340,8 +310,44 @@ async function redeployWithNativeAdminAccess(
       resourceKind: "agent",
       resourceId: topology.agent.id,
       runtimeRole: ADMINISTRATOR_RUNTIME_ROLE,
+      runtimeRoleConfiguration: (
+        await topology.adminRequest(
+          "GET",
+          `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/runtime-roles`,
+        )
+      ).data.configuration,
     });
     assert.equal(assignment.status, 201, JSON.stringify(assignment.error));
+  }
+  const previousGatewayUid = topology.gatewayPod.metadata.uid;
+  const deployed = await topology.request(
+    "POST",
+    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
+  );
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  await waitFor(`native-admin revision ${deployed.data.id} activation`, async () => {
+    const observed = await topology.request(
+      "GET",
+      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    );
+    assert.equal(observed.status, 200);
+    return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
+  });
+  try {
+    await waitFor(`worker completion of native-admin revision ${deployed.data.id}`, () =>
+      topology.events.find(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === deployed.data.id &&
+          event.outcome === "success",
+      ),
+    );
+  } catch (cause) {
+    const events = topology.events
+      .filter((event) => event.revisionId === deployed.data.id)
+      .slice(-8)
+      .map(({ event, code, outcome, revisionId }) => ({ event, code, outcome, revisionId }));
+    throw new Error(`Native admin revision did not finish: ${JSON.stringify(events)}`, { cause });
   }
   topology.revision = deployed.data;
   topology.gatewayPod = await waitForReadyGatewayPod(
@@ -653,6 +659,29 @@ async function assertStopRedeployPreservesWorkspaceFile(
   assert.equal(stoppedAgent.data.desiredRuntimeState, "stopped");
   topology.agent = { ...topology.agent, ...stoppedAgent.data };
 
+  // A real worker has cleared the active revision; role editing must not need a live runtime.
+  const catalog = await topology.adminRequest("GET", agentPath(topology, "/runtime-roles"));
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.error));
+  assert.equal(catalog.data.activeRevision, undefined);
+  const policyPath = `/namespaces/${topology.agent.namespaceId}/iam/access-bindings`;
+  const bindings = await topology.adminRequest("GET", policyPath);
+  const assignment = bindings.data.find(
+    (binding) =>
+      binding.resourceId === topology.agent.id &&
+      binding.runtimeRole === ADMINISTRATOR_RUNTIME_ROLE,
+  );
+  assert.ok(assignment);
+  const changed = await topology.adminRequest(
+    "PATCH",
+    `${policyPath}/${assignment.id}/runtime-role`,
+    {
+      runtimeRole: ADMINISTRATOR_RUNTIME_ROLE,
+      runtimeRoleConfiguration: catalog.data.configuration,
+    },
+  );
+  assert.equal(changed.status, 200, JSON.stringify(changed.error));
+  assert.equal(changed.data.id, assignment.id);
+
   const stoppedRead = await topology.workspaceRequest("GET", workspacePath);
   assert.notEqual(
     stoppedRead.status,
@@ -807,7 +836,15 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
         resourceId,
         roleId,
         ...(resourceKind === "agent"
-          ? { runtimeRole: label === "withdrawn" ? "researcher" : "administrator" }
+          ? {
+              runtimeRole: label === "withdrawn" ? "researcher" : "administrator",
+              runtimeRoleConfiguration: (
+                await topology.adminRequest(
+                  "GET",
+                  `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/runtime-roles`,
+                )
+              ).data.configuration,
+            }
           : {}),
       });
       assert.equal(binding.status, 201);
@@ -929,6 +966,12 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
         `${policyPath}/access-bindings/${withdrawn.agentBinding.id}/runtime-role`,
         {
           runtimeRole: "reviewer",
+          runtimeRoleConfiguration: (
+            await topology.adminRequest(
+              "GET",
+              `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/runtime-roles`,
+            )
+          ).data.configuration,
         },
       );
       assert.equal(changed.status, 200, JSON.stringify(changed.error));

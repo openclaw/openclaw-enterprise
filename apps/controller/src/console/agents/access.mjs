@@ -50,7 +50,14 @@ export function renderAgentAccess(context, agent) {
   const runtimeRole = element("select", { id: "share-runtime-role", required: true });
   const roleDetails = element("details", {}, element("summary", {}, "Selected role permissions"));
   const roleSummary = element("pre", { className: "native-document" });
-  roleDetails.append(roleSummary);
+  const deployedSummary = element("pre", { className: "native-document" });
+  const roleStatus = element("p", { className: "hint" });
+  roleDetails.append(
+    element("p", {}, "Configured permissions"),
+    roleSummary,
+    element("p", {}, "Deployed permissions"),
+    deployedSummary,
+  );
   const acknowledge = element("input", { type: "checkbox", required: true });
   const share = element("button", { type: "submit", className: "primary" }, "Share Agent");
   const refresh = button("Refresh sharing", () => void load());
@@ -74,6 +81,7 @@ export function renderAgentAccess(context, agent) {
       element("label", { for: "share-runtime-role" }, "OpenClaw role"),
       runtimeRole,
     ),
+    roleStatus,
     roleDetails,
     element(
       "label",
@@ -89,7 +97,7 @@ export function renderAgentAccess(context, agent) {
     needsRefresh: false,
     roles: [],
     bindings: [],
-    runtimeRoles: [],
+    catalog: null,
     catalogError: null,
     progress: [],
     error: null,
@@ -121,23 +129,31 @@ export function renderAgentAccess(context, agent) {
   );
 
   function render() {
+    const runtimeRoles = state.catalog?.roles ?? [];
     const blocked = state.pending || !state.loaded || state.needsRefresh;
     principal.disabled = blocked;
     acknowledge.disabled = blocked;
-    share.disabled = blocked || state.runtimeRoles.length === 0;
-    runtimeRole.disabled = blocked || state.runtimeRoles.length === 0;
+    share.disabled = blocked || runtimeRoles.length === 0;
+    runtimeRole.disabled = blocked || runtimeRoles.length === 0;
     const selected = runtimeRole.value;
     runtimeRole.replaceChildren(
-      ...state.runtimeRoles.map((role) => element("option", { value: role.id }, role.id)),
+      ...runtimeRoles.map((role) => element("option", { value: role.id }, role.id)),
     );
-    if (state.runtimeRoles.some((role) => role.id === selected)) {
+    if (runtimeRoles.some((role) => role.id === selected)) {
       runtimeRole.value = selected;
     }
     roleSummary.textContent = JSON.stringify(
-      state.runtimeRoles.find((role) => role.id === runtimeRole.value)?.permissions ?? {},
+      runtimeRoles.find((role) => role.id === runtimeRole.value)?.permissions ?? {},
       null,
       2,
     );
+    const deployedRole = state.catalog?.activeRevision?.roles.find(
+      (role) => role.id === runtimeRole.value,
+    );
+    deployedSummary.textContent = deployedRole
+      ? JSON.stringify(deployedRole.permissions, null, 2)
+      : "This role is not deployed.";
+    roleStatus.textContent = runtimeRoleStatus(runtimeRole.value);
     refresh.disabled = state.pending;
     form.hidden = !state.loaded;
     feedback.replaceChildren(
@@ -198,12 +214,12 @@ export function renderAgentAccess(context, agent) {
               "select",
               {
                 "aria-label": `OpenClaw role for ${binding.subjectId}`,
-                disabled: blocked || state.runtimeRoles.length === 0,
+                disabled: blocked || runtimeRoles.length === 0,
               },
-              ...state.runtimeRoles.map((role) => element("option", { value: role.id }, role.id)),
+              ...runtimeRoles.map((role) => element("option", { value: role.id }, role.id)),
             );
       if (change) {
-        if (!state.runtimeRoles.some((role) => role.id === binding.runtimeRole)) {
+        if (!runtimeRoles.some((role) => role.id === binding.runtimeRole)) {
           change.append(
             element(
               "option",
@@ -226,7 +242,10 @@ export function renderAgentAccess(context, agent) {
             element("p", { className: "hint" }, permissions),
             ...(binding.runtimeRole === undefined
               ? []
-              : [element("p", {}, `OpenClaw role: ${binding.runtimeRole}`)]),
+              : [
+                  element("p", {}, `OpenClaw role: ${binding.runtimeRole}`),
+                  element("p", { className: "hint" }, runtimeRoleStatus(binding.runtimeRole)),
+                ]),
             element("p", { className: "resource-id" }, binding.id),
           ),
           ...(change ? [element("div", { className: "form-field" }, change)] : []),
@@ -249,22 +268,36 @@ export function renderAgentAccess(context, agent) {
     state.loaded = true;
   }
 
+  function runtimeRoleStatus(roleId) {
+    if (!state.catalog) {
+      return "";
+    }
+    if (state.catalog.desiredRuntimeState === "stopped") {
+      return "Agent stopped. Assignments can be saved now; OpenClaw access resumes after deployment.";
+    }
+    const deployed = state.catalog.activeRevision?.roles.find((role) => role.id === roleId);
+    if (!deployed) {
+      return "This role is not deployed. OpenClaw access becomes available after deploying its configuration.";
+    }
+    return "OpenClaw uses the deployed permissions. Deploy saved Configuration changes to apply them.";
+  }
+
   async function readRuntimeRoles() {
     try {
-      state.runtimeRoles = await context.request(
+      state.catalog = await context.request(
         `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agent.id)}/runtime-roles`,
       );
       state.catalogError =
-        state.runtimeRoles.length === 0
-          ? "Configure gateway.roles and deploy this Agent before assigning OpenClaw access."
+        state.catalog.roles.length === 0
+          ? "Configure gateway.roles in this Agent’s saved Configuration before assigning OpenClaw access."
           : null;
     } catch (error) {
       if (error.status === 401 || error.name === "AbortError") {
         throw error;
       }
-      state.runtimeRoles = [];
+      state.catalog = null;
       state.catalogError =
-        "The deployed OpenClaw role catalog is unavailable. Existing assignments can still be removed.";
+        "The configured OpenClaw role catalog is unavailable. Existing assignments can still be removed.";
     }
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
@@ -286,16 +319,18 @@ export function renderAgentAccess(context, agent) {
       return;
     }
     state.needsRefresh = true;
-    // A rejected write shows the API's sentence; once a write in this change was accepted,
-    // later failures keep the generic text.
+    // Conflicts keep their actionable API reason even after earlier sharing steps succeed.
+    // Other failures after an accepted write retain the uncertain-outcome message.
     state.error =
-      error.status === 403
-        ? "Sharing policy requires Installation administration. Your other Agent controls remain available according to their own permissions."
-        : sharing && (error.status === 404 || unavailableShareInput(error))
-          ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
-          : mutation && !state.saved
-            ? rejectionMessage(error, mutation)
-            : message(error, mutation);
+      error.status === 409
+        ? (error.serverMessage ?? message(error, mutation))
+        : error.status === 403
+          ? "Sharing policy requires Installation administration. Your other Agent controls remain available according to their own permissions."
+          : sharing && (error.status === 404 || unavailableShareInput(error))
+            ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
+            : mutation && !state.saved
+              ? rejectionMessage(error, mutation)
+              : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (error.requestId) {
       state.error += ` Request ID: ${error.requestId}`;
@@ -407,7 +442,12 @@ export function renderAgentAccess(context, agent) {
         roleId: role.id,
         resourceKind,
         resourceId,
-        ...(selectedRuntimeRole === undefined ? {} : { runtimeRole: selectedRuntimeRole }),
+        ...(selectedRuntimeRole === undefined
+          ? {}
+          : {
+              runtimeRole: selectedRuntimeRole,
+              runtimeRoleConfiguration: state.catalog.configuration,
+            }),
       },
     });
     if (!context.isCurrent()) {
@@ -446,7 +486,10 @@ export function renderAgentAccess(context, agent) {
   async function writeRuntimeRole(binding, selectedRole) {
     const updated = await write(
       `${path}/access-bindings/${encodeURIComponent(binding.id)}/runtime-role`,
-      { method: "PATCH", body: { runtimeRole: selectedRole } },
+      {
+        method: "PATCH",
+        body: { runtimeRole: selectedRole, runtimeRoleConfiguration: state.catalog.configuration },
+      },
     );
     if (!context.isCurrent()) {
       return;

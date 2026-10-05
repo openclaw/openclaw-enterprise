@@ -848,6 +848,16 @@ export interface AgentRuntimeRole {
   readonly permissions: Readonly<Record<string, unknown>>;
 }
 
+export interface AgentRuntimeRoleCatalog {
+  readonly configuration: Pick<Configuration, "id" | "generation">;
+  readonly roles: readonly AgentRuntimeRole[];
+  readonly desiredRuntimeState: AgentDesiredRuntimeState;
+  readonly activeRevision?: {
+    readonly id: string;
+    readonly roles: readonly AgentRuntimeRole[];
+  };
+}
+
 export type AgentRuntimeAccessUnavailableReason =
   "role_unavailable" | "device_approval_required" | "transport_unsupported";
 
@@ -1749,7 +1759,7 @@ export interface ComputeDriver extends Driver {
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /** Safe configured role catalog for the exact deployed revision. */
-  listAgentRuntimeRoles?(revision: AgentRevision): readonly AgentRuntimeRole[];
+  listAgentRuntimeRoles?(configuration: OpenClawConfigurationDocument): readonly AgentRuntimeRole[];
   /** Human transport admission; must fail closed for unknown or unsupported assignments. */
   getAgentRuntimeAccess?(
     revision: AgentRevision,

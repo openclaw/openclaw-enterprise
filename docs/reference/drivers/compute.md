@@ -65,9 +65,9 @@ context is optional in TypeScript; the worker supplies it after authorization.
 
 ### Human runtime access
 
-A Driver that offers OpenClaw browser access must implement both `listAgentRuntimeRoles(revision)` and `getAgentRuntimeAccess(revision, principalId, runtimeRole)`. `getGatewayEndpoint` alone supplies no human admission authority. These methods remain optional for Drivers that provide other Agent workflows.
+A Driver that offers OpenClaw browser access must implement both `listAgentRuntimeRoles(configuration)` and `getAgentRuntimeAccess(revision, principalId, runtimeRole)`. `getGatewayEndpoint` alone supplies no human admission authority. These methods remain optional for Drivers that provide other Agent workflows.
 
-The catalog lists assignable roles for the active revision. Admission returns a private endpoint and server-owned headers qualified for the exact person and role, or an unavailable reason. Unknown assignments and unsupported transport must fail closed; OCC never substitutes a service endpoint for a missing descriptor. Kubernetes currently implements this contract, including the explicit built-in administrator assignment. Docker and SSH do not offer this browser feature through endpoint discovery alone. See [Runtime access](../agent-native-admin.md) for authorization and configuration requirements.
+The catalog derives assignable roles from a Configuration document without requiring a runtime or revision. OCC uses the saved Agent Configuration for management and the active revision’s immutable Configuration for deployed summaries. Admission returns a private endpoint and server-owned headers qualified for the exact person and role, or an unavailable reason. Unknown assignments and unsupported transport must fail closed; OCC never substitutes a service endpoint for a missing descriptor. Kubernetes currently implements this contract, including the explicit built-in administrator assignment. Docker and SSH do not offer this browser feature through endpoint discovery alone. See [Runtime access](../agent-native-admin.md) for authorization and configuration requirements.
 
 ### Optional additions
 

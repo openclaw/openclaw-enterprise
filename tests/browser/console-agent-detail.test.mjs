@@ -2616,6 +2616,12 @@ test("Agent detail opens native admin UI only after real API access checks pass"
         resourceKind: "agent",
         resourceId: agent.id,
         runtimeRole: "administrator",
+        runtimeRoleConfiguration: (
+          await fixture.request(
+            "GET",
+            `/namespaces/${namespace.id}/agents/${agent.id}/runtime-roles`,
+          )
+        ).data.configuration,
       },
     },
   );
@@ -2890,6 +2896,12 @@ test("Agent detail rereads native admin access once when a pending deployment ac
         resourceKind: "agent",
         resourceId: agent.id,
         runtimeRole: "administrator",
+        runtimeRoleConfiguration: (
+          await fixture.request(
+            "GET",
+            `/namespaces/${namespace.id}/agents/${agent.id}/runtime-roles`,
+          )
+        ).data.configuration,
       },
     },
   );
@@ -3474,6 +3486,66 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   assert.equal(requests.filter((request) => request.path === configurationPath).length, 1);
 });
 
+test("Agent sharing before deployment rejects stale Configuration and previews saved policy changes", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["draft-recipient"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Draft sharing", { ready: true });
+  const values = nativeRolesGateway(nativeValues("draft-sharing"), fixture.origin);
+  const agent = await fixture.createAgent(namespace.id, "Draft sharing Agent", values);
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByLabel("OpenClaw role", { exact: true }).selectOption("researcher");
+  await panel.getByText(/Agent stopped. Assignments can be saved now/).waitFor();
+  await panel.getByText("Selected role permissions", { exact: true }).click();
+  await panel.getByText("This role is not deployed.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  // Another administrator saves policy after the preview was read. The real write must reject it.
+  values.gateway.roles.definitions.researcher.scopes = ["operator.read"];
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel.getByRole("alert").filter({ hasText: "The Agent Configuration changed." }).waitFor();
+  const policyPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  assert.equal(
+    (await fixture.request("GET", policyPath)).data.some(
+      (binding) => binding.runtimeRole !== undefined,
+    ),
+    false,
+  );
+  await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await waitForCondition(
+    () => panel.getByRole("button", { name: "Share Agent", exact: true }).isEnabled(),
+    "refreshed saved role catalog",
+  );
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  assert.equal(
+    (await fixture.request("GET", policyPath)).data.find((binding) => binding.runtimeRole)
+      ?.runtimeRole,
+    "researcher",
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  values.gateway.roles.definitions.researcher.scopes = ["operator.read", "operator.write"];
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
+  await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await panel
+    .getByText(/OpenClaw uses the deployed permissions/)
+    .first()
+    .waitFor();
+  assert.equal(
+    active.revision.configuration.gateway.roles.definitions.researcher.scopes.includes(
+      "operator.write",
+    ),
+    false,
+  );
+  const preview = panel.locator("details pre");
+  assert.match(await preview.nth(0).innerText(), /operator.write/);
+  assert.doesNotMatch(await preview.nth(1).innerText(), /operator.write/);
+});
+
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
   let catalogUnavailable = false;
   const cookieDomain = "oce.example.test";
@@ -3554,6 +3626,9 @@ test("Agent sharing grants existing people exact discovery and native access, th
       resourceKind: "agent",
       resourceId: agent.id,
       runtimeRole: "researcher",
+      runtimeRoleConfiguration: (
+        await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/runtime-roles`)
+      ).data.configuration,
     },
   });
   assert.equal(existingAssignment.status, 201);
@@ -3712,7 +3787,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
   await panel
     .getByText(
-      "The deployed OpenClaw role catalog is unavailable. Existing assignments can still be removed.",
+      "The configured OpenClaw role catalog is unavailable. Existing assignments can still be removed.",
       { exact: true },
     )
     .waitFor();
@@ -4032,7 +4107,7 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
   await login(page, fixture, `${detail.pathname}${detail.search}`);
   const panel = page.locator(".agent-access");
   const roles = panel.locator("#share-runtime-role");
-  await panel.getByText(/The deployed OpenClaw role catalog is unavailable/).waitFor();
+  await panel.getByText(/The configured OpenClaw role catalog is unavailable/).waitFor();
   await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
   assert.equal(await roles.isDisabled(), true);
   const retained = await panel.elementHandle();
@@ -4048,7 +4123,7 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
   assert.equal(await roles.isEnabled(), true);
   assert.equal(await retained.evaluate((node) => node.isConnected), false);
   assert.equal(
-    await panel.getByText(/The deployed OpenClaw role catalog is unavailable/).count(),
+    await panel.getByText(/The configured OpenClaw role catalog is unavailable/).count(),
     0,
   );
 });

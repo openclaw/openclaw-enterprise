@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-10-03"
-last_updated_session: "authoring-run/59d7541c-66d2-414c-8139-174fca84fe33"
+updated: "2026-10-05"
+last_updated_session: "authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10"
 ---
 
 # Console Agent sharing and removal
@@ -27,14 +27,14 @@ See the [parent flow](../platform-console.md) and the
 
 ```mermaid
 graph TD
-  A["Agent detail mounts sharing panel"] --> B["Read Namespace policy and active runtime role catalog"]
+  A["Agent detail mounts sharing panel"] --> B["Read Namespace policy and saved role catalog"]
   B -->|policy denied| K["Keep other Agent panels available"]
   B -->|catalog unavailable| L["Disable role selection; retain removal"]
   B --> C["Submit share for an existing Principal"]
   C --> D["Reread policy; find or create Namespace read Role"]
   D --> E["Bind Namespace read to the exact Namespace"]
   E --> F["Find or create Agent read/use Role"]
-  F --> G["Bind it to the selected Agent"]
+  F --> G["Check reviewed Configuration; bind selected Agent role"]
   G -->|confirmed steps| H["Show progress and direct grants"]
   C -->|uncertain| Q["Block writes until policy refresh"]
   H --> R["Remove one selected Agent binding"]
@@ -52,7 +52,7 @@ the person lacks Installation administration: the policy endpoints require it an
 the API audits each denial. The panel loads `/agents/:agentId/runtime-roles` and the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 sharing panel and leaves the other panels usable; a current `401` retains global
-session expiry. A failed role-catalog read clears role choices and retains removal.
+session expiry. The catalog carries saved Configuration ID/generation, assignable roles, desired runtime state and optional active-revision role summaries. The panel displays configured and deployed permissions independently, including stopped and undeployed states. A failed role-catalog read clears role choices and retains removal.
 The [shared page cache](../platform-console.md#2-resolve-the-session-before-private-reads)
 compares failed and successful GET outcomes on Back; catalog recovery rebuilds
 the panel with current role choices.
@@ -64,7 +64,7 @@ the panel with current role choices.
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
 that response does it find or create the exact Agent read/use Role and
-bind it to the selected Agent with the chosen runtime role. The panel rejects a subject that is not a `prn_`
+bind it to the selected Agent with the chosen runtime role and the reviewed Configuration precondition. Policy readback does not silently refresh that precondition; only explicit catalog refresh replaces the reviewed policy. The panel rejects a subject that is not a `prn_`
 Principal ID, such as an email, before any request, and reports a `404` during a
 share as an unknown Principal ID. The server validates the supplied subject and
 resource on each write. When the person already has a runtime assignment, the panel preserves it and grants exact Agent read separately if missing. Confirmed progress survives later failure; unknown
@@ -76,7 +76,7 @@ configuration evidence, not a historical receipt, and never triggers a write.
 `apps/controller/src/console/agents/access.mjs:writeRuntimeRole`
 `packages/occ/src/index.ts:updateIAMRuntimeRole`
 
-The selector PATCHes only `runtimeRole` on the existing binding. OCC verifies the active role catalog, holds policy-management authority and commits assignment plus audit in the existing transaction. The binding identity, OCE Role and exact resource remain unchanged. An uncertain response blocks further writes until explicit readback. Runtime and proxy admission resolve the new role on subsequent requests.
+The selector PATCHes `runtimeRole` and `runtimeRoleConfiguration` (the reviewed Configuration ID and generation). OCC holds policy-management authority, then checks the saved Configuration under the same Namespace lock used by Configuration and Agent updates. A changed ID or generation rejects the write with `409` before mutating the assignment; a missing role returns `400`. The assignment and audit commit in the existing transaction. Only `runtimeRole` is persisted on the binding. The binding identity, OCE Role and exact resource remain unchanged. An uncertain response blocks further writes until explicit readback. Runtime and proxy admission resolve the new role on subsequent requests.
 
 ### 4. Remove one explicit binding
 
@@ -108,6 +108,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 13:58: Trace saved Configuration role selection, stale-selection rejection and deployed permission previews. (authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10 - 76f9307b61ccb1c544257081d95b15a0ee893b92)
 
 - 2026-10-03 09:11: Preserve cached Agent pages when the deployed role catalog is unavailable. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - b6f9185159f14399905bf495b3cdef3ce2d14e30)
 

@@ -2410,8 +2410,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.validateChannelSecretBindings(configuration, secretBindings);
   }
 
-  listAgentRuntimeRoles(revision: AgentRevision) {
-    return agentRuntimeRoles(revision.configuration);
+  listAgentRuntimeRoles(configuration: OpenClawConfigurationDocument) {
+    return agentRuntimeRoles(configuration);
   }
 
   getAgentRuntimeAccess(revision: AgentRevision, principalId: string, runtimeRole: string) {

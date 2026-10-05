@@ -16270,15 +16270,68 @@
                 "schema": {
                   "properties": {
                     "data": {
-                      "items": {
-                        "properties": {
-                          "id": { "type": "string" },
-                          "permissions": { "additionalProperties": {}, "type": "object" }
+                      "additionalProperties": false,
+                      "properties": {
+                        "activeRevision": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "roles": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "id": { "type": "string" },
+                                  "permissions": { "additionalProperties": {}, "type": "object" }
+                                },
+                                "required": ["id", "permissions"],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": ["id", "roles"],
+                          "type": "object"
                         },
-                        "required": ["id", "permissions"],
-                        "type": "object"
+                        "configuration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "generation": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "id": {
+                              "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["id", "generation"],
+                          "type": "object"
+                        },
+                        "desiredRuntimeState": {
+                          "anyOf": [
+                            { "const": "running", "type": "string" },
+                            { "const": "stopped", "type": "string" }
+                          ]
+                        },
+                        "roles": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "permissions": { "additionalProperties": {}, "type": "object" }
+                            },
+                            "required": ["id", "permissions"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
                       },
-                      "type": "array"
+                      "required": ["configuration", "roles", "desiredRuntimeState"],
+                      "type": "object"
                     },
                     "meta": {
                       "properties": { "requestId": { "type": "string" } },
@@ -16330,7 +16383,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "List assignable runtime roles from the active Agent revision",
+        "summary": "List configured runtime roles and deployed permission summaries for an Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
@@ -18840,6 +18893,22 @@
                     "pattern": "^\\S(?:.*\\S)?$",
                     "type": "string"
                   },
+                  "runtimeRoleConfiguration": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "generation": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "generation"],
+                    "type": "object"
+                  },
                   "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
                   "subjectKind": { "const": "identity", "type": "string" }
                 },
@@ -19317,9 +19386,25 @@
                     "minLength": 1,
                     "pattern": "^\\S(?:.*\\S)?$",
                     "type": "string"
+                  },
+                  "runtimeRoleConfiguration": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "generation": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "generation"],
+                    "type": "object"
                   }
                 },
-                "required": ["runtimeRole"],
+                "required": ["runtimeRole", "runtimeRoleConfiguration"],
                 "type": "object"
               }
             }

@@ -14,6 +14,7 @@ import pg from "pg";
 
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -89,8 +90,8 @@ function nativeComputeDriver(upstreamPort) {
       };
     },
     async retireRevision() {},
-    listAgentRuntimeRoles(revision) {
-      return configuredRuntimeRoles(revision.configuration);
+    listAgentRuntimeRoles(configuration) {
+      return configuredRuntimeRoles(configuration);
     },
     getAgentRuntimeAccess(revision, principalId, runtimeRole) {
       return humanRuntimeAccess(
@@ -226,9 +227,9 @@ async function createApi(t, label, upstreamPort, options = {}) {
     id: `native-admin-iam-${label}`,
   });
   const computeDriver = nativeComputeDriver(upstreamPort);
-  const configurationDriver = createTestConfigurationDriver({
-    id: `native-admin-configuration-${label}`,
-  });
+  const configurationDriver = options.configurationRoot
+    ? new FilesystemConfigurationDriver(options.configurationRoot)
+    : createTestConfigurationDriver({ id: `native-admin-configuration-${label}` });
   const secretDriver = createTestSecretDriver({
     id: `native-admin-secret-${label}`,
   });
@@ -366,19 +367,18 @@ async function createNativeAgent(api, session, upstream) {
   assert.equal(compatibleConfiguration.statusCode, 200, compatibleConfiguration.body);
   await grantAgentSecretOperate(api.pool, agent, secret.ref.id);
 
-  const revision = await api.controller.deployAgent(
-    principal.id,
-    { namespaceId: namespace.id, agentId: agent.id },
-    resolveApprovedHarness,
-  );
-  await api.state.transact((unit) =>
-    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
-  );
   const roleResponse = await inject(api.app, "POST", `/namespaces/${namespace.id}/iam/roles`, {
     session,
     body: { permissions: [{ action: "use", resourceKind: "agent" }] },
   });
   assert.equal(roleResponse.statusCode, 201, roleResponse.body);
+  const catalogResponse = await inject(
+    api.app,
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/runtime-roles`,
+    { session },
+  );
+  assert.equal(catalogResponse.statusCode, 200, catalogResponse.body);
   const bindingResponse = await inject(
     api.app,
     "POST",
@@ -392,10 +392,20 @@ async function createNativeAgent(api, session, upstream) {
         resourceKind: "agent",
         resourceId: agent.id,
         runtimeRole: "administrator",
+        runtimeRoleConfiguration: catalogResponse.json().data.configuration,
       },
     },
   );
   assert.equal(bindingResponse.statusCode, 201, bindingResponse.body);
+  const revision = await api.controller.deployAgent(
+    principal.id,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedHarness,
+  );
+  await api.state.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
+  );
+
   const status = await inject(
     api.app,
     "GET",
@@ -735,13 +745,13 @@ async function parentSessionRow(api) {
   return storedSession.rows[0];
 }
 
-async function openNativeAdminSocketScenario(t, label) {
+async function openNativeAdminSocketScenario(t, label, options = {}) {
   await ensureBootstrap(t);
   const upstream = await startNativeHttpsUpstream(t);
   trustLocalUpstreamCertificate(t, upstream.cert);
   const [apiA, apiB] = await Promise.all([
-    createApi(t, `${label}-a`, upstream.port),
-    createApi(t, `${label}-b`, upstream.port),
+    createApi(t, `${label}-a`, upstream.port, options),
+    createApi(t, `${label}-b`, upstream.port, options),
   ]);
   t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
   const session = await signIn(apiA.app);
@@ -1089,8 +1099,20 @@ test(
   "PostgreSQL role changes and revocation close existing proxy leases across replicas",
   { ...requiresPostgres, timeout: 75_000 },
   async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "role-change");
+    // Both replicas read the same real Configuration store as well as PostgreSQL IAM state.
+    const configurationRoot = await privateBootstrapDirectory(
+      t,
+      "openclaw-native-role-configurations-",
+    );
+    const scenario = await openNativeAdminSocketScenario(t, "role-change", { configurationRoot });
     const policyPath = `/namespaces/${scenario.namespace.id}/iam/access-bindings`;
+    const catalog = await inject(
+      scenario.apiA.app,
+      "GET",
+      `/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/runtime-roles`,
+      { session: scenario.session },
+    );
+    assert.equal(catalog.statusCode, 200, catalog.body);
     // The duplicate must surface as a conflict and roll back without replacing the assignment.
     const duplicate = await inject(scenario.apiA.app, "POST", policyPath, {
       session: scenario.session,
@@ -1101,6 +1123,7 @@ test(
         resourceKind: "agent",
         resourceId: scenario.agent.id,
         runtimeRole: "reviewer",
+        runtimeRoleConfiguration: catalog.json().data.configuration,
       },
     });
     assert.equal(duplicate.statusCode, 409, duplicate.body);
@@ -1131,12 +1154,61 @@ test(
         .map((binding) => binding.id),
       [scenario.runtimeBinding.id],
     );
+    // A Configuration save on another replica invalidates the reviewed catalog without changing the live lease.
+    const configuration = await inject(
+      scenario.apiB.app,
+      "GET",
+      `/namespaces/${scenario.namespace.id}/configurations/${scenario.agent.configurationId}`,
+      { session: scenario.session },
+    );
+    assert.equal(configuration.statusCode, 200, configuration.body);
+    const saved = await inject(
+      scenario.apiB.app,
+      "PATCH",
+      `/namespaces/${scenario.namespace.id}/configurations/${scenario.agent.configurationId}`,
+      {
+        session: scenario.session,
+        body: { values: configuration.json().data.values },
+      },
+    );
+    assert.equal(saved.statusCode, 200, saved.body);
+    const stale = await inject(
+      scenario.apiA.app,
+      "PATCH",
+      `${policyPath}/${scenario.runtimeBinding.id}/runtime-role`,
+      {
+        session: scenario.session,
+        body: {
+          runtimeRole: "reviewer",
+          runtimeRoleConfiguration: catalog.json().data.configuration,
+        },
+      },
+    );
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(
+      (await nativeGet(scenario.apiB, scenario.native, scenario.nativeCookie)).statusCode,
+      200,
+    );
+    assert.equal(scenario.upstream.requests.at(-1).headers["x-occ-role"], "administrator");
+    const freshCatalog = await inject(
+      scenario.apiA.app,
+      "GET",
+      `/namespaces/${scenario.namespace.id}/agents/${scenario.agent.id}/runtime-roles`,
+      { session: scenario.session },
+    );
+    assert.equal(freshCatalog.statusCode, 200, freshCatalog.body);
     await assertSocketClosesAfterMutation(scenario.socket, async () => {
       const changed = await inject(
         scenario.apiA.app,
         "PATCH",
         `/namespaces/${scenario.namespace.id}/iam/access-bindings/${scenario.runtimeBinding.id}/runtime-role`,
-        { session: scenario.session, body: { runtimeRole: "reviewer" } },
+        {
+          session: scenario.session,
+          body: {
+            runtimeRole: "reviewer",
+            runtimeRoleConfiguration: freshCatalog.json().data.configuration,
+          },
+        },
       );
       assert.equal(changed.statusCode, 200, changed.body);
       assert.equal(changed.json().data.runtimeRole, "reviewer");

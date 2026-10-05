@@ -60,7 +60,7 @@
 ### Agents
 
 - [`listAgentRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryoptions): List approved repository choices for updating one Agent.
-- [`listAgentRuntimeRoles`](../api.md#get-namespacesnamespaceidagentsagentidruntimeroles): List assignable runtime roles from the active Agent revision.
+- [`listAgentRuntimeRoles`](../api.md#get-namespacesnamespaceidagentsagentidruntimeroles): List configured runtime roles and deployed permission summaries for an Agent.
 - [`listAgents`](../api.md#get-namespacesnamespaceidagents): List authorized Agents in one exact Namespace.
 - [`listRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsrepositoryoptions): List approved repository choices for Agent creation in one Namespace.
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.

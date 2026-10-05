@@ -1641,7 +1641,7 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#get-namespacesnamespaceidagentsagentidruntimecredentials) | Get metadata for one Agent's provisioned runtime credentials |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#post-namespacesnamespaceidagentsagentidruntimecredentials) | Provision initial runtime credentials for one undeployed Agent |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-images`](#get-namespacesnamespaceidagentsagentidruntimeimages) | Read observed images and source commits for an Agent's active runtime |
-| [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-roles`](#get-namespacesnamespaceidagentsagentidruntimeroles) | List assignable runtime roles from the active Agent revision |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-roles`](#get-namespacesnamespaceidagentsagentidruntimeroles) | List configured runtime roles and deployed permission summaries for an Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/stop`](#post-namespacesnamespaceidagentsagentidstop) | Stop one Agent while retaining its revision and persistent state |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#get-namespacesnamespaceidagentsagentidworkspacefilesname) | Read an allowed workspace file from one active Agent |
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#put-namespacesnamespaceidagentsagentidworkspacefilesname) | Create or replace an allowed workspace file for one active Agent |
@@ -3456,7 +3456,7 @@ Read observed images and source commits for an Agent's active runtime
 
 <span id="get-namespacesnamespaceidagentsagentidruntimeroles"></span>
 
-List assignable runtime roles from the active Agent revision
+List configured runtime roles and deployed permission summaries for an Agent
 
 **Operation ID:** `listAgentRuntimeRoles`
 
@@ -3491,9 +3491,19 @@ List assignable runtime roles from the active Agent revision
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].id` | `string` | Yes | — |
-| `data[].permissions` | `object<string, any>` | Yes | — |
+| `data` | `object` | Yes | — |
+| `data.activeRevision` | `object` | No | — |
+| `data.activeRevision.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.activeRevision.roles` | `array<object>` | Yes | — |
+| `data.activeRevision.roles[].id` | `string` | Yes | — |
+| `data.activeRevision.roles[].permissions` | `object<string, any>` | Yes | — |
+| `data.configuration` | `object` | Yes | — |
+| `data.configuration.generation` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.configuration.id` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.desiredRuntimeState` | `"running" or "stopped"` | Yes | — |
+| `data.roles` | `array<object>` | Yes | — |
+| `data.roles[].id` | `string` | Yes | — |
+| `data.roles[].permissions` | `object<string, any>` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
@@ -4695,6 +4705,9 @@ Create an immutable exact-resource Namespace IAM AccessBinding
 | `resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "preset" or "secret" or "service_account"` | Yes | — |
 | `roleId` | `string` | Yes | min length: 1; max length: 200 |
 | `runtimeRole` | `string` | No | min length: 1; max length: 128; pattern: `^\S(?:.*\S)?$` |
+| `runtimeRoleConfiguration` | `object` | No | — |
+| `runtimeRoleConfiguration.generation` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `runtimeRoleConfiguration.id` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `subjectId` | `string` | Yes | min length: 1; max length: 200 |
 | `subjectKind` | `"identity"` | Yes | — |
 
@@ -4830,6 +4843,9 @@ Change the runtime role on an exact human Agent access grant
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `runtimeRole` | `string` | Yes | min length: 1; max length: 128; pattern: `^\S(?:.*\S)?$` |
+| `runtimeRoleConfiguration` | `object` | Yes | — |
+| `runtimeRoleConfiguration.generation` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `runtimeRoleConfiguration.id` | `string` | Yes | pattern: `^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 ##### Responses
 

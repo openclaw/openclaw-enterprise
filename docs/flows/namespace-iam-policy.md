@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-10-02"
-last_updated_session: "authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f"
+updated: "2026-10-05"
+last_updated_session: "authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10"
 ---
 
 # Namespace IAM Policy Flow
@@ -81,7 +81,7 @@ the caller can read it before asking the IAM Driver to create the binding.
 `create` Permission or no Permission for the target's kind, because evaluation
 would drop those grants.
 
-The runtime-role change endpoint validates the chosen role through the active revision's Compute catalog and updates only `runtimeRole` on the existing exact human/Agent binding. Native definitions and profile admission are traced in [OpenClaw access](agent-native-admin.md).
+Runtime assignment creation and changes use the saved Agent Configuration through the Compute catalog, independent of deployment. `runtimeRoleConfiguration` supplies its reviewed ID and generation. After holding IAM authority and the Namespace lock, OCC reads that Configuration through its Driver and rejects a changed ID or generation with `409`, or an unknown role with `400`. The lock serializes this check and binding write against Configuration changes and Agent Configuration replacement. Only `runtimeRole` is persisted on the existing exact human/Agent binding. Native definitions and profile admission are traced in [OpenClaw access](agent-native-admin.md).
 
 ### 4. The IAM Driver persists or reads policy
 
@@ -163,6 +163,8 @@ selected account, session, and policy writers join the same protocol.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 13:58: Trace saved Configuration role selection, stale-selection rejection and deployed permission previews. (authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10 - 76f9307b61ccb1c544257081d95b15a0ee893b92)
 
 - 2026-10-02 11:55: Trace atomic runtime-role updates, assignment audit fields and duplicate-assignment conflicts. (authoring-run/fd458bb6-fbf9-4c93-ad3f-1e6fc793300f - a946032a14cb2f33a5077c3c0340e8f5f54cf4b7)
 

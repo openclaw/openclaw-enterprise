@@ -2392,6 +2392,37 @@ export const scenarios = {
       "Remove the direct binding; Namespace discovery remains available.",
     ],
   },
+  agentSharingBeforeDeployment: {
+    group: "Pages/Agent detail",
+    name: "Share before first deployment",
+    path: draft,
+    actions: [...shareExistingPerson, { selector: ".agent-access details > summary", click: true }],
+    description:
+      "Save an assignment before deployment. The role has no deployed permissions yet; native access awaits deployment. Simulated UI proof.",
+  },
+  agentSharingStopped: {
+    group: "Pages/Agent detail",
+    name: "Share while stopped",
+    path: draft,
+    deployed: true,
+    stopped: true,
+    actions: [
+      ...shareExistingPerson,
+      { selector: ".agent-access-grant select", value: "reviewer" },
+    ],
+    description:
+      "Change a saved assignment while stopped. OpenClaw access resumes after deployment. Simulated UI proof.",
+  },
+  agentSharingPolicyChanged: {
+    group: "Pages/Agent detail",
+    name: "Configured and deployed role permissions",
+    path: draft,
+    deployed: true,
+    runtimeRolePolicyChanged: true,
+    actions: [{ selector: ".agent-access details > summary", click: true }],
+    description:
+      "The configured researcher role has fewer permissions than the deployed version. Saving assignments does not deploy edited policy. Simulated UI proof.",
+  },
   agentSharingGranted: {
     group: "Pages/Agent detail",
     name: "Agent shared",
@@ -2447,7 +2478,7 @@ export const scenarios = {
       },
     ],
     description:
-      "Sharing remains disabled while the deployed role catalog is unavailable; existing assignments can be removed.",
+      "Sharing remains disabled while the configured role catalog is unavailable; existing assignments can be removed.",
   },
   agentSharingDenied: {
     group: "Pages/Agent detail",
