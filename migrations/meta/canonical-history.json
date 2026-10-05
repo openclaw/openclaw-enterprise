@@ -392,7 +392,7 @@
       "when": 1787000000049,
       "tag": "0049_agent_runtime_roles",
       "breakpoints": true,
-      "sha256": "207a4304b2447ada5936ec66c555ab4e501068a8a411689423ad8837714f6c27"
+      "sha256": "4bfb764c6f1a73bc67f31e993ce05d2b9d97c8b44e92ce436c84884c24f999f0"
     }
   ],
   "initialSchemaStates": {

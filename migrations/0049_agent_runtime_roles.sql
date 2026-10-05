@@ -61,12 +61,12 @@ WITH eligible AS (
       AND (d.resource_id IS NULL OR d.resource_id = a.id)
   )
 ), entry_role AS (
-  INSERT INTO occ.iam_roles (id, name, permissions)
-  SELECT 'role_' || gen_random_uuid()::text, 'Agent runtime entry',
+  INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
+  SELECT 'role_' || gen_random_uuid()::text, namespace_id, 'Agent runtime entry',
     '[{"action":"read","resourceKind":"agent"},{"action":"use","resourceKind":"agent"}]'::jsonb
-  WHERE EXISTS (SELECT 1 FROM eligible)
-  RETURNING id
+  FROM (SELECT DISTINCT namespace_id FROM eligible) namespaces
+  RETURNING id, namespace_id
 )
 INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id, runtime_role)
 SELECT 'binding_' || gen_random_uuid()::text, e.namespace_id, e.principal_id, r.id, 'agent', e.agent_id, 'platform-administrator'
-FROM eligible e CROSS JOIN entry_role r;
+FROM eligible e JOIN entry_role r ON r.namespace_id = e.namespace_id;

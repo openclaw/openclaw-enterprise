@@ -2477,7 +2477,8 @@ test(
     applicationUrl.username = "occ_app";
     applicationUrl.password = "occ-app-local";
     pool = new pg.Pool({ connectionString: applicationUrl.toString() });
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const state = new PostgresPlatformState(pool);
+    const iam = new NativeIAMDriver(state);
     const resource = { kind: "agent", namespaceId, id: agentId };
     // Installation, exact-Agent and Namespace-group administrators retain entry;
     // read-only, other-Namespace and service identities must not acquire it.
@@ -2488,7 +2489,7 @@ test(
     });
     const assignments = (
       await db.app.query(
-        "SELECT id,identity_subject_id,runtime_role FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL ORDER BY identity_subject_id",
+        "SELECT id,identity_subject_id,role_id,runtime_role FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL ORDER BY identity_subject_id",
       )
     ).rows;
     assert.deepEqual(
@@ -2496,6 +2497,17 @@ test(
       expected,
     );
     assert.ok(assignments.every((row) => row.runtime_role === "platform-administrator"));
+    // Sharing resolves each grant through the Namespace Role list, including upgraded grants.
+    const roles = await state.read((unit) => unit.iamPolicy.listRoles(namespaceId));
+    for (const assignment of assignments) {
+      const role = roles.find((candidate) => candidate.id === assignment.role_id);
+      assert.ok(role, "The upgraded entry Role must be visible in Sharing.");
+      assert.equal(role.namespaceId, namespaceId);
+      assert.deepEqual(role.permissions, [
+        { action: "read", resourceKind: "agent" },
+        { action: "use", resourceKind: "agent" },
+      ]);
+    }
     for (const principalId of Object.values(people)) {
       const access = await iam.authorizeRuntimeAccess({ principalId, action: "use", resource });
       assert.equal(access.allowed, expected.includes(principalId));
