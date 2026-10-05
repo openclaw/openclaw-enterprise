@@ -190,7 +190,7 @@ installs the pinned Envoy Gateway and cert-manager controllers. Dedicated
 setup enables the production Helm private route and CA, admits only the observed
 Envoy proxy address, and uses stock local-path RWO Harness storage. OCC enrolls the native workspace node through that authenticated route.
 The Helm fixture creates its own PostgreSQL; no external test database is needed.
-It grants the existing operator roles in both tenant and control-plane namespaces
+It grants the existing operator roles in the shared tenant namespace
 and gives the Gateway 2 GiB for first-request plugin loading. Tool evidence uses
 the latest result for the exact call, or a successful poll of its exact process
 session. An earlier error alone neither proves success nor hides a later completion.

@@ -1,9 +1,10 @@
 # Kubernetes Compute Driver
 
 The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
-or adopts a data-plane namespace for each tenant and creates an OpenClaw gateway
-for each deployed Agent. Dedicated gateways run in a separate managed control-plane
-runtime namespace; embedded OpenClaw remains in the data plane.
+or adopts one namespace per tenant in a single cluster and creates an OpenClaw
+gateway for each deployed Agent. Dedicated Gateways and Harnesses use separate
+Pods, identities and volumes within that namespace; embedded OpenClaw combines
+them in one Pod.
 The experimental `executionCluster` configuration selects a second Kubernetes
 API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/two-cluster-local.md)
 before using it; cloud deployment and complete runtime acceptance remain pending.
@@ -29,6 +30,31 @@ Detailed operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
+
+## Existing split-layout installations
+
+An in-place upgrade from separate Gateway and Harness namespaces is not supported.
+API and worker startup preflight refuses a single-cluster installation containing
+an `oce-gateways-<hash>` storage namespace without the tenant discovery label.
+This check runs before tenant reconciliation; it does not move or delete runtime
+resources. The experimental two-cluster profile retains its separate target.
+
+Before replacing the controller images, inspect the existing storage targets:
+
+```sh
+kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
+```
+
+In a single cluster, a row with an empty `NAMESPACE` column is a split-layout
+tenant. The two-cluster profile's control-cluster rows are expected.
+
+If an Installation has split-layout tenants, keep its existing controller release
+and both namespaces. Preserve their Secrets, ConfigMaps, PVCs and database
+references. Do not delete the old namespace, remove its storage-role label or
+add a tenant label to bypass preflight: those changes do not move the Gateway's
+private state or update UID-bound credential references. A supported migration
+must preserve these identities and state before this release can manage that
+Installation. This release provides no such migration command.
 
 ## Requirements
 
@@ -62,7 +88,7 @@ Detailed operator contracts:
 The worker manages PersistentVolumeClaims and, when private gateway routing is
 enabled, HTTPRoutes through tenant-local RoleBindings. Only the controller API
 issues provider credentials. The worker reads admitted transport/channel material
-and maintains revision-owned gateway Secret projections in the separate target.
+and maintains revision-owned Harness Secret projections in the tenant namespace.
 The API does not need gateway Pod reads, exec, route writes, or certificate
 management for workspace-file access. Do not grant wildcard permissions,
 cluster-wide access to tenant resources, workload access to controller
@@ -177,12 +203,12 @@ Kubernetes API certificates must be verified in either mode.
 
 ### Images and resources
 
-Configure separate gateway and Agent images, CPU and memory requests and limits,
-namespace-level resource quotas and container defaults. `runtime.nodeSelector`
-selects Harness and embedded Pods; dedicated real gateways, including their
-private-state initializer, require `runtime.gatewayNodeSelector`. Use disjoint
-trusted and tenant node pools in production. Quotas and defaults apply
-separately to each physical namespace. The
+Configure Gateway and Agent images, resource requests/limits, namespace quotas
+and container defaults. `runtime.nodeSelector` selects Harness and embedded Pods;
+dedicated real Gateways require `runtime.gatewayNodeSelector`, including their
+private-state initializer. Use disjoint trusted and tenant node pools in
+production. Quotas and defaults cover both roles in a shared tenant namespace;
+the two-cluster profile applies them separately to each physical target. The
 [installation profiles](../../guides/deploy/installation-profiles.md) explain
 the measured memory defaults. Production requires
 `images.requireImmutableDigest: true` and SHA-256 image digests. Quote
@@ -194,20 +220,18 @@ for DNS, gateway clients, proxy trust, and egress requirements.
 ## Execution modes
 
 Each Agent-owned gateway Deployment has exactly one desired replica and uses
-`Recreate`, so Kubernetes stops the previous Pod before starting its
-replacement and rollout can cause transient downtime. A Deployment cannot guarantee
-an absolute process singleton during node partitions or manual replacement, and
-OCC's single active revision and guarded routing do not provide independent
-node-level execution fencing.
+`Recreate`: Kubernetes stops the previous Pod before starting its replacement,
+so gateway rollout can cause transient downtime. Neither Kubernetes Deployment nor OCC routing provides node-level process
+fencing during partitions or manual replacement.
 
 The Agent's Harness configuration determines its execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
   shared storage.
-- **Dedicated:** The gateway and Codex Harness run in separate namespaces and
-  Pods, with separate ServiceAccounts and storage. They communicate through
-  authenticated app-server transport. The gateway uses fully qualified Harness
+- **Dedicated:** The gateway and Codex Harness run in separate Pods in the same
+  tenant namespace, with separate ServiceAccounts and storage. They communicate through
+  authenticated app-server transport. The Gateway uses fully qualified Harness
   Service DNS and the paired node for workspace operations. Codex accepts an
   Agent-scoped model API key or a managed ChatGPT service-account credential,
   and permits `openai/` or `codex/` models.
@@ -276,17 +300,18 @@ selections, uninstall account-wide plugins, or promise rollback.
 
 ### Current runtime diagnostics
 
-Kubernetes Compute implements optional deployment diagnostics. After OCC
-authorizes the exact Agent and revision, the Driver reads the owned runtime
-Pods' private endpoint through the Kubernetes apiserver Pod proxy, which returns
-bounded generic checks for the requested revision. The API needs Pod
-`get`/`list` and `pods/proxy` `get` permission in each runtime namespace: the
-managed gateway namespace for dedicated gateways and the tenant namespace for
-Harnesses. The chart adds these reads to the unbound tenant API and gateway
-observer roles; operators control their namespace-local bindings. Missing Pods
-or unavailable endpoints report unknown checks without mutating
-deployment status. The Agent container
-currently returns no channel checks.
+Kubernetes Compute implements the optional deployment diagnostics contract. OCC
+authorizes the exact Agent and revision, then the Driver reads the owned
+runtime Pods through the Kubernetes apiserver Pod proxy. The private runtime
+endpoint returns bounded generic checks for the requested revision. The API needs
+Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
+Both roles are read in the tenant namespace for a single cluster. The two-cluster
+profile reads dedicated Gateways in its control-cluster Gateway namespace. The chart adds these read permissions to the
+unbound tenant API and Gateway observer roles; operators retain control of their
+namespace-local bindings.
+Missing Pods or unavailable private endpoints report unknown diagnostic checks
+instead of mutating deployment status. The Agent container currently returns no
+channel checks.
 
 The bundled gateway maps Slack channel status into configuration,
 authentication, and connectivity checks. They exclude raw Slack responses,
@@ -297,7 +322,7 @@ model turn.
 
 - **Namespace provisioning fails:** Verify tenant-local RoleBindings, namespace
   ownership labels, restricted Pod Security labels, and enforced
-  NetworkPolicies in both the Harness and gateway runtime namespaces. Existing
+  NetworkPolicies in each selected tenant target. Existing
   namespaces also require external lifecycle ownership, exclusive tenant use,
   and no foreign NetworkPolicies.
 - **Gateway or Harness remains pending:** Check image digests, image pull

@@ -121,8 +121,11 @@ notice names the newer revision to pass. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
-Agent `read_logs` (or `administer`) and `read` plus `read` on the revision, and each view is
-audited.
+Agent `read_logs` (or `administer`) and `read`, which cover every revision, and
+each view is audited. Default revision selection lists only revisions you can
+`read`: without revision grants, `logs` reads the active revision without
+checking for a newer one, and an Agent with no active revision needs
+`--revision ID`.
 
 | `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

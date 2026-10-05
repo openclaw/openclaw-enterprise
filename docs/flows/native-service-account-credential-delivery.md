@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-02
-last_updated_session: codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-03
+last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
 # Harness Authentication Binding Flow
@@ -228,13 +228,14 @@ Secret values.
 
 After dedicated predecessors stop, Compute claims the source Secret with an atomic
 resource-version update, binding its immutable UID to the Agent and PVC UID.
-Source reads and updates use the control-plane client; the seed Secret,
+Single-cluster source and seed share the tenant namespace; two-cluster sources
+use the control client. Seed Secret,
 bootstrap Deployment, and private PVC use the resolved execution-plane namespace
-and client, including during cleanup.
+and client.
 A bootstrap-only Deployment runs
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT`
-and writes native auth plus a generation receipt to the private disk. Repeating
-that generation preserves the current bundle; an explicitly selected new source
+and writes native auth and a generation receipt to disk. Repeating
+that generation preserves the bundle. A new selected source
 can replace it after predecessor termination: the script empties `codex-home`,
 writes through exclusive temporaries, and re-reads both files before readiness.
 A later non-OAuth revision's private-state init container removes `codex-home`.
@@ -289,6 +290,10 @@ Secret updates from resetting custody.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 15:38: Merge current credential flow while preserving shared-namespace source placement. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 94364ae9)
+
+- 2026-10-02: Clarify shared namespace source custody. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
 
 - 2026-09-30 17:30: Preserve persistent OAuth startup alongside filtered Codex child environments in the merge integration. (codex/01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - c724fb7fee3790d9c122eb7dc2563869bad4a56e)
 

@@ -69,16 +69,43 @@ function credentialFixture({
   configMaps = {},
   runtime = true,
   namespaceReadStatus = 200,
+  twoCluster = false,
   secretReadStatus = undefined,
   secretCreateStatus = undefined,
   deploymentListStatus = undefined,
 } = {}) {
-  const driver = createKubernetesComputeDriver(options(runtime ? {} : { runtime: undefined }));
+  const configured = options(runtime ? {} : { runtime: undefined });
+  if (twoCluster) {
+    delete configured.network.gatewayClients;
+    configured.gatewayRouting = {
+      hostname: "gateway.example.test",
+      gatewayName: "gateway",
+      gatewayNamespace: "system",
+      envoyNamespace: "envoy",
+    };
+    configured.executionCluster = {
+      authentication: { ...configured.authentication, context: "execution" },
+      harnessRouting: { ...configured.gatewayRouting, hostname: "harness.example.test" },
+      network: {
+        dns: configured.network.dns,
+        harnessEndpointCidrs: ["192.0.2.2/32"],
+        gatewayEndpointCidrs: ["192.0.2.1/32"],
+        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      },
+    };
+  }
+  const driver = createKubernetesComputeDriver(configured);
   const namespaceName = kubernetesNamespaceName(namespace.id);
   const namespaceObject = {
     ...driver.manifest("v1", "Namespace", namespaceName, { namespaceId: namespace.id }),
     status: { phase: "Active" },
   };
+  const controlNamespace = twoCluster
+    ? {
+        ...driver.gatewayNamespaceManifest({ namespaceId: namespace.id }),
+        status: { phase: "Active" },
+      }
+    : undefined;
   const calls = [];
   const created = [];
   const deleted = [];
@@ -90,16 +117,17 @@ function credentialFixture({
   const core = {
     async listNamespace(request) {
       calls.push({ kind: "listNamespace", request: structuredClone(request) });
-      assert.equal(request.labelSelector, `openclaw.dev/namespace=${namespace.id}`);
-      return { items: namespaceReadStatus === 404 ? [] : [structuredClone(namespaceObject)] };
+      const [label, owner] = request.labelSelector.split("=");
+      return {
+        items: [namespaceReadStatus === 404 ? undefined : namespaceObject, controlNamespace]
+          .filter((value) => value?.metadata.labels?.[label] === owner)
+          .map((value) => structuredClone(value)),
+      };
     },
     async readNamespace(request) {
       calls.push({ kind: "readNamespace", request: structuredClone(request) });
-      if (request.name === kubernetesGatewayNamespaceName(namespace.id)) {
-        return {
-          ...driver.gatewayNamespaceManifest({ namespaceId: namespace.id }),
-          status: { phase: "Active" },
-        };
+      if (request.name === controlNamespace?.metadata.name) {
+        return structuredClone(controlNamespace);
       }
       assert.equal(request.name, namespaceName);
       if (namespaceReadStatus !== 200) {
@@ -154,14 +182,19 @@ function credentialFixture({
       if (secretCreateStatus !== undefined) {
         throw httpError(secretCreateStatus);
       }
-      assert.equal(request.namespace, kubernetesGatewayNamespaceName(namespace.id));
+      assert.equal(request.namespace, controlNamespace?.metadata.name ?? namespaceName);
       created.push(structuredClone(request.body));
       const observed = {
         ...request.body,
         metadata: { ...request.body.metadata, uid: `${request.body.metadata.name}-uid` },
-        data: Object.fromEntries(
-          Object.entries(request.body.stringData).map(([key, value]) => [key, encode(value)]),
-        ),
+        data:
+          request.body.data ??
+          Object.fromEntries(
+            Object.entries(request.body.stringData ?? {}).map(([key, value]) => [
+              key,
+              encode(value),
+            ]),
+          ),
       };
       secrets[observed.metadata.name] = observed;
       return structuredClone(observed);
@@ -186,9 +219,7 @@ function credentialFixture({
       if (deploymentListStatus !== undefined && request.namespace === namespaceName) {
         throw httpError(deploymentListStatus);
       }
-      assert.ok(
-        [namespaceName, kubernetesGatewayNamespaceName(namespace.id)].includes(request.namespace),
-      );
+      assert.ok([namespaceName, controlNamespace?.metadata.name].includes(request.namespace));
       assert.equal(
         request.labelSelector,
         `openclaw.dev/namespace=${namespace.id},openclaw.dev/agent=${agent.id}`,
@@ -201,6 +232,7 @@ function credentialFixture({
     },
   };
   driver.apiClients = Promise.resolve({ core, apps });
+  driver.executionApiClients = driver.apiClients;
   return { driver, namespaceName, calls, created, deleted };
 }
 
@@ -214,7 +246,7 @@ function runtimeSecret(driver, namespaceName, prefix, data, overrides = {}) {
         namespaceId: namespace.id,
         agentId: agent.id,
       },
-      { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
+      { name: kubernetesNamespaceName(namespace.id), plane: "control" },
     ),
     type: "Opaque",
     data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encode(value)])),
@@ -240,6 +272,128 @@ test("mocked Kubernetes client reports only complete owned Agent runtime credent
   assert.deepEqual(await fixture.driver.getAgentRuntimeCredentialStatus(binding()), {
     transportConfigured: true,
   });
+});
+
+for (const executionMode of ["dedicated", "embedded"]) {
+  test(`runtime credentials remain valid across ${executionMode} mode changes`, async () => {
+    const fixture = credentialFixture();
+    const initial = { namespace, agent: { ...agent, executionMode } };
+    await fixture.driver.provisionAgentRuntimeCredentials(initial, {});
+    assert.deepEqual(
+      await fixture.driver.getAgentRuntimeCredentialStatus({
+        namespace,
+        agent: {
+          ...agent,
+          executionMode: executionMode === "dedicated" ? "embedded" : "dedicated",
+        },
+      }),
+      { transportConfigured: true },
+      "changing execution mode must preserve the Agent's provisioned credentials",
+    );
+  });
+}
+
+test("legacy combined credentials remain usable without removing the serving Gateway source", async () => {
+  const first = credentialFixture();
+  const name = `transport-${digest(agent.id)}`;
+  const legacy = runtimeSecret(
+    first.driver,
+    first.namespaceName,
+    "transport",
+    {
+      "app-server-token": "legacy-transport",
+      "gateway-password": "legacy-password",
+    },
+    {
+      metadata: {
+        ...runtimeSecret(first.driver, first.namespaceName, "transport", {}).metadata,
+        uid: "legacy-uid",
+      },
+    },
+  );
+  const secrets = { [name]: legacy };
+  const fixture = credentialFixture({ secrets });
+  for (const executionMode of ["embedded", "dedicated"]) {
+    assert.deepEqual(
+      await fixture.driver.getAgentRuntimeCredentialStatus({
+        namespace,
+        agent: { ...agent, executionMode },
+      }),
+      { transportConfigured: true },
+    );
+  }
+  const before = structuredClone(legacy);
+  await fixture.driver.ensureLegacyGatewayPassword(
+    { namespaceId: namespace.id, agentId: agent.id },
+    {
+      name: fixture.namespaceName,
+      plane: "control",
+    },
+  );
+  const password = secrets[`gateway-password-${digest(agent.id)}`];
+  assert.deepEqual(password.data, { "gateway-password": legacy.data["gateway-password"] });
+  assert.deepEqual(secrets[name], before, "an older Gateway may still reference its legacy Secret");
+  await fixture.driver.ensureLegacyGatewayPassword(
+    { namespaceId: namespace.id, agentId: agent.id },
+    {
+      name: fixture.namespaceName,
+      plane: "control",
+    },
+  );
+  assert.equal(fixture.created.length, 1, "compatibility delivery must be idempotent");
+  password.data["gateway-password"] = encode("conflicting-password");
+  await assert.rejects(
+    fixture.driver.getAgentRuntimeCredentialStatus(binding()),
+    ResourceConflictError,
+  );
+});
+
+test("concurrent legacy password delivery accepts only an identical owned source", async () => {
+  for (const outcome of ["identical", "different", "foreign", "disappeared", "unavailable"]) {
+    const initial = credentialFixture();
+    const name = `transport-${digest(agent.id)}`;
+    const secrets = {
+      [name]: runtimeSecret(initial.driver, initial.namespaceName, "transport", {
+        "app-server-token": "legacy-transport",
+        "gateway-password": "legacy-password",
+      }),
+    };
+    const fixture = credentialFixture({ secrets });
+    const { core } = await fixture.driver.apiClients;
+    const create = core.createNamespacedSecret.bind(core);
+    core.createNamespacedSecret = async (request) => {
+      if (outcome === "unavailable") {
+        throw httpError(503);
+      }
+      if (outcome !== "disappeared") {
+        const competitor = structuredClone(request);
+        if (outcome === "different") {
+          competitor.body.data["gateway-password"] = encode("another-password");
+        }
+        if (outcome === "foreign") {
+          competitor.body.metadata.labels["openclaw.dev/agent"] = "another-agent";
+          competitor.body.metadata.annotations["openclaw.dev/agent-id"] = "another-agent";
+        }
+        await create(competitor);
+      }
+      throw httpError(409);
+    };
+    const original = structuredClone(secrets[name]);
+    const delivery = () =>
+      fixture.driver.ensureLegacyGatewayPassword(
+        { namespaceId: namespace.id, agentId: agent.id },
+        { name: fixture.namespaceName, plane: "control" },
+      );
+    if (outcome === "identical") {
+      await delivery();
+      assert.deepEqual(secrets[`gateway-password-${digest(agent.id)}`].data, {
+        "gateway-password": original.data["gateway-password"],
+      });
+    } else {
+      await assert.rejects(delivery());
+    }
+    assert.deepEqual(secrets[name], original, `${outcome}: preserve the serving Gateway source`);
+  }
 });
 
 test("mocked Kubernetes client deletes every owned Agent runtime credential Secret idempotently", async () => {
@@ -277,7 +431,7 @@ test("Agent deletion removes the Gateway workspace node binding", async () => {
       "ConfigMap",
       name,
       { namespaceId: namespace.id, agentId: agent.id },
-      { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
+      { name: kubernetesNamespaceName(namespace.id), plane: "control" },
     ),
     data: { "workspace-node.json": JSON.stringify({ revisionId: "revision-1", deviceId: "node" }) },
   };
@@ -306,7 +460,7 @@ for (const runtime of [true, false]) {
       ...(runtime
         ? [
             first.driver.gatewayPrivateStateClaim(agent.id, ownership, {
-              name: kubernetesGatewayNamespaceName(namespace.id),
+              name: kubernetesNamespaceName(namespace.id),
               plane: "control",
             }),
           ]
@@ -378,7 +532,7 @@ test("a cluster denial of runtime credential Secrets names the Kubernetes operat
   // Agent's transport Secret, so operators need the operation, not a generic outage.
   for (const [executionMode, kubernetesNamespace, plane] of [
     ["embedded", kubernetesNamespaceName(namespace.id), "execution"],
-    ["dedicated", kubernetesGatewayNamespaceName(namespace.id), "control"],
+    ["dedicated", kubernetesNamespaceName(namespace.id), "execution"],
   ]) {
     const { driver } = credentialFixture({ secretReadStatus: 403 });
     const denied = await driver
@@ -410,7 +564,7 @@ test("a cluster denial of runtime credential Secrets names the Kubernetes operat
   assert.ok(denied instanceof RuntimeCredentialsForbiddenByClusterError);
   assert.equal(denied.verb, "create");
   assert.equal(denied.resource, "secrets");
-  assert.equal(denied.kubernetesNamespace, kubernetesGatewayNamespaceName(namespace.id));
+  assert.equal(denied.kubernetesNamespace, kubernetesNamespaceName(namespace.id));
   assert.equal(created.length, 0);
 
   // A dedicated Agent's preflight also lists Deployments in the data-plane namespace.
@@ -537,7 +691,7 @@ test("mocked Kubernetes client rejects transport Secrets with unexpected keys", 
   assert.equal(created.length, 0);
 });
 
-test("embedded Gateway retains its existing transport Secret password reference", () => {
+test("embedded Gateway uses the separate canonical password source", () => {
   const { driver, namespaceName } = credentialFixture();
   const agentId = "agent-password-projection";
   const suffix = digest(agentId);
@@ -606,7 +760,7 @@ test("embedded Gateway retains its existing transport Secret password reference"
         auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
       },
     }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
-    { name: `transport-${suffix}`, key: "gateway-password" },
+    { name: `gateway-password-${suffix}`, key: "gateway-password" },
   );
   assert.throws(
     () =>
@@ -763,14 +917,14 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
   }
 });
 
-test("credential provisioning cannot replace transport while only the control-plane Gateway survives", async () => {
+test("credential provisioning cannot replace transport while a Gateway survives in the shared namespace", async () => {
   const initial = credentialFixture();
   const gateway = initial.driver.manifest(
     "apps/v1",
     "Deployment",
     "gateway-existing",
     { namespaceId: namespace.id, agentId: agent.id },
-    { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
+    { name: kubernetesNamespaceName(namespace.id), plane: "control" },
   );
   const fixture = credentialFixture({ deployments: [gateway] });
   await assert.rejects(
@@ -780,8 +934,17 @@ test("credential provisioning cannot replace transport while only the control-pl
   assert.equal(fixture.created.length, 0);
 });
 
-test("Agent deletion removes private Gateway storage after the data namespace disappears", async () => {
-  const initial = credentialFixture();
+test("Agent deletion is idempotent after its shared namespace disappears", async () => {
+  const fixture = credentialFixture({ namespaceReadStatus: 404 });
+  await fixture.driver.deleteAgentRuntimeCredentials(binding());
+  assert.equal(
+    fixture.calls.some(({ kind }) => kind === "deleteClaim" || kind === "deleteSecret"),
+    false,
+  );
+});
+
+test("two-cluster Agent deletion removes Gateway state after the execution namespace disappears", async () => {
+  const initial = credentialFixture({ twoCluster: true });
   const claim = initial.driver.gatewayPrivateStateClaim(
     agent.id,
     { namespaceId: namespace.id, agentId: agent.id },
@@ -789,16 +952,16 @@ test("Agent deletion removes private Gateway storage after the data namespace di
   );
   claim.metadata.uid = "retained-gateway-claim";
   const claims = { [claim.metadata.name]: claim };
-  const fixture = credentialFixture({ claims, namespaceReadStatus: 404 });
+  const fixture = credentialFixture({ twoCluster: true, claims, namespaceReadStatus: 404 });
   await fixture.driver.deleteAgentRuntimeCredentials(binding());
   assert.deepEqual(Object.keys(claims), []);
 });
 
 for (const executionMode of ["embedded", "dedicated"]) {
-  test(`Agent deletion cleans both physical targets despite draft mode ${executionMode}`, async () => {
+  test(`Agent deletion cleans the shared target despite draft mode ${executionMode}`, async () => {
     const initial = credentialFixture();
     const ownership = { namespaceId: namespace.id, agentId: agent.id };
-    const targets = [initial.namespaceName, kubernetesGatewayNamespaceName(namespace.id)];
+    const targets = [initial.namespaceName];
     const claims = {};
     const secrets = {};
     for (const target of targets) {
@@ -824,11 +987,11 @@ for (const executionMode of ["embedded", "dedicated"]) {
     assert.deepEqual(
       Object.keys(claims),
       [],
-      "Neither historical private claim may survive Agent deletion",
+      "The private claim must be removed at Agent deletion",
     );
-    assert.deepEqual(Object.keys(secrets), [], "Both owned transport Secrets must be removed");
+    assert.deepEqual(Object.keys(secrets), [], "The owned transport Secret must be removed");
     await fixture.driver.deleteAgentRuntimeCredentials(current);
-    assert.equal(fixture.calls.filter(({ kind }) => kind === "deleteClaim").length, 2);
-    assert.equal(fixture.deleted.length, 2);
+    assert.equal(fixture.calls.filter(({ kind }) => kind === "deleteClaim").length, 1);
+    assert.equal(fixture.deleted.length, 1);
   });
 }

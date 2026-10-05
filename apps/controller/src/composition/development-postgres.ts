@@ -128,6 +128,18 @@ export async function composePostgresDevelopment(
     const installationId = persistedInstallation.id;
 
     const computeDriver = options.computeDriver ?? createDevelopmentDockerComputeDriver();
+    if (drivers !== undefined && computeDriver.preflight !== undefined) {
+      const result = await computeDriver.preflight();
+      if (result !== undefined && config.logger !== undefined) {
+        for (const warning of result.warnings) {
+          emitOccLogEvent(config.logger, {
+            event: "compute.preflight-warning",
+            computeDriverId: computeDriver.id,
+            ...warning,
+          });
+        }
+      }
+    }
     const sandboxDriver = drivers?.sandboxDriver;
     const credentialGatewayDriver = drivers?.credentialGatewayDriver;
     const configurationDriver =

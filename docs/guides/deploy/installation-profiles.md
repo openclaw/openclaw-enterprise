@@ -263,6 +263,10 @@ malformed, it exits without writing a preflight report.
 
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).
+That setup reads the cluster kubeconfig from `$OCC_INPUT_DIRECTORY/kubeconfig`:
+copy it there with mode `0600` first, or render straight into the protected
+directory as the runbook's [profile branch](production-installation.md#recommended-generate-profile-configuration)
+does.
 Skip both configuration-generation branches and continue at the
 [shared bootstrap PVC and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,

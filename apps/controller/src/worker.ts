@@ -802,22 +802,20 @@ export class ControllerWorker {
       }
     }
     this.provisioningController = provisioning;
-    if (this.mode === "production") {
-      const compute = this.compute;
-      if (typeof compute.preflight === "function") {
-        const result = await compute.preflight();
-        if (result !== undefined) {
-          for (const warning of result.warnings) {
-            this.emit({
-              event: "compute.preflight-warning",
-              computeDriverId: compute.id,
-              ...warning,
-            });
-          }
+    const compute = this.compute;
+    if (typeof compute.preflight === "function") {
+      const result = await compute.preflight();
+      if (result !== undefined) {
+        for (const warning of result.warnings) {
+          this.emit({
+            event: "compute.preflight-warning",
+            computeDriverId: compute.id,
+            ...warning,
+          });
         }
-      } else if (this.requireComputePreflight) {
-        throw new Error("The selected bundled production Compute Driver requires preflight.");
       }
+    } else if (this.requireComputePreflight) {
+      throw new Error("The selected bundled production Compute Driver requires preflight.");
     }
     this.emit({
       event: "worker.started",

@@ -3,7 +3,6 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import {
   KubernetesComputeDriver,
-  kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -297,7 +296,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     kind: "Secret",
     metadata: {
       name: "model-key",
-      namespace: kubernetesGatewayNamespaceName(revision.namespaceId),
+      namespace: kubernetesNamespaceName(revision.namespaceId),
       uid: "model-key-uid",
     },
     data: { value: Buffer.from("fixture-key").toString("base64") },
@@ -476,7 +475,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     harnessAuth: {
       ...revision.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(revision.namespaceId),
+        namespaceName: kubernetesNamespaceName(revision.namespaceId),
         name: "model-key",
         key: "value",
         uid: "model-key-uid",
@@ -490,9 +489,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       (object) =>
         object.kind === "Secret" &&
         object.metadata.namespace === namespace &&
-        !object.metadata.name.startsWith("gateway-secrets-") &&
-        !object.metadata.name.startsWith("harness-secrets-") &&
-        !object.metadata.name.startsWith("workspace-node-"),
+        object.metadata.labels?.["openclaw.dev/repository-material"] === "session",
     );
   const enroll = (selected) => {
     const name = driver.workspaceNodeName(selected);
@@ -1997,10 +1994,8 @@ for (const mode of ["embedded", "dedicated"]) {
           createdAt: f.revision.createdAt,
         });
         assert.equal(result.namespaceDeleted, true, JSON.stringify(result));
-        assert.deepEqual(
-          f.secrets().map((secret) => secret.metadata.name),
-          ["external-owner"],
-        );
+        assert.deepEqual(f.secrets(), []);
+        assert.ok(f.objects.has(`Secret:${f.namespace}:external-owner`));
         assert.ok(f.objects.has(`Namespace::${f.namespace}`));
       },
     );

@@ -35,8 +35,8 @@ require an administrator with access to the configured IAM authority.
 ## Rotate or remove a Secret
 
 Updating a Secret changes the stored value. It does not restart a workload or
-change a running process's environment. Redeploy or restart each consumer and
-verify the new process. There is no value history or automatic rotation. If a
+change a running process's environment. Redeploy each consumer through OCE and
+verify the new revision. There is no value history or automatic rotation. If a
 credential is exposed, stop the affected workloads, revoke it at the upstream
 provider, store a replacement, and redeploy. OCC rejects deletion while a
 current Configuration, credential source, Agent draft, active revision,

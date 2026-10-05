@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   fixtureImage,
   requiresKubernetes,
-  kubernetesGatewayNamespaceName,
   hash,
   kubectl,
   resource,
@@ -93,18 +92,46 @@ test(
     // used for Namespace lifecycle without reporting the CI-supported 1.35 family as advisory.
     assert.deepEqual(await driver.preflight(), { warnings: [] });
 
+    // Refuse an existing split layout before controller startup can mutate tenant
+    // labels or create empty replacement state in another namespace.
+    const legacyOwner = namespace("split-upgrade");
+    const legacyName = `oce-gateways-${hash(legacyOwner.id, 24)}`;
+    await kubectl("create", "namespace", legacyName);
+    try {
+      await kubectl(
+        "label",
+        "namespace",
+        legacyName,
+        "app.kubernetes.io/managed-by=openclaw-enterprise",
+        `openclaw.dev/gateway-namespace=${legacyOwner.id}`,
+      );
+      await kubectl(
+        "annotate",
+        "namespace",
+        legacyName,
+        `openclaw.dev/namespace-id=${legacyOwner.id}`,
+      );
+      const before = await resource("namespace", legacyName);
+      await assert.rejects(driver.preflight(), /Existing split-layout Gateway storage/);
+      const after = await resource("namespace", legacyName);
+      assert.equal(after.metadata.uid, before.metadata.uid);
+      assert.deepEqual(after.metadata.labels, before.metadata.labels);
+      assert.equal(await missing("namespace", kubernetesNamespaceName(legacyOwner.id)), true);
+    } finally {
+      await kubectl("delete", "namespace", legacyName, "--wait=true");
+    }
+    assert.deepEqual(await driver.preflight(), { warnings: [] });
+
     const first = namespace("first");
     const second = namespace("second");
     const empty = namespace("empty");
     const foreign = namespace("foreign");
     const owned = [first, second, empty].map(({ id }) => kubernetesNamespaceName(id));
-    const gatewayTargets = [first, second, empty].map(({ id }) =>
-      kubernetesGatewayNamespaceName(id),
-    );
+    const gatewayTargets = owned;
     const foreignName = kubernetesNamespaceName(foreign.id);
     context.after(async () => {
       await Promise.all(
-        [...owned, ...gatewayTargets, foreignName].map((name) =>
+        [...owned, foreignName].map((name) =>
           kubectl("delete", "namespace", name, "--ignore-not-found=true", "--wait=true"),
         ),
       );
@@ -127,16 +154,6 @@ test(
         "openclaw-controller",
         "--namespace",
         kubernetesNamespaceName(owner.id),
-        `--clusterrole=${controller.tenantRole}`,
-        `--serviceaccount=${platformNamespace}:${controller.account}`,
-      );
-      assert.equal((await driver.ensureNamespace(owner)).namespaceReady, false);
-      await kubectl(
-        "create",
-        "rolebinding",
-        "openclaw-controller",
-        "--namespace",
-        kubernetesGatewayNamespaceName(owner.id),
         `--clusterrole=${controller.tenantRole}`,
         `--serviceaccount=${platformNamespace}:${controller.account}`,
       );
@@ -173,6 +190,24 @@ test(
         (await resources("deployments", name)).length,
         0,
         "Namespace preparation must not create a gateway before an Agent is deployed",
+      );
+    }
+
+    for (const owner of [first, second, empty]) {
+      const storageTargets = JSON.parse(
+        await kubectl(
+          "get",
+          "namespaces",
+          "-l",
+          `openclaw.dev/gateway-namespace=${owner.id}`,
+          "-o",
+          "json",
+        ),
+      ).items;
+      assert.deepEqual(
+        storageTargets.map(({ metadata }) => metadata.name),
+        [kubernetesNamespaceName(owner.id)],
+        "single-cluster storage and runtime share one tenant namespace",
       );
     }
 
@@ -336,6 +371,30 @@ test(
         "RuntimeDefault",
       );
       const container = deployment.spec.template.spec.containers[0];
+      const sourceName = revisionContext(candidate).harnessAuth.backendRef.name;
+      const mountedSecrets = [
+        ...(deployment.spec.template.spec.volumes ?? []).flatMap((volume) => [
+          volume.secret?.secretName,
+          ...(volume.projected?.sources ?? []).map((source) => source.secret?.name),
+        ]),
+        ...[
+          ...(deployment.spec.template.spec.initContainers ?? []),
+          ...deployment.spec.template.spec.containers,
+        ].flatMap((entry) => [
+          ...(entry.env ?? []).map((env) => env.valueFrom?.secretKeyRef?.name),
+          ...(entry.envFrom ?? []).map((env) => env.secretRef?.name),
+        ]),
+      ].filter(Boolean);
+      assert.equal(
+        mountedSecrets.includes(sourceName),
+        false,
+        "shared placement must deliver a scoped projection rather than mount canonical sources",
+      );
+      const projectionName = `harness-secrets-${hash(candidate.agentId)}-${hash(candidate.id)}`;
+      assert.ok(mountedSecrets.includes(projectionName));
+      const harnessProjection = await resource("secret", projectionName, placement);
+      assert.equal(Object.keys(harnessProjection.data).length, 1);
+      assert.equal(Object.hasOwn(harnessProjection.data, "gateway-password"), false);
       assert.equal(container.securityContext.allowPrivilegeEscalation, false);
       assert.equal(container.securityContext.readOnlyRootFilesystem, true);
       assert.deepEqual(container.securityContext.capabilities.drop, ["ALL"]);
@@ -555,7 +614,7 @@ test(
     );
 
     const controllerActor = `system:serviceaccount:${platformNamespace}:${controller.account}`;
-    for (const target of [owned[0], gatewayTargets[0]]) {
+    for (const target of [owned[0]]) {
       assert.equal(
         await authorized(target, controllerActor, "get", "secrets"),
         true,

@@ -254,15 +254,42 @@ async function provisionAgentTransportSecret(namespaceName, agentId) {
         writeFile(join(directory, key), value, { mode: 0o600 }),
       ),
     );
-    await kubectl(
-      "create",
-      "secret",
-      "generic",
-      `${transportSecretPrefix}-${suffix}`,
-      "--namespace",
-      namespaceName,
-      ...Object.keys(secrets).map((key) => `--from-file=${key}=${join(directory, key)}`),
-    );
+    const owner = JSON.parse(await kubectl("get", "namespace", namespaceName, "-o", "json"));
+    const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
+    assert.ok(namespaceId, "transport source must belong to the tenant Namespace");
+    for (const [name, key] of [
+      [`${transportSecretPrefix}-${suffix}`, "app-server-token"],
+      [`gateway-password-${suffix}`, "gateway-password"],
+    ]) {
+      await kubectl(
+        "create",
+        "secret",
+        "generic",
+        name,
+        "--namespace",
+        namespaceName,
+        `--from-file=${key}=${join(directory, key)}`,
+      );
+      await kubectl(
+        "label",
+        "secret",
+        name,
+        "--namespace",
+        namespaceName,
+        "app.kubernetes.io/managed-by=openclaw-enterprise",
+        `openclaw.dev/namespace=${namespaceId}`,
+        `openclaw.dev/agent=${agentId}`,
+      );
+      await kubectl(
+        "annotate",
+        "secret",
+        name,
+        "--namespace",
+        namespaceName,
+        `openclaw.dev/namespace-id=${namespaceId}`,
+        `openclaw.dev/agent-id=${agentId}`,
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -282,17 +309,6 @@ async function createStatusCandidate(label, context) {
     await createDriver()
       .retireRevision(candidate)
       .catch(() => {});
-    const { kubernetesGatewayNamespaceName } =
-      await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
-    await kubectl(
-      "delete",
-      "namespace",
-      kubernetesGatewayNamespaceName(owner.id),
-      "--ignore-not-found=true",
-      "--wait=true",
-    );
-    // Nothing reads this namespace again and a failed wait was ignored, so
-    // let the namespace controller finish without holding the case open.
     await kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false");
   });
   return {

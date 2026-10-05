@@ -46,8 +46,8 @@ ownership, credentials, and TLS.
 ### Requirements
 
 You need Kubernetes with enforced NetworkPolicies,
-[Envoy Gateway v1.9](https://gateway.envoyproxy.io/docs/tasks/quickstart/),
-Gateway API CRDs, and [cert-manager](https://cert-manager.io/docs/installation/).
+[Envoy Gateway](https://gateway.envoyproxy.io/docs/tasks/quickstart/)
+(tested with v1.6.7), Gateway API CRDs, and [cert-manager](https://cert-manager.io/docs/installation/).
 Install and operate those controllers separately from this chart and provide
 an existing Envoy GatewayClass. By default, the chart creates a namespaced
 SelfSigned Issuer, a root CA Certificate, and a CA Issuer; cert-manager generates
@@ -233,8 +233,9 @@ This changes ingress for **every gateway in that Namespace**; coordinate the
 cutover with its other Agents and preserve unrelated policies and labels.
 
 Select the Gateway's physical Kubernetes namespace, distinct from its OCC
-Namespace ID: the managed Gateway runtime namespace for dedicated execution,
-or the tenant namespace for embedded execution. The commands below use
+Namespace ID: the Agent's tenant namespace, or for dedicated execution in the
+two-cluster profile, its `oce-gateways-<hash>` namespace in the control cluster.
+The commands below use
 `GATEWAY_NAMESPACE` for that target. This repairs routing on an already placed
 Gateway; it does not migrate a Gateway or move its PVC between namespaces. The following uses the same Gateway name/namespace as the examples
 above, `jq`, and the protected directory from production installation:

@@ -256,15 +256,19 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-Non-Slack cases cover dedicated Codex, embedded OpenClaw with a persisted provider
-credential, and embedded OpenClaw with the Secret API, through real Enterprise
-gateways. Both topologies use OCC Secret-backed Agent `harnessAuth` bindings. The
-Secret API case covers native SecretRefs, grants, denial, sharing, rotation, and
-redeployment.
+Five non-Slack runtime cases must pass: dedicated Codex, embedded OpenClaw,
+the extended Secret lifecycle case, and durable startup-failure status with
+plugins disabled and enabled. Both topologies use Secret-backed Agent `harnessAuth`. The Secret API case prepares
+its grants and tests native SecretRefs, denial, sharing and rotation. Pod recreation
+retains the admitted projection; OCE redeployment refreshes canonical values.
+Routing, Slack and OTLP suites live in separate files.
 
-The ordinary suite runs the production API and worker in Node and does not
-install the controller with Helm. Codex defaults to `0.158.0`; see
-[runtime settings](#kubernetes-real-runtime-test-environment) for version assertions and alternate images.
+Embedded cases run the production API and worker in the Node test process.
+Dedicated and routing cases run both as Kubernetes Deployments with separate
+identities; the coordinator stays in Node. These suites do not install OCC with
+Helm. Missing prerequisites fail selected suites; unselected suites skip.
+The default Codex version is `0.158.0`; see
+[runtime settings](#kubernetes-real-runtime-test-environment) for alternate images.
 
 ### Candidate Skill source lifecycle
 
@@ -276,8 +280,8 @@ OCC_TEST_SKILL_SOURCE_LIFECYCLE=1 node --env-file="$TEST_ENV_FILE" --test \
   tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-Verifies source replacement, denied writes preserving bytes/lockfiles, and recovery
-through OCC redeploy. No conversation turn; unsupported runtime images fail.
+Tests source replacement, denied writes preserving bytes/lockfiles and redeploy
+recovery. Unsupported images fail.
 
 ### Transcript persistence
 

@@ -15,7 +15,7 @@ function clone(value) {
 }
 
 function kubernetesNamespaceName(namespaceId) {
-  return `oce-gateways-${createHash("sha256").update(namespaceId).digest("hex").slice(0, 24)}`;
+  return `oce-${createHash("sha256").update(namespaceId).digest("hex").slice(0, 15)}`;
 }
 
 class FakeCoreV1Api {
@@ -26,16 +26,33 @@ class FakeCoreV1Api {
   readSecretFailureCodes = [];
   readSecretTimesOut = false;
 
-  addNamespace(namespaceId) {
-    const name = kubernetesNamespaceName(namespaceId);
+  addNamespace(namespaceId, layout = "shared") {
+    const name =
+      layout === "split"
+        ? `oce-gateways-${createHash("sha256").update(namespaceId).digest("hex").slice(0, 24)}`
+        : layout === "adopted"
+          ? "customer-support"
+          : kubernetesNamespaceName(namespaceId);
     this.namespaces.set(name, {
       metadata: {
         name,
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
           "openclaw.dev/gateway-namespace": namespaceId,
+          ...(layout === "split" ? {} : { "openclaw.dev/namespace": namespaceId }),
+          ...(layout === "adopted"
+            ? Object.fromEntries(
+                ["enforce", "audit", "warn"].map((mode) => [
+                  `pod-security.kubernetes.io/${mode}`,
+                  "restricted",
+                ]),
+              )
+            : {}),
         },
-        annotations: { "openclaw.dev/namespace-id": namespaceId },
+        annotations: {
+          "openclaw.dev/namespace-id": namespaceId,
+          ...(layout === "adopted" ? { "openclaw.dev/namespace-lifecycle": "external" } : {}),
+        },
       },
       status: { phase: "Active" },
     });
@@ -43,10 +60,10 @@ class FakeCoreV1Api {
   }
 
   async listNamespace({ labelSelector }) {
-    const [, namespaceId] = labelSelector.split("=");
+    const [label, namespaceId] = labelSelector.split("=");
     return {
       items: [...this.namespaces.values()].filter(
-        ({ metadata }) => metadata.labels?.["openclaw.dev/namespace"] === namespaceId,
+        ({ metadata }) => metadata.labels?.[label] === namespaceId,
       ),
     };
   }
@@ -166,104 +183,106 @@ function driverWithClient(client) {
   return driver;
 }
 
-test("kubernetes-secret-driver stores, verifies, updates, resolves, and deletes one exact Namespace Secret", async () => {
-  const client = new FakeCoreV1Api();
-  const nsId = namespaceId();
-  const namespace = client.addNamespace(nsId);
-  const driver = driverWithClient(client);
-  const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
+for (const layout of ["shared", "adopted", "split"]) {
+  test(`kubernetes-secret-driver stores, verifies, updates, resolves, and deletes one exact Namespace Secret (${layout})`, async () => {
+    const client = new FakeCoreV1Api();
+    const nsId = namespaceId();
+    const namespace = client.addNamespace(nsId, layout);
+    const driver = driverWithClient(client);
+    const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
 
-  const backendRef = await driver.create(identity, "stored-value");
-  assert.equal(backendRef.namespaceName, namespace);
-  assert.equal(backendRef.key, "value");
-  assert.match(backendRef.name, /^secret-[a-f0-9]{12}-[a-f0-9]{12}-[a-f0-9]{12}$/);
+    const backendRef = await driver.create(identity, "stored-value");
+    assert.equal(backendRef.namespaceName, namespace);
+    assert.equal(backendRef.key, "value");
+    assert.match(backendRef.name, /^secret-[a-f0-9]{12}-[a-f0-9]{12}-[a-f0-9]{12}$/);
 
-  const stored = client.secrets.get(`${namespace}/${backendRef.name}`);
-  assert.equal(stored.type, "Opaque");
-  assert.equal(stored.immutable, false);
-  assert.deepEqual(stored.metadata.labels, {
-    "app.kubernetes.io/managed-by": "openclaw-enterprise",
-    "openclaw.dev/namespace": nsId,
-    "openclaw.dev/secret": identity.id,
-  });
-  assert.deepEqual(stored.metadata.annotations, {
-    "openclaw.dev/namespace-id": nsId,
-    "openclaw.dev/secret-id": identity.id,
-    "openclaw.dev/secret-name": "model-key",
-    "openclaw.dev/secret-driver-id": "secret-kubernetes",
-  });
+    const stored = client.secrets.get(`${namespace}/${backendRef.name}`);
+    assert.equal(stored.type, "Opaque");
+    assert.equal(stored.immutable, false);
+    assert.deepEqual(stored.metadata.labels, {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/namespace": nsId,
+      "openclaw.dev/secret": identity.id,
+    });
+    assert.deepEqual(stored.metadata.annotations, {
+      "openclaw.dev/namespace-id": nsId,
+      "openclaw.dev/secret-id": identity.id,
+      "openclaw.dev/secret-name": "model-key",
+      "openclaw.dev/secret-driver-id": "secret-kubernetes",
+    });
 
-  stored.metadata.labels["operator.example/retained"] = "true";
-  await driver.update(
-    {
+    stored.metadata.labels["operator.example/retained"] = "true";
+    await driver.update(
+      {
+        ...identity,
+        driverId: driver.id,
+        backendRef,
+        createdAt: new Date().toISOString(),
+      },
+      "rotated-value",
+    );
+    const secret = {
       ...identity,
       driverId: driver.id,
       backendRef,
       createdAt: new Date().toISOString(),
-    },
-    "rotated-value",
-  );
-  const secret = {
-    ...identity,
-    driverId: driver.id,
-    backendRef,
-    createdAt: new Date().toISOString(),
-  };
-  assert.equal(await driver.withValue(secret, async (value) => value), "rotated-value");
-  await assert.rejects(
-    driver.withValue({ ...secret, backendRef: { ...backendRef, uid: "foreign" } }, async () =>
-      assert.fail("foreign Secret must not be used"),
-    ),
-    SecretOwnershipError,
-  );
-  const updated = client.secrets.get(`${namespace}/${backendRef.name}`);
-  assert.equal(updated.metadata.uid, backendRef.uid);
-  assert.equal(updated.metadata.labels["operator.example/retained"], "true");
-  assert.equal(Buffer.from(updated.data.value, "base64").toString("utf8"), "rotated-value");
-  assert.deepEqual(
-    await driver.resolve({
-      ...identity,
-      driverId: driver.id,
-      backendRef,
-      createdAt: new Date().toISOString(),
-    }),
-    backendRef,
-  );
-  // The callback receives the exact stored UTF-8 text, including a leading byte-order mark.
-  updated.data.value = Buffer.from("\uFEFFrotated-value").toString("base64");
-  assert.equal(await driver.withValue(secret, async (value) => value), "\uFEFFrotated-value");
-
-  // A corrupt backend value must not reach the consumer even when ownership matches.
-  for (const malformed of ["%%%", "/w=="]) {
-    updated.data.value = malformed;
+    };
+    assert.equal(await driver.withValue(secret, async (value) => value), "rotated-value");
     await assert.rejects(
-      driver.withValue(secret, async () => assert.fail("invalid value must not be used")),
+      driver.withValue({ ...secret, backendRef: { ...backendRef, uid: "foreign" } }, async () =>
+        assert.fail("foreign Secret must not be used"),
+      ),
+      SecretOwnershipError,
+    );
+    const updated = client.secrets.get(`${namespace}/${backendRef.name}`);
+    assert.equal(updated.metadata.uid, backendRef.uid);
+    assert.equal(updated.metadata.labels["operator.example/retained"], "true");
+    assert.equal(Buffer.from(updated.data.value, "base64").toString("utf8"), "rotated-value");
+    assert.deepEqual(
+      await driver.resolve({
+        ...identity,
+        driverId: driver.id,
+        backendRef,
+        createdAt: new Date().toISOString(),
+      }),
+      backendRef,
+    );
+    // The callback receives the exact stored UTF-8 text, including a leading byte-order mark.
+    updated.data.value = Buffer.from("\uFEFFrotated-value").toString("base64");
+    assert.equal(await driver.withValue(secret, async (value) => value), "\uFEFFrotated-value");
+
+    // A corrupt backend value must not reach the consumer even when ownership matches.
+    for (const malformed of ["%%%", "/w=="]) {
+      updated.data.value = malformed;
+      await assert.rejects(
+        driver.withValue(secret, async () => assert.fail("invalid value must not be used")),
+        SecretBackendUnavailableError,
+      );
+    }
+    updated.data.value = Buffer.from("rotated-value").toString("base64");
+
+    await driver.delete({
+      ...identity,
+      driverId: driver.id,
+      backendRef: { ...backendRef, uid: updated.metadata.uid },
+      createdAt: new Date().toISOString(),
+    });
+    assert.deepEqual(client.deletes[0], {
+      uid: updated.metadata.uid,
+      resourceVersion: updated.metadata.resourceVersion,
+    });
+    await assert.rejects(
+      driver.withValue(secret, async () => assert.fail("deleted Secret must not be used")),
       SecretBackendUnavailableError,
     );
-  }
-  updated.data.value = Buffer.from("rotated-value").toString("base64");
-
-  await driver.delete({
-    ...identity,
-    driverId: driver.id,
-    backendRef: { ...backendRef, uid: updated.metadata.uid },
-    createdAt: new Date().toISOString(),
+    await driver.delete({
+      ...identity,
+      driverId: driver.id,
+      backendRef: { ...backendRef, uid: updated.metadata.uid },
+      createdAt: new Date().toISOString(),
+    });
   });
-  assert.deepEqual(client.deletes[0], {
-    uid: updated.metadata.uid,
-    resourceVersion: updated.metadata.resourceVersion,
-  });
-  await assert.rejects(
-    driver.withValue(secret, async () => assert.fail("deleted Secret must not be used")),
-    SecretBackendUnavailableError,
-  );
-  await driver.delete({
-    ...identity,
-    driverId: driver.id,
-    backendRef: { ...backendRef, uid: updated.metadata.uid },
-    createdAt: new Date().toISOString(),
-  });
-});
+}
 
 test("kubernetes-secret-driver fails closed on missing placement, invalid values, and foreign backends", async () => {
   for (const scenario of [
@@ -274,6 +293,15 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     {
       name: "foreign Secret label",
       mutateStored: (stored) => (stored.metadata.labels["openclaw.dev/secret"] = secretId()),
+    },
+    {
+      name: "foreign namespace annotation",
+      mutateStored: (stored) =>
+        (stored.metadata.annotations["openclaw.dev/namespace-id"] = namespaceId()),
+    },
+    {
+      name: "record owned by another Secret Driver",
+      mutateRecord: (record) => ({ ...record, driverId: "secret-other-driver" }),
     },
     {
       name: "foreign driver annotation",
@@ -296,12 +324,13 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     const identity = { id: secretId(), namespaceId: nsId, name: "model-key" };
     const backendRef = await driver.create(identity, "safe-value");
     scenario.mutateStored?.(client.secrets.get(`${namespace}/${backendRef.name}`));
-    const secret = {
+    const record = {
       ...identity,
       driverId: driver.id,
       backendRef: scenario.mutateBackendRef?.(backendRef) ?? backendRef,
       createdAt: new Date().toISOString(),
     };
+    const secret = scenario.mutateRecord?.(record) ?? record;
     await assert.rejects(driver.resolve(secret), SecretOwnershipError, scenario.name);
     await assert.rejects(
       driver.withValue(secret, async () => assert.fail("foreign Secret must not be used")),
@@ -432,5 +461,33 @@ test("kubernetes-secret-driver delete reports inaccessible backends instead of i
     assert.equal(client.secrets.has(`${namespace}/${backendRef.name}`), true);
     assert.deepEqual(client.deletes, []);
     assert.ok(client.reads > readCountBeforeDelete);
+  }
+});
+
+test("canonical storage discovery rejects ambiguous, foreign and insecure adopted targets before a write", async () => {
+  for (const scenario of ["duplicate", "foreign", "unrestricted"]) {
+    const client = new FakeCoreV1Api();
+    const nsId = namespaceId();
+    const name = client.addNamespace(nsId, "adopted");
+    const stored = client.namespaces.get(name);
+    if (scenario === "duplicate") {
+      const duplicate = clone(stored);
+      duplicate.metadata.name = "second-claim";
+      client.namespaces.set("second-claim", duplicate);
+    }
+    if (scenario === "foreign") {
+      stored.metadata.annotations["openclaw.dev/namespace-id"] = namespaceId();
+    }
+    if (scenario === "unrestricted") {
+      delete stored.metadata.labels["pod-security.kubernetes.io/enforce"];
+    }
+    await assert.rejects(
+      driverWithClient(client).create(
+        { id: secretId(), namespaceId: nsId, name: "model-key" },
+        "safe-value",
+      ),
+      SecretBackendUnavailableError,
+    );
+    assert.equal(client.secrets.size, 0);
   }
 });

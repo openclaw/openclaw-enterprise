@@ -45,7 +45,7 @@ function createDriver(authentication = { mode: "inCluster" }) {
 }
 
 function physicalNamespaceName(id) {
-  return `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+  return `oce-${createHash("sha256").update(id).digest("hex").slice(0, 15)}`;
 }
 
 class FakeConfigurationCoreV1Api {
@@ -53,20 +53,46 @@ class FakeConfigurationCoreV1Api {
   configMaps = new Map();
   creates = 0;
 
-  addNamespace(id) {
-    const name = physicalNamespaceName(id);
+  addNamespace(id, layout = "shared") {
+    const name =
+      layout === "split"
+        ? `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`
+        : layout === "adopted"
+          ? "customer-support"
+          : physicalNamespaceName(id);
     this.namespaces.set(name, {
       metadata: {
         name,
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
           "openclaw.dev/gateway-namespace": id,
+          ...(layout === "split" ? {} : { "openclaw.dev/namespace": id }),
+          ...(layout === "adopted"
+            ? Object.fromEntries(
+                ["enforce", "audit", "warn"].map((mode) => [
+                  `pod-security.kubernetes.io/${mode}`,
+                  "restricted",
+                ]),
+              )
+            : {}),
         },
-        annotations: { "openclaw.dev/namespace-id": id },
+        annotations: {
+          "openclaw.dev/namespace-id": id,
+          ...(layout === "adopted" ? { "openclaw.dev/namespace-lifecycle": "external" } : {}),
+        },
       },
       status: { phase: "Active" },
     });
     return name;
+  }
+
+  async listNamespace({ labelSelector }) {
+    const [label, id] = labelSelector.split("=");
+    return {
+      items: [...this.namespaces.values()].filter(
+        ({ metadata }) => metadata.labels?.[label] === id,
+      ),
+    };
   }
 
   async readNamespace({ name }) {
@@ -303,42 +329,44 @@ test("ConfigMaps contain exactly one native document and preserve real ownership
   }
 });
 
-test("Kubernetes Configuration inspectExact recovers only the exact Configuration", async () => {
-  const client = new FakeConfigurationCoreV1Api();
-  const namespace = client.addNamespace(namespaceId);
-  const driver = createDriver();
-  driver.client = Promise.resolve(client);
+for (const layout of ["shared", "adopted", "split"]) {
+  test(`Kubernetes Configuration inspectExact recovers only the exact Configuration (${layout})`, async () => {
+    const client = new FakeConfigurationCoreV1Api();
+    const namespace = client.addNamespace(namespaceId, layout);
+    const driver = createDriver();
+    driver.client = Promise.resolve(client);
 
-  const created = await driver.createExact(configuration);
-  assert.deepEqual(await driver.inspectExact(configuration), created);
-  assert.equal(client.creates, 1);
-  assert.equal(client.configMaps.size, 1);
-  await assert.rejects(() => driver.createExact(configuration), ConfigurationConflictError);
-  assert.equal(
-    await driver.inspectExact({
-      ...configuration,
-      id: "cfg_00000000-0000-4000-8000-000000000099",
-    }),
-    undefined,
-  );
+    const created = await driver.createExact(configuration);
+    assert.deepEqual(await driver.inspectExact(configuration), created);
+    assert.equal(client.creates, 1);
+    assert.equal(client.configMaps.size, 1);
+    await assert.rejects(() => driver.createExact(configuration), ConfigurationConflictError);
+    assert.equal(
+      await driver.inspectExact({
+        ...configuration,
+        id: "cfg_00000000-0000-4000-8000-000000000099",
+      }),
+      undefined,
+    );
 
-  const stored = client.configMaps.get(
-    `${namespace}/${kubernetesConfigurationName(configuration.id)}`,
-  );
-  stored.data["openclaw.json"] = JSON.stringify({
-    plugins: configuration.values.plugins,
-    agents: configuration.values.agents,
-    secrets: configuration.values.secrets,
-    models: configuration.values.models,
+    const stored = client.configMaps.get(
+      `${namespace}/${kubernetesConfigurationName(configuration.id)}`,
+    );
+    stored.data["openclaw.json"] = JSON.stringify({
+      plugins: configuration.values.plugins,
+      agents: configuration.values.agents,
+      secrets: configuration.values.secrets,
+      models: configuration.values.models,
+    });
+    assert.deepEqual(await driver.inspectExact(configuration), created);
+
+    stored.data["openclaw.json"] = JSON.stringify({
+      ...configuration.values,
+      agents: { defaults: { sandbox: { mode: "networking" } } },
+    });
+    await assert.rejects(() => driver.inspectExact(configuration), ConfigurationConflictError);
   });
-  assert.deepEqual(await driver.inspectExact(configuration), created);
-
-  stored.data["openclaw.json"] = JSON.stringify({
-    ...configuration.values,
-    agents: { defaults: { sandbox: { mode: "networking" } } },
-  });
-  await assert.rejects(() => driver.inspectExact(configuration), ConfigurationConflictError);
-});
+}
 
 test("configuration operations reject invalid references before reading Kubernetes credentials", async () => {
   const driver = createDriver();

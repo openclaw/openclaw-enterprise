@@ -9,6 +9,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   AuthorizationDeniedError,
+  ConfigurationHarnessError,
   DependencyUnavailableError,
   InMemoryPlatformState,
   NamespaceNotEmptyError,
@@ -848,13 +849,17 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
   });
 
   // An explicit Codex selection cannot run in an embedded Agent or use OpenClaw's approval.
+  // The mismatch is the caller's to fix, so it is named rather than reported as a missing dependency.
   await assert.rejects(
     controller.deployAgent(
       administrator,
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedDevelopmentHarness,
     ),
-    DependencyUnavailableError,
+    (error) =>
+      error instanceof ConfigurationHarnessError &&
+      error.message ===
+        "The Configuration selects the Codex Harness, which needs dedicated execution; this Agent uses embedded execution. Change the Agent's execution mode or its Configuration.",
   );
   await assert.rejects(
     controller.deployAgent(

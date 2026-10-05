@@ -344,7 +344,9 @@ test("console shows the external observability link only to Installation adminis
   );
   await login(page, fixture, "/console/", limited.credentials);
   assert.equal((await limitedProbe).status(), 403);
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  // The limited user reads no Agents. The empty list renders only after the page applied the
+  // denied probe, so the link checks below see the settled shell, not the loading one.
+  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   // A denied read is audited, so navigation must not repeat it.
   await page.getByRole("link", { name: "Namespaces" }).click();
@@ -354,12 +356,12 @@ test("console shows the external observability link only to Installation adminis
   );
   await page.getByRole("link", { name: "Agents" }).click();
   await namespacesRead;
-  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 2);
   // A reload in the same tab reuses the settled answer for this session owner.
   await page.reload();
-  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 2);
 });

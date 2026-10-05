@@ -75,6 +75,11 @@ Keep the shell's `umask 077`. If the status read is denied or does not identify
 the confirmed deployment, do not create the response file. The helper rechecks
 its status on resume; it does not verify how you identified an accepted request.
 
+If the candidate API and worker refuse to start because of
+[split-layout Gateway storage](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),
+`--resume` cannot succeed. Keep both namespaces and their storage, and return to
+the previous controller image after the check below.
+
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
 delete Agents, revisions, PVCs, or the bootstrap volume to force recovery.

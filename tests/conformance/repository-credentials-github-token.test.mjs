@@ -45,6 +45,24 @@ function tokenFactory({
   return { clock, config, factory, owner };
 }
 
+/** Factory options selecting one binding of the configured token grant (`github-test`, 73). */
+function factoryBinding(identity = {}, extra = {}) {
+  return {
+    options: {
+      binding: {
+        profile: "git-write",
+        identity: {
+          providerInstanceId: "github-test",
+          repositoryId: "73",
+          grantId: "x",
+          ...identity,
+        },
+        ...extra,
+      },
+    },
+  };
+}
+
 function appFactory() {
   const clock = createControlledClock(1700000000000);
   const config = validateServiceConfig(serviceConfigurationData());
@@ -227,18 +245,7 @@ test("token factory refuses mismatched authorities, metadata scope, broad GraphQ
     ],
     // A lease must cover one exchange deadline plus two safety margins.
     // The gateway enforces the configured allowlist; a binding cannot replace it.
-    [
-      "binding push allowlist",
-      {
-        options: {
-          binding: {
-            profile: "git-write",
-            identity: { providerInstanceId: "github-test", repositoryId: "73", grantId: "x" },
-            pushRefAllowlist: ["refs/heads/*"],
-          },
-        },
-      },
-    ],
+    ["binding push allowlist", factoryBinding({}, { pushRefAllowlist: ["refs/heads/*"] })],
     [
       "lease below the exchange bound",
       { configuration: { leaseSeconds: 900 }, limits: { exchangeMs: 900000 } },
@@ -406,4 +413,20 @@ test("static acquisition checks every bound before borrowing and never dispatche
     ["reauthorization-required", "authority-unavailable"],
   );
   assert.equal(session.custody.records.size, 1);
+});
+
+test("a factory binding must name the configured provider instance and repository", () => {
+  tokenFactory(factoryBinding()).owner.close();
+  for (const [name, identity] of [
+    ["another repository", { repositoryId: "74" }],
+    ["another provider instance", { providerInstanceId: "github-other" }],
+  ]) {
+    const owner = createGitHubStaticTokenOwner({ token: Buffer.from(oauthToken) });
+    assert.throws(
+      () => tokenFactory({ ...factoryBinding(identity), owner }),
+      { message: "invalid-binding" },
+      name,
+    );
+    owner.close();
+  }
 });

@@ -3,6 +3,15 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
+    "tests/integration/auth-maintain.test.mjs",
+    "tests/integration/occ-metrics.test.mjs"
+  ],
+  "serialFiles": {
+    "tests/integration/postgres-worker-agent-revision.test.mjs": "prepares a database per test with prepareFile from the test process, which rewrites the lane state file outside the runner's setup queue"
+  },
   "files": [
     {
       "path": "tests/integration/occ-metrics.test.mjs",

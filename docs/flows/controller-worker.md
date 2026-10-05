@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-04
-last_updated_session: authoring-run/d0545dc8-f524-4ce5-a3ce-918838dddd92
+updated: 2026-10-05
+last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
 # Controller Worker Flow
@@ -67,8 +67,8 @@ production requires explicit configuration.
 `start()` loads the bootstrapped Installation, validates native IAM, and attaches
 selected Configuration, Sandbox, and IAM hooks to Compute. Shared composition
 supplies Kubernetes Compute's optional Sandbox Driver. Selected hooks require
-`setLifecycleDrivers`; unsupported capabilities stop startup. Production runs
-Compute preflight before emitting `worker.started` and entering `run()`.
+`setLifecycleDrivers`; unsupported capabilities stop startup. Every worker runs
+available Compute preflight before emitting `worker.started` and entering `run()`.
 
 Metrics scrapes read lifecycle and backlog state over one read-only connection
 through `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`,
@@ -386,6 +386,9 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
+- 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
+
+- 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
 - 2026-10-04 04:20: Abort Compute when the last confirmed claim lease runs out, even if a renewal never answers. (bughunt-10-claimloss)
 
 - 2026-10-03 17:00: Finish published deployments after a last-attempt crash. (fix-recover-active-revision)

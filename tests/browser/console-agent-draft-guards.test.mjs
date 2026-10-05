@@ -1003,7 +1003,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   const saved = page.waitForResponse(
     (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
   );
-  await page.getByRole("button", { name: "Save authentication source" }).click({ timeout: 2000 });
+  await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await saved).status(), 200);
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();

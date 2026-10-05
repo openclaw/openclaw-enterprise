@@ -150,8 +150,8 @@ bootstrap PVC through approved storage access. Save it to a private path and
 set `OCC_SERVICE_KEY_FILE`. See the [bootstrap storage settings](../settings/production.md#production-installation-bootstrap-environment)
 if the file was given a different name.
 
-For a Compose development environment started with `dev-up`, use the private
-key path it prints. If you need to copy it manually, create a fresh directory:
+For a local stack started with `dev-up`, use the `Service key file` path it
+prints. To copy the key from a Compose stack by hand, create a fresh directory:
 
 ```bash
 umask 077

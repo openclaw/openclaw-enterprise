@@ -271,13 +271,24 @@ trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true
 # Installation the way the API and worker start: the rendered chart's env, mounts
 # and service account, with the candidate Installation in a temporary Secret.
 # Configuration the image rejects, such as a presets.files entry naming a file
-# the image no longer ships, would otherwise crash-loop both after the migration.
+# the image no longer ships, or Kubernetes state its Compute preflight refuses,
+# such as split-layout Gateway storage, would otherwise crash-loop both after the
+# migration.
 preflight_startup() {
-  local suffix secret component pod phase waiting deadline remaining_seconds message failures
+  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
     die "cannot read the rendered chart for the startup preflight; no OCC writer was stopped."
+  node scripts/upgrade-startup-preflight.mjs networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
+    "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
+    die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
+  if [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" != null ]]; then
+    preflight_resources+=("networkpolicy.networking.k8s.io/$secret")
+    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
+      --filename "$evidence_dir/preflight-networkpolicy.json" >/dev/null ||
+      die "cannot create the startup preflight NetworkPolicy $secret; no OCC writer was stopped."
+  fi
   preflight_resources+=("secret/$secret")
   node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
     "$installation_key" "$secret" "$namespace" "$release" |
@@ -339,9 +350,20 @@ preflight_startup() {
           message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no OCC writer was stopped."
           ;;
         *)
-          message=$(tail -n 3 "$evidence_dir/preflight-$component.log" | tr '\n' ' ' | cut -c 1-600)
-          [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
-          message="the selected controller image cannot start the $component with the candidate Installation: ${message}No OCC writer was stopped; correct the Installation and start again with a new evidence directory."
+          refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
+            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
+          if [[ -n "$refusal" ]]; then
+            message="the $component startup preflight stopped: $refusal No OCC writer was stopped; the old release keeps serving."
+            if [[ "$refusal" == *split-layout* ]]; then
+              message+=" See docs/reference/drivers/kubernetes-compute.md#existing-split-layout-installations."
+            else
+              message+=" The Pod uses the installed release's service account and RBAC and only the chart's dependency egress (preflight-networkpolicy.json); fix its Kubernetes API access and start again with a new evidence directory."
+            fi
+          else
+            message=$(tail -n 3 "$evidence_dir/preflight-$component.log" | tr '\n' ' ' | cut -c 1-600)
+            [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
+            message="the selected controller image cannot start the $component with the candidate Installation: ${message}No OCC writer was stopped; correct the Installation and start again with a new evidence directory."
+          fi
           ;;
       esac
     fi

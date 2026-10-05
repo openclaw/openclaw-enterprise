@@ -253,16 +253,27 @@ async function exerciseRepository(store) {
       false,
     );
   });
-  await assert.rejects(
-    store.transact((state) =>
-      state.configurations.createConfiguration({
-        ...configuration,
-        id: identifier("cfg"),
-        secretBindings: bindingFor(foreignSecret),
-      }),
-    ),
-    { name: "ScopeViolationError" },
-  );
+  // Secret IDs are unique, so lookups must still be scoped: a foreign ID is not found here.
+  await store.transact(async (state) => {
+    assert.equal(await state.secrets.findSecret(namespace.id, foreignSecret.id), undefined);
+    assert.equal(await state.secrets.lockSecret(namespace.id, foreignSecret.id), undefined);
+  });
+  // A binding to a foreign Secret is refused, even when it claims this Namespace for it.
+  for (const secretBindings of [
+    bindingFor(foreignSecret),
+    { MODEL_KEY: { source: { kind: "secret", namespaceId: namespace.id, id: foreignSecret.id } } },
+  ]) {
+    await assert.rejects(
+      store.transact((state) =>
+        state.configurations.createConfiguration({
+          ...configuration,
+          id: identifier("cfg"),
+          secretBindings,
+        }),
+      ),
+      { name: "ScopeViolationError" },
+    );
+  }
 
   const configurationBlockerSecret = secret(namespace.id);
   const configurationBlocker = {
@@ -315,6 +326,8 @@ async function exerciseRepository(store) {
       method: "codex_pat",
       source: bindingValue(revisionSecret).source,
     });
+    // The Agent's own Harness binding retains its Secret before any revision exists.
+    assert.equal(await state.secrets.hasReferences(namespace.id, revisionSecret.id), true);
     const snapshot = revisionFor(agent, { ...configuration, generation: 3 }, revisionSecret, 1);
     await assert.rejects(
       state.revisions.createRevision({

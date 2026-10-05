@@ -85,6 +85,7 @@ async function createFixture(options = {}) {
               controller = new OpenClawController(installation, {
                 state: new InMemoryPlatformState({ auditSink }),
                 recordOperations: options.recordOperations ?? false,
+                ...(options.now === undefined ? {} : { now: options.now }),
               });
               return controller;
             },
@@ -1057,7 +1058,18 @@ test("Harness source admission rejects foreign references and superseded model s
     },
   });
   assert.equal(malformed.status, 400);
-  for (const destination of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+  // Provider keys, reserved prefixes and process-control names, in any letter case.
+  for (const destination of [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "openclaw_gateway_token",
+    "LD_PRELOAD",
+    "KUBECONFIG",
+    "PATH",
+    "path",
+    "HTTPS_PROXY",
+  ]) {
     const reserved = await request(
       fixture.app,
       "POST",
@@ -1108,4 +1120,113 @@ test("Contract messages give no bound hint for keywords inherited from Object.pr
       "The request does not match the operation contract: body /x has an unsupported value.",
     );
   }
+});
+
+/** Records gateway copies; OCC admission, IAM and the audit rows under test stay real. */
+function createRecordingCredentialGateway() {
+  const stored = new Map();
+  return {
+    id: "credential-gateway-secret-api",
+    capability: "credential_gateway",
+    implementation: "test-recording-gateway",
+    stored,
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource(context, input) {
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
+    },
+    async updateSource(context, input) {
+      stored.set(context.source.id, input.secrets);
+      return { state: "ready" };
+    },
+    async rotateSource() {
+      throw new Error("not exercised");
+    },
+    async sourceStatus(context) {
+      return stored.has(context.source.id) ? { state: "ready" } : { state: "absent" };
+    },
+    async removeSource(context) {
+      stored.delete(context.source.id);
+    },
+    async attachForRevision() {
+      throw new Error("not exercised");
+    },
+    async attachmentStatus() {
+      throw new Error("not exercised");
+    },
+    async withdraw() {
+      throw new Error("not exercised");
+    },
+  };
+}
+
+test("credential source writes commit one value-free audit row each", async () => {
+  let now = Date.now();
+  const fixture = await createFixture({
+    now: () => new Date(now),
+    computeDriver: {
+      ...createReadyComputeDriver("compute-secret-api"),
+      async resolveSandboxNamespace(namespace) {
+        return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
+      },
+    },
+  });
+  const namespace = await bootstrapNamespace(fixture);
+  const gateway = createRecordingCredentialGateway();
+  fixture.controller().registerDriver(gateway);
+  fixture.controller().selectDriver("credential_gateway", gateway.id);
+  const value = `credential-source-value-${randomUUID()}`;
+  const rotated = `credential-source-rotated-${randomUUID()}`;
+  const secret = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "Source key", value },
+  });
+  assert.equal(secret.status, 201);
+  const sources = `/namespaces/${namespace.id}/credential-sources`;
+
+  const created = await request(fixture.app, "POST", sources, {
+    body: { name: "openai", type: "openai", secrets: { api_key: secret.data.ref } },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: value });
+  const updatedSecret = await request(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespace.id}/secrets/${secret.data.id}`,
+    { body: { value: rotated } },
+  );
+  assert.equal(updatedSecret.status, 200);
+  const updated = await request(fixture.app, "PATCH", `${sources}/${created.data.id}`, {
+    body: {},
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(gateway.stored.get(created.data.id), { api_key: rotated });
+  // Past the registration fence: no timed-out registration could still create a gateway copy.
+  now += 71_000;
+  const deleted = await request(fixture.app, "DELETE", `${sources}/${created.data.id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(gateway.stored.has(created.data.id), false);
+
+  const mutations = fixture.auditSink.events.filter(
+    (event) => event.kind === "mutation" && event.resource.kind === "credential_source",
+  );
+  assert.deepEqual(
+    mutations.map((event) => [event.action, event.resource]),
+    ["create", "update", "delete"].map((verb) => [
+      `openclaw.credential_sources.${verb}`,
+      { kind: "credential_source", id: created.data.id, namespaceId: namespace.id },
+    ]),
+  );
+  const audit = JSON.stringify(fixture.auditSink.events);
+  assert.equal(audit.includes(value), false);
+  assert.equal(audit.includes(rotated), false);
 });

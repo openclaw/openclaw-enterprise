@@ -6,11 +6,15 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
+  OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
   OpenShellSandboxAlreadyExistsError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
+import {
+  SandboxRevisionUnsupportedError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
@@ -956,4 +960,152 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
     loadInstallationFile(t, configuration),
     /OpenShell gateway readiness timeout must be a positive safe integer/,
   );
+});
+
+/**
+ * The OpenShell Credential Gateway over a recording provider store. Each provider's labels say
+ * which credential source owns it; the gateway may act only on its own source's provider.
+ * Kept beside the OpenShell Sandbox cases: both members come from one OpenShell Backend.
+ */
+function credentialGatewayOverProviders({ keepDeleted = false } = {}) {
+  const providers = new Map();
+  const calls = [];
+  const client = {
+    async getProviderProfile() {
+      return undefined;
+    },
+    async importProviderProfile() {},
+    async updateProviderProfile() {},
+    async deleteProviderProfile() {},
+    async createProvider(provider) {
+      calls.push(["createProvider", provider.name]);
+      if (providers.has(provider.name)) {
+        throw new OpenShellProviderAlreadyExistsError(provider.name);
+      }
+      providers.set(provider.name, { ...provider });
+    },
+    async getProvider(_workspace, name) {
+      return providers.get(name);
+    },
+    async listProviders() {
+      return [...providers.values()];
+    },
+    async updateProviderCredentials(_workspace, name, credentials) {
+      calls.push(["updateProviderCredentials", name]);
+      providers.set(name, { ...providers.get(name), credentials });
+    },
+    async deleteProvider(_workspace, name) {
+      calls.push(["deleteProvider", name]);
+      if (!keepDeleted) {
+        providers.delete(name);
+      }
+    },
+  };
+  const driver = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/codex"] },
+    {
+      backend: {
+        drivers: { credential_gateway: "credential-gateway-openshell" },
+        client: { clientForNamespace: () => client },
+      },
+    },
+  );
+  const namespace = { id: "ns_00000000-0000-4000-8000-0000000000aa", name: "placed-tenant" };
+  const signal = new AbortController().signal;
+  const source = (id, namespaceId = namespace.id) => ({
+    id,
+    namespaceId,
+    name: "openai",
+    type: "openai",
+    config: {},
+    secrets: {},
+    driverId: driver.id,
+    state: "ready",
+  });
+  return {
+    calls,
+    driver,
+    providers,
+    source,
+    context: (id) => ({ namespace, source: source(id), signal }),
+    revisionContext: (sources) => ({
+      namespace,
+      revision: { harness: { id: "codex", mode: "dedicated" } },
+      sources,
+      signal,
+    }),
+    input: (apiKey = "synthetic-openai-key") => ({
+      type: "openai",
+      config: {},
+      secrets: { api_key: apiKey },
+    }),
+  };
+}
+
+test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
+  const { calls, context, driver, input, providers, revisionContext, source } =
+    credentialGatewayOverProviders();
+  const owner = "cs_00000000-0000-4000-8000-0000000000b1";
+  const other = "cs_00000000-0000-4000-8000-0000000000b2";
+  assert.deepEqual(await driver.registerSource(context(owner), input()), { state: "ready" });
+  const [stored] = providers.values();
+  assert.equal(stored.labels["openclaw.dev/credential-source-id"], owner);
+  // Another source's provider stored under this source's name: same manager and type, other id.
+  providers.set(stored.name, {
+    ...stored,
+    labels: { ...stored.labels, "openclaw.dev/credential-source-id": other },
+  });
+  calls.length = 0;
+  await assert.rejects(driver.registerSource(context(owner), input()), ScopeViolationError);
+  await assert.rejects(
+    driver.updateSource(context(owner), input("replacement")),
+    ScopeViolationError,
+  );
+  assert.equal((await driver.sourceStatus(context(owner))).state, "failed");
+  await assert.rejects(driver.removeSource(context(owner)), ScopeViolationError);
+  await assert.rejects(
+    driver.attachForRevision(revisionContext([source(owner)])),
+    /provider for a bound credential source is unavailable/,
+  );
+  // Only the replayed create reached the store, and it was refused; nothing was overwritten.
+  assert.deepEqual(
+    calls.map(([operation]) => operation),
+    ["createProvider"],
+  );
+  assert.deepEqual(providers.get(stored.name).credentials, stored.credentials);
+});
+
+test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
+  const { context, driver, input, revisionContext, source } = credentialGatewayOverProviders();
+  const owner = "cs_00000000-0000-4000-8000-0000000000c1";
+  await driver.registerSource(context(owner), input());
+  // The provider is genuinely owned, so only the Namespace check can refuse.
+  const foreign = source(owner, "ns_00000000-0000-4000-8000-0000000000ff");
+  await assert.rejects(
+    driver.attachForRevision(revisionContext([foreign])),
+    (error) =>
+      error instanceof ScopeViolationError &&
+      error.message === "The credential source is not owned by this gateway.",
+  );
+  assert.equal((await driver.attachForRevision(revisionContext([source(owner)]))).length, 1);
+});
+
+test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
+  const { calls, context, driver, input, providers } = credentialGatewayOverProviders();
+  await assert.rejects(
+    driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000d1"), input("")),
+    ScopeViolationError,
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(providers.size, 0);
+});
+
+test("OpenShell credential source removal fails while the provider survives deletion", async () => {
+  const { context, driver, input, providers } = credentialGatewayOverProviders({
+    keepDeleted: true,
+  });
+  const owner = "cs_00000000-0000-4000-8000-0000000000e1";
+  await driver.registerSource(context(owner), input());
+  await assert.rejects(driver.removeSource(context(owner)), /was not deleted/);
+  assert.equal(providers.size, 1);
 });

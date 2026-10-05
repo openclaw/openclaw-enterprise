@@ -109,31 +109,35 @@ async function createSavedAgent(fixture, method = "codex_pat") {
       harnessAuth: { method, source: secret.ref },
     },
   );
-  // Runtime and discovery both need the Agent's own authority to operate its bound Secret.
   if (method === "codex_pat") {
-    const roleId = `agent-plugin-secret-${randomUUID()}`;
-    fixture.policy.identities.push({
-      id: agent.servicePrincipalId,
-      kind: "service_principal",
-      namespaceId: fixture.namespace.id,
-      agentId: agent.id,
-    });
-    fixture.policy.roles.push({
-      id: roleId,
-      namespaceId: fixture.namespace.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    fixture.policy.bindings.push({
-      id: `binding-${roleId}`,
-      namespaceId: fixture.namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
-      roleId,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+    grantAgentSecret(fixture, agent, secret);
   }
   return { agent, secret, path: `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins` };
+}
+
+// Runtime and discovery both need the Agent's own authority to operate its bound Secret.
+function grantAgentSecret(fixture, agent, secret) {
+  const roleId = `agent-plugin-secret-${randomUUID()}`;
+  fixture.policy.identities.push({
+    id: agent.servicePrincipalId,
+    kind: "service_principal",
+    namespaceId: fixture.namespace.id,
+    agentId: agent.id,
+  });
+  fixture.policy.roles.push({
+    id: roleId,
+    namespaceId: fixture.namespace.id,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  fixture.policy.bindings.push({
+    id: `binding-${roleId}`,
+    namespaceId: fixture.namespace.id,
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId,
+    resourceKind: "secret",
+    resourceId: secret.id,
+  });
 }
 
 function trackSecretValueReads(secretDriver) {
@@ -465,6 +469,53 @@ test("Saved Agent plugin discovery rechecks Secret authority after the backend r
   );
 });
 
+test("Saved Agent plugin discovery refuses a credential replaced during the backend read", async (t) => {
+  const fixture = await createFixture(t);
+  const { agent, path } = await createSavedAgent(fixture);
+  const replacement = await fixture.createSecret(
+    fixture.namespace.id,
+    "Replacement plugin credential",
+    `${accessToken}-replacement`,
+  );
+  // Both the caller and the Agent may use the replacement, so only the identity check refuses.
+  const agentBinding = fixture.policy.bindings.find(
+    (binding) =>
+      binding.subjectId === agent.servicePrincipalId && binding.resourceKind === "secret",
+  );
+  fixture.policy.bindings.push({
+    ...agentBinding,
+    id: `${agentBinding.id}-replacement`,
+    resourceId: replacement.id,
+  });
+  const withValue = fixture.secretDriver.withValue.bind(fixture.secretDriver);
+  let updated;
+  fixture.secretDriver.withValue = (source, use) =>
+    withValue(source, async (value) => {
+      if (!updated) {
+        updated = await fixture.request(
+          "PATCH",
+          `/namespaces/${fixture.namespace.id}/agents/${agent.id}`,
+          {
+            body: {
+              configurationId: agent.configurationId,
+              harnessAuth: { method: "codex_pat", source: replacement.ref },
+            },
+          },
+        );
+      }
+      return use(value);
+    });
+
+  const changed = await fixture.request("POST", path, { body: {} });
+  assert.equal(updated?.status, 200, JSON.stringify(updated?.body));
+  assert.equal(changed.status, 409, JSON.stringify(changed.body));
+  assert.equal(
+    changed.body.error.message,
+    "The Agent's plugin credential changed. Refresh and retry.",
+  );
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("Saved Agent plugin discovery rechecks the caller's Secret authority after the backend read", async (t) => {
   const fixture = await createFixture(t);
   const { agent, secret, path } = await createSavedAgent(fixture);
@@ -547,15 +598,28 @@ test("Saved Agent plugin discovery denies unauthorized callers before reporting 
   assert.equal(secretReads(), 0);
 });
 
-test("Saved Agent plugin discovery rejects other Harness authentication without reading credentials", async (t) => {
+test("Saved Agent plugin discovery rejects unsupported Harness authentication or execution mode without reading credentials", async (t) => {
   const fixture = await createFixture(t);
   const { path } = await createSavedAgent(fixture, "api_key");
+  // A Service Accounts Secret the Agent may operate is not enough; the Agent must also run
+  // dedicated. If create-time admission starts refusing this combination, this case is moot.
+  const secret = await fixture.createSecret(fixture.namespace.id, "Embedded PAT", accessToken);
+  const embedded = await fixture.createAgent(
+    fixture.namespace.id,
+    `Embedded PAT Agent ${randomUUID()}`,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+    { executionMode: "embedded", harnessAuth: { method: "codex_pat", source: secret.ref } },
+  );
+  grantAgentSecret(fixture, embedded, secret);
+  const embeddedPath = `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/plugins`;
   const secretReads = trackSecretValueReads(fixture.secretDriver);
-  for (const [suffix, body] of [
-    ["", {}],
-    ["/details", { pluginId: remoteId }],
+  for (const [prefix, suffix, body] of [
+    [path, "", {}],
+    [path, "/details", { pluginId: remoteId }],
+    [embeddedPath, "", {}],
+    [embeddedPath, "/details", { pluginId: remoteId }],
   ]) {
-    const unsupported = await fixture.request("POST", `${path}${suffix}`, { body });
+    const unsupported = await fixture.request("POST", `${prefix}${suffix}`, { body });
     assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));
     assert.equal(unsupported.body.error.code, "NOT_IMPLEMENTED");
   }

@@ -110,8 +110,8 @@ model API keys go only to the Harness that executes the model.
 - No public value reads, version history, rollback, credential issuance, or general
   per-access broker. Environment projection is the supported workload delivery
   mechanism; plugin discovery uses the transient server-side callback.
-- Updating a Secret does not restart workloads. Redeploy or restart consumers
-  before expecting a new value to appear in their environment.
+- Updating a Secret does not restart workloads. Redeploy consumers through OCE
+  to refresh revision projections before expecting a new environment value.
 - Kubernetes is the only selectable implementation. Arbitrary installed Secret
   packages and SSH delivery are unsupported; selection alone does not enable them.
 

@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KubernetesApiUnavailableError } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -54,6 +55,50 @@ test("Kubernetes preflight accepts supported Kubernetes release families", async
     assert.deepEqual(await fixture.driver.preflight(), { warnings: [] });
     assert.equal(fixture.namespaceReads(), 1);
   }
+});
+
+test("single-cluster preflight refuses legacy split storage on a later namespace page", async () => {
+  const fixture = driverForVersion("v1.35.0");
+  const { core } = await fixture.driver.apiClients;
+  const namespaceId = "ns_upgrade_00000000-0000-4000-8000-000000000001";
+  const legacy = {
+    metadata: {
+      name: kubernetesGatewayNamespaceName(namespaceId),
+      labels: { "openclaw.dev/gateway-namespace": namespaceId },
+    },
+  };
+  const original = structuredClone(legacy);
+  let pages = 0;
+  core.listNamespace = async ({ _continue: cursor }) => {
+    pages += 1;
+    if (cursor === undefined) {
+      return { items: [], metadata: { _continue: "next-page" } };
+    }
+    assert.equal(cursor, "next-page");
+    return { items: [legacy] };
+  };
+  await assert.rejects(fixture.driver.preflight(), /Existing split-layout Gateway storage/);
+  assert.equal(pages, 2, "upgrade detection must inspect every namespace page");
+  assert.deepEqual(legacy, original, "preflight must not alter legacy storage ownership");
+});
+
+test("single-cluster preflight accepts canonical storage in a shared tenant namespace", async () => {
+  const fixture = driverForVersion("v1.35.0");
+  const { core } = await fixture.driver.apiClients;
+  core.listNamespace = async () => ({
+    items: [
+      {
+        metadata: {
+          name: "adopted-tenant",
+          labels: {
+            "openclaw.dev/gateway-namespace": "ns_shared",
+            "openclaw.dev/namespace": "ns_shared",
+          },
+        },
+      },
+    ],
+  });
+  assert.deepEqual(await fixture.driver.preflight(), { warnings: [] });
 });
 
 test("Kubernetes preflight rejects an invalid API server version response", async () => {

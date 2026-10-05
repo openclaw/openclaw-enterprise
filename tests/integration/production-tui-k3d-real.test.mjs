@@ -1,4 +1,4 @@
-import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -570,8 +570,8 @@ test(
           ],
         });
       }
-      const gatewayTarget = kubernetesGatewayNamespaceName(namespace.id);
-      names.push(gatewayTarget);
+      const gatewayTarget = kubernetesNamespaceName(namespace.id);
+      assert.equal(gatewayTarget, tenant, "single-cluster Gateway uses the tenant namespace");
       await waitFor("backing Gateway namespace", async () => {
         const list = JSON.parse(
           await kubectl(

@@ -7,10 +7,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import {
-  kubernetesNamespaceName,
-  kubernetesGatewayNamespaceName,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
@@ -269,10 +266,7 @@ async function grantTenantAccess(context, namespaceId) {
   // this mirrors the operator-owned RoleBinding handoff required by the real driver.
   const { platformNamespace, account, tenantRole } =
     await createKubernetesStartupEnvironment(context);
-  for (const name of [
-    kubernetesNamespaceName(namespaceId),
-    kubernetesGatewayNamespaceName(namespaceId),
-  ]) {
+  for (const name of [kubernetesNamespaceName(namespaceId)]) {
     await waitForKubernetesNamespace(context, namespaceId, name);
     try {
       await kubectl(
@@ -296,10 +290,7 @@ function cleanupKubernetesNamespaces(context, namespaceIds) {
   context.after(async () => {
     const cleanup = await Promise.allSettled(
       namespaceIds
-        .flatMap((namespaceId) => [
-          kubernetesNamespaceName(namespaceId),
-          kubernetesGatewayNamespaceName(namespaceId),
-        ])
+        .map(kubernetesNamespaceName)
         .map((name) =>
           kubectl("delete", "namespace", name, "--ignore-not-found=true", "--wait=true"),
         ),

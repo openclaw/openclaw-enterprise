@@ -89,10 +89,17 @@ copies each rendered API and worker Pod template (selected controller image, env
 mounts, service account) into a one-shot Pod whose Installation volume reads a
 temporary Secret holding the candidate. The Pod runs `loadStartupConfigurationSnapshot`
 and `loadInstallationConfiguration`, which resolve Drivers and Preset files
-without the database. A failure, a stuck image pull, or the timeout stops
+without the database. With the bundled Kubernetes Compute Driver it then runs
+`KubernetesComputeDriver.preflight` with the Pod's Kubernetes credentials (its
+service account in `inCluster` mode), as API and worker startup do; that check refuses, for example, single-cluster
+[split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+Because the chart's default-deny NetworkPolicy also selects these Pods, the
+helper first creates a temporary NetworkPolicy carrying the rendered
+`openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.
+A failure, a stuck image pull, or the timeout stops
 preparation before any writer stops. The script first reads both Pods and saves
 each status and log, so every failing component is reported; then the exit trap
-deletes the Pods and Secret.
+deletes the Pods, Secret and NetworkPolicy.
 It saves
 candidate inputs, inventory, target identity, and parameter hashes in the
 private evidence directory before marking preparation complete. A per-directory

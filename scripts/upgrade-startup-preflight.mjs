@@ -1,23 +1,54 @@
 #!/usr/bin/env node
 // Builds and reads the one-shot Pods that scripts/upgrade-production-images runs
 // before it stops OCC: the selected controller image loads the candidate
-// Installation exactly as the API and worker do at startup, without a database.
+// Installation and runs the bundled Kubernetes Compute preflight exactly as the
+// API and worker do at startup, without a database.
 import { readFileSync } from "node:fs";
+
+// Printed before the image's own message when Compute preflight stops startup:
+// a refusal is the Driver's ConfigurationFailure (such as split-layout storage);
+// anything else, such as a denied or unreachable Kubernetes API, is incomplete.
+const computeRefusal = "Kubernetes Compute startup preflight refused the candidate release:";
+const computeIncomplete = "Kubernetes Compute startup preflight could not complete:";
 
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
 // environment, loads Drivers and Preset files, and never opens the database.
+// With the bundled Kubernetes Compute Driver it then runs that Driver's startup
+// preflight, which reads the Kubernetes version and Namespaces with the Pod's
+// service account; it refuses, for example, single-cluster split-layout storage.
+// Other Compute Drivers keep the load-only check.
 const startupCheck = `
+let drivers;
 try {
   const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
     "/app/apps/controller/src/composition/installation-config.ts"
   );
   const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
-  await loadInstallationConfiguration({ mode: "production", startupConfiguration });
-  process.stdout.write("installation-startup-ready\\n");
+  drivers = await loadInstallationConfiguration({ mode: "production", startupConfiguration });
 } catch (error) {
   process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
   process.exit(1);
 }
+try {
+  const { KubernetesComputeDriver } = await import(
+    "/app/apps/controller/src/drivers/compute/kubernetes/index.ts"
+  );
+  if (drivers?.computeDriver instanceof KubernetesComputeDriver) {
+    await drivers.computeDriver.preflight();
+    process.stdout.write("kubernetes-compute-preflight-passed\\n");
+  }
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const refused = error?.constructor?.name === "ConfigurationFailure";
+  process.stderr.write(
+    (refused ? ${JSON.stringify(computeRefusal)} : ${JSON.stringify(computeIncomplete)}) +
+      " " +
+      message +
+      "\\n",
+  );
+  process.exit(1);
+}
+process.stdout.write("installation-startup-ready\\n");
 `;
 
 const labels = (release) => ({
@@ -143,6 +174,37 @@ function pod([
   };
 }
 
+// The chart's default-deny policy also selects the preflight Pods. To reach the
+// Kubernetes API for Compute preflight they get the egress the rendered candidate
+// grants the API and worker for their dependencies (DNS, PostgreSQL, Kubernetes
+// API, and the execution cluster API when enabled). The chart renders that policy
+// beside its default-deny policy; prints null for a render without it.
+function networkPolicy([renderedPath, name, namespace, release]) {
+  const sources = documents(renderedPath).filter(
+    (document) =>
+      document.kind === "NetworkPolicy" &&
+      [
+        "openclaw-enterprise-dependency-egress",
+        "openclaw-enterprise-execution-api-egress",
+      ].includes(document.metadata?.name),
+  );
+  if (
+    !sources.some((document) => document.metadata.name === "openclaw-enterprise-dependency-egress")
+  ) {
+    return null;
+  }
+  return {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name, namespace, labels: labels(release) },
+    spec: {
+      podSelector: { matchLabels: labels(release) },
+      policyTypes: ["Egress"],
+      egress: structuredClone(sources.flatMap((document) => document.spec?.egress ?? [])),
+    },
+  };
+}
+
 // Prints Succeeded, Failed, Stuck:<reason> for a waiting state that never resolves
 // without operator action, Pending:<reason> while the Pod cannot be scheduled (an
 // autoscaler may still add capacity), or Running.
@@ -181,9 +243,10 @@ const [action, ...input] = process.argv.slice(2);
 const actions = {
   secret: [5, (values) => JSON.stringify(secret(values))],
   pod: [9, (values) => JSON.stringify(pod(values))],
+  networkpolicy: [4, (values) => JSON.stringify(networkPolicy(values))],
   phase: [1, phase],
 };
 if (!(action in actions) || input.length !== actions[action][0]) {
-  fail("expected secret, pod, or phase with its arguments.");
+  fail("expected secret, pod, networkpolicy, or phase with its arguments.");
 }
 process.stdout.write(`${actions[action][1](input)}\n`);

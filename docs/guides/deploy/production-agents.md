@@ -44,59 +44,34 @@ stops provisioning permanently.
 
 ### Grant tenant RoleBindings
 
-Grant the worker runtime role in the data plane. The API lists Deployments for
-credential preflight and reads Pods through the proxy for on-demand diagnostics.
-Replace the `oce-` prefix if the Helm release name differs:
+Single-cluster Compute uses the same tenant namespace for both runtime roles and
+canonical storage. Grant the worker runtime role and API credential/configuration
+roles there. Replace the `oce-` prefix if the Helm release name differs:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
   --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-observer \
-  --clusterrole=oce-openclaw-gateway-observer --serviceaccount=openclaw-system:openclaw-enterprise-api
-```
-
-If the Namespace will run embedded Agents, also let the API store their combined
-transport bundle in the data plane. Without this grant, an embedded Agent's
-`runtime-credentials` request and first deployment answer
-`503 RUNTIME_CREDENTIALS_CLUSTER_RBAC`, and the API logs
-`agent_runtime_credentials.cluster_denied` with the denied call and namespace:
-
-```bash
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
   --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
-```
-
-After the data-plane grant, the worker creates a second namespace. Discover it
-and grant worker runtime permissions plus API canonical Configuration/Secret
-storage and Deployment preflight access:
-
-```bash
-GATEWAY_RUNTIME_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get namespaces -l "openclaw.dev/gateway-namespace=$NAMESPACE_ID" -o json | \
-  python3 -c 'import json,sys; items=json.load(sys.stdin)["items"]; print(items[0]["metadata"]["name"]) if len(items)==1 else sys.exit("Expected one Gateway runtime namespace; retry after worker creation")')" && export GATEWAY_RUNTIME_NAMESPACE
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-worker \
-  --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
-  --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
+  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
   --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
-Each `openclaw-enterprise-api-secrets` RoleBinding grants Secret access,
-Deployment list access for preflight, and Pod read/proxy access for diagnostics. The data-plane observer grants
-Deployment list and Pod read/proxy access for Agent diagnostics. With
-`agentRuntimeLogs.enabled` (default), both roles also grant `pods/log get` and
-`events get,list` for [Agent logs](../topics/agent-logs.md); roles you write by
-hand need the same rules, and missing ones return `503 RUNTIME_LOGS_CLUSTER_RBAC`. OCC IAM grants
-remain required. Worker permissions in both targets allow credential delivery.
-Workload ServiceAccounts receive no Secret API access. Wait for Namespace
-`ready` only after granting both targets.
+The Secret role also grants Deployment list access for credential preflight and
+Pod read/proxy access for diagnostics. With `agentRuntimeLogs.enabled` (default),
+it grants `pods/log get` and `events get,list` for [Agent logs](../topics/agent-logs.md).
+Custom roles need the same rules; missing log grants return `503 RUNTIME_LOGS_CLUSTER_RBAC`.
+Missing credential grants return `503 RUNTIME_CREDENTIALS_CLUSTER_RBAC`; API logs
+`agent_runtime_credentials.cluster_denied` identify the denied call and namespace.
+OCC IAM grants remain required. Workload ServiceAccounts receive no Secret API
+access. Wait for Namespace `ready` after these grants. Namespace workload
+managers are trusted for both roles; use disjoint trusted Gateway and Harness
+node pools. For the experimental two-cluster profile, grant these storage roles
+in the separately discovered control target and worker/observer roles in the
+execution target; see [two-cluster testing](../../testing/two-cluster-local.md).
 
 ## Prepare each Agent
 

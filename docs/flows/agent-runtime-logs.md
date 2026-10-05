@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-09-30
-last_updated_session: authoring-run/2c8a089c-ec67-402d-8cfd-ec8b29c5e3fe
+updated: 2026-10-05
+last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
 # Agent runtime logs flow
@@ -78,12 +78,12 @@ reads, so a denial is always audited and never spends a token.
 
 `KubernetesComputeDriver.describeAgentRuntime` resolves the owned Namespace, then
 lists Pods by the exact Agent, revision and workload-role labels: dedicated
-Gateways in the control-plane Gateway namespace, Harnesses and embedded Gateways
-in the tenant namespace on the execution plane. It lists Events by
+Gateways and Harnesses in the shared tenant namespace in a single cluster. The
+two-cluster profile reads dedicated Gateways in its control target and Harnesses
+in its execution target. It lists Events by
 `involvedObject.uid`, keeps only that Pod's Events, drops the scheduler's
-`FailedScheduling` retry after a lost PVC update race (`running PreBind plugin
-"VolumeBinding": Operation cannot be fulfilled on persistentvolumeclaims ...: the
-object has been modified ...`) once the Pod has a node, caps them at 100 and takes each
+`FailedScheduling` retry after a lost PVC update race once the Pod has a node,
+caps them at 100 and takes each
 Event's `container` from `involvedObject.fieldPath` (`spec.containers{name}` or
 the init or ephemeral form; `null` for Pod-level Events such as `Scheduled`). A log
 read passes `{ source, events: false }`, so it lists only that source's Pods and
@@ -217,11 +217,15 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
 ## Changelog
 
+- 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
+
 - 2026-10-04 07:00: Authorize before the rate and concurrency limits so every denial is audited. (bh11-runtime-log-authz)
 
 - 2026-10-03 22:00: A resumed view moves past a line longer than the 1 MiB read limit instead of re-reading it on every poll. (f349-log-resume)
 
 - 2026-10-03 03:00: A cursor from a page that delivered no line resumes from that page, not the whole tail. (bughunt-1/fix-runtime-logs-quiet-follow)
+
+- 2026-10-02: Describe shared single-cluster runtime placement. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
 
 - 2026-10-01 14:00: Add the server-side `minLevel` floor and the console's **Include debug** control. (fix-d79 - 3d6ce1fdb)
 

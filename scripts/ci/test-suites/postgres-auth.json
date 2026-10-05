@@ -3,6 +3,32 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/postgres-github-outage.test.mjs",
+    "tests/integration/postgres-github-sign-in.test.mjs",
+    "tests/integration/native-admin-session-postgres.test.mjs",
+    "tests/integration/postgres-google-sign-in.test.mjs",
+    "tests/integration/postgres-external-session-provider.test.mjs",
+    "tests/integration/postgres-human-authentication.test.mjs",
+    "tests/integration/postgres-break-glass-auth-maintain.test.mjs",
+    "tests/integration/postgres-trusted-proxy.test.mjs",
+    "tests/integration/postgres-auth-accounts.test.mjs",
+    "tests/integration/postgres-password-recovery-only.test.mjs",
+    "tests/integration/postgres-oidc-sign-in.test.mjs",
+    "tests/integration/postgres-github-tab-binding.test.mjs",
+    "tests/integration/postgres-oidc-tab-binding.test.mjs",
+    "tests/integration/postgres-github-admin-attach.test.mjs",
+    "tests/integration/postgres-password-default-activation.test.mjs",
+    "tests/integration/postgres-password-default.test.mjs",
+    "tests/integration/postgres-github-admin-scope.test.mjs",
+    "tests/integration/postgres-github-org-allowlist.test.mjs",
+    "tests/integration/postgres-github-cookie-commit.test.mjs",
+    "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
+    "tests/integration/postgres-github-session-cookie.test.mjs",
+    "tests/integration/postgres-service-api-keys.test.mjs",
+    "tests/integration/postgres-auth-binding.test.mjs"
+  ],
   "files": [
     {
       "path": "tests/integration/native-admin-session-postgres.test.mjs",

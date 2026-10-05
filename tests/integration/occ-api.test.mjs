@@ -744,6 +744,13 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   assert.equal(stopped.status, 202);
   assert.equal(stopped.data.desiredRuntimeState, "stopped");
   assert.equal(stopped.data.id, agent.id);
+  const stopAudit = controller.fixture.auditSink.events.findLast(
+    (event) => event.action === "openclaw.agents.stop",
+  );
+  assert.deepEqual(
+    [stopAudit?.kind, stopAudit?.outcome, stopAudit?.resource.id],
+    ["mutation", "success", agent.id],
+  );
 
   const deployment = await controller.request(
     "POST",

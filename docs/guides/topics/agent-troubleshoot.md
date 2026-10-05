@@ -16,10 +16,11 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 ## Deployment is blocked or has no selected revision
 
 On Kubernetes, open the Agent's **Create new version** draft, then
-**Credentials**. Confirm that **Transport** shows **Stored**. Check that the
-saved model authentication matches the execution mode. For an OpenAI API key,
-the person selecting it and the
-Agent's own identity both need `operate` on the exact platform Secret. See
+**Credentials**. Select **Reload authentication source**, then confirm under
+**Harness authentication** that **Authentication source** is the source you
+expect, not **None**. Check that the saved model authentication matches the
+execution mode. For an OpenAI API key, the person selecting it and the Agent's
+own identity both need `operate` on the exact platform Secret. See
 [Harness authentication](../../reference/agents.md#harness-authentication).
 
 If the deployment was accepted, use the returned revision ID to check its

@@ -798,6 +798,12 @@ function frozenValues(value: unknown): Readonly<OpenClawConfigurationDocument> {
   return immutableCopy(value as OpenClawConfigurationDocument);
 }
 
+/** Product names for Harness ids that appear in caller-facing refusals. */
+const HARNESS_DISPLAY_NAMES: Readonly<Record<string, string>> = Object.freeze({
+  codex: "Codex",
+  openclaw: "OpenClaw",
+});
+
 function validExecutionMode(value: unknown): value is HarnessExecutionMode {
   return value === "embedded" || value === "dedicated";
 }
@@ -5759,6 +5765,17 @@ export class OpenClawController {
       }
       const configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
       const approvedHarness = resolveHarness(configuredHarnessId, lockedAgent.executionMode);
+      const otherMode = lockedAgent.executionMode === "dedicated" ? "embedded" : "dedicated";
+      if (
+        approvedHarness === undefined &&
+        resolveHarness(configuredHarnessId, otherMode)?.id === configuredHarnessId
+      ) {
+        // A Harness/mode mismatch is a request the caller can fix, not a missing dependency.
+        const harnessName = HARNESS_DISPLAY_NAMES[configuredHarnessId] ?? configuredHarnessId;
+        throw new ConfigurationHarnessError(
+          `The Configuration selects the ${harnessName} Harness, which needs ${otherMode} execution; this Agent uses ${lockedAgent.executionMode} execution. Change the Agent's execution mode or its Configuration.`,
+        );
+      }
       if (
         approvedHarness === undefined ||
         !isNonEmptyString(approvedHarness.id) ||

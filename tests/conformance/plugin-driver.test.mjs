@@ -302,6 +302,39 @@ test("Plugin Drivers refuse two selection keys for the same native plugin", () =
   validatePolicies("openclaw", { diffs: { enabled: true }, "occ-plugin:diffs": { enabled: true } });
 });
 
+test("Plugin Drivers name themselves when a selection names a plugin they do not offer", () => {
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  const unknownFor = (driverId) => (error) =>
+    error.name === "PluginPolicyValidationError" &&
+    error.message.includes(`selected Plugin Driver (${driverId}) does not offer`);
+  // The other Driver's plugin, as after an Installation switches its single Plugin Driver.
+  assert.throws(() => codex.validatePolicies(occSelection()), unknownFor("codex-plugin"));
+  assert.throws(
+    () => occ.validatePolicies(codexSelection(linearPluginId)),
+    unknownFor("occ-plugin"),
+  );
+  assert.throws(
+    () => occ.validatePolicies({ "occ-plugin:unknown": { enabled: true } }),
+    unknownFor("occ-plugin"),
+  );
+  assert.throws(
+    () => codex.validatePolicies({ "codex-plugin:linear": { enabled: true } }),
+    unknownFor("codex-plugin"),
+  );
+  // The ID mismatch wins over a policy field the selected Driver does not support.
+  assert.throws(
+    () =>
+      occ.validatePolicies(codexSelection(linearPluginId, { toolDefaults: { reviewer: "human" } })),
+    unknownFor("occ-plugin"),
+  );
+  // Policy errors on an offered plugin keep their own message.
+  assert.throws(
+    () => occ.validatePolicies(occSelection({ toolDefaults: { approval: "all_actions" } })),
+    { name: "PluginPolicyValidationError", message: "The supplied plugin policies are invalid." },
+  );
+});
+
 test("OpenClaw plugin startup translation rejects unsupported policies", () => {
   // Each selection breaks exactly one admission rule, named by its message.
   for (const [selection, message] of [

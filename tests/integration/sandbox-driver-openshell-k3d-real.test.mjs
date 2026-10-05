@@ -1957,7 +1957,7 @@ async function prepareProductionInstallation(
     { loadInstallationConfiguration },
     { composeProduction },
     { createControllerWorker },
-    { kubernetesGatewayNamespaceName, kubernetesNamespaceName },
+    { kubernetesNamespaceName },
     { OpenShellSandboxDriver },
     { GrpcOpenShellGatewayClient },
     { OpenShellGateway },
@@ -2108,7 +2108,6 @@ async function prepareProductionInstallation(
           "delete",
           "namespace",
           placement,
-          ...(gatewayPlacement === undefined ? [] : [gatewayPlacement]),
           "--ignore-not-found=true",
           "--wait=true",
           "--timeout=120s",
@@ -2179,7 +2178,7 @@ async function prepareProductionInstallation(
   assert.equal(createdNamespace.status, 201, JSON.stringify(createdNamespace.error));
   const namespaceId = createdNamespace.data.id;
   placement = kubernetesNamespaceName(namespaceId);
-  gatewayPlacement = kubernetesGatewayNamespaceName(namespaceId);
+  gatewayPlacement = kubernetesNamespaceName(namespaceId);
 
   await waitFor(`worker namespace creation for ${placement}`, async () => {
     try {
@@ -2200,28 +2199,6 @@ async function prepareProductionInstallation(
     `--clusterrole=${controller.tenantRole}`,
     `--serviceaccount=${platformNamespace}:${controller.account}`,
   );
-  // Dedicated Gateways now live in a separate control-plane Namespace. Wait
-  // for Compute to claim it, then grant the same exact scoped controller role
-  // so reconciliation can prepare both sides of the supported topology.
-  await waitFor(`worker gateway namespace creation for ${gatewayPlacement}`, async () => {
-    try {
-      return await resource("namespace", gatewayPlacement);
-    } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
-        return undefined;
-      }
-      throw error;
-    }
-  });
-  await kubectl(
-    "create",
-    "rolebinding",
-    "openclaw-production-controller",
-    "--namespace",
-    gatewayPlacement,
-    `--clusterrole=${controller.tenantRole}`,
-    `--serviceaccount=${platformNamespace}:${controller.account}`,
-  );
   await waitFor(`worker namespace readiness for ${placement}`, async () => {
     const observed = await request("GET", `/namespaces/${namespaceId}`);
     assert.equal(observed.status, 200, JSON.stringify(observed.error));
@@ -2229,8 +2206,7 @@ async function prepareProductionInstallation(
   });
   await waitForOpenShellGateway(placement);
   await assertGatewayBootstrapPolicies(placement);
-  // Agent-owned model credentials follow the control-plane Gateway namespace;
-  // the API identity must not receive Secret authority in the Harness namespace.
+  // Canonical credentials share the tenant namespace; runtime Pods retain no Secret API authority.
   await kubectl(
     "create",
     "rolebinding",

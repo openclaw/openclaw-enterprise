@@ -550,6 +550,16 @@ test(
       [namespace.id],
     );
     assert.ok(audit.rowCount > 0, "provisioning admission must append durable audit evidence");
+    // The HTTP request is audited too, keyed by the accepted work item.
+    const requestAudit = await fixture.pool.query(
+      `SELECT action, outcome
+       FROM occ.audit_events
+       WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2`,
+      [namespace.id, admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(requestAudit.rows, [
+      { action: "openclaw.agents.provision", outcome: "success" },
+    ]);
 
     const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.equal(row.work_id, admitted.data.provisioning.workId);
@@ -2057,6 +2067,39 @@ test(
       `/namespaces/${namespace.id}/configurations/${failed.configurationId}`,
     );
     assert.equal(configuration.status, 200, JSON.stringify(configuration.body));
+
+    // Another Agent cannot take over the reserved Configuration either.
+    const otherConfiguration = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/configurations`,
+      { body: { kind: "agent", values: {} } },
+    );
+    assert.equal(otherConfiguration.status, 201, JSON.stringify(otherConfiguration.body));
+    const other = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: { name: "unreserved-agent", configurationId: otherConfiguration.data.id },
+    });
+    assert.equal(other.status, 201, JSON.stringify(other.body));
+    const borrowed = [
+      await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: { name: "borrowing-agent", configurationId: failed.configurationId },
+      }),
+      await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${other.data.id}`, {
+        body: { configurationId: failed.configurationId },
+      }),
+    ];
+    assert.deepEqual(
+      borrowed.map(({ status, body }) => [status, body.error?.message]),
+      [
+        [
+          409,
+          "The Configuration is reserved for provisioning and is not available for this operation.",
+        ],
+        [
+          409,
+          "The Configuration is reserved for provisioning and is not available for this operation.",
+        ],
+      ],
+    );
 
     const reserved = [
       await fixture.request(

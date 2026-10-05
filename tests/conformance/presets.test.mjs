@@ -192,6 +192,43 @@ test("invalid variable programs and inputs fail before producing launch settings
     [{ variables: null }, {}, /must be an object/],
     [{ variables: { value: { type: "boolean", default: 0 } } }, {}, /default must match/],
     [{ variables: { value: { type: "number" } } }, { value: Infinity }, /only JSON/],
+    [{ ...base, extra: {} }, { value: "x" }, /template: contains unsupported fields/],
+    [{ variables: { "bad-name": { type: "string" } } }, {}, /invalid variable name/],
+    [{ variables: { value: { type: "date" } } }, {}, /type must be string, number/],
+    [
+      { ...base, agent: { plugins: { "{{ vars.value }}": { enabled: true } } } },
+      { value: "github" },
+      /variable field names are only supported in configuration.values/,
+    ],
+    [
+      {
+        agent: {
+          repositoryBindings: Array.from({ length: 17 }, (_, i) => ({ repositoryRef: `r${i}` })),
+        },
+      },
+      {},
+      /at most 16 repository selections/,
+    ],
+    [
+      {
+        agent: {
+          repositoryAccess: { defaultProfile: "read", repositories: [] },
+          repositoryBindings: [],
+        },
+      },
+      {},
+      /cannot be combined/,
+    ],
+    [
+      { agent: { repositoryBindings: [{ repositoryRef: "app" }, { repositoryRef: "app" }] } },
+      {},
+      /repository references must be unique/,
+    ],
+    [
+      { ...base, agent: { repositoryBindings: [{ repositoryRef: "{{ vars.value }}" }] } },
+      { value: "owner/app" },
+      /requires a repository selector/,
+    ],
   ]) {
     assert.throws(
       () => renderPresetTemplate(template, inputs),
@@ -347,6 +384,30 @@ test("preset admission preserves credential structure and literal and default sc
     },
   ]) {
     assert.throws(() => normalizePresetTemplate(invalid, namespaceId), PresetValidationError);
+  }
+  const binding = { source: { kind: "secret", namespaceId, id: secretId } };
+  for (const [invalid, message] of [
+    [{ agent: { harnessAuth: { method: "password" } } }, /Harness authentication requires/],
+    [
+      { agent: { harnessAuth: { method: "chatgpt_service_account", serviceAccountId: "junk" } } },
+      /Harness authentication requires/,
+    ],
+    ...["1TOKEN", "TOKEN-NAME", "T".repeat(254), "HOME", "otel_exporter"].map((name) => [
+      { configuration: { secretBindings: { [name]: binding } } },
+      /reserved or invalid environment destination/,
+    ]),
+    [
+      {
+        configuration: {
+          secretBindings: Object.fromEntries(
+            Array.from({ length: 65 }, (_, i) => [`TOKEN_${i}`, binding]),
+          ),
+        },
+      },
+      /at most 64 bindings/,
+    ],
+  ]) {
+    assert.throws(() => normalizePresetTemplate(invalid, namespaceId), message);
   }
 });
 

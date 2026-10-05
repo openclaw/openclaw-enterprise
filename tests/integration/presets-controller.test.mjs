@@ -128,6 +128,16 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   assert.equal(otherNamespace.status, 403);
   const wrongOwner = await fixture.request("GET", `${collection(beta.id)}/${visible.id}`);
   assert.equal(wrongOwner.status, 404);
+  // Writes addressed through the wrong Namespace are a scope miss, not a write conflict.
+  for (const method of ["PATCH", "DELETE"]) {
+    const misdirected = await fixture.request(
+      method,
+      `${collection(beta.id)}/${visible.id}`,
+      method === "PATCH" ? { body: { name: "Moved" } } : {},
+    );
+    assert.equal(misdirected.status, 404, `${method}: ${JSON.stringify(misdirected.body)}`);
+    assert.equal(misdirected.body.error.code, "NOT_FOUND", method);
+  }
 
   const renamed = await fixture.request("PATCH", `${collection(alpha.id)}/${visible.id}`, {
     body: { name: "Renamed" },
@@ -138,13 +148,22 @@ test("Preset CRUD keeps Namespace names unique and filters reads by exact Native
   await deletePreset(fixture, alpha.id, visible.id);
   const removed = await fixture.request("GET", `${collection(alpha.id)}/${visible.id}`);
   assert.equal(removed.status, 404);
-  assert.ok(
-    fixture.audit.events.some(
-      (event) =>
-        event.resource.kind === "preset" &&
-        event.resource.id === visible.id &&
-        event.outcome === "success",
-    ),
+  // Each successful write leaves exactly one attributable mutation row.
+  assert.deepEqual(
+    fixture.audit.events
+      .filter(
+        (event) =>
+          event.kind === "mutation" &&
+          event.resource.kind === "preset" &&
+          event.resource.id === visible.id &&
+          event.outcome === "success",
+      )
+      .map((event) => [event.action, event.resource.namespaceId]),
+    [
+      ["openclaw.presets.create", alpha.id],
+      ["openclaw.presets.update", alpha.id],
+      ["openclaw.presets.delete", alpha.id],
+    ],
   );
 });
 
@@ -536,6 +555,17 @@ test("Presets block Namespace deletion and deleting one removes only its managed
     bindings.push(binding.data);
   }
   await deletePreset(fixture, namespace.id, target.id);
+  const deletion = fixture.audit.events.filter(
+    (event) =>
+      event.action === "openclaw.presets.delete" &&
+      event.resource.id === target.id &&
+      event.outcome === "success",
+  );
+  assert.equal(deletion.length, 1);
+  assert.deepEqual(
+    deletion[0].details.removedAccessBindings.map((binding) => binding.id),
+    [bindings[0].id],
+  );
   const remaining = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.equal(remaining.status, 200);
   assert.deepEqual(
@@ -982,6 +1012,11 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
       createdAt: new Date().toISOString(),
     }),
   );
+  // A Namespace that is being deleted is skipped and does not fail startup. Its unmodified
+  // defaults from creation do not block the deletion request.
+  const leaving = await fixture.createNamespace("Leaving namespace", { ready: true });
+  const leave = await fixture.request("DELETE", `/namespaces/${leaving.id}`);
+  assert.equal(leave.status, 202, JSON.stringify(leave.body));
   await Promise.all([
     fixture.controller.initializeDefaultPresets(principal.id),
     fixture.controller.initializeDefaultPresets(principal.id),
@@ -1026,12 +1061,21 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
     body: { name: "Denied defaults" },
   });
   assert.equal(permitted.status, 201);
-  assert.deepEqual(
-    (await fixture.request("GET", collection(permitted.data.id))).data
-      .map((preset) => preset.name)
-      .sort(),
-    defaultNames,
-  );
+  const provisioningPresets = (await fixture.request("GET", collection(permitted.data.id))).data;
+  assert.deepEqual(provisioningPresets.map((preset) => preset.name).sort(), defaultNames);
+  // Startup seeds the defaults while the Namespace provisions; callers wait until it is ready.
+  for (const [method, path, body] of [
+    ["POST", collection(permitted.data.id), { name: "Too early", template: {} }],
+    [
+      "PATCH",
+      `${collection(permitted.data.id)}/${provisioningPresets[0].id}`,
+      { name: "Too early" },
+    ],
+  ]) {
+    const early = await fixture.request(method, path, { body });
+    assert.equal(early.status, 409, `${method}: ${JSON.stringify(early.body)}`);
+    assert.equal(early.body.error.code, "NAMESPACE_NOT_READY", method);
+  }
   // Startup must skip a persisted non-administrator even when it is returned first.
   await initializeInstallationPresets(
     fixture.controller,

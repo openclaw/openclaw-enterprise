@@ -3,6 +3,33 @@
     "postgres": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/postgres-password-sign-in-limit.test.mjs",
+    "tests/integration/postgres-bootstrap-failures.test.mjs",
+    "tests/integration/postgres-agent-provisioning.test.mjs",
+    "tests/integration/postgres-platform-state.test.mjs",
+    "tests/integration/postgres-github-recovery-replacement.test.mjs",
+    "tests/integration/postgres-production-wireup.test.mjs",
+    "tests/integration/compute-singleton-worker-postgres.test.mjs",
+    "tests/integration/postgres-backend-ownership.test.mjs",
+    "tests/integration/postgres-restart-recovery.test.mjs",
+    "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-agent-runtime-logs.test.mjs",
+    "tests/integration/postgres-repository-broker-receipts.test.mjs",
+    "tests/integration/postgres-worker-stale-claim.test.mjs",
+    "tests/integration/postgres-namespace-iam-policy.test.mjs",
+    "tests/integration/workspace-setup-worker.test.mjs",
+    "tests/integration/postgres-repository-sessions.test.mjs",
+    "tests/integration/postgres-secret-state.test.mjs",
+    "tests/integration/postgres-service-account-deletion.test.mjs",
+    "tests/integration/postgres-presets.test.mjs",
+    "tests/integration/postgres-workspace-setup.test.mjs",
+    "tests/integration/postgres-connection-auth.test.mjs",
+    "tests/integration/postgres-repository-transactions.test.mjs",
+    "tests/integration/postgres-controller-work-targets.test.mjs",
+    "tests/integration/postgres-transaction-commit.test.mjs"
+  ],
   "files": [
     {
       "path": "tests/integration/postgres-connection-auth.test.mjs",

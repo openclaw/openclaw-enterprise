@@ -42,8 +42,13 @@ else
 fi
 ```
 
-Stop if selection fails. The two aliases are not updated atomically; retry both
-pulls after publication completes if they refer to different source revisions.
+Stop if selection fails. If an anonymous pull fails with `unauthorized` or
+`denied`, the packages have not been published publicly yet:
+[build images from your checkout](production-installation.md#build-and-publish-production-images)
+instead, or [start the local stack](../quickstart.md#start-the-local-stack)
+without image selections, which builds this checkout. The two aliases are not
+updated atomically; retry both pulls after publication completes if they refer
+to different source revisions.
 `latest` identifies the last publication to that alias, not necessarily the
 newest source commit: custom-tag publications leave it unchanged.
 

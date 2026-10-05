@@ -63,10 +63,10 @@ export async function createConsoleRepositoryLaunchFixture(
   const clients = {
     core: {
       async listNamespace({ labelSelector }) {
-        const namespaceId = labelSelector.slice("openclaw.dev/namespace=".length);
+        const [label, value] = labelSelector.split("=");
         return {
           items: [...namespaces.values()].filter(
-            ({ metadata }) => metadata.labels["openclaw.dev/namespace"] === namespaceId,
+            ({ metadata }) => metadata.labels[label] === value,
           ),
         };
       },
@@ -167,13 +167,10 @@ export async function createConsoleRepositoryLaunchFixture(
     unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
   const namespaceName = kubernetesNamespaceName(namespace.id);
-  namespaces.set(namespaceName, {
-    ...compute.manifest("v1", "Namespace", namespaceName, { namespaceId: namespace.id }),
-    status: { phase: "Active" },
-  });
-  // Canonical Secrets live in the control-plane tenant, separate from workloads.
-  // Seed completed Namespace provisioning with the real Driver's ownership labels.
+  // Single-cluster workloads and canonical storage use the same tenant namespace.
+  // Seed completed provisioning with the real Driver's ownership and storage labels.
   const controlNamespace = compute.gatewayNamespaceManifest({ namespaceId: namespace.id });
+  assert.equal(controlNamespace.metadata.name, namespaceName);
   namespaces.set(controlNamespace.metadata.name, {
     ...controlNamespace,
     status: { phase: "Active" },
