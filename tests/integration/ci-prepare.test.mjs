@@ -1898,7 +1898,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
         cluster,
         image: immutableImage,
         // The current runtime must still reject unrelated setup failures before node writes.
-        codexVersion: "0.158.0",
+        codexVersion: "0.160.0",
         execFile: execFileForRuntimeDefaultFailure((command, args) => {
           const commandText = `${command} ${args.join(" ")}`;
           assert.match(commandText, /--namespace/);
