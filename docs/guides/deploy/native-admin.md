@@ -1,10 +1,12 @@
 # Deploy native admin UI access
 
-Enable OpenClaw access through OCC with an explicit runtime assignment for each person. The selected native role determines their permissions. Use a runtime built from the [patched image recipe](../../../deploy/runtime/README.md); the stock source pin cannot accept OCE role assignments. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+Enable OpenClaw access through OCC with an explicit runtime assignment for each person. The selected native role determines their permissions. Configured roles require a runtime built from the [patched image recipe](../../../deploy/runtime/README.md). The built-in `platform-administrator` role can retain the existing administrator transport without named roles. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
 
 ## Existing Agents
 
-Existing Agent `administer` grants and sharing bindings do not automatically assign an OpenClaw role. After updating OCC, those accounts cannot open OpenClaw until an Installation administrator assigns each person a configured role, including the administrator's own account.
+Existing eligible human native administrators receive explicit `platform-administrator` assignments on upgrade, preserving entry without named `gateway.roles`. An Installation administrator can downgrade or remove these assignments in **Share Agent**, independently of OCE management permissions. See [Who can open it](../../reference/agent-native-admin.md#who-can-open-it) for the authorization rules.
+
+To introduce restricted roles on an existing Agent:
 
 1. Use the patched runtime image and [configure the Agent](#configure-each-agent) with named `gateway.roles.definitions` and a `gateway.roles.default` naming one of them. Deploy the new version and wait for it to become active. The Kubernetes Driver configures the trusted-proxy role headers.
 2. Open **Share Agent**, enter the person's Principal ID, and select their OpenClaw role.
@@ -17,7 +19,7 @@ Agent into native admin access:
 
 1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
    console, for example with the Standard Codex Preset. Wait for its active
-   version. Deploy named `gateway.roles` first, then use **Share Agent** to assign the account an explicit OpenClaw role on that exact Agent.
+   version. Use **Share Agent** to assign your existing Principal ID `platform-administrator` on that Agent. Named `gateway.roles` are optional; configure and deploy them when you need restricted roles and individual native profiles.
 2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
    to obtain the exact `data.origin` and active revision ID from the status
    route. Include the returned port; do not construct or reuse another Agent's
