@@ -3213,8 +3213,10 @@ async function assertGatewayEffectiveDefaultModel(context, topology, expectedMod
       topology.gatewayPod.metadata.name,
       `
     (async () => {
-      const { loadConfig } = await import("openclaw/plugin-sdk/config-runtime");
-      const model = loadConfig({ pin: false }).agents?.defaults?.model;
+      const { execFileSync } = await import("node:child_process");
+      const model = JSON.parse(execFileSync(process.execPath,
+        ["/app/openclaw.mjs", "config", "get", "agents.defaults.model", "--json"],
+        { encoding: "utf8" }));
       const primary = typeof model === "string" ? model : model?.primary;
       if (typeof primary !== "string" || !primary.trim()) {
         throw new Error("Effective runtime config did not expose agents.defaults.model");
