@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   codexBwrapAdditionalSyscalls,
@@ -285,9 +285,10 @@ async function withMockedPollClock(t, operation) {
   }
 }
 
+// Synthetic receipts exercise classification; runGeneratedProbe executes the actual shell.
 function probeEvidence(args, stage, exit, entered, detail = "") {
-  const nonce = args.at(-1).match(/OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):START/)?.[1];
-  assert.ok(nonce, "the owning helper must generate an invocation binding");
+  const nonce = args.at(-1);
+  assert.match(nonce, /^[a-f0-9]{32}$/, "the owning helper must generate an invocation binding");
   const prefix = `OCE_SANDBOX_PROBE_V1:${nonce}:`;
   return `${prefix}START\n${entered ? `${prefix}ENTERED\n` : ""}${detail ? `${detail}\n` : ""}${prefix}END:${stage}:${exit}\n`;
 }
@@ -424,7 +425,7 @@ async function missingProfileFixture(t, observations, options = {}) {
   return {
     run: () =>
       withMockedPollClock(t, () =>
-        prepareCodexSeccompProfile({
+        (options.prepareProfile ?? prepareCodexSeccompProfile)({
           cluster,
           image: `registry.invalid/runtime@sha256:${"a".repeat(64)}`,
           execFile,
@@ -623,15 +624,27 @@ for (const [label, alter, extra] of [
   });
 }
 
-// The real helper generates the shell. Only its two resource roots are remapped
+// The real helper delivers the shell asset and its positional inputs. Only its two resource roots are remapped
 // into this fixture. The injected codex executable is inert: no sandbox, cluster
 // or provider is run. Successful payload execution uses an ordinary read-only file
 // to model the tested outside-workspace refusal; this is not isolation evidence.
 async function runGeneratedProbe(args, root, mode) {
-  const expectedVersion = args
-    .at(-1)
-    .match(/if \[ "\$version" != "([0-9]+\.[0-9]+\.[0-9]+)" \]/)?.[1];
-  assert.ok(expectedVersion, "generated probe declares its selected Codex version");
+  const shellArgs = args.slice(args.indexOf("--") + 2);
+  assert.equal(shellArgs[0], "-c");
+  assert.equal(shellArgs[2], "codex-sandbox-probe");
+  assert.equal(shellArgs[3], "0.160.0");
+  assert.match(shellArgs[4], /^[a-f0-9]{32}$/);
+  assert.equal(shellArgs.length, 5);
+  assert.equal(
+    shellArgs[1],
+    await readFile(join(repositoryRoot, "scripts/lib/codex-sandbox-probe.sh"), "utf8"),
+  );
+  const syntax = spawnSync("/bin/sh", ["-n", ...shellArgs], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.equal(syntax.error, undefined);
+  assert.equal(syntax.status, 0, syntax.stderr);
   const tools = join(root, "tools");
   await mkdir(tools, { recursive: true });
   const codex = join(tools, "codex");
@@ -639,18 +652,24 @@ async function runGeneratedProbe(args, root, mode) {
     codex,
     `#!/bin/sh
 if [ "$1" = --version ]; then
-  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex ${expectedVersion}'; fi
+  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.160.0'; fi
   exit 0
 fi
+# Validate the real command's sandbox arguments, independently of its shell layout.
+[ "$#" -eq 11 ] && [ "$1" = sandbox ] && [ "$2" = -c ] &&
+  [ "$3" = sandbox_mode=workspace-write ] && [ "$4" = -c ] &&
+  [ "$5" = sandbox_workspace_write.network_access=false ] &&
+  [ "$6" = -- ] && [ "$7" = sh ] && [ "$8" = -c ] &&
+  [ "\${10}" = codex-sandbox-boundary ] && [ "\${11}" = "$PROBE_NONCE" ] || exit 65
 case "$PROBE_MODE" in
   denied) echo 'bwrap: creating new namespace: Operation not permitted' >&2; exit 1 ;;
   unknown) echo 'synthetic unexplained failure' >&2; exit 1 ;;
   timeout) exit 124 ;;
   missing) exit 127 ;;
 esac
-for arg do payload="$arg"; done
-chmod 400 "$PROBE_ROOT/home/codex-seccomp-outside"
-/bin/sh -c "$payload"
+shift 6
+if [ "$PROBE_MODE" != escape ]; then chmod 400 "$PROBE_ROOT/home/codex-seccomp-outside"; fi
+"$@"
 result=$?
 chmod 600 "$PROBE_ROOT/home/codex-seccomp-outside"
 if [ "$PROBE_MODE" = assertion ]; then echo changed > "$PROBE_ROOT/home/codex-seccomp-outside"; fi
@@ -658,15 +677,37 @@ exit "$result"
 `,
     { mode: 0o700 },
   );
-  const command = args
-    .at(-1)
+  // Fail actual shell commands at preparation and cleanup, leaving the probe's
+  // trap and stage transitions responsible for reporting the failure.
+  await writeFile(
+    join(tools, "mkdir"),
+    `#!/bin/sh
+if [ "$PROBE_MODE" = prepare ]; then exit 73; fi
+exec /bin/mkdir "$@"
+`,
+    { mode: 0o700 },
+  );
+  await writeFile(
+    join(tools, "rm"),
+    `#!/bin/sh
+if [ "$PROBE_MODE" = cleanup ] && [ -f "$PROBE_ROOT/workspace/codex-seccomp-ok" ]; then exit 74; fi
+exec /bin/rm "$@"
+`,
+    { mode: 0o700 },
+  );
+  const command = shellArgs[1]
     .replaceAll("/home/node", join(root, "home"))
     .replaceAll("/workspace", join(root, "workspace"));
-  const result = spawnSync("/bin/sh", ["-c", command], {
+  const result = spawnSync("/bin/sh", ["-c", command, ...shellArgs.slice(2)], {
     encoding: "utf8",
     timeout: 5_000,
     maxBuffer: 8192,
-    env: { PATH: `${tools}:/usr/bin:/bin`, PROBE_MODE: mode, PROBE_ROOT: root },
+    env: {
+      PATH: `${tools}:/usr/bin:/bin`,
+      PROBE_MODE: mode,
+      PROBE_ROOT: root,
+      PROBE_NONCE: shellArgs[4],
+    },
   });
   assert.equal(result.error, undefined);
   assert.equal(result.signal, null);
@@ -684,19 +725,23 @@ exit "$result"
   return { stdout: result.stdout, stderr: result.stderr };
 }
 
-for (const [mode, expectedStage] of [
-  ["version", "VERSION"],
-  ["unknown", "SANDBOX"],
-  ["timeout", "SANDBOX"],
-  ["missing", "SANDBOX"],
-  ["assertion", "ASSERTIONS"],
+for (const [mode, stage, exit, entered] of [
+  ["version", "VERSION", 64, false],
+  ["prepare", "PREPARE", 73, false],
+  ["unknown", "SANDBOX", 1, false],
+  ["timeout", "SANDBOX", 124, false],
+  ["missing", "SANDBOX", 127, false],
+  ["escape", "SANDBOX", 70, true],
+  ["assertion", "ASSERTIONS", 1, true],
+  ["cleanup", "CLEANUP", 74, true],
 ]) {
   test(`generated probe ${mode} refuses profile qualification with fixed stage`, async (t) => {
     const control = await missingProfileFixture(t, [missingProfileWaiting], {
       probeExec: (args, { root }) => runGeneratedProbe(args, root, mode),
     });
     await assert.rejects(control.run, (error) => {
-      assert.equal(error.codexSandboxProbe?.stage, expectedStage);
+      assert.deepEqual(error.codexSandboxProbe, { stage, exit, entered });
+      assert.equal(error.exitCode, exit);
       return true;
     });
     assert.equal(control.installations(), 0);
@@ -711,6 +756,46 @@ test("generated negative and positive probes complete the real profile preparati
   });
   const result = await control.run();
   assert.equal(result.profileName, "openclaw/codex-bwrap.json");
+  assert.equal(control.installations(), 1);
+  await control.assertCleanup();
+});
+
+test("relocated preparation entrypoints require and deliver the local shell asset", async (t) => {
+  const root = await fixture(t);
+  const scripts = join(root, "scripts");
+  await mkdir(join(scripts, "ci"), { recursive: true });
+  await mkdir(join(scripts, "lib"));
+  for (const path of [
+    "ci/codex-seccomp.mjs",
+    "lib/codex-seccomp-k3d.mjs",
+    "lib/codex-seccomp-profile.mjs",
+    "prepare-development-codex-seccomp.mjs",
+  ]) {
+    await writeFile(join(scripts, path), await readFile(join(repositoryRoot, "scripts", path)));
+  }
+  // An incomplete source delivery fails before either entrypoint can prepare resources.
+  for (const entrypoint of ["ci/codex-seccomp.mjs", "prepare-development-codex-seccomp.mjs"]) {
+    const missing = spawnSync(process.execPath, [join(scripts, entrypoint)], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5_000,
+      env: { PATH: "/usr/bin:/bin" },
+    });
+    assert.equal(missing.error, undefined);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /ENOENT[^\n]*codex-sandbox-probe\.sh/);
+  }
+  await writeFile(
+    join(scripts, "lib/codex-sandbox-probe.sh"),
+    await readFile(join(repositoryRoot, "scripts/lib/codex-sandbox-probe.sh")),
+  );
+  const delivered = await import(pathToFileURL(join(scripts, "ci/codex-seccomp.mjs")));
+  const control = await missingProfileFixture(t, [missingProfileWaiting], {
+    prepareProfile: delivered.prepareCodexSeccompProfile,
+    probeExec: (args, { baseline, root: probeRoot }) =>
+      runGeneratedProbe(args, probeRoot, baseline ? "denied" : "success"),
+  });
+  await control.run();
   assert.equal(control.installations(), 1);
   await control.assertCleanup();
 });
@@ -759,7 +844,7 @@ if (a[0] === 'get' && a[1] === 'nodes') {
 } else if (a[0] === 'get' && a[1] === 'pod') {
   process.stdout.write(JSON.stringify({status:{containerStatuses:[{name:'probe',ready:true,containerID:'containerd://fixture'}]}}));
 } else if (a[0] === 'exec') {
-  const nonce = a.at(-1).match(/OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):START/)[1];
+  const nonce = a.at(-1);
   const prefix = 'OCE_SANDBOX_PROBE_V1:' + nonce + ':';
   process.stderr.write(prefix + 'START\\n');
   if (['done_error','success'].includes(process.env.PROBE_MODE)) {

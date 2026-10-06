@@ -1906,7 +1906,7 @@ test("codex seccomp preparation requires a namespace/seccomp RuntimeDefault deni
         };
       }
       if (args.includes("exec")) {
-        const nonce = args.at(-1).match(/OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):START/)?.[1];
+        const nonce = args.at(-1);
         assert.match(nonce, /^[a-f0-9]{32}$/);
         const error = failure(command, args);
         const stage = error.exitCode === 64 ? "VERSION" : "SANDBOX";
@@ -2063,7 +2063,7 @@ test("codex seccomp preparation publishes a reviewed Docker profile for native s
       if (args.includes("exec")) {
         const podName = args[args.indexOf("exec") + 1];
         const manifest = applied.get(podName);
-        const nonce = args.at(-1).match(/OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):START/)?.[1];
+        const nonce = args.at(-1);
         assert.match(nonce, /^[a-f0-9]{32}$/);
         if (!manifest?.spec?.containers?.[0]?.securityContext?.seccompProfile?.localhostProfile) {
           const error = new Error("RuntimeDefault denied bwrap namespace creation");

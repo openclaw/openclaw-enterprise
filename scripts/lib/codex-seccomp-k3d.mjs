@@ -12,6 +12,12 @@ import {
   validateRuntimeDefaultSeccompProfile,
 } from "./codex-seccomp-profile.mjs";
 
+// Load before any preparation effects; the complete script travels through kubectl exec.
+const sandboxProbeScript = await readFile(
+  new URL("./codex-sandbox-probe.sh", import.meta.url),
+  "utf8",
+);
+
 const defaultProfileName = "openclaw/codex-bwrap.json";
 const kubeletSeccompRoot = "/var/lib/kubelet/seccomp";
 const codexProbeTimeoutMs = 180_000;
@@ -227,12 +233,6 @@ function extractRuntimeSpec(criInspect) {
   return runtimeSpec;
 }
 
-// A fresh marker binds the evidence to this invocation, not arbitrary client error text.
-// This is correspondence from the trusted command path, not remote authentication.
-function codexSandboxProbeCommand(options, nonce) {
-  return `set -eu; stage=VERSION; trap 'result=$?; trap - EXIT; printf "OCE_SANDBOX_PROBE_V1:${nonce}:END:%s:%s\\n" "$stage" "$result" >&2; exit "$result"' EXIT; printf "OCE_SANDBOX_PROBE_V1:${nonce}:START\\n" >&2; version=$(codex --version | awk '{print $NF}'); if [ "$version" != "${options.codexVersion}" ]; then echo "Codex version mismatch: expected ${options.codexVersion}, got $version" >&2; exit 64; fi; stage=PREPARE; mkdir -p /home/node/.codex /workspace; cd /workspace; outside=/home/node/codex-seccomp-outside; rm -f "$outside" /workspace/codex-seccomp-ok; echo outside-ok > "$outside"; stage=SANDBOX; timeout 60s codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=false -- sh -c "set -eu; printf 'OCE_SANDBOX_PROBE_V1:${nonce}:ENTERED\\n' >&2; echo ok > /workspace/codex-seccomp-ok; if echo escaped > /home/node/codex-seccomp-outside; then echo outside workspace write unexpectedly succeeded >&2; exit 70; fi"; stage=ASSERTIONS; test "$(cat /workspace/codex-seccomp-ok)" = ok; test "$(cat "$outside")" = outside-ok; stage=CLEANUP; rm -f "$outside" /workspace/codex-seccomp-ok; stage=DONE`;
-}
-
 function receiveSandboxProbe(result, nonce) {
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
@@ -298,6 +298,31 @@ async function inspectContainerRuntimeSpec(nodeName, containerId, options) {
   return runtimeSpec;
 }
 
+function failedSandboxProbe(error, nonce) {
+  const status = error.exitCode ?? error.code;
+  const definite =
+    Number.isInteger(status) &&
+    status > 0 &&
+    status <= 255 &&
+    error.signal === null &&
+    error.timedOut === false &&
+    (error.killed === undefined || error.killed === false) &&
+    (error.exitCode === undefined || error.code === undefined || error.exitCode === error.code);
+  const probe = definite ? receiveSandboxProbe(error, nonce) : null;
+  return probe?.exit === status ? probe : null;
+}
+
+// execFile fulfills only after a zero exit; reject any contradictory explicit status.
+function successfulCommandResult(result) {
+  return (
+    (result.exitCode === undefined || result.exitCode === 0) &&
+    (result.code === undefined || result.code === 0) &&
+    (result.signal === undefined || result.signal === null) &&
+    (result.killed === undefined || result.killed === false) &&
+    (result.timedOut === undefined || result.timedOut === false)
+  );
+}
+
 async function execCodexSandboxProbe(selection, namespace, podName, options) {
   const nonce = randomUUID().replaceAll("-", "");
   let result;
@@ -312,35 +337,42 @@ async function execCodexSandboxProbe(selection, namespace, podName, options) {
         "--",
         "sh",
         "-c",
-        codexSandboxProbeCommand(options, nonce),
+        sandboxProbeScript,
+        "codex-sandbox-probe",
+        options.codexVersion,
+        nonce,
       ]),
       { timeoutMs: options.commandTimeoutMs },
     );
   } catch (error) {
-    const status = error.exitCode ?? error.code;
-    const definite =
-      Number.isInteger(status) &&
-      status > 0 &&
-      status <= 255 &&
-      error.signal === null &&
-      error.timedOut === false &&
-      (error.killed === undefined || error.killed === false) &&
-      (error.exitCode === undefined || error.code === undefined || error.exitCode === error.code);
-    const probe = definite ? receiveSandboxProbe(error, nonce) : null;
-    error.codexSandboxProbe = probe?.exit === status ? probe : null;
+    error.codexSandboxProbe = failedSandboxProbe(error, nonce);
     throw error;
   }
-  // execFile fulfills only after a zero exit; reject any contradictory explicit status.
-  const successful =
-    (result.exitCode === undefined || result.exitCode === 0) &&
-    (result.code === undefined || result.code === 0) &&
-    (result.signal === undefined || result.signal === null) &&
-    (result.killed === undefined || result.killed === false) &&
-    (result.timedOut === undefined || result.timedOut === false);
-  const receipt = successful ? receiveSandboxProbe(result, nonce) : null;
+  const receipt = successfulCommandResult(result) ? receiveSandboxProbe(result, nonce) : null;
   assert.ok(
     receipt?.stage === "DONE" && receipt.exit === 0 && receipt.entered,
     "Codex sandbox probe did not return complete invocation-bound success evidence.",
+  );
+}
+
+function isRuntimeDefaultSandboxDenial(error) {
+  const probe = error.codexSandboxProbe;
+  if (
+    error.timedOut === true ||
+    error.killed === true ||
+    error.signal ||
+    probe?.stage !== "SANDBOX" ||
+    probe.exit !== 1 ||
+    probe.entered
+  ) {
+    return false;
+  }
+  const diagnostic = [error.stderr, error.stdout].filter(Boolean).join("\n");
+  return (
+    !/codex version mismatch/i.test(diagnostic) &&
+    /bwrap|bubblewrap|clone|namespace|operation not permitted|permission denied|seccomp|unshare/i.test(
+      diagnostic,
+    )
   );
 }
 
@@ -348,26 +380,7 @@ async function verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podN
   try {
     await execCodexSandboxProbe(selection, namespace, podName, options);
   } catch (error) {
-    const probe = error.codexSandboxProbe;
-    if (
-      error.timedOut === true ||
-      error.killed === true ||
-      error.signal ||
-      probe?.stage !== "SANDBOX" ||
-      probe.exit !== 1 ||
-      probe.entered
-    ) {
-      throw error;
-    }
-    const diagnostic = [error.stderr, error.stdout].filter(Boolean).join("\n");
-    if (/codex version mismatch/i.test(diagnostic)) {
-      throw error;
-    }
-    if (
-      !/bwrap|bubblewrap|clone|namespace|operation not permitted|permission denied|seccomp|unshare/i.test(
-        diagnostic,
-      )
-    ) {
+    if (!isRuntimeDefaultSandboxDenial(error)) {
       throw error;
     }
     return false;
