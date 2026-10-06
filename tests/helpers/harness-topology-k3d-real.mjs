@@ -1,6 +1,6 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
@@ -9,7 +9,6 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { promisify } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   authenticatedHeaders,
@@ -17,6 +16,7 @@ import {
   signInWithEmailPassword,
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { attachPostgresToK3d } from "./k3d-postgres-network.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
@@ -96,7 +96,6 @@ const deniedPort = 18791;
 const sharedWorkspaceVolumeName = "openclaw-workspace";
 const harnessWorkspaceClaimSize = "40Gi";
 const harnessWorkspaceSubPaths = Object.freeze(["codex-sessions", "generated-images", "workspace"]);
-const executeFile = promisify(execFile);
 const {
   kubectl,
   kubectlArguments,
@@ -202,75 +201,6 @@ async function createAuthenticatedControllerUrlRequest(origin, credentials, requ
     const body = await response.text();
     return { status: response.status, ...(body.length === 0 ? {} : JSON.parse(body)) };
   };
-}
-
-async function attachPostgresToK3d(registerCleanup) {
-  const statePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
-  const containerBin = process.env.OCC_DOCKER_BIN ?? "docker";
-  assert.ok(statePath, "OPENCLAW_ENTERPRISE_CI_STATE is required for in-cluster OCC");
-  const state = JSON.parse(await readFile(statePath, "utf8"));
-  const cluster = state.resources?.find(
-    ({ kind, status }) => kind === "k3d-cluster" && status === "ready",
-  );
-  const postgres = state.resources?.find(
-    ({ kind, status }) => kind === "compose-postgres" && status === "ready",
-  );
-  assert.ok(cluster?.name, "prepared state must identify the owned k3d cluster");
-  assert.ok(postgres?.name, "prepared state must identify the owned PostgreSQL service");
-  const { stdout: containerOutput } = await executeFile(containerBin, [
-    "ps",
-    "--filter",
-    `label=com.docker.compose.project=${postgres.name}`,
-    "--filter",
-    "label=com.docker.compose.service=postgres",
-    "--format",
-    "{{.Names}}",
-  ]);
-  const containers = containerOutput.trim().split(/\r?\n/).filter(Boolean);
-  assert.equal(containers.length, 1, "prepared PostgreSQL must have exactly one container");
-  const postgresContainer = containers[0];
-  const serverContainer = `k3d-${cluster.name}-server-0`;
-  const { stdout: serverNetworksOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    serverContainer,
-  ]);
-  const serverNetworks = JSON.parse(serverNetworksOutput);
-  const network = Object.keys(serverNetworks).find((name) =>
-    name.startsWith(`k3d-${cluster.name}`),
-  );
-  assert.ok(network, "owned k3d server network must be inspectable");
-  const { stdout: postgresNetworksOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    postgresContainer,
-  ]);
-  const alreadyAttached = Object.hasOwn(JSON.parse(postgresNetworksOutput), network);
-  if (!alreadyAttached) {
-    await executeFile(containerBin, ["network", "connect", network, postgresContainer]);
-  }
-  registerCleanup(async () => {
-    if (!alreadyAttached) {
-      await executeFile(containerBin, [
-        "network",
-        "disconnect",
-        "--force",
-        network,
-        postgresContainer,
-      ]).catch(() => undefined);
-    }
-  });
-  const { stdout: attachedOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    `{{(index .NetworkSettings.Networks ${JSON.stringify(network)}).IPAddress}}`,
-    postgresContainer,
-  ]);
-  const address = attachedOutput.trim();
-  assert.equal(isIP(address), 4, "PostgreSQL must have an IPv4 address on the k3d network");
-  return address;
 }
 
 async function createScopedController(context, identifier, platformNamespace, kubeconfig) {

@@ -716,7 +716,6 @@ if [ "$action" = "demo" ]; then
   export OCC_K3D_HARNESS="$harness"
   if [ "$harness" = "openclaw" ]; then
     info "Starting the dedicated native OpenClaw Control UI demo through OpenShell."
-    export OCC_TEST_OPENSHELL_SECRET_PROJECTION=1
     export OCC_TEST_OPENSHELL_HARNESS=openclaw
     if ! node \
       --test \
@@ -735,7 +734,6 @@ fi
 
 if [ "$harness" = "openclaw" ]; then
   info "Running the dedicated native OpenClaw integration through OpenShell."
-  export OCC_TEST_OPENSHELL_SECRET_PROJECTION=1
   export OCC_TEST_OPENSHELL_HARNESS=openclaw
   node \
     --test \

@@ -104,7 +104,7 @@ API_SERVICE="$(kc -n default get service kubernetes -o jsonpath='{.spec.clusterI
 API_ENDPOINT=$(kc -n default get endpointslice kubernetes \
   -o jsonpath='{.endpoints[0].addresses[0]}:{.ports[0].port}')
 ENVOY_NAMESPACE='envoy-gateway-system' # gatewayRouting.envoyNamespace
-AGENT_GATEWAY='oce-agent-gateways'     # gatewayRouting.gatewayName
+AGENT_GATEWAY='oce-agent-gateways'     # gatewayRouting.gatewayName, default <release>-agent-gateways
 ENVOY="$(kc -n "$ENVOY_NAMESPACE" get pods \
   -l "gateway.envoyproxy.io/owning-gateway-name=$AGENT_GATEWAY" \
   -o jsonpath='{.items[0].status.podIP}'):10443"
@@ -145,15 +145,15 @@ must be `OPEN`; skip any target your network blocks for every Pod. `ENVOY` and
 the Agent ports deny the control Pod, because their ingress policies admit only
 their peers; the API row shows that `ENVOY` listens.
 
-The test Pods use the installed controller image. If a node cannot pull it,
-create the release's pull Secret in the test Pod's namespace and add
-`imagePullSecrets` to the Pod.
+The test Pods use the installed controller image and need the node's own pull
+access, as the OCE Pods do; OCE renders no pull Secret. Don't add `imagePullSecrets`
+([why](../deploy/private-registry-images.md#configure-node-pull-access)).
 
 ## Run the checks
 
 | Source        | Command                                                                   | Expected                                                                                                                                                                                                                                                                                                                                                               |
 | ------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API           | `probe openclaw-system deploy/openclaw-enterprise-api api $TARGETS`       | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`. The API also reaches the destinations your values grant, including sign-in on TCP/443: an empty GitHub or Google `egressCidrs` allows any address, and an empty OIDC `egressCidrs` any address except `169.254.0.0/16`. Without private routing, a gateway client can reach the gateway port. |
+| API           | `probe openclaw-system deploy/openclaw-enterprise-api api $TARGETS`       | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`. The API also reaches the destinations your values grant, including sign-in on TCP/443: an empty GitHub, Google or OIDC `egressCidrs` allows any address except link-local `169.254.0.0/16`, which holds cloud metadata. Without private routing, a gateway client can reach the gateway port. |
 | Worker        | `probe openclaw-system deploy/openclaw-enterprise-worker worker $TARGETS` | DNS, both Kubernetes API addresses, the database and `ENVOY` are `OPEN`; no sign-in, model discovery or channel directory egress. With repository credentials, `repositoryCredentials.upstreamCidrs` is open on TCP/443.                                                                                                                                               |
 | Agent egress  | `probe $TENANT_NAMESPACE $HARNESS_POD $HARNESS_CONTAINER $TARGETS`        | DNS resolves and `1.1.1.1:443` is `OPEN`. Port 80, `PRIVATE_HTTPS`, the Kubernetes API, the database and the other Agent ports are denied. A dedicated Harness also reaches `ENVOY`; an embedded gateway does not.                                                                                                                                                     |
 | Gateway       | `probe $GATEWAY_RUNTIME_NAMESPACE $GATEWAY_POD gateway $TARGETS`          | DNS and its own Harness, `$HARNESS_IP:18790` and `:18791`, are `OPEN`. Everything else is denied: no internet, Kubernetes API or database. With channels enabled, the channel proxy is also open.                                                                                                                                                                      |
@@ -212,7 +212,10 @@ kc get --raw "/api/v1/namespaces/$GATEWAY_RUNTIME_NAMESPACE/pods/$GATEWAY_POD:80
 For an embedded Agent, use `$TENANT_NAMESPACE/pods/$HARNESS_POD` in both
 commands. The first command prints a JSON status report, or an HTTP error from
 the status server while the Pod starts. The second fails with
-`error trying to reach service` and `502 Bad Gateway`. The control Pod showed
+`error trying to reach service` and `502 Bad Gateway`. Some CNIs, such as k3s's
+kube-router, always admit traffic from a node to its own Pods: when the API server
+runs on the Pod's node, the second command can return the gateway's response, so this
+check cannot show the status-port policy there. The control Pod showed
 that other Pods cannot connect to the status port directly. Repeat for Agents
 on different nodes: the proxy source address can differ per node. Host-network
 Pods and node processes that share a proxy source address can also reach the

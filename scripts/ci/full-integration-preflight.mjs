@@ -15,6 +15,7 @@ export const fullIntegrationLanes = Object.freeze([
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
+const branchEligibleLanes = new Set(["k3d-model", "openshell"]);
 const providerAccountEnvironment = "integration-provider-account";
 const laneEnvironments = Object.freeze({
   "docker-model": "integration-model",
@@ -35,7 +36,7 @@ export function selectLane({ eventName, inputLane }) {
 }
 
 export function assertSourceRef(ref, lane) {
-  if (lane === "k3d-model" && /^refs\/heads\/.+/.test(ref ?? "")) {
+  if (branchEligibleLanes.has(lane) && /^refs\/heads\/.+/.test(ref ?? "")) {
     return;
   }
   if (ref !== "refs/heads/main") {

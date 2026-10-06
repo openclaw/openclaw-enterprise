@@ -13,6 +13,11 @@
     "k3d": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/kubelet-volume-refresh-k3d.test.mjs",
+    "tests/integration/kubernetes-compute-driver-real.test.mjs"
+  ],
   "files": [
     {
       "path": "tests/integration/kubelet-volume-refresh-k3d.test.mjs",

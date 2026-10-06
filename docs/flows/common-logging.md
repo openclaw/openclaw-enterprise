@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-09-25
-last_updated_session: redacted
+updated: 2026-10-01
+last_updated_session: authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2
 ---
 
 # Common Operational Logging Flow
@@ -63,6 +63,10 @@ graph TD
 
 API and worker parse trusted YAML once and pass `startupConfiguration.logging`
 to driver composition. Invalid settings fail startup before requests or work.
+Bootstrap, maintenance, and the worker's fallback read only the logging section
+through `apps/controller/src/composition/startup-file.ts:loadOperationalLoggingConfiguration`,
+which shares the snapshot's file reader and checks. The migration command imports
+that module directly, so it never loads Drivers.
 See the [settings reference](../reference/settings.md) for YAML shape and values.
 
 ### 2. Processes log fixed sanitized events
@@ -78,8 +82,12 @@ keeps reviewed scalar fields and drops unapproved fields, credentials, provider
 payloads, request/reply objects, and unsafe strings. This source boundary precedes
 the separate Collector filter in step 7. For worker records, the Collector retains
 allowlisted `work.operation` values and bounded `work.id` shapes. Agent stop keys
-include the operation UUID; deletion keys have no operation suffix. Unsupported
-values and key shapes are excluded.
+and credential withdrawal keys include the operation UUID; deletion keys have no
+operation suffix. Unsupported values and key shapes are excluded.
+
+Compute preparation failures may include a Driver-reviewed stage, classification,
+status, and bounded message. The worker never serializes the raw exception, and
+the sanitizer drops secret-shaped messages before local output.
 
 ### 3. Admission freezes runtime logging
 
@@ -174,6 +182,21 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its bounded cause as
 `occ.worker.cause`.
+`worker.compute-prepare-failed` (a Compute Driver could not prepare a revision) is
+ERROR and keeps `occ.code` plus the Namespace, Agent and revision IDs and work identity
+other worker events keep; the stage, error class, status and message stay local.
+API lifecycle and dependency warnings are exported too. `shutdown.started`,
+`shutdown.completed` and `shutdown.failed` (ERROR, `occ.code`) carry the drain's
+`duration_ms` once it ends; the signal stays local. `database.idle-client-error`
+keeps its SQLSTATE or transport code as `occ.code`. `device_authorization.start_failed`
+keeps `request.id`, `occ.device_authorization.reason` (`unreachable` or `unavailable`)
+and its bounded failure (such as `TimeoutError`) as `occ.device_authorization.failure`.
+`agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
+resource and Kubernetes namespace stay local. `native_admin.websocket_audit_failed`
+keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
+carries none. `authentication.activation-warning`, `authentication.password-sign-in-warning`
+and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
+messages stay local.
 `presets.default-refresh-skipped` (a default Preset copy kept because policy refused
 its refresh) is WARN and keeps `occ.namespace.id` and `occ.preset.id`; the Preset
 name, refusal text and Restriction IDs stay local. `presets.default-create-skipped`
@@ -230,10 +253,13 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-10-06 06:30: Export the API shutdown, idle database connection, device login, cluster credential denial, native admin audit failure and authentication startup warnings that other pages tell operators to look for.
 - 2026-10-05 05:30: Note that the Preset startup warnings come only from the API.
 - 2026-10-05 03:30: Export `presets.bundled-default-shadowed` as WARN with only its event name.
 - 2026-10-05 02:30: Export `presets.default-create-skipped` as WARN with only the Namespace ID.
 - 2026-10-04 23:10: Export `presets.default-refresh-skipped` as WARN with only the Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
+
+- 2026-10-01 16:37: Added the sanitized Compute preparation diagnostic boundary. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 - 2026-10-01 14:45: Export sign-in provider outage warnings with bounded provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)
 

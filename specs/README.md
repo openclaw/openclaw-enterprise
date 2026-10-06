@@ -74,6 +74,7 @@ recorded status is not proof of current implementation or release availability.
 | Installation profiles: openclaw and codex                   | [Decision](rfcs/2026-09-28-installation-profiles-design/index.md) | —                                                                         |
 | Native OpenClaw plugin tool policies                        | [Decision](rfcs/35-native-plugin-tool-policy.md)                  | —                                                                         |
 | OCC Gateway Administration and Command Proxy                | —                                                                 | [Plan / record](plans/15-occ-gateway-access/index.md)                     |
+| OpenShell first-Agent dedicated Codex                       | —                                                                 | [Plan](plans/0044-openshell-first-agent-codex.md)                         |
 | Platform audit                                              | [Decision](rfcs/37-platform-audit/index.md)                       | —                                                                         |
 | Per-person runtime-role assignments | [Decision](rfcs/36-agent-access.md) | [Plan](plans/0042-agent-runtime-role-assignments.md) |
 | Plugin policy enforcement                                   | [Decision](rfcs/37-plugin-policy-enforcement.md)                  | —                                                                         |

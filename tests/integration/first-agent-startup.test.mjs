@@ -65,8 +65,8 @@ async function fixture(t, sandboxDriver) {
   return { directory, engineLog, env };
 }
 
-function runFirstAgent(env) {
-  const result = spawnSync(process.execPath, [firstAgent, "state-contract-test"], {
+function runFirstAgent(env, ...args) {
+  const result = spawnSync(process.execPath, [firstAgent, "state-contract-test", ...args], {
     cwd: repository,
     encoding: "utf8",
     env,
@@ -86,14 +86,18 @@ test("first-Agent accepts current Compose-backed Kubernetes development state", 
   assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
 });
 
-test("first-Agent rejects OpenShell development state before external calls", async (t) => {
+test("first-Agent requires dedicated Codex for OpenShell before external calls", async (t) => {
   const { engineLog, env } = await fixture(t, "openshell");
 
-  assert.match(
-    runFirstAgent(env),
-    /does not support the OpenShell Sandbox Driver.*OCC_DEVELOPMENT_SANDBOX_DRIVER=none/,
-  );
+  assert.match(runFirstAgent(env), /OpenShell first-Agent workflow requires --harness codex/);
   await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+});
+
+test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {
+  const { engineLog, env } = await fixture(t, "openshell");
+
+  assert.match(runFirstAgent(env, "--harness", "codex"), /docker did not complete successfully/);
+  assert.match(await readFile(engineLog, "utf8"), /compose .* port controller 3000/);
 });
 
 test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) => {

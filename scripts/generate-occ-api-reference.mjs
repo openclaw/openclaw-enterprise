@@ -300,22 +300,17 @@ function operationRows(operations) {
 }
 
 function errorSchema(document, entries) {
-  const operations = entries.map(({ operation }) => operation);
-  return (
-    operations
-      .flatMap((operation) => Object.entries(operation.responses))
-      .find(([status, response]) => {
-        const schema = resolveSchema(response.content?.["application/json"]?.schema, document);
-        return !status.startsWith("2") && schema?.properties?.error?.properties?.details;
-      })
-      ?.at(1).content["application/json"].schema ??
-    operations
-      .flatMap((operation) => Object.entries(operation.responses))
-      .find(([status, response]) => {
-        return !status.startsWith("2") && response.content?.["application/json"]?.schema;
-      })
-      ?.at(1).content["application/json"].schema
+  const schemas = entries
+    .flatMap(({ operation }) => Object.entries(operation.responses))
+    .filter(([status, response]) => {
+      return !status.startsWith("2") && response.content?.["application/json"]?.schema;
+    })
+    .map(([, response]) => response.content["application/json"].schema);
+  const detailed = schemas.filter(
+    (schema) => resolveSchema(schema, document)?.properties?.error?.properties?.details,
   );
+  // Prefer the shared envelope component over a route's inline copy of it.
+  return detailed.find((schema) => schema.$ref) ?? detailed[0] ?? schemas[0];
 }
 
 function generatedComment() {

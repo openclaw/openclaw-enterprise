@@ -18,6 +18,7 @@ import {
   createTestAuthPrincipal,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
+import { bindRole } from "../helpers/iam-grants.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -215,14 +216,11 @@ async function configureAgentHarnessSecret(context, namespace, agent, configurat
     id: "model-consumer",
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
-  context.bindings.push({
+  bindRole(context, admittedAgent.servicePrincipalId, {
     id: "model-consumer",
-    subjectKind: "identity",
-    subjectId: admittedAgent.servicePrincipalId,
     roleId: "model-consumer",
     namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: harnessSecret.id,
+    resource: { kind: "secret", id: harnessSecret.id },
   });
 }
 

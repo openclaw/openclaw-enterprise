@@ -185,8 +185,8 @@ Compose service with Docker-compatible engine access.
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers`,
 `internal/occdev/repository_k3d.go:enableDevelopmentRepository`.
 
-Before tool discovery or state creation, `upK3d` requires the platform Namespace
-name to match a DNS label of at most 63 characters. Cleanup accepts the historical
+Before tool discovery or state creation, `upK3d` requires the control-plane Kubernetes
+namespace name to match a DNS label of at most 63 characters. Cleanup accepts the historical
 Namespace syntax in recorded state, including longer names, and deletes only the
 validated recorded cluster through its recorded engine endpoint. All other state
 validation and ownership checks still apply.
@@ -202,7 +202,7 @@ cluster.
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
 manifests and waits for the k3s-owned Gateway API CRDs before installing Envoy,
 printing k3s add-on status before rollback on failure.
-`internal/occdev/gateway_k3d.go:waitForCRDEstablished` polls each CRD every
+`internal/occdev/gateway_k3d.go:waitDevelopmentCRDEstablished` polls each CRD every
 second until `Established`, stopping on a `kubectl` error or startup
 timeout. Before configuring gateway proxy trust,
 `internal/occdev/network_k3d.go:verifyDevelopmentNetworkPolicy`
@@ -374,6 +374,8 @@ external key if a later OpenShell readiness step fails.
 - 2026-10-04 01:12: Pointed the API startup step at the existing composition function. (authoring-run/286855f7-c7cb-43b6-ba19-419a20192f76 - 7a8a64046ac8ef3e7b5a4ed46b1d4cef9f1573f3)
 
 - 2026-10-02 11:01: Polled CRD status instead of `kubectl wait`. (authoring-run/20771b6e-d59b-4737-8a63-cb33c420218e - 67302dd99e03d28053dbb72ba2569418f6aca1d0)
+
+- 2026-10-02: Treated an absent initial CRD condition as pending.
 
 - 2026-09-30 00:26: Tightened startup prose without changing its behavior. (authoring-run/6c4c7a4c-4674-456a-b1c4-69cec0c52c70 - 282ab1031ff2dd86af00c0c3ff304c9ad442fec1)
 

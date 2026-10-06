@@ -66,10 +66,10 @@ func TestDevelopmentInstallationAdmitsTheStatusProxySource(t *testing.T) {
 	// second time (the node id goes into the pod spec) and Compute status and
 	// diagnostics are unavailable. Keep the launcher setting them.
 	state := &developmentState{Cluster: "occ-dev-test", SandboxDriver: "none", DeploymentMode: "k3d", PlatformNamespace: "oce-system", directory: t.TempDir()}
-	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", ""); err == nil {
+	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "", ""); err == nil {
 		t.Fatal("an Installation without the status proxy source was written")
 	}
-	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "10.42.0.1/32"); err != nil {
+	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "", "10.42.0.1/32"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
@@ -102,7 +102,7 @@ func TestDevelopmentInstallationSizesAgentsFromMeasuredUse(t *testing.T) {
 	// running lint, tsc and tests together was OOM-killed at 2Gi and reached a
 	// 4Gi limit.
 	state := &developmentState{Cluster: "occ-dev-test", SandboxDriver: "none", DeploymentMode: "k3d", PlatformNamespace: "oce-system", directory: t.TempDir()}
-	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "10.42.0.1/32"); err != nil {
+	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "", "10.42.0.1/32"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))

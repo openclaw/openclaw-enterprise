@@ -7,6 +7,10 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -200,7 +204,13 @@ async function ensureProvisioningBootstrap(context, state) {
   await bootstrapPromise;
 }
 
-function installationDrivers({ computeDriver, configurationDriver, secretDriver, repoDriver }) {
+function installationDrivers({
+  computeDriver,
+  configurationDriver,
+  secretDriver,
+  repoDriver,
+  pluginDriver,
+}) {
   return {
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
@@ -239,6 +249,7 @@ function installationDrivers({ computeDriver, configurationDriver, secretDriver,
     configurationDriver,
     secretDriver,
     ...(repoDriver === undefined ? {} : { repoDriver }),
+    ...(pluginDriver === undefined ? {} : { pluginDriver }),
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
   };
@@ -274,6 +285,7 @@ async function createFixture(context, options = {}) {
     configurationDriver,
     secretDriver,
     repoDriver: options.repoDriver,
+    pluginDriver: options.pluginDriver,
   });
   const app = await composePostgresDevelopment(
     {
@@ -1438,6 +1450,152 @@ test(
       [admitted.data.provisioning.workId],
     );
     assert.deepEqual(work.rows, [{ state: "failed_permanent" }], "a refused retry queues nothing");
+  },
+);
+
+test(
+  "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-plugin-switch",
+    });
+    const createExact = configurationDriver.createExact;
+    let configurationOutage = true;
+    configurationDriver.createExact = async (configuration) => {
+      if (configurationOutage) {
+        throw new Error("synthetic Configuration outage");
+      }
+      return createExact(configuration);
+    };
+    const computeDriver = createRuntimeComputeDriver();
+    const secretDriver = createTestSecretDriver({ id: "secret-provisioning" });
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      pluginDriver: new CodexPluginDriver(),
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
+    const body = provisioningBody(namespace.id, secrets, {
+      plugins: { [pluginId]: { enabled: true } },
+    });
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    await fixture.startWorker();
+    const failed = await waitFor(
+      "Agent provisioning to fail before its Configuration",
+      async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.status === "failed" ? observed.data : undefined;
+      },
+    );
+    await fixture.stopWorker();
+    // Rule out the Configuration outage as the cause of the retry refusal below.
+    configurationOutage = false;
+
+    // The administrator restarts the API with a Plugin Driver that does not offer the stored
+    // plugin. Reading status reports the stored work: plugin admission belongs to writes.
+    const switched = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      pluginDriver: new OCCPluginDriver(),
+    });
+    const status = await switched.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.deepEqual(status.data, failed);
+
+    // Retry would run the plan again, so it is still refused, naming the stored plugin
+    // without a request-body detail, and queues nothing.
+    const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 400, JSON.stringify(retried.body));
+    assert.equal(retried.body.error.code, "INVALID_REQUEST");
+    assert.match(
+      retried.body.error.message,
+      new RegExp(
+        `^A plugin selection names a plugin that the selected Plugin Driver \\(occ-plugin\\) does not offer: ${pluginId}\\.`,
+      ),
+    );
+    assert.equal(Object.hasOwn(retried.body.error, "details"), false);
+    // A replay of the original request rechecks the stored plan, so it is refused the same way
+    // and returns no progress.
+    const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
+    const replayed = await switched.request("POST", provisionPath, { body });
+    assert.equal(replayed.status, 400, JSON.stringify(replayed.body));
+    assert.deepEqual(replayed.body.error, retried.body.error);
+    const work = await switched.pool.query(
+      "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+      [admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(
+      work.rows,
+      [{ state: "failed_permanent" }],
+      "a refused retry or replay queues nothing",
+    );
+  },
+);
+
+test(
+  "a Plugin Driver switch before the worker runs rejects the provisioning work without retrying",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-plugin-switch-worker",
+    });
+    const computeDriver = createRuntimeComputeDriver();
+    const secretDriver = createTestSecretDriver({ id: "secret-provisioning" });
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      pluginDriver: new CodexPluginDriver(),
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets, { plugins: { [pluginId]: { enabled: true } } }),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+    // The Installation now selects a Plugin Driver that does not offer the stored plugin. Every
+    // attempt would refuse the plan the same way, so the worker fails it on the first one.
+    const switched = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      pluginDriver: new OCCPluginDriver(),
+    });
+    await switched.startWorker();
+    await waitFor("the switched worker to reject the provisioning work", async () => {
+      const observed = await switched.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "failed" ? observed.data : undefined;
+    });
+    await switched.stopWorker();
+    const failed = await switched.request("GET", admitted.data.provisioning.url);
+    assert.equal(failed.status, 200, JSON.stringify(failed.body));
+    // The refusal names the stored plugin, as HTTP retry would, so Console can say why.
+    assert.equal(failed.data.error.code, "PROVISIONING_REJECTED");
+    assert.ok(
+      failed.data.error.message.startsWith(
+        `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}.`,
+      ),
+      failed.data.error.message,
+    );
+    const work = await switched.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 1 },
+    ]);
   },
 );
 

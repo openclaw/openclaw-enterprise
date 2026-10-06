@@ -46,6 +46,9 @@ still block initial workspace files and Secret-backed environment projection.
    Choose a model Secret or **Create new Secret...**.
    New Secrets persist after cancellation.
    Choose a model from the starter list or select **Enter model ID manually**.
+   **Choose a model from the list** returns. Switching modes keeps a model
+   available in the current provider's list; a custom ID outside that list requires
+   a new selection when returning. Other settings are preserved.
    No model is preselected.
 4. Confirm the Installation, credential, and runtime support the chosen model. Primary and fallback
    models must use the same supported provider and Harness. For custom settings,

@@ -13,7 +13,9 @@ planned. Current Channel operations validate credentials and look up provider
 directories; runtime messaging is not a general OCC dispatch contract. Current
 Sandbox is optional, can provision the dedicated Harness, and
 exposes containment facets rather than the full policy interface in this design.
-Stock OpenShell deployment remains unsupported. See
+OpenShell implements an experimental plugin-free dedicated Codex path in the
+local development profile; real activation and production deployment remain
+subject to its upstream preconditions. See
 [Driver development](../contributing/driver-development.md),
 [Sandbox](../reference/drivers/sandbox.md), and
 [OpenShell limits](../reference/drivers/openshell-sandbox.md) for current contracts.

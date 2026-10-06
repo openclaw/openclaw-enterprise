@@ -144,8 +144,11 @@ together. Activation still requires closed ingress and stopped identity writers.
 
 With `auth.github.enabled`, the chart adds an API-only egress policy on TCP 443
 for `github.com` and `api.github.com`. Empty `auth.github.egressCidrs` allows
-`0.0.0.0/0`. To narrow it, list the `web` and `api` IPv4 ranges from
-`https://api.github.com/meta`, and update them when GitHub changes them.
+any address except link-local `169.254.0.0/16`. To narrow it, list the `web` and `api`
+IPv4 ranges from `https://api.github.com/meta`, and update them when GitHub changes them.
+A non-empty list replaces the default, so an egress proxy on a link-local address is
+reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs carry no
+link-local exception, so keep them narrow.
 
 `api.trustedProxy` is off by default: the API rejects `Forwarded`,
 `X-Forwarded-*`, and `X-Real-IP` with `403`. Failed password sign-ins are then
@@ -184,10 +187,10 @@ guarded profile and `OCC_AUTH_GITHUB_RECOVERY_USER_ID` recovery user as GitHub; 
 With `auth.google.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-google-login-egress` on TCP 443 for
 `oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
-allows `0.0.0.0/0`; narrow it with an egress proxy. Rendering fails on incomplete
-Google values, a Secret shared with GitHub or any other chart Secret,
-`agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed domain that
-is not a DNS name.
+allows any address except link-local `169.254.0.0/16`; narrow it with an egress proxy.
+Rendering fails on incomplete Google values, a Secret shared with GitHub or any other
+chart Secret, `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed
+domain that is not a DNS name.
 
 ### OIDC sign-in
 
@@ -204,8 +207,8 @@ recovery user; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md).
 
 With `auth.oidc.enabled`, the chart adds the API-only egress policy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except `169.254.0.0/16`. The port is the destination Pod's port; an
-IdP inside the cluster on another target port needs
+allows any address except link-local `169.254.0.0/16`. The port is the destination Pod's
+port; an IdP inside the cluster on another target port needs
 [its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
 a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
 with OIDC, or an HTTP base URL.

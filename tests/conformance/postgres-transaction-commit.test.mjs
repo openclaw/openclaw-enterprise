@@ -70,6 +70,17 @@ function serverError(code) {
   return Object.assign(new pg.DatabaseError("server rejection", 0, "error"), { code });
 }
 
+// The transaction reports an unknown COMMIT outcome, sends nothing after COMMIT
+// and discards its client.
+async function assertCommitUnknown(p) {
+  await assert.rejects(
+    p.state.transact(async () => 1),
+    PostgresCommitOutcomeUnknownError,
+  );
+  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
+  assert.equal(p.releases.at(-1), true);
+}
+
 test("known outer acknowledgment returns the original value after cleanup", async () => {
   const p = protocol();
   const value = Object.freeze({ result: "unchanged" });
@@ -166,12 +177,7 @@ test("a client error with a server-looking code leaves COMMIT unknown", async ()
       throw Object.assign(new Error("client failure"), { code: "23514" });
     },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  await assertCommitUnknown(p);
 });
 
 test("a transport failure during COMMIT leaves even a server-looking rejection unknown", async () => {
@@ -181,12 +187,7 @@ test("a transport failure during COMMIT leaves even a server-looking rejection u
       throw serverError("40001");
     },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  await assertCommitUnknown(p);
 });
 
 test("a known-bad client is discarded without attempting pre-COMMIT rollback", async () => {
@@ -414,12 +415,7 @@ test("40003 statement completion unknown does not issue a follow-up query", asyn
       throw serverError("40003");
     },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  await assertCommitUnknown(p);
 });
 
 test("an unclassified valid SQLSTATE does not establish no commit", async () => {
@@ -428,12 +424,7 @@ test("an unclassified valid SQLSTATE does not establish no commit", async () => 
       throw serverError("XX000");
     },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  await assertCommitUnknown(p);
 });
 
 test("actual ROLLBACK command acknowledgment establishes no commit", async () => {
@@ -451,12 +442,7 @@ test("unrecognized acknowledgment does not establish rollback", async () => {
   const p = protocol({
     commit: () => ({ rows: [], rowCount: 0 }),
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  await assertCommitUnknown(p);
 });
 
 test("a throwing acknowledgment projection remains unknown even with a definite SQLSTATE", async () => {
@@ -467,12 +453,7 @@ test("a throwing acknowledgment projection remains unknown even with a definite 
       },
     }),
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases.at(-1), true);
+  await assertCommitUnknown(p);
 });
 
 test("release failure after acknowledged COMMIT is unknown and cleanup continues", async () => {

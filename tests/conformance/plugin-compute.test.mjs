@@ -2961,6 +2961,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   };
   const scenarios = [
     {
+      name: "verifier-only app server starts without exposing either token input",
+      tokenVerifier: true,
+      events: [started, assistant, completed],
+      ready: true,
+    },
+    {
       name: "delayed retry uses only the remaining budget",
       probeTimeouts: 2,
       retryDelayMs: 30500,
@@ -3266,7 +3272,9 @@ test("Codex runtime gates startup and readiness on a successful native authentic
               OPENCLAW_RUNTIME_STATUS_PORT: "18791",
               OPENCLAW_POD_UID: "pod-runtime-auth-gate",
               OPENCLAW_PLUGIN_READY_MARKER: marker,
-              APP_SERVER_TOKEN: "fixture-transport-token",
+              ...(scenario.tokenVerifier
+                ? { APP_TOKEN_SHA: sha256("fixture-transport-token") }
+                : { APP_SERVER_TOKEN: "fixture-transport-token" }),
               APP_SERVER_PORT: "4500",
             },
             on() {},
@@ -3306,11 +3314,19 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                     loginCalls++;
                     const loginEnvironment = options.env ?? sandbox.process.env;
                     assert.equal(Object.hasOwn(loginEnvironment, "APP_SERVER_TOKEN"), false);
+                    assert.equal(Object.hasOwn(loginEnvironment, "APP_TOKEN_SHA"), false);
                     assert.equal(
                       loginEnvironment.CODEX_LOGIN_MODE,
                       sandbox.process.env.CODEX_LOGIN_MODE,
                     );
-                    assert.equal(sandbox.process.env.APP_SERVER_TOKEN, "fixture-transport-token");
+                    if (scenario.tokenVerifier) {
+                      assert.equal(
+                        sandbox.process.env.APP_TOKEN_SHA,
+                        sha256("fixture-transport-token"),
+                      );
+                    } else {
+                      assert.equal(sandbox.process.env.APP_SERVER_TOKEN, "fixture-transport-token");
+                    }
                   }
                   if (isLogin && scenario.pat) {
                     assert.equal(command, "codex");
@@ -3361,8 +3377,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                       scenario.events.map((event) => JSON.stringify(event)).join("\n"),
                   };
                 },
-                spawn(_command, args) {
+                spawn(_command, args, options) {
                   assert.ok(args.includes("app-server"));
+                  const tokenDigest = args[args.indexOf("--ws-token-sha256") + 1];
+                  assert.equal(tokenDigest, sha256("fixture-transport-token"));
+                  assert.equal(Object.hasOwn(options.env, "APP_SERVER_TOKEN"), false);
+                  assert.equal(Object.hasOwn(options.env, "APP_TOKEN_SHA"), false);
                   appServerStarts++;
                   return { on() {}, kill() {} };
                 },

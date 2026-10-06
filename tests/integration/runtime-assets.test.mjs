@@ -25,7 +25,9 @@ packages:
 `,
     "dist/index.js": "export const ready = true;\n",
     "openclaw.mjs":
-      'import { ready } from "./node-compile-cache.mjs"; process.stdout.write(ready);\n',
+      'import { ready } from "./node-runtime-recovery.mjs"; process.stdout.write(ready);\n',
+    "node-runtime-recovery.mjs": 'export { ready } from "./node-runtime-env.mjs";\n',
+    "node-runtime-env.mjs": 'export { ready } from "./node-compile-cache.mjs";\n',
     "node-compile-cache.mjs": 'export const ready = "runtime-ready";\n',
     "extensions/slack/skills/slack/SKILL.md": "Slack runtime skill",
     "extensions/slack/src/client.test.ts": "development test",
@@ -109,7 +111,7 @@ packages:
     await assert.rejects(readFile(join(root, name)), { code: "ENOENT" });
   }
   const contents = await readFile(join(output, "contents.json"));
-  // The pinned upstream launcher imports this sibling before loading dist.
+  // The launcher must retain transitive root-level imports before loading dist.
   assert.equal(
     execFileSync(process.execPath, [join(root, "openclaw.mjs")], { encoding: "utf8" }),
     "runtime-ready",

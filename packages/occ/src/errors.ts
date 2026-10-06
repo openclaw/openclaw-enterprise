@@ -195,9 +195,23 @@ export class ConfigurationHarnessError extends ScopeViolationError {
  * later and stays a scope miss.
  */
 export class SecretBindingValidationError extends ScopeViolationError {
-  constructor(message: string) {
+  /**
+   * The submitted destination key that broke a destination rule, and the JSON Pointer of
+   * the binding map that holds it. Never a Secret value or ID.
+   */
+  readonly destination?: {
+    readonly bindingsPath: string;
+    /** Absent for a malformed key, which is not echoed; the detail points at the map. */
+    readonly key?: string;
+    readonly code: "INVALID_FORMAT" | "INVALID_VALUE";
+  };
+
+  constructor(message: string, destination?: SecretBindingValidationError["destination"]) {
     super(message);
     this.name = "SecretBindingValidationError";
+    if (destination !== undefined) {
+      this.destination = Object.freeze({ ...destination });
+    }
   }
 }
 
@@ -591,6 +605,9 @@ export class RuntimeLogsError extends Error {
 }
 
 export class PluginPolicyValidationError extends Error {
+  /** The rejected plugin selection key, so HTTP can point at `/plugins/<id>`. */
+  readonly pluginId?: string;
+
   constructor(
     field?:
       | "toolDefaults.reviewer"
@@ -599,13 +616,19 @@ export class PluginPolicyValidationError extends Error {
       | "aliasedPlugin"
       | "unknownPlugin",
     driverId?: string,
+    pluginId?: string,
   ) {
     let message = "The supplied plugin policies are invalid.";
     if (field === "unknownPlugin") {
       // driverId comes from trusted Installation configuration, never from the request.
+      // pluginId is a selection key admitted under the API contract's [A-Za-z0-9._~:@-] rule,
+      // from this request or from storage. It follows the rule, so HTTP's message cap cuts
+      // the advice first.
       message = `A plugin selection names a plugin that the selected Plugin Driver${
         driverId === undefined ? "" : ` (${driverId})`
-      } does not offer. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+      } does not offer${
+        pluginId === undefined ? "" : `: ${pluginId}`
+      }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
@@ -621,6 +644,20 @@ export class PluginPolicyValidationError extends Error {
     }
     super(message);
     this.name = "PluginPolicyValidationError";
+    if (field === "unknownPlugin" && pluginId !== undefined) {
+      this.pluginId = pluginId;
+    }
+  }
+
+  /**
+   * The same refusal without the `/plugins/<id>` pointer, for selections read from storage
+   * (deploy, an update that omits `plugins`, provisioning replay or retry): the request body
+   * holds no such path. The message still names the plugin.
+   */
+  withoutRequestPath(): PluginPolicyValidationError {
+    const stored = new PluginPolicyValidationError();
+    stored.message = this.message;
+    return stored;
   }
 }
 

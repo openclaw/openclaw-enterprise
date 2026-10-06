@@ -177,7 +177,7 @@ drivers:
         gatewayNodeSelector: { oce-role: control-plane }
         transportSecretPrefix: openclaw-agent-transport
         # Optional; first install this reviewed profile on every eligible node.
-        codexSeccompProfile: profiles/codex-0.158.0.json
+        codexSeccompProfile: profiles/codex-0.160.0.json
 ```
 
 This is only the Compute Driver portion of the Installation configuration; the
@@ -211,8 +211,8 @@ production. Quotas and defaults cover both roles in a shared tenant namespace;
 the two-cluster profile applies them separately to each physical target. The
 [installation profiles](../../guides/deploy/installation-profiles.md) explain
 the measured memory defaults. Production requires
-`images.requireImmutableDigest: true` and SHA-256 image digests. Quote
-whole-core quantities, such as `cpu: "4"`.
+`images.requireImmutableDigest: true` and lowercase `@sha256:` image digests.
+Quote whole-core quantities, such as `cpu: "4"`.
 
 See [network configuration](kubernetes-compute/networking-and-isolation.md#networking)
 for DNS, gateway clients, proxy trust, and egress requirements.

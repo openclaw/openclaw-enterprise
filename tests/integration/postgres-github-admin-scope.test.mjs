@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   clientAddresses,
   composeProductionSignIn,
@@ -10,6 +8,7 @@ import {
   githubSignIn,
   githubUpgradeSettings,
   onboardPasswordAccounts,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -35,13 +34,8 @@ test(
   "an exact-scope Installation administrator cannot manage an account with broader grants",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     await startFakeGitHub(t);
     const address = clientAddresses("198.19");
     const {

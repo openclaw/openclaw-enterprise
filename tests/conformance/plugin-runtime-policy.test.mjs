@@ -715,7 +715,10 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   // The Gateway starts before the node pairs: the optional binding file is absent.
   const { files, calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: codexGatewayConfig(),
-    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+    env: {
+      APP_SERVER_URL: "ws://harness.example.test:18790",
+      OPENCLAW_REMOTE_WORKSPACE_ROOT: "/sandbox/enterprise",
+    },
     workspaceNodeBindingPath: true,
     intervals,
     kills,
@@ -773,11 +776,11 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   assert.equal(applied.plugins.entries["file-transfer"].enabled, true);
   assert.deepEqual(applied.plugins.entries["file-transfer"].config.workspaces.main, {
     nodeId: "enrolled-node",
-    remoteRoot: "/home/node/workspace",
+    remoteRoot: "/sandbox/enterprise",
   });
   assert.equal(
     applied.plugins.entries.codex.config.appServer.remoteWorkspaceRoot,
-    "/home/node/workspace",
+    "/sandbox/enterprise",
   );
   // The write was a whole-file replacement, not an in-place rewrite.
   assert.equal(

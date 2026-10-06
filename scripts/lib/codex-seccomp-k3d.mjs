@@ -227,8 +227,59 @@ function extractRuntimeSpec(criInspect) {
   return runtimeSpec;
 }
 
-function codexSandboxProbeCommand(options) {
-  return `set -eu; version=$(codex --version | awk '{print $NF}'); if [ "$version" != "${options.codexVersion}" ]; then echo "Codex version mismatch: expected ${options.codexVersion}, got $version" >&2; exit 64; fi; mkdir -p /home/node/.codex /workspace; cd /workspace; outside=/home/node/codex-seccomp-outside; rm -f "$outside" /workspace/codex-seccomp-ok; echo outside-ok > "$outside"; timeout 60s codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=false -- sh -c "set -eu; echo ok > /workspace/codex-seccomp-ok; if echo escaped > /home/node/codex-seccomp-outside; then echo outside workspace write unexpectedly succeeded >&2; exit 70; fi"; test "$(cat /workspace/codex-seccomp-ok)" = ok; test "$(cat "$outside")" = outside-ok; rm -f "$outside" /workspace/codex-seccomp-ok`;
+// A fresh marker binds the evidence to this invocation, not arbitrary client error text.
+// This is correspondence from the trusted command path, not remote authentication.
+function codexSandboxProbeCommand(options, nonce) {
+  return `set -eu; stage=VERSION; trap 'result=$?; trap - EXIT; printf "OCE_SANDBOX_PROBE_V1:${nonce}:END:%s:%s\\n" "$stage" "$result" >&2; exit "$result"' EXIT; printf "OCE_SANDBOX_PROBE_V1:${nonce}:START\\n" >&2; version=$(codex --version | awk '{print $NF}'); if [ "$version" != "${options.codexVersion}" ]; then echo "Codex version mismatch: expected ${options.codexVersion}, got $version" >&2; exit 64; fi; stage=PREPARE; mkdir -p /home/node/.codex /workspace; cd /workspace; outside=/home/node/codex-seccomp-outside; rm -f "$outside" /workspace/codex-seccomp-ok; echo outside-ok > "$outside"; stage=SANDBOX; timeout 60s codex sandbox -c sandbox_mode="workspace-write" -c sandbox_workspace_write.network_access=false -- sh -c "set -eu; printf 'OCE_SANDBOX_PROBE_V1:${nonce}:ENTERED\\n' >&2; echo ok > /workspace/codex-seccomp-ok; if echo escaped > /home/node/codex-seccomp-outside; then echo outside workspace write unexpectedly succeeded >&2; exit 70; fi"; stage=ASSERTIONS; test "$(cat /workspace/codex-seccomp-ok)" = ok; test "$(cat "$outside")" = outside-ok; stage=CLEANUP; rm -f "$outside" /workspace/codex-seccomp-ok; stage=DONE`;
+}
+
+function receiveSandboxProbe(result, nonce) {
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  if (
+    typeof stdout !== "string" ||
+    typeof stderr !== "string" ||
+    Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 4096
+  ) {
+    return null;
+  }
+  const prefix = "OCE_SANDBOX_PROBE_V1:";
+  // Partial, duplicate and foreign invocation markers cannot qualify a failure.
+  const lines = stderr.split("\n").filter((line) => line.includes(prefix));
+  const entered = lines.length === 3;
+  if (lines.length !== 2 && !entered) {
+    return null;
+  }
+  if (lines[0] !== `${prefix}${nonce}:START`) {
+    return null;
+  }
+  if (entered && lines[1] !== `${prefix}${nonce}:ENTERED`) {
+    return null;
+  }
+  const terminal = lines
+    .at(-1)
+    .match(
+      /^OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):END:(VERSION|PREPARE|SANDBOX|ASSERTIONS|CLEANUP|DONE):(0|[1-9][0-9]{0,2})$/,
+    );
+  if (
+    !terminal ||
+    terminal[1] !== nonce ||
+    Number(terminal[3]) > 255 ||
+    !stderr.endsWith("\n") ||
+    stdout.includes(prefix)
+  ) {
+    return null;
+  }
+  const stage = terminal[2];
+  const exit = Number(terminal[3]);
+  if (
+    (stage === "DONE") !== (exit === 0) ||
+    (entered && ["VERSION", "PREPARE"].includes(stage)) ||
+    (!entered && ["ASSERTIONS", "CLEANUP", "DONE"].includes(stage))
+  ) {
+    return null;
+  }
+  return { stage, exit, entered };
 }
 
 async function inspectContainerRuntimeSpec(nodeName, containerId, options) {
@@ -248,19 +299,48 @@ async function inspectContainerRuntimeSpec(nodeName, containerId, options) {
 }
 
 async function execCodexSandboxProbe(selection, namespace, podName, options) {
-  await kubectl(
-    selection,
-    [
-      "exec",
-      podName,
-      "--namespace",
-      namespace,
-      "--",
-      "sh",
-      "-c",
-      codexSandboxProbeCommand(options),
-    ],
-    options,
+  const nonce = randomUUID().replaceAll("-", "");
+  let result;
+  try {
+    result = await options.execFile(
+      options.kubectl,
+      kubectlArgs(selection, [
+        "exec",
+        podName,
+        "--namespace",
+        namespace,
+        "--",
+        "sh",
+        "-c",
+        codexSandboxProbeCommand(options, nonce),
+      ]),
+      { timeoutMs: options.commandTimeoutMs },
+    );
+  } catch (error) {
+    const status = error.exitCode ?? error.code;
+    const definite =
+      Number.isInteger(status) &&
+      status > 0 &&
+      status <= 255 &&
+      error.signal === null &&
+      error.timedOut === false &&
+      (error.killed === undefined || error.killed === false) &&
+      (error.exitCode === undefined || error.code === undefined || error.exitCode === error.code);
+    const probe = definite ? receiveSandboxProbe(error, nonce) : null;
+    error.codexSandboxProbe = probe?.exit === status ? probe : null;
+    throw error;
+  }
+  // execFile fulfills only after a zero exit; reject any contradictory explicit status.
+  const successful =
+    (result.exitCode === undefined || result.exitCode === 0) &&
+    (result.code === undefined || result.code === 0) &&
+    (result.signal === undefined || result.signal === null) &&
+    (result.killed === undefined || result.killed === false) &&
+    (result.timedOut === undefined || result.timedOut === false);
+  const receipt = successful ? receiveSandboxProbe(result, nonce) : null;
+  assert.ok(
+    receipt?.stage === "DONE" && receipt.exit === 0 && receipt.entered,
+    "Codex sandbox probe did not return complete invocation-bound success evidence.",
   );
 }
 
@@ -268,18 +348,28 @@ async function verifyRuntimeDefaultDeniesCodexSandbox(selection, namespace, podN
   try {
     await execCodexSandboxProbe(selection, namespace, podName, options);
   } catch (error) {
-    if (error.timedOut === true) {
+    const probe = error.codexSandboxProbe;
+    if (
+      error.timedOut === true ||
+      error.killed === true ||
+      error.signal ||
+      probe?.stage !== "SANDBOX" ||
+      probe.exit !== 1 ||
+      probe.entered
+    ) {
       throw error;
     }
     const diagnostic = [error.stderr, error.stdout].filter(Boolean).join("\n");
     if (/codex version mismatch/i.test(diagnostic)) {
       throw error;
     }
-    assert.match(
-      diagnostic,
-      /bwrap|bubblewrap|clone|namespace|operation not permitted|permission denied|seccomp|unshare/i,
-      "RuntimeDefault Codex sandbox denial must mention a namespace or seccomp restriction.",
-    );
+    if (
+      !/bwrap|bubblewrap|clone|namespace|operation not permitted|permission denied|seccomp|unshare/i.test(
+        diagnostic,
+      )
+    ) {
+      throw error;
+    }
     return false;
   }
   return true;
@@ -538,7 +628,7 @@ async function prepareCodexSeccompProfile({
   execFile,
   kubectl: kubectlBin,
   docker,
-  codexVersion = "0.158.0",
+  codexVersion = "0.160.0",
   commandTimeoutMs = timeoutMs + 15_000,
   env = process.env,
 } = {}) {
@@ -791,7 +881,7 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
   const cluster = await selectedDevelopmentCluster(directory);
   assertImmutableImageReference(image);
   const execute = requireExecFile(execFile);
-  const codexVersion = "0.158.0";
+  const codexVersion = "0.160.0";
   assertReviewedCodexVersion(codexVersion);
   const selection = { kubeconfig: cluster.kubeconfig, context: cluster.context };
   const namespace = `openclaw-dev-seccomp-${randomSuffix(4)}`;

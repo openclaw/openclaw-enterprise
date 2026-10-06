@@ -6,7 +6,6 @@
     "OCC_TEST_KUBERNETES_AGENT_IMAGE",
     "OPENAI_API_KEY",
     "OCC_TEST_OPENAI_MODEL",
-    "OCC_TEST_OPENSHELL_SECRET_PROJECTION",
     "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
     "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
     "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
@@ -18,7 +17,8 @@
   "env": {
     "OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL": "1",
     "OCC_TEST_DEV_UP_OPENSHELL_REAL": "1",
-    "OCC_TEST_OPENSHELL_K3D_REAL": "1"
+    "OCC_TEST_OPENSHELL_K3D_REAL": "1",
+    "OCC_TEST_LOCAL_FIRST_AGENT_REAL": "1"
   },
   "prepare": {
     "postgres": true,
@@ -43,7 +43,19 @@
     },
     {
       "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
-      "expectedTests": ["OpenShell enforces the selected Secret projection contract"]
+      "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"]
+    },
+    {
+      "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "expectedTests": [
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes"
+      ]
+    },
+    {
+      "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      "expectedTests": [
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes"
+      ]
     }
   ]
 }

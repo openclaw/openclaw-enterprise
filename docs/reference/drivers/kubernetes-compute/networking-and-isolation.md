@@ -19,6 +19,14 @@ Cross-tenant traffic, traffic between different Agents, Kubernetes API access,
 and cloud metadata access remain denied where those addresses fall inside the
 model egress exclusions below.
 
+A provisioning Sandbox Driver may own the dedicated Harness endpoint. Configure
+`network.providerHarness` with its namespace, Pod labels, Service ClusterIP in
+`address`, and `port`. Compute maps the advertised hostname to that address,
+limits Gateway egress to the peer, and leaves its direct Harness route inactive.
+This ClusterIP bridge is only for owned k3d profiles advertising
+`*.openshell.localhost`; it is not production configuration. Drivers without
+the endpoint capability retain ordinary Service or private routing.
+
 For Compute-owned startup failure evidence, plugin reporting, and on-demand
 deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
 Kubernetes API server's source addresses for Pod proxy requests, preferably
@@ -65,6 +73,7 @@ Operators must verify that the configured CIDRs contain the proxy's actual
 source addresses and exclude untrusted sources. CIDRs do not authenticate a
 proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization.
+Direct access still requires a trusted proxy or the operator loopback password.
 
 For repository-bearing revisions, Compute grants credential-service egress to
 the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated

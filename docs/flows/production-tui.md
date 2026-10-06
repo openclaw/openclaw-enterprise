@@ -199,7 +199,8 @@ ConfigMap-mounted gateway is Running and Ready.
   kubeconfig/context, and `OPENAI_API_KEY`.
 - Adjacent source-backed checks remain
   `node --test tests/integration/harness-topology-k3d-real.test.mjs`,
-  `node --test tests/integration/kubernetes-compute-real.test.mjs` and
+  `node --test tests/integration/kubernetes-compute-real.test.mjs`,
+  `node --test tests/integration/kubernetes-compute-provisioning-real.test.mjs` and
   `node --test tests/integration/kubernetes-compute-driver-real.test.mjs`.
 
 ## Related docs

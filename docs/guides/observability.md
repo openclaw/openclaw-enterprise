@@ -202,8 +202,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 ```
 
 Review the `deploy/logging/` diff between the two revisions first. The restart
-re-sends every collected Pod log still on each node, so expect duplicate records in the
-backend (see [production readiness](#production-readiness)).
+re-sends every collected Pod log still on each node, so expect duplicate or
+refused records in the backend (see [production readiness](#production-readiness)).
 `scripts/upgrade-production-images` compares both files with its checkout and
 stops before any change when they differ. Pass `--collector-config-reviewed`
 only to keep a reviewed custom configuration.
@@ -289,9 +289,15 @@ to assign alert recipients and response procedures alongside these collection ch
   replaced Collector Pod, including after the `rollout restart` an upgrade
   refresh needs, reads every collected Pod log still on its node from the
   beginning, so the backend receives duplicates of records it already has, with
-  their original timestamps. An outage can lose operational logs without
-  blocking OCC work. Audit records are
-  stored separately in PostgreSQL.
+  their original timestamps. A backend can refuse the oldest of them instead:
+  Loki answers `400` `entry too far behind` for records outside its out-of-order
+  window (by default, one hour behind the newest record in the stream). The
+  Collector does not retry them; it logs `Exporting failed. Dropping data.` and
+  `otelcol_exporter_send_failed_log_records` rises. Expect this, and any
+  failed-export alert, after each Collector Pod replacement. Investigate if
+  failures continue after the replay or new records stop reaching the backend.
+  An outage can lose operational logs without blocking OCC work. Audit records
+  are stored separately in PostgreSQL.
 
 ## Troubleshooting
 

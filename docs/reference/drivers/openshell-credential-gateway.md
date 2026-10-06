@@ -9,9 +9,9 @@ Harness never receives the real model key. It implements the
 [Backend](../backends.md#openshell-gateway).
 
 **This Driver does not make OpenShell a supported production path.** It removes
-the model API key from the list of [upstream blockers](openshell-sandbox.md#current-upstream-preconditions);
-the app-server token, workload identity, workspace mounts, plugin-runtime files,
-and exposed-route authorization still fail closed on stock OpenShell `v0.1.3-pre.1`.
+the model API key from the Harness. Workload identity, writable state, gateway
+authentication, admission, and provider-file proof remain subject to the
+[OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
 
 ## Configure the Driver
 

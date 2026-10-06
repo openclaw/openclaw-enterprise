@@ -461,20 +461,22 @@ test(
           egress,
           label,
         );
-        // The default OIDC egress is any address except link-local, on TCP 443 only.
-        const oidcEgress = policies.find(({ metadata }) =>
-          metadata.name.endsWith("-api-oidc-login-egress"),
-        );
-        assert.deepEqual(
-          oidcEgress.spec.egress,
-          [
-            {
-              to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
-              ports: [{ protocol: "TCP", port: 443 }],
-            },
-          ],
-          label,
-        );
+        // Every default sign-in egress is any address except link-local, on TCP 443 only.
+        for (const provider of egress) {
+          const providerEgress = policies.find(({ metadata }) =>
+            metadata.name.endsWith(`-api-${provider}-login-egress`),
+          );
+          assert.deepEqual(
+            providerEgress.spec.egress,
+            [
+              {
+                to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
+                ports: [{ protocol: "TCP", port: 443 }],
+              },
+            ],
+            `${label}: ${provider}`,
+          );
+        }
         assert.ok(
           !deploymentEnv(objects, "worker").some(({ name }) => /^OCC_AUTH_OIDC_/.test(name)),
           label,
@@ -484,15 +486,27 @@ test(
         assert.equal(await startupCode(directory, environment), "PERSISTENCE_UNAVAILABLE", label);
       }),
     );
+    // A listed CIDR replaces the default, link-local included, for each provider.
     const narrowed = await renderChart({
+      ...githubUpgradeValues(recoveryUserId),
+      ...googleUpgradeValues(recoveryUserId),
       ...oidcUpgradeValues(recoveryUserId),
+      "auth.github.egressCidrs[0]": "140.82.112.0/20",
+      "auth.google.egressCidrs[0]": "169.254.10.0/24",
       "auth.oidc.egressCidrs[0]": "198.51.100.0/24",
     });
-    assert.deepEqual(
-      narrowed.find(({ metadata }) => metadata.name.endsWith("-api-oidc-login-egress")).spec
-        .egress[0].to,
-      [{ ipBlock: { cidr: "198.51.100.0/24" } }],
-    );
+    for (const [provider, cidr] of [
+      ["github", "140.82.112.0/20"],
+      ["google", "169.254.10.0/24"],
+      ["oidc", "198.51.100.0/24"],
+    ]) {
+      assert.deepEqual(
+        narrowed.find(({ metadata }) => metadata.name.endsWith(`-api-${provider}-login-egress`))
+          .spec.egress[0].to,
+        [{ ipBlock: { cidr } }],
+        provider,
+      );
+    }
   },
 );
 
@@ -914,6 +928,16 @@ test(
         /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
       ],
       [
+        "an empty-string egress list",
+        { ...google, "auth.google.egressCidrs": "" },
+        /auth\.google\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
+      ],
+      [
+        "an empty-string domain allowlist",
+        { ...google, "auth.google.allowedDomains": "" },
+        /auth\.google\.allowedDomains must be a list of DNS domain names/,
+      ],
+      [
         "an HTTP base URL",
         { ...google, "auth.baseUrl": "http://oce.example.internal" },
         /auth\.google requires an HTTPS auth\.baseUrl/,
@@ -961,6 +985,11 @@ test(
         /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
       ],
       [
+        "an empty-string egress list",
+        { ...oidc, "auth.oidc.egressCidrs": "" },
+        /auth\.oidc\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
+      ],
+      [
         "an HTTP base URL",
         { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
         /auth\.oidc requires an HTTPS auth\.baseUrl/,
@@ -997,3 +1026,20 @@ test(
     }
   },
 );
+
+test("a null optional sign-in map renders like an absent one", tooling, async () => {
+  // `auth.github: null` (or `--set auth.github=null`) deletes the map's defaults. The chart
+  // must then render the password-only install without a trusted proxy, as validation and
+  // the install notes already assume, instead of failing with a template nil pointer.
+  for (const key of ["auth.github", "auth.google", "auth.oidc", "api.trustedProxy"]) {
+    const objects = await renderChart({ [key]: "null" });
+    assert.deepEqual(signInSettings(deploymentEnv(objects, "api")), defaultInstallSettings, key);
+    assert.equal(
+      objects.filter(
+        ({ kind, metadata }) => kind === "NetworkPolicy" && /-login-egress$/.test(metadata.name),
+      ).length,
+      0,
+      key,
+    );
+  }
+});

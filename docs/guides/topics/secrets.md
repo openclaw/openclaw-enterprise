@@ -22,8 +22,11 @@ environment variable. Use the path that matches the consumer:
    and Agent must belong to the same Namespace. Never put credential values in
    Configuration `values` or a ConfigMap.
 3. Confirm permissions before deployment. Assigning a Secret requires the caller
-   to have `operate` on that exact Secret. Deploying also requires the Agent's
-   service principal to have `operate`. The
+   to have `operate` on that exact Secret. Once an Agent's draft is bound to a
+   Secret for model authentication, every later edit of that draft, including a
+   switch to another Secret, also requires `operate` on the Secret bound now.
+   Deploying also
+   requires the Agent's service principal to have `operate`. The
    [driver guide](../../reference/drivers/kubernetes-secret.md#bind-a-secret-to-gateway-environment)
    explains who can grant it. Namespace access or possession of the Secret ID
    does not grant permission to consume the value.

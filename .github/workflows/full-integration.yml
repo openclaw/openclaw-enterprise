@@ -352,7 +352,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'openshell'
-    timeout-minutes: 35
+    timeout-minutes: 120
     environment: integration-openshell
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

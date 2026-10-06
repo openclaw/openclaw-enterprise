@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
@@ -11,6 +9,7 @@ import {
   githubUpgradeSettings,
   googleUpgradeSettings,
   oidcUpgradeSettings,
+  postgresSignInState,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -39,13 +38,8 @@ test(
   "unmatched external sign-in callbacks are counted, not audited",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     await bootstrapProductionInstallation(t, { databaseUrl, email: adminEmail, authSecret });
     const adminId = (await pool.query('SELECT id FROM occ."user" WHERE email = $1', [adminEmail]))
       .rows[0].id;

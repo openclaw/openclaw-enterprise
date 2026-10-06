@@ -55,7 +55,7 @@
         "name": "event",
         "label": "Event",
         "type": "custom",
-        "query": "http.completed,http.unexpected_error,worker.completed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,listening,startup-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,authentication.sign-in-limit-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,presets.bundled-default-shadowed,presets.default-create-skipped,presets.default-refresh-skipped,gateway.operational,gateway.startup_failed,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
+        "query": "http.completed,http.unexpected_error,worker.completed,worker.compute-prepare-failed,worker.error,worker.health,worker.started,worker.stopped,worker.startup-error,worker.repository-cleanup-warning,listening,startup-error,shutdown.started,shutdown.completed,shutdown.failed,database.idle-client-error,installation.bootstrapped,installation.already-bootstrapped,installation.bootstrap-failed,migration.completed,migration.failed,compute.preflight-warning,device_authorization.start_failed,agent_runtime_credentials.cluster_denied,native_admin.websocket_audit_failed,native_admin.websocket_denial_audit_failed,authentication.sign-in-limit-warning,authentication.sign-in-limited,authentication.provider-unavailable-warning,authentication.activation-warning,authentication.password-sign-in-warning,authentication.recovery-seed-warning,presets.bundled-default-shadowed,presets.default-create-skipped,presets.default-refresh-skipped,gateway.operational,gateway.startup_failed,codex.operational,codex.turn,codex.tool_call,runtime.startup_phase,runtime.workspace_node,openclaw.model_probe,codex.model_probe",
         "includeAll": true,
         "allValue": ".*",
         "multi": false,
@@ -85,6 +85,11 @@
             "selected": false
           },
           {
+            "text": "worker.compute-prepare-failed",
+            "value": "worker.compute-prepare-failed",
+            "selected": false
+          },
+          {
             "text": "worker.error",
             "value": "worker.error",
             "selected": false
@@ -110,6 +115,11 @@
             "selected": false
           },
           {
+            "text": "worker.repository-cleanup-warning",
+            "value": "worker.repository-cleanup-warning",
+            "selected": false
+          },
+          {
             "text": "listening",
             "value": "listening",
             "selected": false
@@ -117,6 +127,26 @@
           {
             "text": "startup-error",
             "value": "startup-error",
+            "selected": false
+          },
+          {
+            "text": "shutdown.started",
+            "value": "shutdown.started",
+            "selected": false
+          },
+          {
+            "text": "shutdown.completed",
+            "value": "shutdown.completed",
+            "selected": false
+          },
+          {
+            "text": "shutdown.failed",
+            "value": "shutdown.failed",
+            "selected": false
+          },
+          {
+            "text": "database.idle-client-error",
+            "value": "database.idle-client-error",
             "selected": false
           },
           {
@@ -150,6 +180,26 @@
             "selected": false
           },
           {
+            "text": "device_authorization.start_failed",
+            "value": "device_authorization.start_failed",
+            "selected": false
+          },
+          {
+            "text": "agent_runtime_credentials.cluster_denied",
+            "value": "agent_runtime_credentials.cluster_denied",
+            "selected": false
+          },
+          {
+            "text": "native_admin.websocket_audit_failed",
+            "value": "native_admin.websocket_audit_failed",
+            "selected": false
+          },
+          {
+            "text": "native_admin.websocket_denial_audit_failed",
+            "value": "native_admin.websocket_denial_audit_failed",
+            "selected": false
+          },
+          {
             "text": "authentication.sign-in-limit-warning",
             "value": "authentication.sign-in-limit-warning",
             "selected": false
@@ -162,6 +212,21 @@
           {
             "text": "authentication.provider-unavailable-warning",
             "value": "authentication.provider-unavailable-warning",
+            "selected": false
+          },
+          {
+            "text": "authentication.activation-warning",
+            "value": "authentication.activation-warning",
+            "selected": false
+          },
+          {
+            "text": "authentication.password-sign-in-warning",
+            "value": "authentication.password-sign-in-warning",
+            "selected": false
+          },
+          {
+            "text": "authentication.recovery-seed-warning",
+            "value": "authentication.recovery-seed-warning",
             "selected": false
           },
           {

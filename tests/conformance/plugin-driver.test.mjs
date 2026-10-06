@@ -305,28 +305,41 @@ test("Plugin Drivers refuse two selection keys for the same native plugin", () =
 test("Plugin Drivers name themselves when a selection names a plugin they do not offer", () => {
   const occ = new OCCPluginDriver();
   const codex = new CodexPluginDriver();
-  const unknownFor = (driverId) => (error) =>
+  // The error names the Driver and the rejected selection key, which HTTP reports as a
+  // /plugins/<id> detail.
+  const unknownFor = (driverId, pluginId) => (error) =>
     error.name === "PluginPolicyValidationError" &&
-    error.message.includes(`selected Plugin Driver (${driverId}) does not offer`);
+    error.pluginId === pluginId &&
+    error.message.startsWith(
+      `A plugin selection names a plugin that the selected Plugin Driver (${driverId}) does not offer: ${pluginId}.`,
+    );
   // The other Driver's plugin, as after an Installation switches its single Plugin Driver.
-  assert.throws(() => codex.validatePolicies(occSelection()), unknownFor("codex-plugin"));
+  assert.throws(
+    () => codex.validatePolicies(occSelection()),
+    unknownFor("codex-plugin", "occ-plugin:diffs"),
+  );
   assert.throws(
     () => occ.validatePolicies(codexSelection(linearPluginId)),
-    unknownFor("occ-plugin"),
+    unknownFor("occ-plugin", linearPluginId),
   );
   assert.throws(
     () => occ.validatePolicies({ "occ-plugin:unknown": { enabled: true } }),
-    unknownFor("occ-plugin"),
+    unknownFor("occ-plugin", "occ-plugin:unknown"),
   );
   assert.throws(
     () => codex.validatePolicies({ "codex-plugin:linear": { enabled: true } }),
-    unknownFor("codex-plugin"),
+    unknownFor("codex-plugin", "codex-plugin:linear"),
+  );
+  // With several selections, the error names the one the Driver does not offer.
+  assert.throws(
+    () => occ.validatePolicies({ ...occSelection(), ...codexSelection(linearPluginId) }),
+    unknownFor("occ-plugin", linearPluginId),
   );
   // The ID mismatch wins over a policy field the selected Driver does not support.
   assert.throws(
     () =>
       occ.validatePolicies(codexSelection(linearPluginId, { toolDefaults: { reviewer: "human" } })),
-    unknownFor("occ-plugin"),
+    unknownFor("occ-plugin", linearPluginId),
   );
   // Policy errors on an offered plugin keep their own message.
   assert.throws(

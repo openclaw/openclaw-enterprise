@@ -300,6 +300,60 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
   assert.equal(JSON.stringify(output.lines).includes("arbitrary"), false);
 });
 
+test("Compute preparation diagnostics keep reviewed context and reject secret-bearing text", () => {
+  const output = memoryDestination();
+  const logger = createOccLogger({
+    component: "occ-worker",
+    level: "info",
+    destination: output.destination,
+  });
+
+  emitOccLogEvent(logger, {
+    event: "worker.compute-prepare-failed",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    computeDriverId: "compute-kubernetes",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    message: "The Kubernetes API rejected revision preparation.",
+  });
+  emitOccLogEvent(logger, {
+    event: "worker.compute-prepare-failed",
+    code: "KUBERNETES_PREPARATION_FAILED",
+    step: "sandbox_provision",
+    message: "Bearer token-that-must-not-log",
+  });
+
+  assert.equal(output.lines.length, 2);
+  const { time, ...diagnostic } = output.lines[0];
+  assert.ok(time);
+  assert.deepEqual(diagnostic, {
+    severity: "ERROR",
+    service: "occ-worker",
+    event: "worker.compute-prepare-failed",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    computeDriverId: "compute-kubernetes",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    message: "The Kubernetes API rejected revision preparation.",
+  });
+  assert.equal(Object.hasOwn(output.lines[1], "message"), false);
+  assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
+});
+
 test("activation warning caps skipped account IDs and reports the total and truncation", () => {
   const output = memoryDestination();
   const logger = createOccLogger({

@@ -177,9 +177,11 @@ Compute releases the corresponding infrastructure.
 
 A CredentialGatewayDriver holds registered model credentials and supplies
 revision attachments to its paired Sandbox; activation waits for applied
-attachments. This implemented integration does not make stock OpenShell Agent
-deployment supported: required identity and credential projections remain
-blocked upstream. See [Sandbox](reference/drivers/sandbox.md) and
+attachments. The OpenShell development profile implements a plugin-free
+dedicated Codex path through experimental provider files and bearer passthrough.
+Real activation remains conditional on the documented identity, storage,
+admission, and gateway-authentication preconditions. See
+[Sandbox](reference/drivers/sandbox.md) and
 [OpenShell limits](reference/drivers/openshell-sandbox.md).
 Other Drivers participate through bounded
 [Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).

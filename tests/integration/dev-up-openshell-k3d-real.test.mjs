@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,6 +14,10 @@ import { openShellProviderName } from "../../apps/controller/src/backends/opensh
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+
+const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
+  "@kubernetes/client-node",
+);
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
@@ -680,12 +685,134 @@ test(
     assert.equal(state.sandboxDriver, "openshell");
     assert.equal(state.deploymentMode, undefined);
     assert.equal(existsSync(join(stateDirectory, "compose.yaml")), true);
+    const installation = loadYaml(
+      await readFile(join(stateDirectory, "installation.yaml"), "utf8"),
+    );
+    const compute = installation.drivers.compute.configuration;
+    assert.deepEqual(compute.gatewayRouting, {
+      gatewayName: "openclaw-enterprise-agent-gateways",
+      gatewayNamespace: "oce-system",
+      envoyNamespace: "envoy-gateway-system",
+      hostname: `k3d-${cluster}-server-0`,
+      endpointPort: compute.gatewayRouting.endpointPort,
+    });
+    assert.ok(Number.isInteger(compute.gatewayRouting.endpointPort));
+    assert.ok(compute.gatewayRouting.endpointPort > 0);
+    assert.equal(compute.network.gatewayClients, undefined);
+    for (const path of ["gateway-api-key", "gateway-ca.crt"]) {
+      assert.equal((await stat(join(stateDirectory, path))).mode & 0o077, 0);
+    }
+    const compose = loadYaml(await readFile(join(stateDirectory, "compose.yaml"), "utf8"));
+    for (const serviceName of ["controller", "worker-kubernetes"]) {
+      const service = compose.services[serviceName];
+      assert.equal(
+        service.environment.OCC_GATEWAY_API_KEY_PATH,
+        "/run/openclaw-development/gateway-api-key",
+      );
+      assert.equal(
+        service.environment.NODE_EXTRA_CA_CERTS,
+        "/run/openclaw-development/gateway-ca.crt",
+      );
+      assert.ok(
+        service.volumes.some(
+          ({ source, target, read_only: readOnly }) =>
+            source === join(stateDirectory, "gateway-api-key") &&
+            target === "/run/openclaw-development/gateway-api-key" &&
+            readOnly === true,
+        ),
+      );
+      assert.ok(
+        service.volumes.some(
+          ({ source, target, read_only: readOnly }) =>
+            source === join(stateDirectory, "gateway-ca.crt") &&
+            target === "/run/openclaw-development/gateway-ca.crt" &&
+            readOnly === true,
+        ),
+      );
+    }
     const kubectl = [
       "--kubeconfig",
       join(stateDirectory, "kubeconfig"),
       "--context",
       `k3d-${cluster}`,
     ];
+    const envoySelector =
+      "app.kubernetes.io/component=proxy,app.kubernetes.io/managed-by=envoy-gateway," +
+      "gateway.envoyproxy.io/owning-gateway-namespace=oce-system," +
+      "gateway.envoyproxy.io/owning-gateway-name=openclaw-enterprise-agent-gateways";
+    const envoyPods = JSON.parse(
+      (
+        await execute(
+          "kubectl",
+          [
+            ...kubectl,
+            "get",
+            "pods",
+            "--namespace",
+            "envoy-gateway-system",
+            "-l",
+            envoySelector,
+            "-o",
+            "json",
+          ],
+          { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
+        )
+      ).stdout,
+    );
+    const envoyProxyCidrs = envoyPods.items.map(({ status }) => `${status.podIP}/32`).toSorted();
+    assert.ok(envoyProxyCidrs.length > 0);
+    // Only Envoy may supply trusted client-attribution headers. Trusting the whole Pod
+    // CIDR would misclassify OpenShell's transparent proxy and reject node enrollment.
+    assert.deepEqual(compute.network.gatewayTrustedProxyCidrs, envoyProxyCidrs);
+    const routedGateway = JSON.parse(
+      (
+        await execute(
+          "kubectl",
+          [
+            ...kubectl,
+            "get",
+            "gateway",
+            "openclaw-enterprise-agent-gateways",
+            "--namespace",
+            "oce-system",
+            "-o",
+            "json",
+          ],
+          { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
+        )
+      ).stdout,
+    );
+    assert.equal(
+      routedGateway.status.conditions.some(
+        ({ type, status }) => type === "Programmed" && status === "True",
+      ),
+      true,
+    );
+    const envoyServices = JSON.parse(
+      (
+        await execute(
+          "kubectl",
+          [
+            ...kubectl,
+            "get",
+            "services",
+            "--namespace",
+            "envoy-gateway-system",
+            "-l",
+            envoySelector,
+            "-o",
+            "json",
+          ],
+          { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
+        )
+      ).stdout,
+    );
+    const envoyService = envoyServices.items.find(({ spec }) => spec.type === "NodePort");
+    assert.ok(envoyService);
+    assert.equal(
+      envoyService.spec.ports.find(({ port }) => port === 443)?.nodePort,
+      compute.gatewayRouting.endpointPort,
+    );
     const service = JSON.parse(
       (
         await execute(
@@ -706,6 +833,15 @@ test(
     );
     assert.equal(service.spec.type, "NodePort");
     assert.equal(service.spec.ports[0].nodePort, 30051);
+    assert.deepEqual(compute.network.providerHarness, {
+      namespace: "openshell-system",
+      podLabels: {
+        "app.kubernetes.io/name": "openshell",
+        "app.kubernetes.io/instance": "openshell-gateway",
+      },
+      address: service.spec.clusterIP,
+      port: 8080,
+    });
     const namespaceList = JSON.parse(
       (
         await execute(

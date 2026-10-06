@@ -48,6 +48,22 @@ async function createPreset(fixture, namespaceId, name, template = {}) {
   return response.data;
 }
 
+// Reads a Preset artifact shipped in deploy/presets.
+async function shippedPreset(file) {
+  return JSON.parse(
+    await readFile(new URL(`../../deploy/presets/${file}`, import.meta.url), "utf8"),
+  );
+}
+
+// Creates the Agent Configuration of a rendered Preset template.
+async function createAgentConfiguration(fixture, namespaceId, rendered) {
+  const response = await fixture.request("POST", `/namespaces/${namespaceId}/configurations`, {
+    body: { kind: "agent", ...rendered.configuration },
+  });
+  assert.equal(response.status, 201, JSON.stringify(response.body));
+  return response;
+}
+
 async function deletePreset(fixture, namespaceId, presetId) {
   const result = await fixture.rawRequest("DELETE", `${collection(namespaceId)}/${presetId}`, {
     headers: authenticatedHeaders(fixture.session),
@@ -222,14 +238,7 @@ test("Preset variables create independent ordinary Agent drafts that survive tem
   assert.deepEqual(read.data.template, template);
   // The API consumer uses the same renderer as the console, then the ordinary two-create flow.
   const rendered = renderPresetTemplate(read.data.template, { name: 'My "Agent"', enabled: false });
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
   assert.equal(configuration.data.values.agents.defaults.model, "openai/gpt-5.1");
   assert.deepEqual(Object.keys(configuration.data.values.agents.defaults.models), [
     "openai/gpt-5.1",
@@ -485,14 +494,7 @@ test("method-only Preset authentication is a default, not an Agent credential", 
     model: "gpt-6-astra",
   });
   assert.deepEqual(rendered.agent.harnessAuth, { method: "codex_pat" });
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
   const rejected = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { ...rendered.agent, configurationId: configuration.data.id },
   });
@@ -589,9 +591,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
   const fixture = await createFixture(t);
   const namespace = await fixture.createNamespace("Standard Codex", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
+  const artifact = await shippedPreset("standard-codex.json");
   // Install the shipped request through the operator API, then render the
   // persisted template as the existing console chooser does.
   const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
@@ -611,14 +611,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
     model: "gpt-5.1",
     modelSecret: "synthetic-model-key",
   });
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
   const agent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       ...rendered.agent,
@@ -689,14 +682,7 @@ test("standard Codex Preset installs and creates a dedicated Agent with restrict
     { body: { template: boundTemplate } },
   );
   assert.equal(crossNamespaceUpdate.status, 400, JSON.stringify(crossNamespaceUpdate.body));
-  const otherConfiguration = await fixture.request(
-    "POST",
-    `/namespaces/${other.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(otherConfiguration.status, 201, JSON.stringify(otherConfiguration.body));
+  const otherConfiguration = await createAgentConfiguration(fixture, other.id, rendered);
   const rejected = await fixture.request("POST", `/namespaces/${other.id}/agents`, {
     body: {
       ...rendered.agent,
@@ -714,9 +700,7 @@ test("standard OpenClaw Preset installs and creates an embedded Agent with nativ
   const fixture = await createFixture(t);
   const namespace = await fixture.createNamespace("Standard OpenClaw", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-openclaw.json", import.meta.url), "utf8"),
-  );
+  const artifact = await shippedPreset("standard-openclaw.json");
   const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
   assert.equal(installed.status, 201, JSON.stringify(installed.body));
   const catalog = await fixture.request("GET", collection(namespace.id));
@@ -728,14 +712,7 @@ test("standard OpenClaw Preset installs and creates an embedded Agent with nativ
     model: "gpt-6-sol",
     modelSecret: "synthetic-model-key",
   });
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
   const agent = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       ...rendered.agent,
@@ -779,27 +756,18 @@ test("default-codex Preset creates a Configuration that references the generated
     "standard-openclaw.json",
     "swe-preset.json",
   ]) {
-    const bundled = JSON.parse(
-      await readFile(new URL(`../../deploy/presets/${file}`, import.meta.url), "utf8"),
-    );
+    const bundled = await shippedPreset(file);
     assert.deepEqual(
       bundled.template.configuration.values.gateway.auth,
       { password: gatewayPassword },
       file,
     );
   }
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-  );
+  const artifact = await shippedPreset("default-codex.json");
   const installed = await fixture.request("POST", collection(namespace.id), { body: artifact });
   assert.equal(installed.status, 201, JSON.stringify(installed.body));
   const rendered = renderPresetTemplate(installed.data.template, {});
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    { body: { kind: "agent", ...rendered.configuration } },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
   assert.equal(rendered.agent.executionMode, "dedicated");
   assert.deepEqual(configuration.data.values.gateway.auth, { password: gatewayPassword });
 });
@@ -814,9 +782,7 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
     "Existing service account token",
     "synthetic-existing-service-account-token",
   );
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/swe-preset.json", import.meta.url), "utf8"),
-  );
+  const artifact = await shippedPreset("swe-preset.json");
   const originalTemplate = structuredClone(artifact.template);
   validatePresetTemplate(originalTemplate);
   assert.equal(artifact.name, "SWE Agent");
@@ -866,14 +832,7 @@ test("SWE Agent Preset defaults to Astra and reuses an existing service-account 
   assert.equal(retained.status, 200, JSON.stringify(retained.body));
   assert.deepEqual(retained.data.template, originalTemplate);
 
-  const configuration = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-    {
-      body: { kind: "agent", ...rendered.configuration },
-    },
-  );
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.body));
+  const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
   assert.deepEqual(configuration.data.values.channels.slack.replyToModeByChatType, {
     channel: "all",
   });
@@ -960,9 +919,7 @@ test("Installation YAML seeds authorized default Presets for new and existing Na
   const { loadInstallationFile } = await import("../helpers/installation-file.mjs");
   const { OpenClawController } = await import("../../packages/occ/src/index.ts");
   const configuration = createInstallationDriverConfiguration();
-  const customPreset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/swe-preset.json", import.meta.url), "utf8"),
-  );
+  const customPreset = await shippedPreset("swe-preset.json");
   configuration.presets = {
     includeDefaults: true,
     files: [fileURLToPath(new URL("../../deploy/presets/swe-preset.json", import.meta.url))],
@@ -1291,13 +1248,7 @@ test("Namespace deletion removes unmodified default Presets and names what still
 
 // Shipped versions of the bundled defaults, read from the archive the release ships.
 async function archivedDefault(file, version) {
-  const stem = file.replace(/\.json$/, "");
-  return JSON.parse(
-    await readFile(
-      new URL(`../../deploy/presets/archive/${stem}/${version}.json`, import.meta.url),
-      "utf8",
-    ),
-  );
+  return shippedPreset(`archive/${file.replace(/\.json$/, "")}/${version}.json`);
 }
 
 async function bundledRuntime(t, includeDefaults) {
@@ -1702,9 +1653,7 @@ test("Namespace deletion treats every shipped bundled version as unmodified, eve
     defaultPresets: runtime.defaultPresets,
     bundledPresetVersions: runtime.bundledPresetVersions,
   });
-  const currentCodex = JSON.parse(
-    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-  );
+  const currentCodex = await shippedPreset("default-codex.json");
   const shipped = [
     currentCodex,
     await archivedDefault("default-codex.json", "32576b8f13976778"),

@@ -11,6 +11,7 @@ import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/
 import {
   ActivationFailedError,
   ActivationPendingError,
+  DependencyUnavailableError,
   PostgresMetricsSnapshot,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
@@ -6962,6 +6963,72 @@ test(
 );
 
 test(
+  "the revision worker emits bounded Driver diagnostics for failed Compute preparation",
+  requiresPostgres,
+  async (context) => {
+    const events = [];
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const owner = await fixture.agent("compute-preparation-diagnostic");
+    const candidate = await fixture.revision(owner, 1);
+    const failure = new Error("opaque provider response that must not be logged");
+
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          if (revision.id === candidate.id) {
+            throw failure;
+          }
+          return fixture.compute.prepareRevision(revision);
+        },
+        describePrepareRevisionFailure(error) {
+          assert.equal(error, failure);
+          return {
+            code: "KUBERNETES_API_REJECTED",
+            stage: "gateway_deployment",
+            errorClass: "KubernetesApiError",
+            message: "The Kubernetes API rejected revision preparation.",
+            status: 422,
+          };
+        },
+      },
+      (event) => events.push(event),
+    );
+
+    await fixture.work(candidate, "failed_permanent");
+    const diagnostic = events.find(
+      (event) =>
+        event.event === "worker.compute-prepare-failed" && event.revisionId === candidate.id,
+    );
+    assert.deepEqual(diagnostic, {
+      event: "worker.compute-prepare-failed",
+      workId: candidate.idempotencyKey,
+      attempt: 1,
+      operation: "agent_revision.reconcile",
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      revisionId: candidate.id,
+      computeDriverId: fixture.compute.id,
+      code: "KUBERNETES_API_REJECTED",
+      step: "gateway_deployment",
+      errorClass: "KubernetesApiError",
+      message: "The Kubernetes API rejected revision preparation.",
+      status: 422,
+    });
+    assert.equal(JSON.stringify(events).includes(failure.message), false);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === candidate.id &&
+          event.code === "DEPENDENCY_UNAVAILABLE" &&
+          event.outcome === "retry",
+      ),
+    );
+  },
+);
+
+test(
   "an overdue Agent runtime fails closed without activating its incomplete revision",
   requiresPostgres,
   async (context) => {
@@ -7382,7 +7449,7 @@ test(
         observations += 1;
         throw new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.3-pre.1 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell v0.1.3-pre.2 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         );
       },
     });
@@ -7607,6 +7674,94 @@ test(
     ]);
     const succeeded = await fixture.work(candidate, "succeeded");
     assert.equal(succeeded.attempt_count, 1);
+  },
+);
+
+test(
+  "an activation pass that a failed private Secret write ends logs the API status and reason",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const owner = await fixture.agent("activation-private-write-status");
+    const candidate = await fixture.revision(owner, 1);
+    const events = [];
+    let activations = 0;
+
+    // The Kubernetes Driver writes a revision's private Secrets on activation too. When the
+    // API server refuses such a write, it raises its own DependencyUnavailableError rather
+    // than the client error, whose message and body echo the Secret, and keeps only the HTTP
+    // status and Status reason as the cause. tests/conformance/kubernetes-compute.test.mjs
+    // pins that Driver shape; this case proves the worker's side: its log must carry that
+    // status and reason, not only the class. A 429 or 5xx answer is transient instead and
+    // keeps the same evidence as its cause.
+    const refused = new DependencyUnavailableError(
+      "Workspace setup private delivery is unavailable.",
+    );
+    refused.cause = Object.assign(new Error("The Kubernetes API answered HTTP 403 (Forbidden)."), {
+      code: 403,
+      reason: "Forbidden",
+    });
+    const unavailable = new TransientDependencyError(
+      "kubernetes_api",
+      "unavailable",
+      "The Kubernetes API answered HTTP 503.",
+      {
+        cause: Object.assign(
+          new Error("The Kubernetes API answered HTTP 503 (ServiceUnavailable)."),
+          { code: 503, reason: "ServiceUnavailable" },
+        ),
+      },
+    );
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async activateRevision(revision, revisionContext) {
+          activations += 1;
+          if (activations === 1) {
+            throw refused;
+          }
+          if (activations === 2) {
+            throw unavailable;
+          }
+          return fixture.compute.activateRevision?.(revision, revisionContext);
+        },
+      },
+      (event) => events.push(event),
+    );
+
+    await fixture.work(candidate, "succeeded", 30_000);
+    assert.equal(activations, 3);
+    const pending = events.filter(
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.outcome === "pending",
+    );
+    assert.deepEqual(
+      pending.map(({ code, dependency, cause, status, reason }) => ({
+        code,
+        dependency,
+        cause,
+        status,
+        reason,
+      })),
+      [
+        {
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          dependency: undefined,
+          cause: "DependencyUnavailableError",
+          status: 403,
+          reason: "Forbidden",
+        },
+        {
+          code: "KUBERNETES_API_UNAVAILABLE",
+          dependency: "kubernetes_api",
+          cause: "unavailable",
+          status: 503,
+          reason: "ServiceUnavailable",
+        },
+      ],
+    );
   },
 );
 

@@ -16,6 +16,21 @@
     "requireEnv": ["NODE_BASE_IMAGE"],
     "nodeBaseImage": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/codex-model-probe.test.mjs",
+    "tests/integration/production-image-upgrade-recovery.test.mjs",
+    "tests/integration/docker-compute-token-retry.test.mjs",
+    "tests/integration/workspace-setup-runtime.test.mjs",
+    "tests/integration/production-kubernetes-packaging.test.mjs",
+    "tests/integration/production-image-startup.test.mjs",
+    "tests/integration/container-registry-real.test.mjs",
+    "tests/integration/logging-packaging.test.mjs",
+    "tests/integration/repository-runtime-volume.test.mjs",
+    "tests/integration/production-image-qualification.test.mjs",
+    "tests/integration/development-packaging.test.mjs",
+    "tests/integration/container-publication-workflow.test.mjs"
+  ],
   "files": [
     {
       "path": "tests/integration/container-publication-workflow.test.mjs",

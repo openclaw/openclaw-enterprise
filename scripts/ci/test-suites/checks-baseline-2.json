@@ -101,7 +101,8 @@
       "path": "tests/integration/first-agent-startup.test.mjs",
       "expectedTests": [
         "first-Agent accepts current Compose-backed Kubernetes development state",
-        "first-Agent rejects OpenShell development state before external calls",
+        "first-Agent requires dedicated Codex for OpenShell before external calls",
+        "first-Agent admits dedicated Codex with OpenShell development state",
         "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
       ]
     },

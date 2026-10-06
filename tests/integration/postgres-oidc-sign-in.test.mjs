@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   attachProvider,
   authRowCounts,
@@ -22,6 +20,7 @@ import {
   oidcUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -71,13 +70,8 @@ test(
   "PostgreSQL OIDC sign-in admits only attached (issuer, subject) pairs",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install, before OIDC is configured.

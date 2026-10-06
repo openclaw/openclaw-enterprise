@@ -1340,7 +1340,7 @@ test("failure text is bounded and redacts env values and credential shapes", asy
   assert.equal((await render(undefined)).message, undefined);
 });
 
-test("run keeps bounded Agent namespace activity from a passing k3d file", async (t) => {
+test("run keeps bounded Agent namespace activity from passing k3d files, alone and side by side", async (t) => {
   const root = await fixture(t);
   const clusterDirectory = join(root, "cluster");
   await mkdir(clusterDirectory);
@@ -1416,7 +1416,8 @@ test("run keeps bounded Agent namespace activity from a passing k3d file", async
       `const lines = query.startsWith("/api/v1/pods?") ? ${JSON.stringify(pods)} : ${JSON.stringify(events)};`,
       "for (const line of lines) process.stdout.write(JSON.stringify(line) + '\\n');",
       'process.stdout.write(\'{"type":"MODIFIED","object":\');',
-      "setInterval(() => {}, 1000);",
+      // A live watch runs until stopped; a stranded one exits on its own after a minute.
+      "setTimeout(() => {}, 60_000);",
       "",
     ].join("\n"),
   );
@@ -1485,6 +1486,122 @@ test("run keeps bounded Agent namespace activity from a passing k3d file", async
   );
   assert.doesNotMatch(text, /do-not-publish|unrelated system event/);
   // Raw watch streams hold full Pod specs; only the projection survives.
+  assert.deepEqual(await readdir(clusterDirectory), []);
+
+  // Two files sharing the runner under fileConcurrency watch the same cluster at once. Each
+  // keeps its own watch streams, so neither truncates nor deletes the other's capture.
+  await writeFile(
+    join(root, "tests/integration/agent-sibling.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      'test("sibling file passes", () => delay(300));',
+      "",
+    ].join("\n"),
+  );
+  const pairFiles = [
+    "tests/integration/agent.test.mjs",
+    "tests/integration/agent-sibling.test.mjs",
+  ];
+  await writeJson(join(root, "scripts/ci/pair-suites.json"), {
+    version: 1,
+    lanes: {
+      "k3d-pair": {
+        fileConcurrency: 2,
+        parallelFiles: pairFiles,
+        files: [
+          { path: pairFiles[0], expectedTests: ["agent file passes"] },
+          { path: pairFiles[1], expectedTests: ["sibling file passes"] },
+        ],
+      },
+    },
+    groups: {},
+  });
+  const pairStatePath = join(root, "state/k3d-pair.json");
+  await writeJson(pairStatePath, {
+    lane: "k3d-pair",
+    resources: JSON.parse(await readFile(statePath, "utf8")).resources,
+  });
+  const pairResultsPath = join(root, "results/k3d-pair.json");
+  const pair = run(
+    root,
+    [
+      "run",
+      "k3d-pair",
+      "--manifest",
+      join(root, "scripts/ci/pair-suites.json"),
+      "--root",
+      root,
+      "--state",
+      pairStatePath,
+      "--results",
+      pairResultsPath,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, CI_RUNNER_FILE_CONCURRENCY: "2" },
+  );
+  assert.equal(pair.status, 0, pair.stderr);
+  const pairSummary = JSON.parse(await readFile(pairResultsPath, "utf8"));
+  assert.deepEqual(
+    pairSummary.files.map(({ mode }) => mode),
+    ["parallel", "parallel"],
+  );
+  const pairReport = JSON.parse(await readFile(`${pairStatePath}.diagnostics.json`, "utf8"));
+  assert.deepEqual(
+    // Files finish in either order; each appends its own record.
+    pairReport.agentNamespaces
+      .map(({ file, namespaces, pods }) => [file, namespaces, pods.length])
+      .sort(([left], [right]) => left.localeCompare(right)),
+    pairFiles
+      .map((file) => [file, ["occ-agent-a"], 3])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+  assert.deepEqual(await readdir(clusterDirectory), []);
+
+  // A second cluster whose directory is gone fails the capture after the first cluster's
+  // watches started. The file still runs, and those watches are stopped: left running,
+  // their child processes would hold the runner until the watch timeout.
+  const brokenStatePath = join(root, "state/k3d-broken.json");
+  await writeJson(brokenStatePath, {
+    lane: "k3d-lane",
+    resources: [
+      ...JSON.parse(await readFile(statePath, "utf8")).resources,
+      {
+        kind: "k3d-cluster",
+        status: "ready",
+        name: "removed-cluster",
+        directory: join(root, "removed-cluster"),
+        kubeconfig: join(root, "removed-cluster/kubeconfig"),
+        context: "k3d-removed-cluster",
+      },
+    ],
+  });
+  const broken = spawnSync(
+    process.execPath,
+    [
+      runnerPath,
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      brokenStatePath,
+      "--results",
+      join(root, "results/k3d-broken.json"),
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_SHA: currentSha(), OCC_KUBECTL_BIN: kubectl },
+      timeout: 30_000,
+    },
+  );
+  assert.equal(broken.status, 0, broken.stderr);
+  assert.match(
+    broken.stderr,
+    /Agent namespace activity unavailable for tests\/integration\/agent\.test\.mjs/,
+  );
   assert.deepEqual(await readdir(clusterDirectory), []);
 });
 

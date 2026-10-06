@@ -3,11 +3,16 @@
   "prepare": {
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/runtime-image-startup-probe.test.mjs",
+    "tests/integration/runtime-image-model-probe-outcomes.test.mjs",
+    "tests/integration/runtime-image-gateway-peer.test.mjs"
+  ],
   "files": [
     {
       "path": "tests/integration/runtime-image-startup-probe.test.mjs",
       "expectedTests": [
-        "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
         "runtime image Codex Harness stays unready until its model probe passes",
         "runtime image Codex Harness fails fast when the provider rejects its credential",
         "runtime image embedded Gateway probes its model before it starts OpenClaw",
@@ -22,6 +27,14 @@
       "expectedTests": [
         "runtime image embedded Gateway passes its model probe at a 500m CPU limit",
         "runtime image embedded Gateway reports a hung provider as a model probe timeout"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-gateway-peer.test.mjs",
+      "expectedTests": [
+        "runtime image Gateway respawns OpenClaw in place when its Harness peer changes",
+        "runtime image Gateway exits if OpenClaw crashes during a peer status outage",
+        "runtime image Gateway rejects a peer changed during replacement startup"
       ]
     }
   ]

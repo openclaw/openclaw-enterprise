@@ -14,9 +14,11 @@ calls the model and runs tools. If you are new to OpenClaw Enterprise,
 2. **Deploy the draft.** The control plane saves an immutable revision and a
    worker starts it. Editing a draft later does not change the running Agent;
    deploy again to apply the new settings.
-3. **Check the result.** A selected revision means deployment progressed, but
-   the console has no live health or browser chat. Check an actual model
-   response before treating a new deployment as working.
+3. **Check the result.** A selected revision means deployment progressed. The
+   console's **Logs** tab shows Pod status, restarts, Events and container
+   output. On Kubernetes, **Run diagnostics for this version** checks only the
+   Slack channel. Neither tests the model, and OCE has no browser chat. Check an
+   actual model response before treating a new deployment as working.
 4. **Stop when needed.** Stopping ends execution and routing but preserves
    revision history, credentials, and persistent state. Deploying again starts
    a new revision. To remove the Agent and its revisions,

@@ -84,6 +84,19 @@ export function jsonPointer(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
+/**
+ * One INVALID_VALUE detail for a submitted object key under `parent`. The error contract
+ * caps detail paths at 512 characters; a key too long to fit points at `parent` instead.
+ */
+function pointerDetail(
+  parent: string,
+  key: string,
+  code: ErrorDetail["code"] = "INVALID_VALUE",
+): readonly ErrorDetail[] {
+  const path = `${parent}/${jsonPointer(key.replaceAll("\u0000", "?").replace(/\p{Cs}/gu, "?"))}`;
+  return [{ path: path.length <= 512 ? path : parent, code }];
+}
+
 export function responseHeaders(reply: FastifyReply, requestId: string): void {
   reply.header("cache-control", "no-store");
   reply.header("content-type", "application/json; charset=utf-8");
@@ -166,55 +179,146 @@ function expectedBound(keyword: string, parameters: Record<string, unknown>): st
     : `${relation} ${limit} ${unit}${limit === 1 ? "" : "s"}`;
 }
 
+// Ajv reports a failed union's members with schema paths under the union's own path and
+// instance paths at or below its value.
+function unionMembersOf(
+  union: ValidationEntry,
+  entries: readonly ValidationEntry[],
+): readonly ValidationEntry[] {
+  return entries.filter(
+    (entry) =>
+      entry.schemaPath.startsWith(`${union.schemaPath}/`) &&
+      (entry.instancePath === union.instancePath ||
+        entry.instancePath.startsWith(`${union.instancePath}/`)),
+  );
+}
+
+function unionBranch(union: ValidationEntry, member: ValidationEntry): string {
+  return member.schemaPath.slice(union.schemaPath.length + 1).split("/")[0] ?? "";
+}
+
+// A member failure that says the value has another shape than this branch: the wrong type or
+// literal, a field the branch requires or does not accept, or a field outside the literal,
+// enum or union of literals that the branch declares for it, which is how a discriminated
+// union tells its shapes apart. Ajv stops each branch at its first failure and checks
+// properties in declaration order: declare such fields before content fields in request
+// unions, or a content failure can hide that the branch has the wrong shape.
+function rejectsBranchShape(union: ValidationEntry, member: ValidationEntry): boolean {
+  if (member.instancePath === union.instancePath) {
+    return ["required", "additionalProperties", "type", "const", "enum", "anyOf"].includes(
+      member.keyword,
+    );
+  }
+  const [, keyword, field] = member.schemaPath.slice(union.schemaPath.length + 1).split("/");
+  return (
+    keyword === "properties" &&
+    member.instancePath === `${union.instancePath}/${field}` &&
+    ["const", "enum", "anyOf"].includes(member.keyword)
+  );
+}
+
+// A union of object shapes fails once per shape, so its message would also list the fields
+// that the other shapes require. When some shapes fit the value and fail only on a field's
+// content, report just those shapes' problems and drop the others and the union itself.
+// When no shape fits, every problem stays: the request matches none of them.
+function mismatchedUnionShapes(entries: readonly ValidationEntry[]): ReadonlySet<ValidationEntry> {
+  const dropped = new Set<ValidationEntry>();
+  // Inner unions first: a nested union that found its shape no longer counts against the
+  // outer union's branch that contains it.
+  const unions = entries
+    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
+    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  for (const union of unions) {
+    // A recursive union reports every level with one schema path, so its members cannot be
+    // told apart by level.
+    if (unions.some((other) => other !== union && other.schemaPath === union.schemaPath)) {
+      continue;
+    }
+    const branches = new Map<string, ValidationEntry[]>();
+    const remaining = entries.filter((entry) => !dropped.has(entry));
+    for (const member of unionMembersOf(union, remaining)) {
+      const branch = unionBranch(union, member);
+      branches.set(branch, [...(branches.get(branch) ?? []), member]);
+    }
+    const mismatched = [...branches.values()].filter((failures) =>
+      failures.some((member) => rejectsBranchShape(union, member)),
+    );
+    if (mismatched.length === branches.size) {
+      continue;
+    }
+    dropped.add(union);
+    for (const member of mismatched.flat()) {
+      dropped.add(member);
+    }
+  }
+  return dropped;
+}
+
 // A union of literals or scalar types fails once per member, at the same field. Report that
-// field once with the accepted members instead of one contradictory problem per member.
-function collapseScalarUnions(entries: readonly ValidationEntry[]): readonly ContractProblem[] {
+// field once with the accepted members instead of one contradictory problem per member. A
+// member that is itself such a union counts with its accepted members, so a string sent for
+// an object-shape union or null is one wrong-type problem naming object and null.
+function collapseScalarUnions(allEntries: readonly ValidationEntry[]): readonly ContractProblem[] {
+  const dropped = mismatchedUnionShapes(allEntries);
+  const entries = allEntries.filter((entry) => !dropped.has(entry));
   const collapsed = new Map<ValidationEntry, ContractProblem | null>();
   // A member of a union that does not collapse names only one alternative, so it gets no hint.
   const unionMembers = new Set<ValidationEntry>();
-  for (const union of entries) {
-    if (union.keyword !== "anyOf" || typeof union.schemaPath !== "string") {
-      continue;
+  for (const union of allEntries) {
+    if (union.keyword === "anyOf" && typeof union.schemaPath === "string") {
+      for (const member of unionMembersOf(union, allEntries)) {
+        unionMembers.add(member);
+      }
     }
-    const members = entries.filter(
-      (entry) =>
-        entry.schemaPath.startsWith(`${union.schemaPath}/`) &&
-        (entry.instancePath === union.instancePath ||
-          entry.instancePath.startsWith(`${union.instancePath}/`)),
-    );
-    for (const member of members) {
-      unionMembers.add(member);
-    }
+  }
+  // Accepted members of each collapsed union, for an outer union that has it as a member.
+  const acceptedBy = new Map<
+    ValidationEntry,
+    { readonly values: readonly (string | undefined)[]; readonly literals: boolean }
+  >();
+  // Inner unions first, so an outer union sees which of its members collapsed.
+  const unions = entries
+    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
+    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  for (const union of unions) {
+    const allMembers = unionMembersOf(union, entries);
+    // A collapsed inner union stands for its own members. Every member, collapsed or not, must
+    // fail at the union's own value: a recursive union's deeper level shares its schema path,
+    // so it is no member that could block a collapse here.
+    const members = allMembers.filter((entry) => collapsed.get(entry) !== null);
     if (
       members.length === 0 ||
+      !allMembers.every((entry) => entry.instancePath === union.instancePath) ||
       !members.every(
-        (entry) =>
-          entry.instancePath === union.instancePath &&
-          (entry.keyword === "const" || entry.keyword === "type"),
+        (entry) => entry.keyword === "const" || entry.keyword === "type" || acceptedBy.has(entry),
       )
     ) {
       continue;
     }
-    // A literal member can fail on both its JSON type and its value; name it by its value.
     const branches = new Map<string, ValidationEntry[]>();
     for (const member of members) {
-      const branch = member.schemaPath.slice(union.schemaPath.length + 1).split("/")[0] ?? "";
+      const branch = unionBranch(union, member);
       branches.set(branch, [...(branches.get(branch) ?? []), member]);
     }
-    const accepted = [
-      ...new Set(
-        [...branches.values()].map((failures) => {
-          const literal = failures.find((entry) => entry.keyword === "const");
-          return literal === undefined
-            ? expectedType(failures[0]!.params as Record<string, unknown>)
-            : JSON.stringify((literal.params as Record<string, unknown>).allowedValue);
-        }),
-      ),
-    ];
+    const values = [...branches.values()].flatMap((failures) => {
+      const inner = failures.find((entry) => acceptedBy.has(entry));
+      if (inner !== undefined) {
+        return failures.length === 1 ? acceptedBy.get(inner)!.values : [undefined];
+      }
+      // A literal member can fail on both its JSON type and its value; name it by its value.
+      const literal = failures.find((entry) => entry.keyword === "const");
+      return literal === undefined
+        ? expectedType(failures[0]!.params as Record<string, unknown>)
+        : JSON.stringify((literal.params as Record<string, unknown>).allowedValue);
+    });
+    const accepted = [...new Set(values)];
     if (accepted.some((value) => value === undefined)) {
       continue;
     }
-    const literals = members.some((entry) => entry.keyword === "const");
+    const literals = members.some(
+      (entry) => entry.keyword === "const" || acceptedBy.get(entry)?.literals === true,
+    );
+    acceptedBy.set(union, { values: accepted, literals });
     collapsed.set(union, {
       detail: { path: union.instancePath, code: literals ? "INVALID_VALUE" : "INVALID_TYPE" },
       expected: `one of ${accepted.join(", ")}`,
@@ -255,7 +359,18 @@ function validationProblems(error: FastifyError): readonly ContractProblem[] {
   if (!Array.isArray(error.validation)) {
     return [];
   }
-  return collapseScalarUnions(error.validation).slice(0, 32);
+  // Shapes that fail the same way report the same problem; list it once, in first-seen order.
+  const seen = new Set<string>();
+  return collapseScalarUnions(error.validation)
+    .filter(({ detail, expected }) => {
+      const key = JSON.stringify([detail.path, detail.code, expected]);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 32);
 }
 
 const DETAIL_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.freeze({
@@ -651,13 +766,29 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {
-    return failure(400, "INVALID_REQUEST", error.message);
+    // The message names the rule, and the detail the submitted destination key.
+    const { destination } = error;
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      error.message,
+      destination === undefined
+        ? undefined
+        : destination.key === undefined
+          ? [{ path: destination.bindingsPath, code: destination.code }]
+          : pointerDetail(destination.bindingsPath, destination.key, destination.code),
+    );
   }
   if (error instanceof NativeWorkerSupportError) {
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof PluginPolicyValidationError) {
-    return failure(400, "INVALID_REQUEST", error.message);
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      error.message,
+      error.pluginId === undefined ? undefined : pointerDetail("/plugins", error.pluginId),
+    );
   }
   if (error instanceof PresetValidationError && error instanceof Error) {
     // Preset messages name the template path (including submitted object keys) and the

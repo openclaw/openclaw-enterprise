@@ -293,8 +293,8 @@ test("production image includes the OpenShell gRPC proto asset", imageTestOption
       await client.health(AbortSignal.timeout(${1500 * imageSmokeTimeoutMultiplier}));
       assert.fail("OpenShell probe unexpectedly reached an unavailable test endpoint.");
     } catch (error) {
-      assert.equal(error?.code, 14);
-      assert.match(String(error?.message), /UNAVAILABLE|ECONNREFUSED|No connection established/);
+      assert.equal(error?.grpcStatus, 14);
+      assert.match(String(error?.message), /OpenShell Health failed with gRPC status 14/);
       process.stdout.write('{"event":"openshell-proto-loaded"}\n');
     } finally {
       client.close();

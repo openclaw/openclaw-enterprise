@@ -798,6 +798,30 @@ test("channel directory lookup refuses saved IDs with C0 controls or DEL before 
   }
 });
 
+test("channel directory lookup measures the query and saved IDs in characters, as the contract does", async () => {
+  const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
+  const lookup = (input) =>
+    controller.lookupChannelDirectory(administrator, "ns_directory", {
+      secretId: "secret_directory",
+      kind: "users",
+      ...input,
+    });
+  const refused = (error) =>
+    error instanceof ScopeViolationError &&
+    error.message === "The channel directory lookup input is invalid.";
+  // Within the contract's 200 characters the input passes and reaches authorization,
+  // which this bare controller cannot provide.
+  const admitted = (error) =>
+    error instanceof DependencyUnavailableError &&
+    error.message === "The selected authorization Driver is unavailable.";
+  // Each emoji is one character (code point) but two UTF-16 code units.
+  const emoji = (count) => "\u{1f600}".repeat(count);
+  await assert.rejects(lookup({ query: emoji(200) }), admitted, "200-character query");
+  await assert.rejects(lookup({ query: emoji(201) }), refused, "201-character query");
+  await assert.rejects(lookup({ ids: ["U0001", emoji(200)] }), admitted, "200-character ID");
+  await assert.rejects(lookup({ ids: ["U0001", emoji(201)] }), refused, "201-character ID");
+});
+
 test("Secret values are checked before the Secret Driver sees them, on create and update", async () => {
   const { controller, makeReady, namespace, secretDriver } = await fixture({ skipAgent: true });
   await makeReady();

@@ -207,12 +207,10 @@ spec:
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
-    # Empty egressCidrs permits HTTPS to any address for github.com and api.github.com.
+    # Empty egressCidrs permits HTTPS for github.com and api.github.com to any address
+    # except link-local (cloud metadata) 169.254.0.0/16.
     - to:
-        {{- range (default (list "0.0.0.0/0") .Values.auth.github.egressCidrs) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.github.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443
@@ -232,13 +230,10 @@ spec:
   policyTypes: [Egress]
   egress:
     # The API calls only oauth2.googleapis.com and www.googleapis.com. Google publishes
-    # no small stable range for them. Empty egressCidrs permits HTTPS to any address;
-    # narrow it with an egress proxy.
+    # no small stable range for them. Empty egressCidrs permits HTTPS to any address
+    # except link-local (cloud metadata) 169.254.0.0/16; narrow it with an egress proxy.
     - to:
-        {{- range (default (list "0.0.0.0/0") .Values.auth.google.egressCidrs) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.google.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443
@@ -261,17 +256,7 @@ spec:
     # at startup; this bounds the addresses they resolve to. Empty egressCidrs permits HTTPS
     # to any address except link-local (cloud metadata) 169.254.0.0/16.
     - to:
-        {{- if .Values.auth.oidc.egressCidrs }}
-        {{- range .Values.auth.oidc.egressCidrs }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
-        {{- else }}
-        - ipBlock:
-            cidr: "0.0.0.0/0"
-            except:
-              - "169.254.0.0/16"
-        {{- end }}
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.oidc.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443

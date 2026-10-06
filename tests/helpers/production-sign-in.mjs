@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import pg from "pg";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../../apps/controller/src/auth/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
@@ -21,6 +23,7 @@ import {
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { databaseUrl as testDatabaseUrl } from "./postgres-database.mjs";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
 // Authentication, State, IAM, audit and Fastify are the production implementations.
@@ -284,6 +287,24 @@ export async function signedInHeaders(app, origin, account, remoteAddress) {
 
 export async function currentSession(app, cookie) {
   return (await app.inject({ url: "/api/auth/session", headers: { cookie } })).json().data;
+}
+
+/**
+ * A pool and PlatformState on the test database for one sign-in test. After the test, each
+ * object `closeFirst()` returns (an app, or anything with `close()`) closes in order, then
+ * the pool ends.
+ * `let app; const { pool, state } = postgresSignInState(t, () => [app]);`
+ */
+export function postgresSignInState(context, closeFirst = () => []) {
+  const pool = new pg.Pool({ connectionString: testDatabaseUrl });
+  const state = new PostgresPlatformState(pool);
+  context.after(async () => {
+    for (const closable of closeFirst()) {
+      await closable?.close();
+    }
+    await pool.end();
+  });
+  return { pool, state };
 }
 
 /** Distinct client addresses, so a suite's many sign-ins never meet the per-address limit. */

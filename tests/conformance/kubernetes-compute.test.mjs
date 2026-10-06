@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 import { spawnSync } from "node:child_process";
+import { inspect } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import test from "node:test";
 import {
@@ -2957,10 +2958,14 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
   assert.equal(nodeEgress.metadata.annotations["openclaw.dev/namespace-id"], tenant.id);
   assert.deepEqual(nodeEgress.spec, {
     podSelector: {
-      matchLabels: {
-        "openclaw.dev/workload-role": "agent",
-        "openclaw.dev/network-profile": "broad-egress-v1",
-      },
+      matchLabels: { "openclaw.dev/workload-role": "agent" },
+      matchExpressions: [
+        {
+          key: "openclaw.dev/network-profile",
+          operator: "In",
+          values: ["broad-egress-v1", "provider-fenced-v1"],
+        },
+      ],
     },
     policyTypes: ["Egress"],
     egress: [
@@ -7436,6 +7441,27 @@ test("immutable image policy accepts digests and rejects mutable tags", () => {
       ),
     /digest|immutable/i,
   );
+  // The OCI image specification allows only `sha256` and lowercase hex for SHA-256
+  // digests; containerd refuses any other spelling at pull time, so the Driver refuses
+  // it at configuration time instead of leaving every Agent Pod failing to pull.
+  for (const [description, digest] of [
+    ["uppercase hex", `sha256:${"A".repeat(64)}`],
+    ["uppercase algorithm", `SHA256:${"a".repeat(64)}`],
+  ]) {
+    for (const role of ["gateway", "agent"]) {
+      const images = {
+        gateway: `registry.example/gateway@sha256:${"a".repeat(64)}`,
+        agent: `registry.example/agent@sha256:${"b".repeat(64)}`,
+        requireImmutableDigest: true,
+        [role]: `registry.example/${role}@${digest}`,
+      };
+      assert.throws(
+        () => createKubernetesComputeDriver(options({ images })),
+        /immutable SHA-256 digest/,
+        `${role} ${description}`,
+      );
+    }
+  }
 
   assert.doesNotThrow(() =>
     createKubernetesComputeDriver(
@@ -7526,12 +7552,15 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     assert.equal(workload.spec.template.metadata.labels[key], value);
     assert.equal(requirements.labels[key], value);
   }
-  assert.deepEqual(requirements.serviceAccountToken, {
-    audience: "openclaw-controller",
-    expirationSeconds: 900,
-    mountPath: "/var/run/secrets/openclaw/service-principal",
-    path: "token",
-    readOnly: true,
+  assert.deepEqual(requirements.workloadIdentity, {
+    serviceAccountName: workload.spec.template.spec.serviceAccountName,
+    token: {
+      audience: "openclaw-controller",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw/service-principal",
+      path: "token",
+      readOnly: true,
+    },
   });
 
   for (const mutate of [
@@ -7588,13 +7617,28 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     undefined,
     preparedAuth(withoutProjection, kubernetesNamespaceName(tenant.id), false),
   );
+  assert.equal(
+    withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key").workloadIdentity,
+    undefined,
+  );
+
+  const unexpectedProjection = structuredClone(unprojected);
+  unexpectedProjection.spec.template.spec.volumes.push({
+    name: "openclaw-service-principal",
+    projected: { sources: [] },
+  });
   assert.throws(
-    () => withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key"),
-    /projected ServicePrincipal token/i,
+    () => withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key"),
+    /credentials disabled must not project/i,
   );
 });
 
-function providerReadinessFixture({ provisionHarness, lifecycleDrivers = [] } = {}) {
+function providerReadinessFixture({
+  provisionHarness,
+  harnessEndpoint,
+  lifecycleDrivers = [],
+  nodeEnrollment,
+} = {}) {
   const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -7606,22 +7650,36 @@ function providerReadinessFixture({ provisionHarness, lifecycleDrivers = [] } = 
         audience: "openclaw-controller",
         expirationSeconds: 900,
       },
+      ...(harnessEndpoint === undefined
+        ? {}
+        : {
+            network: {
+              providerHarness: {
+                namespace: "openshell-system",
+                podLabels: { app: "openshell-gateway" },
+                address: "10.43.0.50",
+                port: 8080,
+              },
+            },
+          }),
     }),
     {
       lifecycleDrivers,
-      nodeEnrollment: {
+      nodeEnrollment: nodeEnrollment ?? {
         async isConnected() {
           return true;
         },
       },
       sandboxDriver: {
         id: "sandbox-provider",
+        implementation: "openshell",
         async provisionHarness(context) {
           if (provisionHarness !== undefined) {
             return provisionHarness(context);
           }
           assert.fail("activation must only observe the previously provisioned Harness");
         },
+        ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
       },
     },
   );
@@ -7667,6 +7725,35 @@ function providerReadinessFixture({ provisionHarness, lifecycleDrivers = [] } = 
       };
     },
     async readNamespacedSecret({ name }) {
+      if (name === "occ-model-key") {
+        return {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: {
+            name,
+            namespace: kubernetesNamespaceName(tenant.id),
+            uid: "model-secret-uid",
+          },
+          type: "Opaque",
+          data: { value: Buffer.from("model-key").toString("base64") },
+        };
+      }
+      const transportName = `transport-${digest(revision.agentId)}`;
+      if (name === transportName) {
+        const secret = driver.manifest(
+          "v1",
+          "Secret",
+          name,
+          { namespaceId: tenant.id, agentId: revision.agentId },
+          { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+        );
+        secret.metadata.uid = "transport-secret-uid";
+        return {
+          ...secret,
+          type: "Opaque",
+          data: { "app-server-token": Buffer.from("transport-token").toString("base64") },
+        };
+      }
       assert.equal(name, driver.workspaceNodeName(revision));
       return {
         ...driver.manifest("v1", "Secret", name, driver.pluginRuntimeOwnership(revision), {
@@ -7943,9 +8030,13 @@ test("provider Harness requires its assigned network profile before readiness an
   }
 });
 
-test("provider Harness preparation preserves readiness and cleanup contracts", async () => {
+test("provider Harness endpoint owns Gateway transport through preparation and activation", async () => {
   const hooks = [];
   const provisions = [];
+  const endpoints = [];
+  const setupRequests = [];
+  const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
+  const providerWorkspaceRoot = "/sandbox/enterprise";
   const fixture = providerReadinessFixture({
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
@@ -7954,11 +8045,12 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
         false,
         "provider-fenced Harnesses receive no Compute authentication egress",
       );
-      assert.ok(
+      assert.equal(
         objects.has(
           key("NetworkPolicy", `allow-agent-runtime-${digest(context.revision.agentId)}`),
         ),
-        "the Gateway transport ingress exists before Sandbox startup",
+        false,
+        "provider-owned transport does not grant direct ingress to the Harness",
       );
       provisions.push(context);
       return {
@@ -7967,6 +8059,10 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
         agentId: context.revision.agentId,
         revisionId: context.revision.id,
       };
+    },
+    async harnessEndpoint(context) {
+      endpoints.push(context);
+      return { url: providerUrl, workspaceRoot: providerWorkspaceRoot };
     },
     lifecycleDrivers: [
       {
@@ -7983,9 +8079,23 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
         },
       },
     ],
+    nodeEnrollment: {
+      async createSetup(url, nodeUrl) {
+        setupRequests.push({ url, nodeUrl });
+        return {
+          setupId: "provider-setup",
+          setupCode: "provider-setup-code",
+          expiresAtMs: Date.now() + 600_000,
+        };
+      },
+      async isConnected() {
+        return true;
+      },
+    },
   });
   const { driver, revision, namespace, core } = fixture;
   const gatewayName = `gateway-${digest(revision.agentId)}`;
+  const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const gatewayOwnership = { namespaceId: tenant.id, agentId: revision.agentId };
   const objects = new Map();
   const key = (kind, name, target = namespace) =>
@@ -8065,6 +8175,11 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
     [],
     [],
     driver.pluginRuntimeSnapshot(revision),
+    [],
+    undefined,
+    undefined,
+    undefined,
+    { url: providerUrl, workspaceRoot: providerWorkspaceRoot },
   );
   gateway.metadata.generation = 1;
   gateway.status = {
@@ -8073,7 +8188,6 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
     updatedReplicas: 1,
     readyReplicas: 1,
   };
-  save(gateway);
   const clients = {
     core,
     apps: {},
@@ -8113,8 +8227,12 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
   };
   core.readNamespace = async ({ name }) => structuredClone(objects.get(key("Namespace", name)));
   const enrollmentSecret = core.readNamespacedSecret;
+  let workspaceNodeSetupAvailable = false;
   core.readNamespacedSecret = async ({ name, namespace: target }) => {
     if (name === driver.workspaceNodeName(revision)) {
+      if (!workspaceNodeSetupAvailable) {
+        throw Object.assign(new Error("not found"), { statusCode: 404 });
+      }
       return enrollmentSecret({ name });
     }
     const value = objects.get(key("Secret", name, target));
@@ -8149,21 +8267,54 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
         assert.equal(requestedNamespace, body.metadata.namespace);
         writes.push(structuredClone(body));
         const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
-        if (kind === "Deployment") {
-          assert.deepEqual(
-            body.spec,
-            previous?.spec,
-            "fixture readiness requires an unchanged gateway",
-          );
-        }
         save({ ...previous, ...body, metadata: { ...previous?.metadata, ...body.metadata } });
       };
     }
   }
   driver.apiClients = Promise.resolve(clients);
   const expected = { namespaceId: tenant.id, agentId: revision.agentId, revisionId: revision.id };
+
+  // The Agent Gateway must be available to mint node setup material. Its first
+  // fail-closed template cannot justify creating the provider-owned Harness.
+  fixture.setObservation({ items: [] });
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: false,
+  });
+  assert.equal(provisions.length, 0);
+  assert.equal(endpoints.length, 0);
+  const bootstrapGateway = objects.get(key("Deployment", gatewayName, gatewayNamespace));
+  assert.ok(bootstrapGateway);
+  assert.notEqual(
+    bootstrapGateway.spec.template.spec.containers[0].env.find(
+      ({ name }) => name === "APP_SERVER_URL",
+    ).value,
+    providerUrl,
+  );
+
+  // Once the Gateway is serving, its Agent-owned setup Secret lets Compute
+  // render the final provider request and transition to the OpenShell endpoint.
+  bootstrapGateway.metadata.generation = 1;
+  bootstrapGateway.status = {
+    observedGeneration: 1,
+    replicas: 1,
+    updatedReplicas: 1,
+    readyReplicas: 1,
+  };
+  save(bootstrapGateway);
+  fixture.setObservation({ items: [] });
+  assert.deepEqual(await driver.prepareRevision(revision, authContext(revision)), {
+    ...expected,
+    ready: false,
+  });
+  assert.deepEqual(setupRequests, [
+    {
+      url: driver.getGatewayEndpoint(revision),
+      nodeUrl: `ws://${gatewayName}.${gatewayNamespace}.svc.cluster.local:8080/node`,
+    },
+  ]);
+  workspaceNodeSetupAvailable = true;
   for (const [items, ready] of [
-    [[], false],
     [[fixture.pod("starting", "False")], false],
     [[fixture.pod("ready"), fixture.pod("starting", "False")], false],
     [[fixture.pod("ready")], true],
@@ -8174,9 +8325,97 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
       ready,
     });
   }
-  assert.deepEqual(hooks, ["start", "start", "start", "start"]);
+  assert.deepEqual(hooks, ["start", "start", "start", "start", "start"]);
   assert.equal(provisions.length, 4);
+  assert.equal(endpoints.length, 4);
   assert.deepEqual(provisions[0].requirements.labels, fixture.labels);
+  assert.deepEqual(
+    provisions[0].requirements.environment.find(({ name }) => name === "APP_TOKEN_SHA"),
+    {
+      name: "APP_TOKEN_SHA",
+      value: createHash("sha256").update("test-transport").digest("hex"),
+    },
+  );
+  assert.equal(
+    provisions[0].requirements.environment.some(({ name }) => name === "APP_SERVER_TOKEN"),
+    false,
+  );
+  assert.equal(JSON.stringify(provisions[0].requirements).includes("test-transport"), false);
+  assert.deepEqual(
+    provisions[0].requirements.environment.find(({ name }) => name === "OPENCLAW_NODE_SETUP_CODE"),
+    {
+      name: "OPENCLAW_NODE_SETUP_CODE",
+      valueFrom: {
+        secretKeyRef: {
+          name: driver.workspaceNodeName(revision),
+          key: "setupCode",
+        },
+      },
+    },
+  );
+  const workspaceNodePolicy = objects.get(key("NetworkPolicy", "allow-node-gateway"));
+  assert.equal(
+    selectorMatches(workspaceNodePolicy.spec.podSelector, provisions[0].requirements.labels),
+    true,
+    "the provider-fenced Harness must retain exact workspace-node Gateway egress",
+  );
+  const supervisorNodePolicy = objects.get(
+    key("NetworkPolicy", `allow-workspace-node-gateway-${digest(revision.agentId)}`, namespace),
+  );
+  assert.deepEqual(supervisorNodePolicy.spec.podSelector, {
+    matchLabels: { "openshell.ai/boundary-role": "supervisor" },
+  });
+  assert.deepEqual(supervisorNodePolicy.spec.egress[0].ports, [{ protocol: "TCP", port: 8080 }]);
+  const gatewayNodePolicy = objects.get(
+    key(
+      "NetworkPolicy",
+      `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+      gatewayNamespace,
+    ),
+  );
+  assert.deepEqual(gatewayNodePolicy.spec.ingress[0].from, [
+    {
+      namespaceSelector: {
+        matchLabels: { "kubernetes.io/metadata.name": namespace },
+      },
+      podSelector: {
+        matchLabels: { "openshell.ai/boundary-role": "supervisor" },
+      },
+    },
+  ]);
+  const gatewayContainer = objects.get(key("Deployment", gatewayName, gatewayNamespace)).spec
+    .template.spec.containers[0];
+  assert.equal(
+    gatewayContainer.env.find(({ name }) => name === "APP_SERVER_URL").value,
+    providerUrl,
+  );
+  assert.equal(
+    gatewayContainer.env.find(({ name }) => name === "OPENCLAW_REMOTE_WORKSPACE_ROOT").value,
+    providerWorkspaceRoot,
+  );
+  assert.deepEqual(gateway.spec.template.spec.hostAliases, [
+    { ip: "10.43.0.50", hostnames: ["tenant--sandbox.openshell.localhost"] },
+  ]);
+  assert.deepEqual(
+    provisions[0].requirements.files.map(({ name, environmentVariable }) => ({
+      name,
+      environmentVariable,
+    })),
+    [
+      {
+        name: "runtime.json",
+        environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+      },
+      {
+        name: "config.toml",
+        environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
+      },
+    ],
+  );
+  assert.deepEqual(JSON.parse(provisions[0].requirements.files[0].content), {
+    kind: "codex",
+    selections: {},
+  });
   const agentServiceName = `agent-${digest(revision.agentId)}`;
   assert.equal(
     objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
@@ -8198,13 +8437,27 @@ test("provider Harness preparation preserves readiness and cleanup contracts", a
 
   fixture.setObservation({ items: [fixture.pod("ready")] });
   await driver.activateRevision(revision, authContext(revision));
-  assert.deepEqual(objects.get(key("Service", agentServiceName)).spec.selector, {
-    "openclaw.dev/network-profile": "provider-fenced-v1",
-    "openclaw.dev/namespace": revision.namespaceId,
-    "openclaw.dev/agent": revision.agentId,
-    "openclaw.dev/revision": revision.id,
-    "openclaw.dev/workload-role": "agent",
-  });
+  assert.equal(endpoints.length, 6);
+  assert.equal(
+    objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
+    `${agentServiceName}-inactive`,
+  );
+  const gatewayPolicy = objects.get(
+    key("NetworkPolicy", `allow-gateway-agent-${digest(revision.agentId)}`, gatewayNamespace),
+  );
+  assert.deepEqual(gatewayPolicy.spec.egress, [
+    {
+      to: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
+          },
+          podSelector: { matchLabels: { app: "openshell-gateway" } },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 8080 }],
+    },
+  ]);
 });
 
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
@@ -11614,6 +11867,171 @@ test("Kubernetes workspace setup redacts backend failures and refuses foreign pr
   assert.equal(fixture.records.length, before);
 });
 
+// A private Secret write that the API server answers with 429 or 5xx clears by itself, so it
+// must surface as a transient Kubernetes API failure: the worker then waits within the
+// convergence deadline instead of spending its attempt budget. Other answers keep the redacted
+// delivery error. Either way the status and Status reason stay visible to diagnostics, while
+// the client error, whose message and body echo the submitted Secret, stays behind. A Secret
+// that already exists is replaced instead of created; that write is classified the same way.
+for (const embedded of [true, false]) {
+  test(`Kubernetes ${embedded ? "embedded" : "dedicated"} private Secret writes classify API answers without echoing Secret data`, async () => {
+    const { ApiException } = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    )("@kubernetes/client-node");
+    const targets = [
+      {
+        name: /^(harness|gateway)-secrets-/u,
+        message: "Runtime credential delivery is unavailable.",
+        stage: "harness_auth",
+      },
+      {
+        name: /^workspace-setup-/u,
+        message: "Workspace setup private delivery is unavailable.",
+        stage: "workspace_setup",
+      },
+    ];
+    for (const [target, write, status, reason, transient] of targets.flatMap((target) =>
+      ["create", "replace"].flatMap((write) =>
+        [
+          [503, "ServiceUnavailable", true],
+          [429, "TooManyRequests", true],
+          [403, "Forbidden", false],
+        ].map((answer) => [target, write, ...answer]),
+      ),
+    )) {
+      const fixture = workspaceSetupFixture(embedded);
+      const clients = await fixture.driver.apiClients;
+      if (write === "replace") {
+        // A first pass creates every Secret. Then the runtime Secret's stored data differs
+        // from the admitted credentials (as after a rotation), and the workspace setup is
+        // completed while the stored payload is not (as after a lost ready acknowledgement),
+        // so the next pass replaces the target.
+        await fixture.driver.prepareRevision(fixture.revision, fixture.context);
+        for (const object of fixture.objects.values()) {
+          if (
+            object.kind === "Secret" &&
+            /^(harness|gateway)-secrets-/u.test(object.metadata.name)
+          ) {
+            object.data = {};
+          }
+        }
+        fixture.context.workspaceSetup.completed = true;
+      }
+      const method = `${write}NamespacedSecret`;
+      const send = clients.core[method];
+      let rejected = 0;
+      const written = [];
+      clients.core[method] = async (request) => {
+        if (target.name.test(request.body.metadata.name)) {
+          rejected += 1;
+          written.push(...Object.values(request.body.data));
+          // The client's own error keeps the answer as JSON text and echoes it in its
+          // message; this answer also echoes the submitted Secret.
+          const answer = { kind: "Status", code: status, reason, message: request.body };
+          throw new ApiException(status, "Unknown API Status Code!", JSON.stringify(answer), {});
+        }
+        return send(request);
+      };
+      const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
+        () => assert.fail("the private Secret write must fail"),
+        (failure) => failure,
+      );
+      assert.equal(rejected, 1, "a mutating write is never retried inside the pass");
+      if (transient) {
+        assert.equal(error.name, "TransientDependencyError");
+        assert.equal(error.code, "KUBERNETES_API_UNAVAILABLE");
+        assert.equal(error.reason, "unavailable");
+        assert.equal(error.message, `The Kubernetes API answered HTTP ${status}.`);
+      } else {
+        assert.equal(error.name, "DependencyUnavailableError");
+        assert.equal(error.message, target.message);
+      }
+      assert.equal(error.cause.code, status);
+      assert.equal(error.cause.reason, reason);
+      assert.equal(error.cause.cause, undefined);
+      assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
+        code: transient ? "KUBERNETES_API_UNAVAILABLE" : "KUBERNETES_API_REJECTED",
+        stage: target.stage,
+        errorClass: "KubernetesApiError",
+        message: "The Kubernetes API rejected revision preparation.",
+        status,
+      });
+      const evidence = inspect(error, { depth: 8 });
+      assert.ok(written.length > 0);
+      for (const secret of [...written, "fixture-model-key", "private-create-documents"]) {
+        assert.equal(evidence.includes(secret), false);
+      }
+    }
+  });
+}
+
+// Two more ways a private Secret write can end. A connection that breaks while the write is
+// sent (EPIPE, or ECONNABORTED for a socket the local kernel aborted) never got an answer
+// from the API server, so it is transient like a refused connection. An owner that cancels
+// the pass while the write is in flight gets its own cancellation back, as from every other
+// Kubernetes call, not the delivery error that would read as an unavailable dependency.
+for (const embedded of [true, false]) {
+  test(`Kubernetes ${embedded ? "embedded" : "dedicated"} private Secret writes keep broken connections transient and cancellations intact`, async () => {
+    const targets = [
+      { name: /^(harness|gateway)-secrets-/u, stage: "harness_auth" },
+      { name: /^workspace-setup-/u, stage: "workspace_setup" },
+    ];
+    for (const target of targets) {
+      for (const code of ["EPIPE", "ECONNABORTED"]) {
+        const fixture = workspaceSetupFixture(embedded);
+        const clients = await fixture.driver.apiClients;
+        const create = clients.core.createNamespacedSecret;
+        clients.core.createNamespacedSecret = async (request) => {
+          if (target.name.test(request.body.metadata.name)) {
+            // The client's fetch rejects with the socket error as its cause.
+            throw new TypeError("fetch failed", {
+              cause: Object.assign(new Error(`write ${code}`), { code, syscall: "write" }),
+            });
+          }
+          return create(request);
+        };
+        const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
+          () => assert.fail("the private Secret write must fail"),
+          (failure) => failure,
+        );
+        assert.equal(error.name, "TransientDependencyError");
+        assert.equal(error.code, "KUBERNETES_API_UNAVAILABLE");
+        assert.equal(error.reason, "unreachable");
+        assert.equal(error.cause.code, code);
+        assert.equal(error.cause.cause, undefined);
+        assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
+          code: "KUBERNETES_API_UNAVAILABLE",
+          stage: target.stage,
+          errorClass: "KubernetesApiUnavailableError",
+          message: "The Kubernetes API server is unreachable.",
+        });
+      }
+
+      const fixture = workspaceSetupFixture(embedded);
+      const clients = await fixture.driver.apiClients;
+      const create = clients.core.createNamespacedSecret;
+      const owner = new AbortController();
+      const cancellation = new Error("revision pass cancelled");
+      clients.core.createNamespacedSecret = async (request) => {
+        if (!target.name.test(request.body.metadata.name)) {
+          return create(request);
+        }
+        // The owner cancels while the write is in flight, and the client rejects with the
+        // reason of the request's signal, which follows the owner's.
+        const signal = currentComputeAbortSignal();
+        owner.abort(cancellation);
+        throw signal.reason;
+      };
+      await assert.rejects(
+        withComputeAbortSignal(owner.signal, () =>
+          fixture.driver.prepareRevision(fixture.revision, fixture.context),
+        ),
+        (error) => error === cancellation,
+      );
+    }
+  });
+}
+
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} failed workspace initialization reports safe evidence and retains retry content`, async () => {
     const fixture = workspaceSetupFixture(embedded);
@@ -12430,8 +12848,25 @@ function withProfile(labels, profile) {
 }
 
 function selectorMatches(selector, labels) {
-  assert.deepEqual(selector.matchExpressions ?? [], []);
-  return Object.entries(selector.matchLabels ?? {}).every(([key, value]) => labels[key] === value);
+  const labelsMatch = Object.entries(selector.matchLabels ?? {}).every(
+    ([key, value]) => labels[key] === value,
+  );
+  const expressionsMatch = (selector.matchExpressions ?? []).every(({ key, operator, values }) => {
+    if (operator === "In") {
+      return labels[key] !== undefined && values.includes(labels[key]);
+    }
+    if (operator === "NotIn") {
+      return labels[key] === undefined || !values.includes(labels[key]);
+    }
+    if (operator === "Exists") {
+      return labels[key] !== undefined;
+    }
+    if (operator === "DoesNotExist") {
+      return labels[key] === undefined;
+    }
+    assert.fail(`unsupported selector operator ${operator}`);
+  });
+  return labelsMatch && expressionsMatch;
 }
 
 function profileNetworkDriver() {
@@ -12574,7 +13009,7 @@ test("deployment readiness requires the ordinary network profile on the Pod temp
   }
 });
 
-test("every ordinary allow policy requires the explicit network profile", () => {
+test("every allow policy requires an explicit approved network profile", () => {
   const driver = profileNetworkDriver();
   const dedicated = profileNetworkRevision(driver, "dedicated");
   const embedded = profileNetworkRevision(driver, "embedded");
@@ -12620,11 +13055,21 @@ test("every ordinary allow policy requires the explicit network profile", () => 
       assert.deepEqual(selector, {});
       continue;
     }
-    assert.equal(
-      selector.matchLabels?.[ORDINARY_PROFILE_LABEL],
-      ORDINARY_PROFILE,
-      `${key} must select only the ordinary profile`,
-    );
+    if (policy.metadata.name === "allow-node-gateway") {
+      assert.deepEqual(selector.matchExpressions, [
+        {
+          key: ORDINARY_PROFILE_LABEL,
+          operator: "In",
+          values: [ORDINARY_PROFILE, "provider-fenced-v1"],
+        },
+      ]);
+    } else {
+      assert.equal(
+        selector.matchLabels?.[ORDINARY_PROFILE_LABEL],
+        ORDINARY_PROFILE,
+        `${key} must select only the ordinary profile`,
+      );
+    }
     // The generated ordinary workload for the selected role receives the grant; the
     // same Pod with a missing, empty, or unknown profile receives none.
     const role =
@@ -12780,10 +13225,10 @@ test("ordinary embedded and dedicated policy callers retain exact model and Harn
   );
 });
 
-// A SandboxDriver that provisions the Harness fences its egress (OpenShell's
-// workload policy has `egress: []`). NetworkPolicies are additive, so any
-// Compute egress grant selecting that Pod would reopen DNS and public 443.
-test("SandboxDriver Harness Pods get Compute's transport ingress but none of its egress", () => {
+// A SandboxDriver that provisions the Harness fences its general egress
+// (OpenShell's workload policy has `egress: []`). Compute adds only the exact
+// workspace-node route required by the regular Agent workflow.
+test("SandboxDriver Harness Pods get transport ingress and only workspace-node egress", () => {
   const options = routedOptions({
     network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] },
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
@@ -12819,12 +13264,20 @@ test("SandboxDriver Harness Pods get Compute's transport ingress but none of its
   ].filter((policy) => policy.metadata.namespace === execution.name);
   const selecting = policies.filter((policy) => selectorMatches(policy.spec.podSelector, harness));
   for (const policy of selecting) {
-    assert.deepEqual(
-      policy.spec.egress ?? [],
-      [],
-      `${policy.metadata.name} must not grant the provider-fenced Harness egress`,
-    );
+    if (policy.metadata.name === "allow-node-gateway") {
+      assert.equal(policy.spec.egress.length, 1);
+    } else {
+      assert.deepEqual(
+        policy.spec.egress ?? [],
+        [],
+        `${policy.metadata.name} must not grant general provider-fenced Harness egress`,
+      );
+    }
   }
+  assert.ok(
+    selecting.some((policy) => policy.metadata.name === "allow-node-gateway"),
+    "the Harness keeps its workspace-node enrollment route",
+  );
   // Compute must not issue an authentication egress grant for a fenced Harness.
   assert.throws(
     () => driver.agentAuthenticationNetworkPolicy(revision, execution),

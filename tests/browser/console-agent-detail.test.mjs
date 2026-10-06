@@ -1754,13 +1754,14 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   assert.equal(secretDriver.valueFor(duplicateNameSecret), "hidden-duplicate-picker");
 
   // Simulate documented controller conflict responses; duplicate rejection above uses the real route.
+  let createStatus = 409;
   let conflictCode = "NAMESPACE_NOT_READY";
   const failSecretCreate = (route, request) => {
     if (request.method() !== "POST") {
       return route.fallback();
     }
     return route.fulfill({
-      status: 409,
+      status: createStatus,
       contentType: "application/json",
       body: JSON.stringify({
         error: { code: conflictCode, message: "masked Secret create conflict" },
@@ -1794,6 +1795,27 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     "synthetic-duplicate-value",
   );
   assert.equal(await dialog.getByRole("alert").filter({ hasText: "may already exist" }).count(), 1);
+
+  // A denied create is a known rejection: it names the permission and keeps the input editable.
+  createStatus = 403;
+  conflictCode = "FORBIDDEN";
+  await dialog.getByLabel("Name", { exact: true }).fill("Denied picker Secret");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog
+    .getByRole("alert")
+    .filter({
+      hasText: "Access denied. You do not have permission to manage this Secret binding.",
+    })
+    .waitFor();
+  assert.equal(await dialog.getByLabel("Name", { exact: true }).isDisabled(), false);
+  assert.equal(
+    await dialog.getByLabel("Value", { exact: true }).inputValue(),
+    "synthetic-duplicate-value",
+  );
+  assert.equal(
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
+    false,
+  );
   await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
 
   const distinctName = "Combobox Agent corrected service account token";
@@ -4032,6 +4054,12 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await waitForSettledFetches(page, nativeAdminPath, 1);
   assert.equal(reads(nativeAdminPath), 1);
   assert.equal(reads(configurationPath), 1);
+  // The card settles on the denial and stays hidden: a 403 is not a failed read with Refresh.
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector(".native-admin-access [role='status']")?.textContent === "",
+  );
+  assert.equal(await page.locator(".native-admin-access:not([hidden])").count(), 0);
 
   // Each denied read is an audited authorization denial; reloading the view does not repeat it.
   for (let view = 0; view < 2; view += 1) {

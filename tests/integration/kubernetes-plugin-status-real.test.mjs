@@ -71,20 +71,45 @@ function isKubernetesObjectConflict(error) {
   );
 }
 
-async function prepareRevisionEventually(fixture, driver = fixture.driver) {
-  return waitFor(
-    "real Compute prepareRevision to avoid transient Kubernetes conflicts",
-    async () => {
-      try {
-        return await driver.prepareRevision(fixture.candidate, fixture.auth.context);
-      } catch (error) {
-        if (isKubernetesObjectConflict(error)) {
-          return undefined;
-        }
-        throw error;
-      }
-    },
+// The Driver does not retry a failed write. A runtime Secret write the API server answers
+// with 429 or 5xx surfaces as TransientDependencyError, and other failures of it as
+// DependencyUnavailableError. The worker retries both on a later pass, so this direct
+// caller retries them too. CI saw one while another file shared the k3d cluster. A failure
+// that persists still ends the wait, and the timeout names the last transient error.
+function isTransientPrepareFailure(error) {
+  return (
+    isKubernetesObjectConflict(error) ||
+    error?.name === "TransientDependencyError" ||
+    error?.name === "DependencyUnavailableError"
   );
+}
+
+async function prepareRevisionEventually(fixture, driver = fixture.driver) {
+  let lastTransient;
+  try {
+    return await waitFor(
+      "real Compute prepareRevision to avoid transient Kubernetes failures",
+      async () => {
+        try {
+          return await driver.prepareRevision(fixture.candidate, fixture.auth.context);
+        } catch (error) {
+          if (isTransientPrepareFailure(error)) {
+            lastTransient = error;
+            process.stderr.write(
+              `Transient prepareRevision failure (${error.message}); retrying\n`,
+            );
+            return undefined;
+          }
+          throw error;
+        }
+      },
+    );
+  } catch (error) {
+    if (lastTransient !== undefined && /^Timed out waiting for /.test(error.message)) {
+      error.message = `${error.message} Last transient failure: ${lastTransient.message}`;
+    }
+    throw error;
+  }
 }
 
 async function assertPrerequisites() {

@@ -116,7 +116,9 @@ nobody uses. It is still a credential:
   because another account already holds the subject, correct the subject and
   attach again. (A refused `github.subject` in step 2 creates nothing; retry
   the creation.) An account you abandon keeps its email, which creation will
-  not reuse, so disable it.
+  not reuse, so disable it. Account controls need GitHub, Google or OIDC
+  sign-in. On a password-only Installation they return `409`, so an abandoned
+  account there cannot be disabled.
 
 Add actions such as `update` or `deploy` to the Role for more access; see
 [Authorization](../../reference/authorization.md) for actions and scope. A

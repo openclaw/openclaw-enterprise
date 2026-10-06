@@ -5,12 +5,14 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   ghcrPackageName,
   github,
   readArchivePlatforms,
   repository,
   publishWorkflow,
+  runtimeImageSmokeTests,
   validateCi,
   validateContext,
   validateEnvironment,
@@ -19,6 +21,7 @@ import {
   verifyGhcr,
 } from "../../scripts/ci/container-release.mjs";
 import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   chartArchiveContent,
   stageReleaseChart,
@@ -945,4 +948,25 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     assert.throws(() => run(invalid), /mismatch|native runner/);
     await assert.rejects(readFile(invalid.env.GITHUB_OUTPUT), { code: "ENOENT" });
   }
+});
+
+test("the runtime release smoke runs every Image Runtime Startup file", () => {
+  const { lanes } = loadTestSuites(
+    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+  );
+  const laneFiles = ["images-runtime-startup", "images-runtime-startup-2"].flatMap((lane) =>
+    lanes[lane].files.map((file) => file.path),
+  );
+  // The model probe outcomes moved into lane 2 from Image Model Probes, whose files
+  // the release smoke has never run. Every other file a lane splits off must stay in
+  // the release smoke, or a native-platform release loses those cases silently.
+  const ciOnly = ["tests/integration/runtime-image-model-probe-outcomes.test.mjs"];
+  for (const path of ciOnly) {
+    assert.ok(laneFiles.includes(path), `${path} is no longer in a runtime startup lane.`);
+  }
+  assert.deepEqual(
+    [...runtimeImageSmokeTests].sort(),
+    laneFiles.filter((path) => !ciOnly.includes(path)).sort(),
+    "Keep the release smoke list equal to the lane files; drop a ciOnly entry once the smoke runs it.",
+  );
 });

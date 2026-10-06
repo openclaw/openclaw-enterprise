@@ -6,10 +6,9 @@ OpenClaw Control Plane (OCC), and Agent workloads in the owned cluster.
 
 ## Start the profile
 
-Install Node.js 24 or newer, the repository-pinned pnpm, the Go version from
-`go.mod`, k3d, kubectl, Helm, and either Docker or Podman. In Kubernetes-only
-mode, the container engine hosts k3d and builds or imports images without
-running OCE application services.
+Install Node.js 24+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
+kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
+k3d and images, not OCE services.
 
 K3s requires the `cpuset` cgroup controller, which systemd does not delegate to
 a rootless session. On Podman, run as root or use a rootful Podman machine;
@@ -62,7 +61,7 @@ OpenShell) in `oce-system`, and writes a generated administrator password and
 service key to the private state directory.
 
 Before bootstrapping, startup checks the dedicated Codex sandbox with the exact
-imported runtime image and Codex `0.158.0`. If the node's `RuntimeDefault`
+imported runtime image and Codex `0.160.0`. If the node's `RuntimeDefault`
 blocks it, the launcher derives the
 [reviewed compatibility profile](codex-sandbox.md) from that node's actual
 policy, installs it only on the owned k3d node, and verifies workspace and
@@ -114,26 +113,36 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The checkout-local CLI creates one k3d cluster and then:
+The checkout-local CLI creates one k3d cluster, then:
 
 1. installs the pinned Agent Sandbox controller and OpenShell
-   `v0.1.3-pre.1` assets;
+   `v0.1.3-pre.2` assets, then the pinned cert-manager and Envoy Gateway
+   controllers for private Agent Gateway routing;
 2. imports digest-resolved OpenShell, OCE controller, Agent runtime, and
    PostgreSQL images;
 3. creates `oce-system` and installs PostgreSQL, one central OpenShell Gateway
    for the cluster, and the OCE Helm release there;
 4. exposes a labeled development proxy through a loopback-only k3d port map;
-   and
 5. waits for the bootstrap Namespace and its OpenShell Workspace to become
-   ready.
+   ready; and
+6. writes kubeconfig and the administrator service key to private state.
 
 OpenShell's Agent Sandbox controller remains in its upstream
 `agent-sandbox-system` Namespace. OCC runs in the cluster and creates tenant
 Workspaces, Sandbox resources, and Agent Pods in separate OCC-owned `oce-*`
 Namespaces.
 
+To keep PostgreSQL, the OCC API, and the Kubernetes worker in Compose, set
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` with the same OpenShell selection. This
+profile also installs the pinned private Envoy route in k3d. It mounts the
+route's service key and public CA only into the Compose controller and
+`worker-kubernetes`, then records the k3d node hostname and Envoy NodePort in
+the Installation. Do not run the separate manual hybrid-routing procedure for
+this OpenShell profile.
+
 The first start requires network access. To use reviewed local assets instead,
-set `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
+set
+`OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
@@ -267,9 +276,9 @@ In Kubernetes-only mode, the API is reachable only through the loopback k3d
 publication, whose Service selects a dedicated in-cluster proxy admitted by
 exact Namespace and Pod labels in the OCE Helm NetworkPolicy. The OCE API itself
 remains a ClusterIP Service, and the worker authenticates to Kubernetes
-in-cluster. With OpenShell, the API (which registers credential sources) and the
-worker reach OpenShell Gateway through a narrow development NetworkPolicy in
-`oce-system`.
+in-cluster. With OpenShell, the API (which registers credential sources), the
+worker, and dedicated Agent Gateways reach OpenShell Gateway through a narrow
+development NetworkPolicy in `oce-system`.
 
 The launcher sets
 [`network.pluginStatusProxySourceCidrs`](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
@@ -418,6 +427,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.3-pre.1` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.3-pre.2` remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

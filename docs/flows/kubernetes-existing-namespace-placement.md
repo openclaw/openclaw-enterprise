@@ -140,7 +140,7 @@ complete-deletion lifecycle.
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
   through the resolved namespace.
-- Run `node --test tests/integration/kubernetes-compute-real.test.mjs` against
+- Run `node --test tests/integration/kubernetes-compute-provisioning-real.test.mjs` against
   the explicitly selected disposable cluster documented in `AGENTS.md`.
   Missing cluster infrastructure is an explicit verification gap.
 

@@ -38,7 +38,7 @@ async function writeJson(path, value) {
 }
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
-  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.158.0" });
+  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.160.0" });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
   assert.deepEqual(profile.architectures, runtimeDefaultBaseline.architectures);
@@ -160,7 +160,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.158.0",
+      "0.160.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -178,7 +178,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.158.0");
+  assert.equal(provenance.codexVersion, "0.160.0");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -191,7 +191,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.158.0",
+      "0.160.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -285,6 +285,13 @@ async function withMockedPollClock(t, operation) {
   }
 }
 
+function probeEvidence(args, stage, exit, entered, detail = "") {
+  const nonce = args.at(-1).match(/OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):START/)?.[1];
+  assert.ok(nonce, "the owning helper must generate an invocation binding");
+  const prefix = `OCE_SANDBOX_PROBE_V1:${nonce}:`;
+  return `${prefix}START\n${entered ? `${prefix}ENTERED\n` : ""}${detail ? `${detail}\n` : ""}${prefix}END:${stage}:${exit}\n`;
+}
+
 // Exercise the real preparation/cleanup path with injected command responses.
 // These ordered API observations are synthetic, not a claimed live Pod transition.
 async function missingProfileFixture(t, observations, options = {}) {
@@ -301,6 +308,7 @@ async function missingProfileFixture(t, observations, options = {}) {
   let installedProfile;
   let missingReads = 0;
   let cleanupCalls = 0;
+  let installations = 0;
   const execFile = async (command, args) => {
     // Like a real child process, every injected command completes on a later turn.
     // This also lets withMockedPollClock's guard run between polls: a poll loop
@@ -368,12 +376,24 @@ async function missingProfileFixture(t, observations, options = {}) {
       }
       if (args.includes("exec")) {
         const name = args[args.indexOf("exec") + 1];
+        if (options.probeExec) {
+          return options.probeExec(args, {
+            baseline: !applied.get(name).spec.containers[0].securityContext.seccompProfile,
+            root,
+          });
+        }
         if (!applied.get(name).spec.containers[0].securityContext.seccompProfile) {
-          const error = new Error("RuntimeDefault denied namespace creation");
-          error.stderr = "bwrap namespace denied by seccomp";
+          const error = Object.assign(new Error("RuntimeDefault denied namespace creation"), {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+          });
+          error.stderr =
+            options.baselineStderr ??
+            probeEvidence(args, "SANDBOX", 1, false, "bwrap namespace denied by seccomp");
           throw error;
         }
-        return { stdout: "", stderr: "" };
+        return { stdout: "", stderr: probeEvidence(args, "DONE", 0, true) };
       }
     }
     if (command === "docker") {
@@ -385,6 +405,7 @@ async function missingProfileFixture(t, observations, options = {}) {
         };
       }
       if (args[0] === "cp") {
+        installations += 1;
         installedProfile = JSON.parse(await readFile(args[1], "utf8"));
         return { stdout: "", stderr: "" };
       }
@@ -411,6 +432,7 @@ async function missingProfileFixture(t, observations, options = {}) {
         }),
       ),
     reads: () => missingReads,
+    installations: () => installations,
     async assertCleanup() {
       assert.equal(cleanupCalls, 1);
       assert.equal(
@@ -543,5 +565,245 @@ for (const [label, message] of [
     await assert.rejects(control.run, /Timed out waiting for Pod .* to fail closed/);
     assert.equal(control.reads(), 1);
     await control.assertCleanup();
+  });
+}
+
+for (const [label, diagnostic] of [
+  ["Forbidden", 'Error from server (Forbidden): cannot exec in namespace "synthetic"'],
+  ["NotFound", 'Error from server (NotFound): pod absent in namespace "synthetic"'],
+]) {
+  test(`baseline origin refuses Kubernetes ${label} before profile installation`, async (t) => {
+    const control = await missingProfileFixture(t, [missingProfileWaiting], {
+      baselineStderr: diagnostic,
+    });
+    await assert.rejects(control.run, /./, "a client error must not qualify the baseline denial");
+    assert.equal(control.installations(), 0);
+    await control.assertCleanup();
+  });
+}
+
+for (const [label, alter, extra] of [
+  ["wrong nonce", (text) => text.replaceAll(/:[a-f0-9]{32}:/g, `:${"0".repeat(32)}:`)],
+  ["duplicate terminal", (text) => text + text.split("\n").at(-2) + "\n"],
+  ["partial terminal", (text) => text.slice(0, -1)],
+  ["oversized output", (text) => text + "x".repeat(4097)],
+  ["unexpected stage", (text) => text.replace("END:SANDBOX", "END:OTHER")],
+  ["wrong exit", (text) => text.replace("END:SANDBOX:1", "END:SANDBOX:127")],
+  [
+    "entered payload",
+    (text) => text.replace("START\n", "START\n" + text.split("START")[0] + "ENTERED\n"),
+  ],
+  ["version failure", (text) => text.replace("END:SANDBOX:1", "END:VERSION:64")],
+  ["contradictory exit", (text) => text, { exitCode: 2 }],
+  ["missing exit", (text) => text, { exitCode: undefined }],
+  ["missing signal", (text) => text, { signal: undefined }],
+  ["contradictory code fields", (text) => text, { code: 2 }],
+  ["non-numeric status", (text) => text, { exitCode: "1" }],
+  ["killed process", (text) => text, { killed: true }],
+  ["timeout", (text) => text, { timedOut: true }],
+  ["signal", (text) => text, { signal: "SIGTERM" }],
+  ["success-shaped failure", (text) => text.replace("END:SANDBOX:1", "END:DONE:0")],
+]) {
+  test(`baseline origin refuses ${label} and preserves cleanup`, async (t) => {
+    const control = await missingProfileFixture(t, [missingProfileWaiting], {
+      probeExec(args) {
+        const error = Object.assign(new Error("probe rejected"), {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+        });
+        error.stderr = alter(probeEvidence(args, "SANDBOX", 1, false, "bwrap namespace denied"));
+        Object.assign(error, extra);
+        throw error;
+      },
+    });
+    await assert.rejects(control.run, /probe rejected/);
+    assert.equal(control.installations(), 0);
+    await control.assertCleanup();
+  });
+}
+
+// The real helper generates the shell. Only its two resource roots are remapped
+// into this fixture. The injected codex executable is inert: no sandbox, cluster
+// or provider is run. Successful payload execution uses an ordinary read-only file
+// to model the tested outside-workspace refusal; this is not isolation evidence.
+async function runGeneratedProbe(args, root, mode) {
+  const expectedVersion = args
+    .at(-1)
+    .match(/if \[ "\$version" != "([0-9]+\.[0-9]+\.[0-9]+)" \]/)?.[1];
+  assert.ok(expectedVersion, "generated probe declares its selected Codex version");
+  const tools = join(root, "tools");
+  await mkdir(tools, { recursive: true });
+  const codex = join(tools, "codex");
+  await writeFile(
+    codex,
+    `#!/bin/sh
+if [ "$1" = --version ]; then
+  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex ${expectedVersion}'; fi
+  exit 0
+fi
+case "$PROBE_MODE" in
+  denied) echo 'bwrap: creating new namespace: Operation not permitted' >&2; exit 1 ;;
+  unknown) echo 'synthetic unexplained failure' >&2; exit 1 ;;
+  timeout) exit 124 ;;
+  missing) exit 127 ;;
+esac
+for arg do payload="$arg"; done
+chmod 400 "$PROBE_ROOT/home/codex-seccomp-outside"
+/bin/sh -c "$payload"
+result=$?
+chmod 600 "$PROBE_ROOT/home/codex-seccomp-outside"
+if [ "$PROBE_MODE" = assertion ]; then echo changed > "$PROBE_ROOT/home/codex-seccomp-outside"; fi
+exit "$result"
+`,
+    { mode: 0o700 },
+  );
+  const command = args
+    .at(-1)
+    .replaceAll("/home/node", join(root, "home"))
+    .replaceAll("/workspace", join(root, "workspace"));
+  const result = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 8192,
+    env: { PATH: `${tools}:/usr/bin:/bin`, PROBE_MODE: mode, PROBE_ROOT: root },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  if (result.status !== 0) {
+    const error = new Error("generated probe failed");
+    Object.assign(error, {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.status,
+      signal: result.signal,
+      timedOut: false,
+    });
+    throw error;
+  }
+  return { stdout: result.stdout, stderr: result.stderr };
+}
+
+for (const [mode, expectedStage] of [
+  ["version", "VERSION"],
+  ["unknown", "SANDBOX"],
+  ["timeout", "SANDBOX"],
+  ["missing", "SANDBOX"],
+  ["assertion", "ASSERTIONS"],
+]) {
+  test(`generated probe ${mode} refuses profile qualification with fixed stage`, async (t) => {
+    const control = await missingProfileFixture(t, [missingProfileWaiting], {
+      probeExec: (args, { root }) => runGeneratedProbe(args, root, mode),
+    });
+    await assert.rejects(control.run, (error) => {
+      assert.equal(error.codexSandboxProbe?.stage, expectedStage);
+      return true;
+    });
+    assert.equal(control.installations(), 0);
+    await control.assertCleanup();
+  });
+}
+
+test("generated negative and positive probes complete the real profile preparation path", async (t) => {
+  const control = await missingProfileFixture(t, [missingProfileWaiting], {
+    probeExec: (args, { baseline, root }) =>
+      runGeneratedProbe(args, root, baseline ? "denied" : "success"),
+  });
+  const result = await control.run();
+  assert.equal(result.profileName, "openclaw/codex-bwrap.json");
+  assert.equal(control.installations(), 1);
+  await control.assertCleanup();
+});
+
+test("a client success without completed probe evidence does not qualify a positive", async (t) => {
+  const control = await missingProfileFixture(t, [missingProfileWaiting], {
+    probeExec: async () => ({ stdout: "", stderr: "" }),
+  });
+  await assert.rejects(control.run, /complete invocation-bound success evidence/);
+  assert.equal(control.installations(), 0);
+  await control.assertCleanup();
+});
+
+for (const mode of ["exit1", "exit2", "signal", "done_error", "success"]) {
+  test(`actual preparation adapter binds probe evidence to ${mode}`, async (t) => {
+    const root = await fixture(t);
+    const state = join(root, "state");
+    const tools = join(root, "tools");
+    const reached = join(root, "profile-derivation");
+    await mkdir(state, { mode: 0o700 });
+    await mkdir(tools, { mode: 0o700 });
+    const dockerHost = "unix:///tmp/inert-probe-fixture.sock";
+    await writeFile(join(state, ".openclaw-development"), "openclaw-enterprise-development-v3\n", {
+      mode: 0o600,
+    });
+    await writeJson(join(state, "state.json"), {
+      version: 3,
+      repository: repositoryRoot,
+      computeDriver: "kubernetes",
+      deploymentMode: "k3d",
+      sandboxDriver: "none",
+      containerEngine: "docker",
+      cluster: "occ-dev-origin-fixture",
+      dockerHost,
+    });
+    await writeFile(join(state, "kubeconfig"), "{}\n", { mode: 0o600 });
+    // These are inert external commands. The actual preparation entrypoint owns
+    // the execFile callback and error propagation; no Kubernetes or Docker runs.
+    await writeFile(
+      join(tools, "kubectl"),
+      `#!${process.execPath}
+const args = process.argv.slice(2);
+const a = args.slice(args.indexOf('--request-timeout') + 2);
+if (a[0] === 'get' && a[1] === 'nodes') {
+  process.stdout.write(JSON.stringify({items:[{metadata:{name:'k3d-occ-dev-origin-fixture-server-0'}}]}));
+} else if (a[0] === 'get' && a[1] === 'pod') {
+  process.stdout.write(JSON.stringify({status:{containerStatuses:[{name:'probe',ready:true,containerID:'containerd://fixture'}]}}));
+} else if (a[0] === 'exec') {
+  const nonce = a.at(-1).match(/OCE_SANDBOX_PROBE_V1:([a-f0-9]{32}):START/)[1];
+  const prefix = 'OCE_SANDBOX_PROBE_V1:' + nonce + ':';
+  process.stderr.write(prefix + 'START\\n');
+  if (['done_error','success'].includes(process.env.PROBE_MODE)) {
+    process.stderr.write(prefix + 'ENTERED\\n' + prefix + 'END:DONE:0\\n');
+  } else {
+    process.stderr.write('bwrap: namespace: Operation not permitted\\n' + prefix + 'END:SANDBOX:1\\n');
+  }
+  if (process.env.PROBE_MODE === 'signal') process.kill(process.pid, 'SIGTERM');
+  else process.exit(process.env.PROBE_MODE === 'success' ? 0 : process.env.PROBE_MODE === 'exit2' ? 2 : 1);
+}
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      join(tools, "docker"),
+      `#!${process.execPath}
+require('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
+process.exit(71);
+`,
+      { mode: 0o700 },
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(repositoryRoot, "scripts/prepare-development-codex-seccomp.mjs"),
+        state,
+        `registry.invalid/runtime@sha256:${"a".repeat(64)}`,
+        "5",
+      ],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        timeout: 15_000,
+        maxBuffer: 8192,
+        env: { PATH: tools, DOCKER_HOST: dockerHost, PROBE_MODE: mode, PROBE_REACHED: reached },
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    if (mode === "exit1") {
+      assert.equal(await readFile(reached, "utf8"), "reached");
+    } else {
+      await assert.rejects(() => readFile(reached, "utf8"), { code: "ENOENT" });
+    }
+    assert.equal(result.status, mode === "success" ? 0 : 1);
   });
 }

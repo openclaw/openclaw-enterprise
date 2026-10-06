@@ -94,6 +94,16 @@ principal. OCC token verification, identity exchange, and ServicePrincipal
 workload authentication through the controller API remain deferred. Ordinary
 service keys are deliberately unavailable to Agent-owned principals.
 
+A Kubernetes ServiceAccount token is evidence from its issuing cluster and
+ServiceAccount; it is not a portable OCE Agent identity. In particular, a
+Gateway and dedicated Harness in different cluster trust domains cannot use one
+cluster's ServiceAccount as their shared identity. A future workload-authentication
+path must verify each environment's local evidence, exchange it for a
+short-lived credential scoped to the existing OCE Agent ServicePrincipal and
+revision, and authenticate the Gateway and Harness independently. Until OCC has
+that verifier, exchange, authorization, and a runtime client, projecting the
+token does not authenticate an Agent request.
+
 An unknown identity is denied. Email addresses, display names, caller-supplied
 identity headers, or membership in another Namespace do not grant access.
 

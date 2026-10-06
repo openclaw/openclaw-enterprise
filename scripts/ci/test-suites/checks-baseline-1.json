@@ -251,7 +251,10 @@
       "path": "tests/integration/production-image-upgrade.test.mjs"
     },
     {
-      "path": "tests/integration/sandbox-driver-startup.test.mjs"
+      "path": "tests/integration/sandbox-driver-startup.test.mjs",
+      "expectedTests": [
+        "OpenShell reconciles renewed workspace-node setup into its revision provider"
+      ]
     },
     {
       "path": "tests/integration/secret-api.test.mjs"
@@ -283,7 +286,6 @@
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
         "dev-up applies per-image overrides on top of the shared runtime image",
-        "Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell",
         "Kubernetes dev-up rejects an unsupported control-plane selection",
         "dev-up rejects a public controller port rendered by real Compose",
         "dev-up refuses an existing key destination before invoking Compose",

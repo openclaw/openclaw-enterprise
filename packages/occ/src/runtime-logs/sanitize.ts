@@ -389,7 +389,7 @@ const CODEX_SOCKET_ADDRESS = String.raw`(?:\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:.
 // OS error, an HTTP status code and reason (never the body), or a proxy, URL or TLS
 // diagnostic. Anchored to the kinds so a changed error type falls back to withholding.
 const CODEX_CONNECT_ERROR = String.raw`(?:Connection closed normally|Trying to work with closed connection|Write buffer is full|Attack attempt detected|(?:IO|TLS|URL|HTTP|HTTP format|UTF-8 encoding) error: [^\n]{1,1000}|WebSocket protocol error: [^\n]{1,1000}|Space limit exceeded: [^\n]{1,1000})`;
-// Reviewed fixed-format diagnostics (codex-cli 0.158.0) from targets that also log
+// Reviewed fixed-format diagnostics (codex-cli 0.160.0) from targets that also log
 // payloads, so the target as a whole is never kept: `responses_websocket` logs
 // `failed to parse websocket event: <err>, data: <event>`, and the network proxy logs
 // the hosts and paths of sandboxed requests. The variable parts allowed here are a

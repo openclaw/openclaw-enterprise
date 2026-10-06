@@ -279,7 +279,7 @@ Gateway supplies the model key. The upstream OpenShell Gateway must still
 support the app-server token Secret reference and projected workload identity
 the admitted workload requires; stock OpenShell incompatibilities fail
 explicitly, and test bridges do not establish turnkey production support. See its
-[upstream preconditions](drivers/openshell-sandbox.md#current-upstream-preconditions).
+[qualification contract](drivers/openshell-sandbox.md#qualification-contract).
 
 ### Native worker support
 

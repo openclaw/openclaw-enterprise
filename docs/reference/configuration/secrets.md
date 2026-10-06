@@ -159,7 +159,7 @@ Configuration JSON; per-channel overrides still take precedence. The API stores
 the supplied native document unchanged, so API clients should include the
 chat-type setting shown above. Save and redeploy to apply a change.
 
-The console exposes **Direct-message policy** and **Allowed DM user IDs**
+The console exposes **Direct-message policy** and **Allowed people in direct messages**
 separately from channel access. New setup selects `allowlist` and requires sender
 IDs before saving; choose `disabled` for channel-only access. `pairing` admits
 approved senders, with optional preapproved IDs. Selecting `open` writes

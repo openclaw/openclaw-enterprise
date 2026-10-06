@@ -16,6 +16,7 @@ import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -116,29 +117,17 @@ test("service API keys authenticate scoped automation without replacing sessions
   const path = `/namespaces/${namespaceId}`;
   const principal = { kind: "service_principal", id: `sp_${randomUUID()}`, namespaceId };
   policy.identities.push(principal);
-  policy.roles.push({
+  grantRole(policy, principal.id, {
     id: "tenant-automation",
+    bindingId: "service-automation",
     namespaceId,
-    permissions: [
-      { action: "read", resourceKind: "namespace" },
-      { action: "create", resourceKind: "configuration" },
-      { action: "delete", resourceKind: "configuration" },
-      { action: "create", resourceKind: "secret" },
-      { action: "read", resourceKind: "secret" },
-      { action: "update", resourceKind: "secret" },
-      { action: "delete", resourceKind: "secret" },
-      { action: "read", resourceKind: "preset" },
-      { action: "read", resourceKind: "agent" },
-      { action: "operate", resourceKind: "agent" },
-      { action: "delete", resourceKind: "agent" },
-    ],
-  });
-  policy.bindings.push({
-    id: "service-automation",
-    namespaceId,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "tenant-automation",
+    permissions: {
+      namespace: ["read"],
+      configuration: ["create", "delete"],
+      secret: ["create", "read", "update", "delete"],
+      preset: ["read"],
+      agent: ["read", "operate", "delete"],
+    },
   });
   const body = { servicePrincipalId: principal.id, namespaceId, name: "tenant-automation" };
   const issue = () => request("POST", "/api/auth/service-keys", { body });
@@ -228,33 +217,16 @@ test("service API keys authenticate scoped automation without replacing sessions
     // not the bootstrap administrator Role, so the key cannot reach other data.
     const installationPrincipal = { kind: "service_principal", id: `sp_${randomUUID()}` };
     policy.identities.push(installationPrincipal);
-    policy.roles.push(
-      {
-        id: "cli-installation-iam-administrator",
-        permissions: [{ action: "administer", resourceKind: "installation" }],
-      },
-      {
-        id: "cli-installation-namespace-reader",
-        namespaceId,
-        permissions: [{ action: "read", resourceKind: "namespace" }],
-      },
-    );
-    policy.bindings.push({
+    grantRole(policy, installationPrincipal.id, {
       id: "cli-installation-iam-administrator",
-      subjectKind: "identity",
-      subjectId: installationPrincipal.id,
-      roleId: "cli-installation-iam-administrator",
-      resourceKind: "installation",
-      resourceId: installationId,
+      permissions: { installation: ["administer"] },
+      resource: { kind: "installation", id: installationId },
     });
-    policy.bindings.push({
+    grantRole(policy, installationPrincipal.id, {
       id: "cli-installation-namespace-reader",
       namespaceId,
-      subjectKind: "identity",
-      subjectId: installationPrincipal.id,
-      roleId: "cli-installation-namespace-reader",
-      resourceKind: "namespace",
-      resourceId: namespaceId,
+      permissions: { namespace: ["read"] },
+      resource: { kind: "namespace", id: namespaceId },
     });
     const adminKey = await request("POST", "/api/auth/service-keys", {
       body: { servicePrincipalId: installationPrincipal.id, name: "cli-installation-admin" },
@@ -395,14 +367,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       id: "cli-model-consumer",
       permissions: [{ action: "operate", resourceKind: "secret" }],
     });
-    policy.bindings.push({
+    bindRole(policy, boundAgent.servicePrincipalId, {
       id: "cli-model-consumer",
-      subjectKind: "identity",
-      subjectId: boundAgent.servicePrincipalId,
       roleId: "cli-model-consumer",
       namespaceId,
-      resourceKind: "secret",
-      resourceId: source.id,
+      resource: { kind: "secret", id: source.id },
     });
     const roleCreated = await run(
       occCli,
@@ -422,19 +391,11 @@ test("service API keys authenticate scoped automation without replacing sessions
       env: adminEnv,
     });
     assert.deepEqual(JSON.parse(roleRead.stdout), role);
-    policy.roles.push({
+    grantRole(policy, installationPrincipal.id, {
       id: "cli-installation-secret-reader",
       namespaceId,
-      permissions: [{ action: "read", resourceKind: "secret" }],
-    });
-    policy.bindings.push({
-      id: "cli-installation-secret-reader",
-      namespaceId,
-      subjectKind: "identity",
-      subjectId: installationPrincipal.id,
-      roleId: "cli-installation-secret-reader",
-      resourceKind: "secret",
-      resourceId: cliSecret.id,
+      permissions: { secret: ["read"] },
+      resource: { kind: "secret", id: cliSecret.id },
     });
     const bindingFile = join(directory, "binding.json");
     await writeFile(
@@ -496,17 +457,10 @@ test("service API keys authenticate scoped automation without replacing sessions
 
     // This Installation selects no Credential Gateway: the CLI names it and the reference
     // instead of an opaque dependency failure.
-    policy.roles.push({
+    grantRole(policy, principal.id, {
       id: "cli-credential-source-creator",
       namespaceId,
-      permissions: [{ action: "create", resourceKind: "credential_source" }],
-    });
-    policy.bindings.push({
-      id: "cli-credential-source-creator",
-      namespaceId,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "cli-credential-source-creator",
+      permissions: { credential_source: ["create"] },
     });
     const sourceFile = join(directory, "credential-source.json");
     await writeFile(sourceFile, JSON.stringify({ name: "openai-key", type: "openai" }), {
@@ -658,12 +612,10 @@ test("service API keys authenticate scoped automation without replacing sessions
     policy.restrictions.length = 0;
     assert.equal((await request("GET", path, { headers })).status, 200);
     // Even an administrative Role cannot widen a credential's fixed Namespace.
-    policy.bindings.push({
+    bindRole(policy, principal.id, {
       id: "namespace-service-admin",
-      namespaceId,
-      subjectKind: "identity",
-      subjectId: principal.id,
       roleId: seed.bindings[0].roleId,
+      namespaceId,
     });
     await assertServiceKeyManagementDenied(headers, issued, 403);
     policy.bindings.pop();
@@ -684,15 +636,10 @@ test("service API keys authenticate scoped automation without replacing sessions
     async () => {
       const installationPrincipal = { kind: "service_principal", id: `sp_${randomUUID()}` };
       policy.identities.push(installationPrincipal);
-      policy.roles.push({
+      grantRole(policy, installationPrincipal.id, {
         id: "installation-reader",
-        permissions: [{ action: "read", resourceKind: "installation" }],
-      });
-      policy.bindings.push({
-        id: "installation-service-reader",
-        subjectKind: "identity",
-        subjectId: installationPrincipal.id,
-        roleId: "installation-reader",
+        bindingId: "installation-service-reader",
+        permissions: { installation: ["read"] },
       });
       const created = await request("POST", "/api/auth/service-keys", {
         body: { servicePrincipalId: installationPrincipal.id, name: "installation-reader" },
@@ -943,12 +890,10 @@ test("service API keys authenticate scoped automation without replacing sessions
     // Each altered subject below holds the same Namespace grant as the issued key.
     const grant = (identity) => {
       policy.identities.push(identity);
-      policy.bindings.push({
+      bindRole(policy, identity.id, {
         id: `altered-${identity.id}`,
-        namespaceId,
-        subjectKind: "identity",
-        subjectId: identity.id,
         roleId: "tenant-automation",
+        namespaceId,
       });
     };
     const agentPrincipal = {
@@ -1200,22 +1145,12 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
     namespaceId: namespace.data.id,
   };
   policy.identities.push(logReader);
-  policy.roles.push({
+  grantRole(policy, logReader.id, {
     id: "agent-log-reader",
+    bindingId: "agent-log-reader-binding",
     namespaceId: namespace.data.id,
-    permissions: [
-      { action: "read", resourceKind: "agent" },
-      { action: "read_logs", resourceKind: "agent" },
-    ],
-  });
-  policy.bindings.push({
-    id: "agent-log-reader-binding",
-    namespaceId: namespace.data.id,
-    subjectKind: "identity",
-    subjectId: logReader.id,
-    roleId: "agent-log-reader",
-    resourceKind: "agent",
-    resourceId: `agt_${randomUUID()}`,
+    permissions: { agent: ["read", "read_logs"] },
+    resource: { kind: "agent", id: `agt_${randomUUID()}` },
   });
   const logReaderKey = await request("POST", "/api/auth/service-keys", {
     headers: asAdmin,

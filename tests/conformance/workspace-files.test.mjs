@@ -9,6 +9,7 @@ import {
   createTenantReaderFixture,
   tenantRequest as request,
 } from "../helpers/tenant-reader-app.mjs";
+import { bindRole } from "../helpers/iam-grants.mjs";
 
 const installationId = "ins_4033697e-6397-4cc6-9b04-8ec17af78cf1";
 const publicOrigin = "http://127.0.0.1";
@@ -108,14 +109,11 @@ async function createAgent(fixture, namespace, name) {
     id: `model-${agent.id}`,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
-  fixture.state.bindings.push({
+  bindRole(fixture.state, agent.servicePrincipalId, {
     id: `model-${agent.id}`,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
     roleId: `model-${agent.id}`,
     namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: secret.id,
+    resource: { kind: "secret", id: secret.id },
   });
   const deployed = await request(
     fixture.app,

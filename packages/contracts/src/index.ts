@@ -988,20 +988,35 @@ export type SandboxEnvironmentVariable =
       };
     };
 
-export interface HarnessWorkloadRequirements {
-  readonly loginMode: HarnessAuthBinding["method"];
-  readonly image: string;
-  readonly command: readonly string[];
+export interface SandboxWorkloadFile {
+  /** Safe logical name; the Sandbox implementation selects the absolute workload path. */
+  readonly name: string;
+  /** Immutable, non-secret UTF-8 content admitted with the revision. */
+  readonly content: string;
+  /** Environment variable through which the workload opens the implementation-selected path. */
+  readonly environmentVariable: string;
+}
+
+export interface SandboxWorkloadIdentity {
   readonly serviceAccountName: string;
-  readonly serviceAccountToken: {
+  readonly token: {
     readonly audience: string;
     readonly expirationSeconds: number;
     readonly mountPath: string;
     readonly path: string;
     readonly readOnly: true;
   };
+}
+
+export interface HarnessWorkloadRequirements {
+  readonly loginMode: HarnessAuthBinding["method"];
+  readonly image: string;
+  readonly command: readonly string[];
+  /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
+  readonly workloadIdentity?: SandboxWorkloadIdentity;
   readonly workspaceMounts: readonly SandboxWorkspaceMount[];
   readonly environment: readonly SandboxEnvironmentVariable[];
+  readonly files: readonly SandboxWorkloadFile[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
   readonly labels: Readonly<Record<string, string>>;
@@ -1012,6 +1027,13 @@ export interface SandboxResourceRef {
   readonly resourceName: string;
   readonly agentId: string;
   readonly revisionId: string;
+}
+
+/** Provider-owned endpoint through which the Agent Gateway reaches its dedicated Harness. */
+export interface SandboxHarnessEndpoint {
+  readonly url: string;
+  /** Provider-local workspace root served by the Harness workspace node. */
+  readonly workspaceRoot?: string;
 }
 
 export interface SandboxNamespaceContext {
@@ -1281,6 +1303,12 @@ export interface SandboxDriver extends Driver {
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
   /**
+   * Returns the provider-owned transport for the exact provisioned Harness. When present,
+   * Compute must route the Agent Gateway through this endpoint instead of its native Harness
+   * Service. Implementations must fail closed until the endpoint is observable and exact.
+   */
+  harnessEndpoint?(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint>;
+  /**
    * The exact Sandbox `provisionHarness` creates for this revision, derived without effects.
    * Required to revoke credentials from a running revision.
    */
@@ -1427,6 +1455,20 @@ export interface ComputeReadiness extends Scope {
   /** Only on an unready observation; the worker ignores unknown values. */
   readonly pendingReason?: ComputePendingReason;
   readonly repositoryCredentialMaterialMissing?: readonly RepositoryCredentialMaterialRef[];
+}
+
+/** Safe operational context for one failed Compute preparation attempt. */
+export interface ComputePrepareRevisionFailureDiagnostic {
+  /** Stable Driver-owned reason code; never a provider response or credential value. */
+  readonly code: string;
+  /** Stable preparation stage that identifies the failed reconciliation boundary. */
+  readonly stage: string;
+  /** Reviewed error classification, not an arbitrary constructor or provider value. */
+  readonly errorClass?: string;
+  /** Optional bounded, non-secret operator explanation. */
+  readonly message?: string;
+  /** Optional dependency status code when it is safe and meaningful. */
+  readonly status?: number;
 }
 
 /** Authorized, server-admitted resource identities for an Agent-owned runtime. */
@@ -1787,6 +1829,10 @@ export interface ComputeDriver extends Driver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness>;
+  /** Maps a rejected preparation to bounded operational fields; never return raw errors. */
+  describePrepareRevisionFailure?(
+    error: unknown,
+  ): ComputePrepareRevisionFailureDiagnostic | undefined;
   activateRevision?(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void>;
   deactivateRevision?(revision: AgentRevision): Promise<void>;
   stopRevision(revision: AgentRevision): Promise<void>;

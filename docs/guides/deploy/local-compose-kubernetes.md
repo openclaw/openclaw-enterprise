@@ -1,8 +1,14 @@
 # Connect a Compose control plane to Kubernetes Agents
 
-Start the [Compose + k3d profile](local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute), then configure private routing **before creating Agent Namespaces**. This supplies the route and node enrollment required by Standard Codex while PostgreSQL, OCC and its worker remain in Compose. Standard OpenClaw uses embedded compute.
+Use this manual procedure for the Compose + k3d profile with
+`OCC_DEVELOPMENT_SANDBOX_DRIVER=none`. It supplies the private route and node
+enrollment required by Standard Codex while PostgreSQL, OCC and its worker
+remain in Compose. Standard OpenClaw uses embedded compute.
 
-This procedure is for one disposable Docker/k3d installation. Keep its generated files private and retain the same state directory, project and cluster for cleanup. Do not apply it to a shared cluster. The launcher does not perform these routing steps.
+The OpenShell Compose profile performs these routing steps during `dev-up`; do
+not repeat them manually. This procedure is for one disposable Docker/k3d
+installation. Keep its generated files private and retain the same state
+directory, project and cluster for cleanup. Do not apply it to a shared cluster.
 
 ## Select the owned installation
 

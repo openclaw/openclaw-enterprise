@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestWaitForCRDEstablishedRetriesWhileConditionsAreNil(t *testing.T) {
+func TestWaitDevelopmentCRDEstablishedRetriesWhileConditionsAreNil(t *testing.T) {
 	// kubectl wait exits immediately when status.conditions is nil, before its
 	// timeout. A CRD that has just been applied is in that state. Startup must
 	// read the object again and continue until Established is True.
@@ -36,7 +36,7 @@ func TestWaitForCRDEstablishedRetriesWhileConditionsAreNil(t *testing.T) {
 	installFakeKubectl(t, script)
 	runner := newRunner(Options{Repository: t.TempDir()})
 
-	if err := runner.waitForCRDEstablished(context.Background(), "securitypolicies.gateway.envoyproxy.io", 3*time.Second); err != nil {
+	if err := runner.waitDevelopmentCRDEstablished(context.Background(), "securitypolicies.gateway.envoyproxy.io", 3*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	calls, err := os.ReadFile(log)
@@ -48,7 +48,7 @@ func TestWaitForCRDEstablishedRetriesWhileConditionsAreNil(t *testing.T) {
 	}
 }
 
-func TestWaitForCRDEstablishedTimesOutWhileConditionsStayNil(t *testing.T) {
+func TestWaitDevelopmentCRDEstablishedTimesOutWhileConditionsStayNil(t *testing.T) {
 	installFakeKubectl(t, `#!/bin/sh
 case "$*" in
 "get crd securitypolicies.gateway.envoyproxy.io --ignore-not-found -o json")
@@ -58,19 +58,19 @@ case "$*" in
 esac
 `)
 	runner := newRunner(Options{Repository: t.TempDir()})
-	if err := runner.waitForCRDEstablished(context.Background(), "securitypolicies.gateway.envoyproxy.io", 200*time.Millisecond); err == nil {
+	if err := runner.waitDevelopmentCRDEstablished(context.Background(), "securitypolicies.gateway.envoyproxy.io", 200*time.Millisecond); err == nil {
 		t.Fatal("succeeded while conditions stayed nil")
 	}
 }
 
-func TestWaitForCRDEstablishedReturnsKubectlFailure(t *testing.T) {
+func TestWaitDevelopmentCRDEstablishedReturnsKubectlFailure(t *testing.T) {
 	installFakeKubectl(t, `#!/bin/sh
 echo "kubectl get failed" >&2
 exit 1
 `)
 	runner := newRunner(Options{Repository: t.TempDir()})
 	started := time.Now()
-	err := runner.waitForCRDEstablished(context.Background(), "securitypolicies.gateway.envoyproxy.io", 5*time.Second)
+	err := runner.waitDevelopmentCRDEstablished(context.Background(), "securitypolicies.gateway.envoyproxy.io", 5*time.Second)
 	if err == nil {
 		t.Fatal("accepted a failed kubectl read")
 	}

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { open, readFile, rm, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -310,6 +311,12 @@ async function stopWatch(child) {
  * them, before the file exits, so a post-run read cannot recover them. The
  * returned `finish` appends bounded activity to `<state>.diagnostics.json` for
  * passing and failing runs alike and never fails the run.
+ *
+ * Each capture streams to its own files, so files that share a cluster under
+ * fileConcurrency never truncate or delete each other's watches. The watches
+ * are cluster-wide: a file's record then also lists a concurrent sibling's
+ * namespaces and shares its record caps. Callers serialize `finish` with other
+ * writers of the state's diagnostics file.
  */
 export async function startAgentNamespaceCapture({ statePath, lane, file }) {
   let clusters;
@@ -332,9 +339,10 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
   for (const cluster of clusters) {
     const kubectl = cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl";
     const scope = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
+    const capture = randomUUID();
     const paths = {
-      events: join(cluster.directory, "agent-activity-events.ndjson"),
-      pods: join(cluster.directory, "agent-activity-pods.ndjson"),
+      events: join(cluster.directory, `agent-activity-${capture}-events.ndjson`),
+      pods: join(cluster.directory, `agent-activity-${capture}-pods.ndjson`),
     };
     const children = [];
     for (const [kind, path] of Object.entries(paths)) {
@@ -344,7 +352,22 @@ export async function startAgentNamespaceCapture({ statePath, lane, file }) {
           : `/api/v1/events?watch=true&timeoutSeconds=${WATCH_SECONDS}`;
       // The raw watch streams one JSON object per line straight to the cluster's
       // private directory, which cleanup removes; only the projection is kept.
-      const output = await open(path, "w", 0o600);
+      let output;
+      try {
+        output = await open(path, "w", 0o600);
+      } catch (error) {
+        // The caller gets no finish to call: stop the watches already started, whose
+        // running child processes would otherwise keep the runner alive, and drop
+        // their streams.
+        const started = [...watches, { paths, children }];
+        await Promise.all(started.flatMap((watch) => watch.children).map(stopWatch));
+        await Promise.all(
+          started
+            .flatMap((watch) => Object.values(watch.paths))
+            .map((stream) => rm(stream, { force: true })),
+        );
+        throw error;
+      }
       try {
         const child = spawn(kubectl, [...scope, "get", "--raw", query], {
           stdio: ["ignore", output.fd, "ignore"],

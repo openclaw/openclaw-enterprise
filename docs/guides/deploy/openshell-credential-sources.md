@@ -8,11 +8,10 @@ OpenShell keeps its own copy of the key and substitutes it on requests to
 [credential source reference](../../reference/credential-sources.md) defines the
 API behavior.
 
-This profile installs no private gateway routing, so Kubernetes Compute refuses
-every dedicated revision before OpenShell is asked for a Sandbox. The procedure
-proves registration, authorization, and admission. For a real model
-turn with the injected key, run the
-[OpenShell compatibility proof](../../testing/openshell.md#openshell-sandbox).
+The profile installs private Gateway routing, so the deployment provisions an
+OpenShell Sandbox for the dedicated Codex Harness. To run these steps and verify
+a real model turn with the injected key in one command, use
+[Deploy your first Agent](../first-agent.md) with `--harness codex`.
 
 ## Before you start
 
@@ -160,13 +159,11 @@ DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 ```
 
 Expected result: OCC accepts the deployment and freezes
-`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. The
-worker retries, and the status then reaches `failed` with
-`DEPENDENCY_UNAVAILABLE` "Deployment reconciliation failed." On this profile
-that is expected: dedicated Harness storage requires gateway routing and node
-enrollment, which the profile does not install. No Sandbox is created, and the
-Agent's `oce-*` Harness namespace contains no Secret. Without the access
-binding, the deploy request fails with `403`.
+`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. Compute
+starts the Agent Gateway, then OpenShell creates the Sandbox, and the revision
+becomes active once the Harness workspace node connects to the Gateway. Startup
+can take several minutes. Without the access binding, the deploy request fails
+with `403`.
 
 ## Rotate the key
 

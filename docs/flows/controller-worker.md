@@ -40,11 +40,13 @@ graph TD
         F -->|yes| G["Invoke Compute while renewing the claim lease"]
         F -->|no| H["Persist permanent failure under the live claim"]
         G --> I{"Observed result"}
+        G -->|rejected| R["Emit bounded Driver diagnostic"]
     end
     subgraph Outcome["Claim-protected result and next handoff"]
         I -->|ready| J["Publish lifecycle result and complete work"]
         I -->|pending| K["Defer without spending failure budget"]
         I -->|temporary failure| L["Retry within the attempt budget"]
+        R --> L
         I -->|invalid or exhausted| H
         K --> D
         L --> D
@@ -231,6 +233,11 @@ Compute owns infrastructure and Sandbox dispatch. See the
 [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 and [Docker execution flow](docker-compose-development.md).
 
+When `prepareRevision` rejects, the worker asks Compute for an optional bounded
+failure description. Kubernetes names the reconciliation stage and maps only
+reviewed classifications, status codes, and messages. The worker emits
+`worker.compute-prepare-failed`, then preserves the original retry behavior.
+
 ### 6. Persist the result and finish revision activation
 
 `apps/controller/src/worker.ts:ControllerWorker.finalize`,
@@ -357,6 +364,9 @@ failed retry keeps the active runtime.
   `SANDBOX_ADMISSION_LIMIT_REACHED` logs `dependency` and `cause` (`unreachable`,
   `timeout` or `unavailable`); other failures log their error class in `cause` and,
   for HTTP errors, `status`.
+- `worker.compute-prepare-failed` identifies the failed Driver stage without
+  serializing the raw exception. Correlate it by `workId` or `revisionId` with
+  the following `worker.completed` retry.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
   require PostgreSQL; neither proves real model execution.
@@ -398,6 +408,8 @@ failed retry keeps the active runtime.
 - 2026-10-02 06:30: Name Compute's pending reason in deployment progress and slow rechecks for long-pending revisions. (fix-deploy-pending-reasons)
 
 - 2026-10-01 17:20: Point Agent lifecycle admission at its HTTP owner; deployment audit keeps the admitted authorization. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
+
+- 2026-10-01 16:37: Added bounded Compute preparation failure diagnostics without changing retry outcomes. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 - 2026-10-01 04:06: Document metrics client error ownership through release. (authoring-run/d0545dc8-f524-4ce5-a3ce-918838dddd92 - 97dfb6b9)
 

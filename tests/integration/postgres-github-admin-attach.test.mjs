@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   clientAddresses,
   composeProductionSignIn,
@@ -11,6 +9,7 @@ import {
   githubUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -35,13 +34,8 @@ test(
   "Installation administrators attach, detach and re-attach GitHub identities and disable accounts",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const github = await startFakeGitHub(t);
     const address = clientAddresses();
     // Password onboarding on the default install: a second administrator and a reader.

@@ -111,7 +111,7 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 
 ## Debugging and Verification
 
-- Follow the returned `data.provisioning.url` or read `GET /namespaces/:namespaceId/agents/provision/:workId`. Failed work reports a safe error; if a Secret or ServiceAccount it uses was deleted, status and retry answer `409` naming it. Explicit retry uses the same URL plus `/retry` and an empty body. Both first check the Namespace-wide provisioning grants (Agent and Configuration `create`, Installation `administer`), so a caller without them gets an audited `403` whether or not the Namespace or work item exists; only the initiating actor can then read or retry the work.
+- Follow the returned `data.provisioning.url` or read `GET /namespaces/:namespaceId/agents/provision/:workId`. Failed work reports a safe error; if a Secret or ServiceAccount it uses was deleted, status and retry answer `409` naming it. Status does not recheck the plugin policy, so after a Plugin Driver switch it still reads while retry answers `400` naming the stored plugin. If the worker meets such a switch, or an Installation without native worker support, it fails the work on that attempt with `PROVISIONING_REJECTED` and the refusal's message instead of retrying it as an unavailable dependency; work with an unsettled external write still retries. Explicit retry uses the same URL plus `/retry` and an empty body. Both first check the Namespace-wide provisioning grants (Agent and Configuration `create`, Installation `administer`), so a caller without them gets an audited `403` whether or not the Namespace or work item exists; only the initiating actor can then read or retry the work.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -130,6 +130,10 @@ While initialization owns an Agent, conflicting edits and manual deployment are 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 05:00: The worker rejects stored plans refused by the current Plugin Driver or runtime image on the first attempt. (audit-1006/provisioning-refusal-class)
+
+- 2026-10-05 23:30: A binding destination failure names the broken rule; a reserved destination also names its key, with a `/configuration/secretBindings/<key>` detail. (findings-sweep-1-api)
 
 - 2026-10-03 15:30: Provisioning rejects reserved binding destinations and cross-Namespace Secret references as invalid requests instead of not-found. (f239/provisioning-binding-validation)
 

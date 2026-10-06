@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: "2026-10-03"
-last_updated_session: authoring-run/59d7541c-66d2-414c-8139-174fca84fe33
+last_updated_session: 01a10328-9de5-7081-ada2-d88ff80161e4
 ---
 
 # Platform console request flow
@@ -201,7 +201,19 @@ Secret server-side. Pagination is upstream; filtering is local. Selecting a plug
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
 `create.mjs:MODEL_CHOICES` supplies unauthenticated static model lists and manual
-entry.
+entry. In `renderAgentForm`, the model-entry button switches `manualModel` and
+calls `updateModelConfiguration` and `updateControls`. Entering manual mode
+keeps `model.value` and clears the hidden dropdown selection.
+Returning to the list uses `resetModelChoices` to rebuild the current provider's
+options, including after Configuration JSON changes the provider. It retains
+the model only if that provider's list contains it; otherwise it clears both
+inputs. Provider and authentication changes call the same reset without a model
+to retain. `model.value` supplies one Configuration model, and submission checks
+that its primary model matches that value.
+`updateControls` updates the button label, visibility, and required input; focus moves
+to that input. Switching back to the list preserves credentials and unrelated
+Configuration values. Saved Configuration and pending-request locks apply to
+both directions.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication; Presets replace the starter unchanged.
@@ -340,6 +352,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
 - 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
 - 2026-10-03 09:42: Track completed GET failures centrally and revalidate their outcomes before restoring a view. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)

@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   attachProvider,
   authRowCounts,
@@ -12,6 +10,7 @@ import {
   githubUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
@@ -38,13 +37,8 @@ test(
   "a GitHub org and team allowlist refuses non-members before the account lookup and fails closed when GitHub cannot answer",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const github = await startFakeGitHub(t);
     let memberships = {};
     // Compare with the fixed paths; never select a handler by the request's own key.

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-02
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-05
+last_updated_session: authoring-run/583f86ae-e997-4586-8fb5-217bb20a1410
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -50,11 +50,14 @@ graph TD
     P --> F["Authorize caller and Agent SP; verify backend"]
     F -->|allowed| G["Freeze references in AgentRevision"]
     F -->|denied or unavailable| X["No admitted deployment"]
-    D --> K{"Local v3 state uses<br/>Kubernetes and Sandbox none?"}
-    K -->|yes| L["Local installer: grant Agent use of this exact Secret"]
-    K -->|no or OpenShell| X
+    D --> K{"Supported local<br/>Kubernetes profile?"}
+    K -->|Sandbox none| L["Grant Agent use of this exact Secret"]
+    K -->|OpenShell and dedicated Codex| M["Register source and grant Agent exact source access"]
+    K -->|unsupported| X
     L --> F
+    M --> F
     L -->|ownership or IAM denied| X
+    M -->|ownership or IAM denied| X
   end
   subgraph Runtime["Worker and Kubernetes"]
     G --> H["Worker resolves OCC metadata for Compute"]
@@ -62,7 +65,7 @@ graph TD
     I --> J["OpenClaw resolves native env SecretRef"]
     I -->|missing material| Y["Gateway cannot become ready"]
     G -->|Agent harnessAuth| W["Harness auth flow delivers to model workload"]
-    W -->|local installer| V["Check model response"]
+    W -->|local installer| V["Discover tenant Gateway and check model response"]
   end
 ```
 
@@ -131,7 +134,7 @@ Model-auth environment destinations are reserved for Agent `harnessAuth`;
 Configuration bindings cannot select or override model credentials in either
 execution topology.
 
-### 4. Grant the first local Agent access to its model Secret
+### 4. Grant the first local Agent access to its model credential
 
 `scripts/first-agent.mjs:main`;
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
@@ -139,9 +142,8 @@ execution topology.
 The [tool](../../scripts/first-agent.mjs) targets the persistent installation
 started with `./bin/occ dev up`. Before invoking Kubernetes or the OCC API, it
 requires the current v3 development marker and state from the same checkout.
-The state must select Kubernetes Compute and
-`sandboxDriver: "none"`. OpenShell state fails with an explicit unsupported-profile
-error because that development profile does not support this model-turn path.
+The state must select Kubernetes Compute. The default `sandboxDriver: "none"`
+path uses embedded OpenClaw; OpenShell requires explicit `--harness codex`.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -149,15 +151,28 @@ plain model ID; a repeat without an override keeps the recorded model, and a
 conflicting override is rejected. Bootstrap already has Secret `operate`; the
 Agent does not.
 
-OCC has no public IAM management endpoint. The tool opens the recorded local
-PostgreSQL service. One transaction verifies the Namespace, Agent, and Secret, then
-grants the Agent's existing principal `operate` on that exact Secret. It verifies
-the bootstrap identity, honors IAM restrictions, and audits a new grant.
+Without OpenShell, the tool opens the recorded local PostgreSQL service. One
+transaction verifies the Namespace, Agent, and Secret, then grants the Agent's
+existing principal `operate` on that exact Secret. It verifies the bootstrap
+identity, honors IAM restrictions, and audits a new grant.
+
+With OpenShell, the tool registers the Secret as an `openai` CredentialSource
+and uses the public Namespace IAM API to grant the Agent principal exact
+`credential_source:operate`. It does not grant Secret access. `--replace-key`
+updates the Secret and asks the Credential Gateway to reread it before deploying
+a new revision. The private helper record freezes the Harness and Sandbox Driver
+choices so a rerun cannot silently change topology.
 
 The tool provisions initial runtime credentials and requests deployment through
-OCC. Once the revision is active, it sends a prompt through the gateway and
-[checks the model response](../../scripts/first-agent-model.mjs). It leaves the
-installation and resources in place on exit.
+OCC. Once the revision is active,
+[`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
+tenant namespace through `openclaw.dev/namespace`. The supported local setup is
+single-cluster, so embedded and dedicated Gateways share that physical namespace
+with the provider-owned Harness. The verifier requires the exact Agent labels,
+revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
+prompt. Kubernetes Compute owns any experimental two-cluster placement; this
+local helper does not infer physical placement from the Agent execution mode.
+The tool leaves the installation and resources in place on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
 <span id="4.-render-only-the-exact-gateway's-projection"></span>
@@ -276,7 +291,14 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-10-05 17:02: Align first-Agent Gateway discovery with the canonical single-cluster tenant namespace. (authoring-run/583f86ae-e997-4586-8fb5-217bb20a1410 - 1d7bd797a941a45c36280b7531ee3051b5cad830)
+
 - 2026-10-02: Canonical sources and role-specific projections share the single-cluster tenant namespace. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
+
+- 2026-10-02 16:00: Discover the first-Agent Gateway from its admitted embedded or dedicated execution placement before checking the model response. (authoring-run/f85f64d4-af40-4918-91ea-2d16640c12b2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
+
+- 2026-10-01: Added the OpenShell dedicated Codex first-Agent path with exact
+  CredentialSource access and no Agent Secret grant.
 
 - 2026-09-25 14:57: Align first-Agent admission and its real fixture with v3 development state, and reject the unsupported OpenShell profile before external calls. (authoring-run/6556d897-be75-463f-b50c-73f3b1fb6d72 - 189c62c993066d52703d2cd7eb896e2c2c01bdc4)
 
