@@ -859,7 +859,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.compute.id = "compute-kubernetes-production";
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
   const pluginStatusProxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
   if (pluginStatusProxyCidrs !== undefined && pluginStatusProxyCidrs.trim().length > 0) {
     configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
@@ -878,7 +878,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "requests.memory": "2Gi",
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
-    "limits.memory": "6Gi",
+    "limits.memory": "12Gi",
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
