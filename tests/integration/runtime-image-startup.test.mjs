@@ -50,6 +50,48 @@ import {
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
 } from "../helpers/runtime-image-startup.mjs";
+// ci-speed-21 experiment only (never lands): CPU timeline and per-case CPU, published as subtest names.
+import { readFileSync as probeRead, readdirSync as probeDir } from "node:fs";
+import { beforeEach as probeBefore, afterEach as probeAfterEach } from "node:test";
+const probeSamples = [];
+const probeMarks = [];
+let probeEmitting = false;
+function probeSnap() {
+  const cpu = probeRead("/proc/stat", "utf8").split("\n")[0].trim().split(/\s+/).slice(1).map(Number);
+  const groups = { self: 0, cli: 0, ctr: 0, shim: 0, dockerd: 0, containerd: 0, other: 0 };
+  for (const pid of probeDir("/proc")) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      const s = probeRead(`/proc/${pid}/stat`, "utf8");
+      const comm = s.slice(s.indexOf("(") + 1, s.lastIndexOf(")"));
+      const r = s.slice(s.lastIndexOf(")") + 2).split(" ");
+      const total = +r[11] + +r[12] + +r[13] + +r[14];
+      let key;
+      if (Number(pid) === process.pid) key = "self";
+      else if (comm === "docker") key = "cli";
+      else if (comm.startsWith("containerd-shim")) key = "shim";
+      else if (comm === "dockerd") key = "dockerd";
+      else if (comm === "containerd") key = "containerd";
+      else {
+        const cg = probeRead(`/proc/${pid}/cgroup`, "utf8");
+        key = /docker[-/][0-9a-f]{12}/.test(cg) && !/buildkit/.test(comm) ? "ctr" : "other";
+      }
+      groups[key] += total;
+    } catch {}
+  }
+  probeSamples.push({ t: Date.now(), cpu, groups });
+}
+probeSnap();
+setInterval(probeSnap, 2_000).unref();
+probeBefore((t) => { if (probeEmitting) return; probeSnap(); probeMarks.push({ name: t.name, start: probeSamples.length - 1 }); });
+probeAfterEach(() => { if (probeEmitting) return; probeSnap(); const m = probeMarks.at(-1); if (m && m.end === undefined) m.end = probeSamples.length - 1; });
+function probeDelta(a, b) {
+  const d = b.cpu.map((v, j) => v - a.cpu[j]);
+  const total = d.reduce((x, y) => x + y, 0) || 1;
+  const idle = d[3] + d[4];
+  const g = Object.keys(b.groups).map((k) => `${k}=${((b.groups[k] - a.groups[k]) / 100).toFixed(1)}`).join(" ");
+  return { busy: (100 * (1 - idle / total)).toFixed(0), iow: d[4], steal: d[7], g, s: ((b.t - a.t) / 1000).toFixed(1) };
+}
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
@@ -2259,3 +2301,22 @@ process.stdout.write("shared-codex-0.160.0-ready\n");
     assert.match(stdout, /shared-codex-0.160.0-ready/);
   },
 );
+
+test("ci-speed-21 probe", async (context) => {
+  probeEmitting = true;
+  probeSnap();
+  const first = probeSamples[0];
+  const lines = [];
+  for (let i = 1; i < probeSamples.length; i++) {
+    const x = probeDelta(probeSamples[i - 1], probeSamples[i]);
+    lines.push(`T t=${Math.round((probeSamples[i].t - first.t) / 1000)} d=${x.s} busy=${x.busy}% iow=${x.iow} steal=${x.steal} ${x.g}`);
+  }
+  for (const m of probeMarks) {
+    if (m.end === undefined) continue;
+    const x = probeDelta(probeSamples[m.start], probeSamples[m.end]);
+    lines.push(`C ${m.name.slice(14, 70)} at=${Math.round((probeSamples[m.start].t - first.t) / 1000)} d=${x.s} busy=${x.busy}% ${x.g}`);
+  }
+  const x = probeDelta(first, probeSamples.at(-1));
+  lines.push(`TOTAL d=${x.s} busy=${x.busy}% ${x.g}`);
+  for (const line of lines) await context.test(line, () => {});
+});
