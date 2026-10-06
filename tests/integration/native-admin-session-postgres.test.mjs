@@ -27,6 +27,7 @@ import {
 } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
@@ -37,6 +38,10 @@ const authBaseURL = publicOrigin;
 const cookieDomain = "example.test";
 const nativeDomain = `native-pg.${cookieDomain}`;
 const nativeGatewayApiKey = `native-postgres-gateway-key-${randomUUID()}`;
+// Production renews every 25 s and bounds each renewal at 5 s, which is the documented
+// 30 s revocation bound. A short interval proves the same renewal path without the wait.
+const leaseIntervalMs = 500;
+const leaseRenewalTimeoutMs = 5_000;
 const requiresPostgres = {
   skip: databaseUrl
     ? false
@@ -251,6 +256,7 @@ async function createApi(t, label, upstreamPort, options = {}) {
       sharedCookieDomain: cookieDomain,
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
+    nativeAdminWebSocketLeaseIntervalMs: leaseIntervalMs,
   });
   app.addHook("onClose", async () => {
     if (!closed) {
@@ -258,7 +264,7 @@ async function createApi(t, label, upstreamPort, options = {}) {
       await pool.end();
     }
   });
-  return { app, auth, controller, state, pool };
+  return { app, auth, controller, iamDriver, state, pool };
 }
 
 async function inject(app, method, url, { session, headers = {}, body } = {}) {
@@ -516,28 +522,29 @@ async function assertNativeWebSocketRejected(port, native, cookie, options = {})
   assert.doesNotMatch(received, /^HTTP\/1\.1 101 /);
 }
 
-async function assertSocketClosesAfterMutation(socket, mutate, timeoutMs = 31_000) {
-  const started = Date.now();
-  const closed = socket.destroyed
-    ? Promise.resolve(true)
-    : Promise.race([once(socket, "close").then(() => true), delay(timeoutMs).then(() => false)]);
+// The socket must survive renewals while its admission holds, then close at the first
+// renewal after the mutation: within one interval plus the renewal's own time bound.
+async function assertSocketClosesAfterMutation(socket, mutate) {
+  await delay(leaseIntervalMs * 2.5);
+  assert.equal(socket.destroyed, false, "an admitted socket must survive lease renewals");
+  const timeoutMs = leaseIntervalMs + leaseRenewalTimeoutMs;
+  let closedAt;
+  const closed = Promise.race([
+    once(socket, "close").then(() => {
+      closedAt = Date.now();
+      return true;
+    }),
+    delay(10_000, false, { ref: false }),
+  ]);
   await mutate();
-  assert.equal(await closed, true, `socket remained open after ${timeoutMs}ms`);
-  const closedAfterMs = Date.now() - started;
-  assert.ok(closedAfterMs <= timeoutMs, `lease close took ${closedAfterMs}ms`);
+  const mutatedAt = Date.now();
+  assert.equal(await closed, true, "socket remained open after the mutation");
+  const closedAfterMs = Math.max(0, closedAt - mutatedAt);
+  assert.ok(
+    closedAfterMs <= timeoutMs,
+    `lease close took ${closedAfterMs}ms (bound ${timeoutMs}ms)`,
+  );
   return closedAfterMs;
-}
-
-async function waitFor(description, read, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await read();
-    if (result !== undefined) {
-      return result;
-    }
-    await delay(50);
-  }
-  assert.fail(`${description} did not complete within ${timeoutMs}ms`);
 }
 
 async function waitForAuditActions(pool, namespaceId, agentId, actions) {
@@ -595,9 +602,17 @@ async function waitForAuthorizationDenialAudit(
           AND action = $3
           AND ($4::text IS NULL OR actor_id = $4)
           AND ($5::text IS NULL OR id <> $5)
+          AND ($6::boolean IS NULL OR (details->'nativeAdmin' ? 'revisionId') = $6)
         ORDER BY occurred_at DESC, id DESC
         LIMIT 1`,
-      [namespaceId, agentId, action, actorId ?? null, options.excludeId ?? null],
+      [
+        namespaceId,
+        agentId,
+        action,
+        actorId ?? null,
+        options.excludeId ?? null,
+        options.leaseRenewal ?? null,
+      ],
     );
     row = result.rows[0];
     if (row !== undefined) {
@@ -791,8 +806,8 @@ test(
 );
 
 test(
-  "PostgreSQL native admin WebSocket lease closes within thirty seconds after parent logout",
-  { ...requiresPostgres, timeout: 45_000 },
+  "PostgreSQL native admin WebSocket lease closes at the next renewal after parent logout",
+  { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "logout");
     const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
@@ -808,8 +823,8 @@ test(
 );
 
 test(
-  "PostgreSQL native admin WebSocket lease closes within thirty seconds after parent session expiry",
-  { ...requiresPostgres, timeout: 45_000 },
+  "PostgreSQL native admin WebSocket lease closes at the next renewal after parent session expiry",
+  { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "expiry");
     const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
@@ -829,8 +844,8 @@ test(
 );
 
 test(
-  "PostgreSQL native admin WebSocket lease closes within thirty seconds after IAM administer restriction",
-  { ...requiresPostgres, timeout: 45_000 },
+  "PostgreSQL native admin WebSocket lease closes at the next renewal after IAM administer restriction",
+  { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "iam-restriction");
     const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
@@ -844,13 +859,18 @@ test(
     });
     t.diagnostic(`IAM administer restriction closed native admin WebSocket in ${closedAfterMs}ms`);
     await assertSocketAuditCloseReason(scenario, "authorization_denied");
+    // Lease renewals check the socket's revision, so their denials record it; the HTTP
+    // denial carries none. That keeps a second, overlapping renewal's denial from passing
+    // for the HTTP one.
     const leaseDenial = await waitForAuthorizationDenialAudit(
       scenario.apiA.pool,
       scenario.namespace.id,
       scenario.agent.id,
       "openclaw.agents.native_admin.proxy.authorize",
       scenario.principal.id,
+      { leaseRenewal: true },
     );
+    assert.equal(leaseDenial.details.nativeAdmin.revisionId, scenario.revision.id);
     await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
     await waitForAuthorizationDenialAudit(
       scenario.apiA.pool,
@@ -858,14 +878,41 @@ test(
       scenario.agent.id,
       "openclaw.agents.native_admin.proxy.authorize",
       scenario.principal.id,
-      { excludeId: leaseDenial.id },
+      { excludeId: leaseDenial.id, leaseRenewal: false },
     );
   },
 );
 
 test(
-  "PostgreSQL native admin WebSocket lease closes within thirty seconds after Agent stop",
-  { ...requiresPostgres, timeout: 45_000 },
+  "PostgreSQL native admin WebSocket lease closes as a dependency failure during an IAM outage",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    const scenario = await openNativeAdminSocketScenario(t, "iam-outage");
+    // The replica holding the socket loses its IAM Driver at the next lease renewal. An outage
+    // is not a revocation: the close names a dependency failure and writes no denial audit.
+    const authorize = scenario.apiB.iamDriver.authorize;
+    t.after(() => {
+      scenario.apiB.iamDriver.authorize = authorize;
+    });
+    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
+      scenario.apiB.iamDriver.authorize = async () => {
+        throw new Error("IAM outage");
+      };
+    });
+    t.diagnostic(`IAM outage closed native admin WebSocket in ${closedAfterMs}ms`);
+    await assertSocketAuditCloseReason(scenario, "dependency_failure");
+    const denials = await scenario.apiA.pool.query(
+      `SELECT count(*)::int AS count FROM occ.audit_events
+        WHERE namespace_id = $1 AND resource_id = $2 AND kind = 'authorization_denial'`,
+      [scenario.namespace.id, scenario.agent.id],
+    );
+    assert.equal(denials.rows[0].count, 0);
+  },
+);
+
+test(
+  "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
+  { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "stop");
     const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
@@ -884,8 +931,8 @@ test(
 );
 
 test(
-  "PostgreSQL native admin WebSocket lease closes within thirty seconds after active revision replacement",
-  { ...requiresPostgres, timeout: 45_000 },
+  "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
+  { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "revision");
     let nextRevision;
@@ -940,6 +987,7 @@ test(
         );
         return result.rows[0];
       },
+      5_000,
     );
     assert.equal(
       latestConnect.details.nativeAdmin.revisionId,
@@ -951,7 +999,7 @@ test(
 
 test(
   "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
-  { ...requiresPostgres, timeout: 45_000 },
+  { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
     const scenario = await openNativeAdminSocketScenario(t, "shutdown-disabled");
     const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {

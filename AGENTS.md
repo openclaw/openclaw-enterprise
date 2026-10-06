@@ -13,9 +13,6 @@ authorize every exact resource operation through the selected IAM Driver, and
 emit attributable audit evidence for bootstrap, successful mutations, and
 authorization denials.
 
-Preserve Git history, registered worktrees, ignored local `.env` files, and
-existing root or nested `node_modules/` directories.
-
 The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Read its [implementation status](docs/design.md#implementation-status) before
@@ -38,6 +35,17 @@ and filter by author before making changes; ask if unclear.
 Keep other authors' PRs, branches, and worktrees read-only unless explicitly
 assigned. Repository permissions and dependencies do not expand scope.
 Subagents inherit these limits.
+
+For new PRs, default to pushing a topic branch to the requesting user's fork
+and opening it against `openclaw/openclaw-enterprise`, including when the user
+has write access to the upstream repository. Use upstream topic branches when
+the user's instructions or an authorized maintainer workflow selects that path.
+Maintainers retain their review, merge, and approved bypass permissions.
+When assigned to update an existing PR, preserve its head repository and branch.
+Follow the [fork workflow](CONTRIBUTING.md#prepare-a-pull-request);
+verify repository URLs and ownership rather than assuming `origin` is the fork.
+Preserve existing remotes. Keep fork PRs editable by maintainers
+as described in the contribution policy.
 
 "Refresh against main" does not authorize force pushes. Preserve published
 history by default. Rewrite history only with explicit authorization for the
@@ -329,6 +337,8 @@ adapter may mirror a constraint when it substitutes for the database.
 Tests must verify real, supported application behavior. A test that merely
 confirms behavior invented by its own mock, monkeypatch, fixture, or hand-written
 adapter is invalid and must be rewritten or deleted.
+
+Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credential-bearing URLs at runtime; do not commit complete credential-bearing URL literals, which TruffleHog treats as secrets.
 
 - Use actual API routes, request methods, server-owned resource scope, response
   envelopes, authorization rules, and lifecycle transitions. Never invent

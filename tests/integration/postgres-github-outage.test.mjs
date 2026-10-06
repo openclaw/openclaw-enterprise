@@ -1,26 +1,26 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import test from "node:test";
-import pg from "pg";
+import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import {
-  PostgresHumanAuthentication,
-  PostgresPlatformState,
-} from "../../packages/occ/src/index.ts";
-import {
-  bootstrapProductionInstallation,
+  assertConsoleSignIn,
+  assertProviderAttached,
+  assertSessionUser,
+  authRowCounts,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
+  githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
+  onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   signedInHeaders,
+  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "outage-recovery@example.test";
 const password = "outage-member-password";
 const authSecret = "outage-auth-test-secret-at-least-32-bytes";
@@ -30,6 +30,11 @@ const secrets = {
   "occ-github-login/client-secret": "outage-client-secret",
 };
 const memberSubject = 7_000_001;
+// The production slow lane with shorter floors: 250 ms doubling to a 500 ms cap instead of
+// 1 s doubling to 8 s. Each paced attempt waits its floor in real time, and spending one
+// email three times in a window reaches the 4 s floor otherwise. The slots and budgets stay
+// the production values.
+const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
 // GitHub is optional: when it errors or stalls, GitHub sign-in fails closed and password
 // sign-in keeps working; strangers can slow the recovery administrator's password but never
@@ -37,122 +42,44 @@ const memberSubject = 7_000_001;
 // The provider fixture replaces only remote HTTP to github.com and api.github.com.
 test(
   "a GitHub outage fails GitHub sign-in closed while password sign-in keeps working",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
-    const provider = createServer();
-    let mode = "up";
     let app;
-    t.after(async () => {
-      await app?.close();
-      provider.closeAllConnections();
-      await new Promise((resolve) => provider.close(resolve));
-      await pool.end();
-    });
-    provider.on("request", async (request, response) => {
-      if (mode === "hang") {
-        return; // Never answers; the controller's shared provider deadline must end the wait.
-      }
-      if (mode === "error") {
-        response.writeHead(503, { "content-type": "application/json" });
-        response.end("{}");
-        return;
-      }
-      for await (const chunk of request) {
-        void chunk;
-      }
-      response.setHeader("content-type", "application/json");
-      if (request.url === "/login/oauth/access_token") {
-        response.end(JSON.stringify({ access_token: "ghu_outage_fixture", token_type: "bearer" }));
-      } else if (request.url === "/user") {
-        response.end(JSON.stringify({ id: memberSubject, login: "outage-member" }));
-      } else {
-        response.writeHead(404);
-        response.end();
-      }
-    });
-    await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-    const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
-    const originalFetch = globalThis.fetch;
-    t.mock.method(globalThis, "fetch", (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input);
-      if (url.origin === "https://github.com" || url.origin === "https://api.github.com") {
-        return originalFetch(new URL(url.pathname + url.search, providerOrigin), init);
-      }
-      return originalFetch(input, init);
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
+    // In "hang" mode the provider never answers; the controller's shared provider deadline
+    // must end the wait.
+    const provider = await startFakeGitHub(t);
 
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Password onboarding on the default install, then the GitHub upgrade. Members read the
+    // Installation but do not administer it, so a spent email refuses them.
+    const { admin, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
+      secrets,
+      password,
+      accounts: {
+        member: { email: "outage-member@example.test" },
+        other: { email: "outage-other@example.test" },
+        resetMember: { email: "outage-reset@example.test" },
+        disabledMember: { email: "outage-disabled@example.test" },
+      },
     });
-    const admin = { email: adminEmail, password: adminPassword };
-    // Members read the Installation but do not administer it, so a spent email refuses them.
-    const { reader: readerRole } = await installationRoles(state, pool);
-
-    // Password onboarding on the default install, then the GitHub upgrade.
+    const { member, other, resetMember, disabledMember } = accounts;
     app = await composeProductionSignIn(t, {
       databaseUrl,
-      settings: defaultInstallSettings,
+      settings: githubUpgradeSettings(admin.id),
       secrets,
+      passwordSlowLaneFloors: slowLane,
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin);
-    const adminId = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const members = [];
-    for (const email of [
-      "outage-member@example.test",
-      "outage-other@example.test",
-      "outage-reset@example.test",
-      "outage-disabled@example.test",
-    ]) {
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: readerRole.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      members.push({ id: created.json().data.id, email, password });
-    }
-    const [member, other, resetMember, disabledMember] = members;
-    await app.close();
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(adminId),
-      secrets,
-    });
-    adminHeaders = await signedInHeaders(app, origin, admin);
-    const account = await app.inject({
-      url: `/api/auth/accounts/${member.id}`,
-      headers: adminHeaders,
-    });
-    const attached = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${member.id}/providers/github`,
-      headers: adminHeaders,
-      payload: { subject: String(memberSubject), expectedVersion: account.json().data.version },
-    });
-    assert.equal(attached.statusCode, 200, attached.body);
+    const adminHeaders = await signedInHeaders(app, origin, admin);
+    await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));
 
-    async function githubSignIn(remoteAddress = "192.0.2.50") {
-      const start = await app.inject({
-        method: "POST",
-        url: "/api/auth/providers/github/start",
-        remoteAddress,
-        headers: { origin },
-      });
-      assert.equal(start.statusCode, 200, start.body);
-      const attemptState = new URL(start.json().data.url).searchParams.get("state");
-      return app.inject({
-        url: `/api/auth/providers/github/callback?state=${attemptState}&code=outage-code`,
-        remoteAddress,
-        headers: { cookie: cookieHeaderFromSetCookie(start.headers["set-cookie"]) },
-      });
-    }
-    const sessionCount = async () =>
-      (await pool.query("SELECT count(*)::int AS count FROM occ.session")).rows[0].count;
+    const memberGitHubSignIn = async (remoteAddress) =>
+      (await githubSignIn(app, origin, memberSubject, remoteAddress)).callback;
+    const sessionCount = async () => (await authRowCounts(pool)).sessions;
     async function assertFailedClosed(callback, sessionsBefore) {
       assert.equal(callback.statusCode, 302);
       assert.equal(callback.headers.location, "/console/?authError=github");
@@ -161,20 +88,17 @@ test(
     }
 
     await t.test("the fixture provider signs the attached account in while up", async () => {
-      const callback = await githubSignIn();
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      const callback = await memberGitHubSignIn();
+      await assertConsoleSignIn(app, callback, member.id);
     });
 
     await t.test("provider 5xx fails closed; password sign-in keeps working", async () => {
-      mode = "error";
+      provider.mode = "error";
       const before = await sessionCount();
-      await assertFailedClosed(await githubSignIn(), before);
+      await assertFailedClosed(await memberGitHubSignIn(), before);
       const signedIn = await passwordSignIn(app, origin, member);
       assert.equal(signedIn.statusCode, 200, signedIn.body);
-      const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      const cookie = await assertSessionUser(app, signedIn, member.id);
       const signedOut = await app.inject({
         method: "POST",
         url: "/api/auth/sign-out",
@@ -187,10 +111,10 @@ test(
     await t.test(
       "a hung provider fails closed at the deadline without blocking passwords",
       async () => {
-        mode = "hang";
+        provider.mode = "hang";
         const before = await sessionCount();
         const started = performance.now();
-        const pending = githubSignIn();
+        const pending = memberGitHubSignIn();
         // Password sign-in proceeds while the provider exchange is stalled.
         const signedIn = await passwordSignIn(app, origin, member, "192.0.2.51");
         assert.equal(signedIn.statusCode, 200, signedIn.body);
@@ -204,7 +128,7 @@ test(
     const wrong = "outage-wrong-password";
 
     await t.test("successful password sign-ins spend no budget during an outage", async () => {
-      mode = "error";
+      provider.mode = "error";
       // Only failed sign-ins count: more successes in one minute than the ten-failure budget
       // from one address all sign in.
       for (let index = 0; index < 12; index += 1) {
@@ -212,7 +136,7 @@ test(
         assert.equal(signedIn.statusCode, 200, signedIn.body);
       }
       assert.equal(
-        (await githubSignIn("203.0.113.10")).headers.location,
+        (await memberGitHubSignIn("203.0.113.10")).headers.location,
         "/console/?authError=github",
       );
     });
@@ -236,7 +160,7 @@ test(
         assert.equal(signedIn.statusCode, 200, signedIn.body);
         // External start has no per-minute budget to spend, and junk callbacks without the
         // browser's attempt cookie spend only their own key, never a real browser's.
-        mode = "up";
+        provider.mode = "up";
         for (let index = 0; index < 35; index += 1) {
           const start = await app.inject({
             method: "POST",
@@ -253,14 +177,14 @@ test(
           });
           assert.equal(junk.headers.location, "/console/?authError=github");
         }
-        const callback = await githubSignIn(ingress);
+        const callback = await memberGitHubSignIn(ingress);
         assert.equal(callback.headers.location, "/console/", callback.body);
       },
     );
 
     await t.test("GitHub sign-in recovers without a restart", async () => {
-      mode = "up";
-      const callback = await githubSignIn("192.0.2.60");
+      provider.mode = "up";
+      const callback = await memberGitHubSignIn("192.0.2.60");
       assert.equal(callback.headers.location, "/console/", callback.body);
     });
 
@@ -281,8 +205,8 @@ test(
         payload: { email: account.email, password: account.password },
       });
     await t.test("a GitHub sign-in marks the browser for password fallback", async () => {
-      mode = "up";
-      const callback = await githubSignIn("192.0.2.61");
+      provider.mode = "up";
+      const callback = await memberGitHubSignIn("192.0.2.61");
       assert.equal(callback.headers.location, "/console/", callback.body);
       const setCookie = [callback.headers["set-cookie"]]
         .flat()
@@ -332,8 +256,7 @@ test(
         );
         const known = await signInWith(device, member, "192.0.2.62");
         assert.equal(known.statusCode, 200, known.body);
-        const cookie = cookieHeaderFromSetCookie(known.headers["set-cookie"]);
-        assert.equal((await currentSession(app, cookie)).user.id, member.id);
+        await assertSessionUser(app, known, member.id);
         // The cookie is bound to its account and grants nothing for another email.
         const foreign = await signInWith(device, { ...other, password: wrong }, "192.0.2.62");
         assert.equal(foreign.statusCode, 401);
@@ -356,92 +279,23 @@ test(
           const response = await signInWith(cookie, { ...other, password: wrong }, "192.0.2.80");
           assert.equal(response.statusCode, 401, `attempt ${index}: ${response.body}`);
         }
-        // Hold two admitted readers before their genuine database operation. A third
-        // request must finish through refusal, not enter another reader and later return
-        // 429 merely because the device's password allowance was already spent.
-        const releaseReads = Promise.withResolvers();
-        const twoReads = Promise.withResolvers();
-        const thirdRead = Promise.withResolvers();
-        let readCount = 0;
-        let completedReads = 0;
-        const pending = [];
-        let settled;
-        let timer;
-        const deadline = new Promise((resolve) => {
-          timer = setTimeout(() => resolve({ kind: "deadline" }), 10_000);
-        });
-        const holdRead = async (read) => {
-          readCount += 1;
-          if (readCount === 2) {
-            twoReads.resolve({ kind: "two-reads" });
-          } else if (readCount > 2) {
-            thirdRead.resolve({ kind: "third-read" });
-          }
-          await releaseReads.promise;
-          const result = await read();
-          completedReads += 1;
-          return result;
-        };
-        const readState = PostgresHumanAuthentication.prototype.knownDeviceState;
-        const reader = t.mock.method(
-          PostgresHumanAuthentication.prototype,
-          "knownDeviceState",
-          function (email) {
-            if (email === other.email) {
-              return holdRead(() => readState.call(this, email));
-            }
-            return readState.call(this, email);
+        await assertSpentDeviceProofRefusal({
+          installReader(holdRead) {
+            const readState = PostgresHumanAuthentication.prototype.knownDeviceState;
+            return t.mock.method(
+              PostgresHumanAuthentication.prototype,
+              "knownDeviceState",
+              function (email) {
+                if (email === other.email) {
+                  return holdRead(() => readState.call(this, email));
+                }
+                return readState.call(this, email);
+              },
+            );
           },
-        );
-        const launch = () => {
-          const request = Promise.resolve(
-            signInWith(cookie, { ...other, password: wrong }, "192.0.2.80"),
-          ).then(
-            (response) => ({ kind: "response", response }),
-            (error) => ({ kind: "request-error", error }),
-          );
-          pending.push(request);
-          return request;
-        };
-        try {
-          launch();
-          launch();
-          const started = await Promise.race([twoReads.promise, ...pending, deadline]);
-          if (started.kind === "request-error") {
-            throw started.error;
-          }
-          assert.equal(started.kind, "two-reads", "both admitted readers must be held");
-          const refused = await Promise.race([thirdRead.promise, launch(), deadline]);
-          if (refused.kind === "request-error") {
-            throw refused.error;
-          }
-          assert.equal(
-            refused.kind,
-            "response",
-            "proof refusal must answer without admitting a third account-state read",
-          );
-          assert.equal(readCount, 2, "refused proof never reaches the account-state reader");
-          assert.equal(refused.response.statusCode, 429, refused.response.body);
-          assert.equal(knownDeviceOf(refused.response), undefined, "refusal issues no device");
-        } finally {
-          // Never abandon the injected requests or leave the real reader wrapped after a
-          // failed assertion (including the genuine unbounded-reader negative control).
-          clearTimeout(timer);
-          releaseReads.resolve();
-          try {
-            settled = await Promise.all(pending);
-          } finally {
-            reader.mock.restore();
-          }
-        }
-        assert.equal(readCount, 2);
-        assert.equal(completedReads, 2, "both held reads completed their real database work");
-        for (const result of settled) {
-          if (result.kind === "request-error") {
-            throw result.error;
-          }
-          assert.equal(result.response.statusCode, 429, result.response.body);
-        }
+          signIn: () => signInWith(cookie, { ...other, password: wrong }, "192.0.2.80"),
+          knownDeviceOf,
+        });
       },
     );
 
@@ -467,21 +321,17 @@ test(
       }
       assert.ok(refused, "the recovery email's budget is spent");
       assert.ok(Number(refused.headers["retry-after"]) >= 1, "refusals carry Retry-After");
-      // A new browser's correct recovery password is still checked, after the slowed floor.
+      // A new browser's correct recovery password is still checked, after the slowed floor
+      // (the email's second paced attempt, so the 500 ms cap).
       const started = performance.now();
       const slowed = await passwordSignIn(app, origin, admin, "192.0.2.65");
       assert.equal(slowed.statusCode, 200, slowed.body);
-      assert.ok(performance.now() - started >= 1_000, "the attempt was slowed");
-      assert.equal(
-        (await currentSession(app, cookieHeaderFromSetCookie(slowed.headers["set-cookie"]))).user
-          .id,
-        adminId,
-      );
+      assert.ok(performance.now() - started >= slowLane.maxFloorMs - 10, "the attempt was slowed");
+      await assertSessionUser(app, slowed, admin.id);
       // The browser that signed in before spends its own lane instead.
       const known = await signInWith(device, admin, "192.0.2.64");
       assert.equal(known.statusCode, 200, known.body);
-      const cookie = cookieHeaderFromSetCookie(known.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, adminId);
+      await assertSessionUser(app, known, admin.id);
     });
 
     // A known-device entry is bound to the account's password and enabled state: a password

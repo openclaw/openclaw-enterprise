@@ -8,12 +8,16 @@ AgentRevision.
 ## Set files when creating an Agent
 
 1. Open **Agents** in the intended Namespace and start creating an Agent.
-2. In **Workspace files**, review the prefilled OpenClaw defaults and edit the
-   files you want to customize. Leaving the text unchanged submits that default;
-   clearing a field submits an empty file. Each field accepts up to 16 KiB of
-   UTF-8 text. The browser uses LF newlines.
-3. Create the Agent, then deploy it. Creation saves the inputs privately and
-   leaves the Agent undeployed. Deployment applies them before execution starts.
+2. Open **Advanced settings**. In **Workspace files**, review the prefilled
+   OpenClaw defaults and edit the files you want to customize. Leaving the text
+   unchanged submits that default; clearing a field submits an empty file. Each
+   field accepts up to 16 KiB of UTF-8 text. The browser uses LF newlines.
+3. Select **Create Agent**. Where the installation supports Dedicated
+   provisioning, a Dedicated Agent starts provisioning and its first
+   deployment. Otherwise, including every Embedded Agent, creation saves an
+   undeployed draft; deploy it with **Deploy new version** on its Agent page.
+   Creation saves the inputs privately, and the first deployment applies them
+   before execution starts.
 4. Once the revision is active, open **Workspace files** on the Agent and reload
    the files to check the contents.
 
@@ -24,8 +28,8 @@ overwrite conflicting edits during an incomplete attempt. After completion,
 restarting or redeploying preserves subsequent workspace edits.
 
 You cannot edit staged inputs on an undeployed Agent. To correct them, delete
-and recreate the Agent through the API; the console does not offer Agent deletion.
-The [initial contents reference](../../reference/agents.md#initial-contents-at-creation)
+the Agent (**Delete Agent** on its page, or the API; both need Agent `delete`)
+and create it again. The [initial contents reference](../../reference/agents.md#initial-contents-at-creation)
 defines API omission, empty values, and the pinned defaults contract.
 
 ## Edit a file
@@ -37,8 +41,9 @@ it is not available with the bundled [SSH Driver](../../reference/drivers/ssh-co
 
 1. Open **Agents**, select the Agent in the intended Namespace, and open
    **Workspace files**.
-2. Select the file you want to edit. Use **Reload** before editing if another
-   person might have changed it; reloading discards your unsaved changes.
+2. The four files are listed with their own **Reload** and **Save**. Use
+   **Reload** before editing if another person might have changed the file;
+   reloading discards your unsaved changes.
 3. Edit the text, then select **Save** for that file. Saving creates or replaces
    only the selected file. Each file can contain up to 16 KiB of UTF-8 text.
 4. Reload the file to confirm the expected content was stored.

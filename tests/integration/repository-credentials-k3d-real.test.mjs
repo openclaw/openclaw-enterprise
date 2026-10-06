@@ -199,6 +199,11 @@ test(
 
 function installedRepositoryJourney(mode, profile = "git-full") {
   return async (context) => {
+    if (selected) {
+      throw new Error(
+        "Installed repository qualification is temporarily unavailable until safe remote cleanup is supported.",
+      );
+    }
     const dedicated = mode === "dedicated";
     const readOnly = profile === "git-read";
     if (dedicated) {
@@ -314,7 +319,6 @@ function installedRepositoryJourney(mode, profile = "git-full") {
     let taskStarted = false;
     let agentStopped = false;
     let workFailure;
-    let remoteEvidence;
     const cleanupFailures = [];
     try {
       const backendId = "repository-proof";
@@ -1336,7 +1340,6 @@ ${commandSpecs.map(({ operation, workdir, argv }) => `${operation}: working dire
         assert.equal(pull.body, marker);
         assert.equal(pull.state, "open");
         assert.equal(pull.draft, false);
-        remoteEvidence = { commitSha, pullNumber: pull.number };
         assert.equal(trace.exists, true);
         if (!dedicated) {
           assert.equal(trace.promptReportSource, "run");
@@ -1499,75 +1502,7 @@ ${commandSpecs.map(({ operation, workdir, argv }) => `${operation}: working dire
         cleanupFailures.push("remote cleanup requires confirmed stopped Agent");
       }
       if (taskStarted && agentStopped) {
-        try {
-          const { data: matches } = await observe(
-            "GET",
-            `pulls?state=all&head=${encodeURIComponent(repository.split("/")[0] + ":" + branch)}&per_page=100`,
-          );
-          const reference = await observe("GET", `git/ref/heads/${branch}`, undefined, [200, 404]);
-          if (reference.status === 200) {
-            const sha = reference.data.object.sha;
-            if (readOnly) {
-              // If an authorization regression created the unique test ref,
-              // remove it only while it still points to the observed base.
-              assert.equal(
-                sha,
-                baseSha,
-                "unexpected read-only ref cannot be cleaned automatically",
-              );
-              assert.equal(matches.length, 0, "unexpected PR prevents automatic cleanup");
-              assert.equal(
-                (await observe("GET", `git/ref/heads/${branch}`)).data.object.sha,
-                baseSha,
-              );
-              await observe("DELETE", `git/refs/heads/${branch}`, undefined, 204);
-              await observe("GET", `git/ref/heads/${branch}`, undefined, 404);
-            } else {
-              const { data: commit } = await observe("GET", `commits/${sha}`);
-              assert.deepEqual(
-                commit.parents.map((p) => p.sha),
-                [baseSha],
-              );
-              assert.equal(commit.commit.message, `Installed credential proof ${f.suffix}`);
-              assert.deepEqual(
-                commit.files.map((value) => ({ filename: value.filename, status: value.status })),
-                [{ filename: file, status: "added" }],
-              );
-              const { data: ownedFile } = await observe("GET", `contents/${file}?ref=${sha}`);
-              assert.equal(Buffer.from(ownedFile.content, "base64").toString("utf8"), content);
-              if (remoteEvidence) {
-                assert.equal(
-                  sha,
-                  remoteEvidence.commitSha,
-                  "changed branch cannot be cleaned automatically",
-                );
-              }
-              assert.ok(matches.length <= 1, "ambiguous PR ownership");
-              for (const pull of matches) {
-                assert.equal(pull.body, marker);
-                assert.equal(pull.head.ref, branch);
-                assert.equal(pull.head.sha, sha);
-                assert.equal(pull.head.repo.id, Number(app.repositoryId));
-                assert.equal(pull.base.ref, base);
-                const { data: current } = await observe("GET", `pulls/${pull.number}`);
-                assert.equal(current.head.sha, sha);
-                assert.equal(current.body, marker);
-                if (current.state === "open") {
-                  await observe("PATCH", `pulls/${pull.number}`, { state: "closed" });
-                }
-                assert.equal((await observe("GET", `pulls/${pull.number}`)).data.state, "closed");
-              }
-              assert.equal((await observe("GET", `git/ref/heads/${branch}`)).data.object.sha, sha);
-              await observe("DELETE", `git/refs/heads/${branch}`, undefined, 204);
-              await observe("GET", `git/ref/heads/${branch}`, undefined, 404);
-            }
-          } else {
-            assert.equal(matches.length, 0, "PR remains after branch disappeared");
-          }
-          await f.record("Run-owned remote PR and unchanged branch reconciled and removed");
-        } catch {
-          cleanupFailures.push("remote ownership or cleanup unresolved");
-        }
+        cleanupFailures.push("remote reconciliation requires an independent operator");
       }
     }
     if (cleanupFailures.length) {

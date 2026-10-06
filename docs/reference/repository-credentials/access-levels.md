@@ -13,6 +13,10 @@ Every level also requests `metadata: read`, `checks: read` and `statuses: read`.
 These columns and shared permissions form the complete token permission map;
 OCE requests one numeric repository ID and rejects a different returned grant.
 App permissions must be approved on the installation before use.
+With the [development token authority](development-token.md), these maps decide
+only which REST write routes the gateway forwards; the token keeps its own
+GitHub permissions, and GraphQL is refused unless explicitly enabled, and then
+read-only.
 
 The Console starts with Contributor as the Agent default. Added repositories
 inherit it until customized by expanding their card. Turning off issue management
@@ -49,8 +53,9 @@ token. It refuses Git push and REST writes. `git-write` adds supported PR writes
 `git-full` adds ordinary issue writes. GitHub shares some PR/issue comment
 endpoints, so comment authorization also depends on the provider's token check.
 
-All three levels admit unfiltered GraphQL. GitHub enforces the token's repository
-and permission grant; OCE does not inspect fields, mutations or node IDs.
+All three levels admit GraphQL. GitHub enforces the token's repository and
+permission grant; OCE does not inspect mutations or node IDs. It refuses only
+request bodies that name `tempCloneToken`, the provider clone credential.
 GraphQL can also return independently public information. Every GraphQL POST
 retains possible-write accounting, including Read-only requests, and uncertain
 mutations are never automatically replayed.

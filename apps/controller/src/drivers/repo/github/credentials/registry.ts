@@ -5,7 +5,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { GitHubProfile } from "./types.ts";
 import { githubCapabilityPolicy, permissionsForProfile } from "./profiles.ts";
-import { normalizePushRefAllowlist } from "../../credentials/client-contracts.ts";
+import {
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+} from "../../credentials/client-contracts.ts";
 
 export const GITHUB_REPOSITORY_REGISTRY_MAX_BYTES = 256 * 1024;
 
@@ -49,14 +52,7 @@ function object(value: unknown, fields: readonly string[]): Record<string, unkno
 }
 
 function text(value: unknown, pattern = selectorPattern): string {
-  if (
-    typeof value !== "string" ||
-    !pattern.test(value) ||
-    [...value].some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 0x1f || code === 0x7f;
-    })
-  ) {
+  if (typeof value !== "string" || !pattern.test(value) || hasControlCharacter(value)) {
     return invalid();
   }
   return value;

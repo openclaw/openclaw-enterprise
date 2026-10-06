@@ -22,6 +22,107 @@ async function kubectlFor(selection, ...args) {
   return stdout;
 }
 
+// kubectl reports a dropped API server or kubelet stream on stderr: an exec
+// WebSocket that closed mid-stream ("error: EOF"), a reset or refused
+// connection, or a kubelet tunnel that could not be dialed. A remote command
+// that ran and failed ends with "command terminated with exit code N"; that is
+// the command's own result and is never retried.
+const transientKubectlFailure =
+  /^error: EOF$|Unable to connect to the server|error dialing backend|websocket: close|unexpected EOF|connection reset by peer|connection refused|http2: client connection lost|TLS handshake timeout|i\/o timeout|the server is currently unable to handle the request|etcdserver: request timed out/m;
+
+export function isTransientKubectlFailure(error) {
+  // A spawn failure (ENOENT, EACCES) has empty stderr: kubectl never ran.
+  const stderr = String(error?.stderr ?? "");
+  return !/command terminated with exit code/.test(stderr) && transientKubectlFailure.test(stderr);
+}
+
+// Retries a kubectl command that changes nothing in the cluster or in the
+// container (a get, or an exec that only reads) when the transport dropped.
+// Any other failure, and the last transient one, is thrown unchanged.
+export async function retryKubectlRead(
+  read,
+  {
+    attempts = 4,
+    firstDelayMs = 500,
+    sleep = delay,
+    log = (message) => process.stderr.write(`${message}\n`),
+  } = {},
+) {
+  let delayMs = firstDelayMs;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      if (attempt >= attempts || !isTransientKubectlFailure(error)) {
+        throw error;
+      }
+      const reason = String(error.stderr).trim().split("\n").at(-1);
+      log(
+        `Transient kubectl failure (${reason}); retrying in ${delayMs} ms (attempt ${attempt + 1}/${attempts})`,
+      );
+      await sleep(delayMs);
+      delayMs *= 2;
+    }
+  }
+}
+
+// tests/fixtures/kubernetes/probe.mjs exits with this code, and prints
+// {"denied":true,"code":...} on stdout, only when its connection attempt was
+// refused, unreachable, or unanswered. Any other probe failure exits 1.
+export const PROBE_DENIED_EXIT_CODE = 42;
+
+// Returns the probe's denial report when kubectl exec ran the probe and the
+// probe itself reported a denial, otherwise undefined. A dropped exec stream, a
+// missing or crashing probe script, and a DNS or argument error are not denials.
+export function probeDenial(error) {
+  const stderr = String(error?.stderr ?? "");
+  if (
+    error?.code !== PROBE_DENIED_EXIT_CODE ||
+    !stderr.includes(`command terminated with exit code ${PROBE_DENIED_EXIT_CODE}`)
+  ) {
+    return undefined;
+  }
+  try {
+    const report = JSON.parse(
+      String(error.stdout ?? "")
+        .trim()
+        .split("\n")
+        .at(-1),
+    );
+    return report?.denied === true && typeof report.code === "string" ? report : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Runs a probe exec that is expected to be blocked. Transport drops are
+// retried like any read; the check passes only on the probe's own denial.
+export async function assertProbeDenied(description, run, options) {
+  let stdout;
+  try {
+    stdout = await retryKubectlRead(run, options);
+  } catch (error) {
+    const denial = probeDenial(error);
+    if (denial !== undefined) {
+      return denial;
+    }
+    const detail = String(error?.stderr ?? "").trim() || error?.message;
+    throw new Error(
+      `${description}: the probe did not report a denial (exit ${error?.code}): ${detail}`,
+      { cause: error },
+    );
+  }
+  assert.fail(`${description} unexpectedly succeeded: ${String(stdout).trim()}`);
+}
+
+// The `node` command that runs probe.mjs from its source text, for a container
+// that does not mount the fixture (a Gateway container, the DNS fixture Pods).
+// "probe.mjs" fills process.argv[1], so the probe still reads its own arguments
+// from process.argv.slice(2).
+export function inlineProbeCommand(source, ...probeArguments) {
+  return ["node", "--input-type=module", "-e", source, "probe.mjs", ...probeArguments.map(String)];
+}
+
 export function createKubernetesClient({
   selection,
   kubectl = (...args) => kubectlFor(selection, ...args),
@@ -309,7 +410,7 @@ export function createRealKubernetesFixture({
     directory,
     namespace,
     agentId,
-    { gatewayPassword, executionMode = "dedicated" } = {},
+    { gatewayPassword, legacyCombined = false } = {},
   ) {
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
@@ -326,17 +427,13 @@ export function createRealKubernetesFixture({
       const owner = await kubernetes.resource("namespace", namespace);
       const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
       assert.ok(namespaceId, "transport source must belong to the resolved data-plane Namespace");
-      const { kubernetesGatewayNamespaceName } =
-        await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
-      const target =
-        executionMode === "embedded" ? namespace : kubernetesGatewayNamespaceName(namespaceId);
-      const bundles =
-        executionMode === "embedded"
-          ? [[`openclaw-agent-transport-${suffix}`, ["app-server-token", "gateway-password"]]]
-          : [
-              [`openclaw-agent-transport-${suffix}`, ["app-server-token"]],
-              [`gateway-password-${suffix}`, ["gateway-password"]],
-            ];
+      const target = namespace;
+      const bundles = legacyCombined
+        ? [[`openclaw-agent-transport-${suffix}`, ["app-server-token", "gateway-password"]]]
+        : [
+            [`openclaw-agent-transport-${suffix}`, ["app-server-token"]],
+            [`gateway-password-${suffix}`, ["gateway-password"]],
+          ];
       for (const [name, keys] of bundles) {
         await kubectl(
           "create",

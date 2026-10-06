@@ -30,12 +30,16 @@ namespace must already be `Active`, carry
 security labels, and have the required tenant-local RoleBindings. The worker
 rejects foreign tenant markers and NetworkPolicies before binding its exact
 `openclaw.dev/namespace` Namespace-ID label and `openclaw.dev/namespace-id`
-annotation together with a `resourceVersion`-guarded, non-forced patch;
+annotation (and, in single-cluster Compute, the `openclaw.dev/gateway-namespace`
+label) together with a `resourceVersion`-guarded, non-forced patch;
 concurrent ownership changes cannot overwrite another tenant's claim.
 Additive foreign policies could otherwise defeat default-deny isolation. The
 namespace and its existing manager remain operator-owned;
 persisted uniqueness prevents simultaneous claims, and retained tenant markers
-prevent reassignment until an operator deliberately clears both old markers.
+prevent reassignment until an operator deliberately clears all of the old
+markers: the `openclaw.dev/namespace` label, the `openclaw.dev/namespace-id`
+annotation and, in single-cluster Compute, the `openclaw.dev/gateway-namespace`
+label. A selection that still finds any of them ends `failed`.
 
 Each tenant namespace also receives:
 
@@ -125,7 +129,7 @@ runtime verification. Profile generation and CI use the same reviewed rules;
 host installation remains operator-owned.
 
 The optional profile is for cases where `RuntimeDefault` blocks the
-user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.158.0`
+user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.160.0`
 and bubblewrap. The profile is a syscall compatibility allowlist, not the
 filesystem or network boundary. Codex and bubblewrap continue to own runtime
 filesystem enforcement, and Kubernetes NetworkPolicies plus the configured
@@ -212,9 +216,10 @@ configuration. In Helm, the bundled Collector uses dedicated config and exporter
 Secrets, read-only `/var/log/pods`, a non-root UID with supplementary group
 `0` for CRI file read access, and restricted Pod and container security
 settings. Its dedicated egress policy permits DNS, the Kubernetes API for
-metadata, and one approved exporter or proxy `/32`. The shared dependency
-egress policy also selects Collector Pods and permits the configured database
-destination; NetworkPolicy permissions are additive. Its file offsets and exporter queue use a
+metadata, and one approved exporter or proxy: a `/32` address or an in-cluster
+namespace and Pod selector, on the exporter port. No chart policy grants the
+Collector database access; the shared dependency egress policy selects only
+the API, worker and initialization Pods. Its file offsets and exporter queue use a
 bounded `emptyDir`; they are best-effort across process or container restart and
 are lost with Pod or node replacement. In Docker development, forwarding is
 nonblocking with finite Engine and container-local buffers. Export outage or
@@ -242,7 +247,12 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   A download is the same sanitized page in a text serializer; it needs the
   same grants and is not stored on the server.
 - **Content.** An allowlist classifier keeps only operational wrapper, Gateway,
-  Codex tracing and short plain-text lines. Other structured output, including
+  Codex tracing and short plain-text lines. Codex message text is kept only from
+  reviewed operational targets (app server, login, CA setup, plugin manifests)
+  and reviewed fixed-format messages (model endpoint connection, network proxy
+  startup, retries) whose variable parts are a configured endpoint, a listener
+  address, counts, durations or a connection error (error kind, OS error, HTTP
+  status, proxy or TLS diagnostic). Other structured output, including
   Codex protocol traffic, payload keys such as `prompt` and `content`, and
   pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes pattern redaction, which is
   best-effort. The `content` class has no producer.
@@ -257,9 +267,11 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   and URLs are redacted and cut to 1 KiB.
 - **Errors.** Driver and cluster error text never reaches a client; failures map
   to fixed codes.
-- **Ordering.** The operator switch (`501`) and the per-principal rate limit
-  run before authorization, so a principal without grants learns only whether
-  the feature is on and can spend only its own request budget.
+- **Ordering.** The operator switch (`501`) runs before authorization, so a
+  principal without grants learns only whether the feature is on. The
+  per-principal rate limit and the replica's concurrent-read limit apply after
+  authorization: every denial is refused and audited, and only authorized
+  requests spend the caller's request budget.
 - **Cluster access.** The tenant API, Gateway observer and execution tenant API
   roles gain read-only `pods/log get` and `events get,list` through
   `agentRuntimeLogs.enabled`. RBAC cannot separate Agents, so OCC reads only

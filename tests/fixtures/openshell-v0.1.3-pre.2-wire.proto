@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Independent wire oracle extracted from NVIDIA OpenShell commit
-// dde8a9a57f34f9d998618b3d35821608165c980f. Keep this fixture pinned to that
+// 021400be8af471f8669369e679de3e18cf0bd672. Keep this fixture pinned to that
 // upstream contract; do not derive it from the production client proto.
 syntax = "proto3";
 
@@ -13,6 +13,8 @@ import "google/protobuf/timestamp.proto";
 service OpenShell {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
+  rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
@@ -70,6 +72,18 @@ message DeleteSandboxRequest {
   WorkspaceSelector workspace_scope = 2;
 }
 
+message GetSandboxRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 2;
+}
+
+message GetServiceRequest {
+  string sandbox = 1;
+  // Empty selects the unnamed endpoint.
+  string name = 2;
+  WorkspaceSelector workspace_scope = 3;
+}
+
 message SandboxSpec {
   SandboxPolicy policy = 7;
   repeated string providers = 8;
@@ -100,7 +114,11 @@ message NetworkEndpoint {
   NetworkAccessPreset access = 6;
   repeated uint32 ports = 9;
   string path = 15;
+  bool websocket_credential_rewrite = 16;
+  NetworkCredentialBinding credential_binding = 24;
 }
+
+message NetworkCredentialBinding { string provider = 1; }
 
 enum NetworkTlsMode {
   NETWORK_TLS_MODE_UNSPECIFIED = 0;
@@ -127,14 +145,32 @@ message SandboxResponse {
   map<string, string> service_urls = 2;
 }
 
+message ServiceEndpoint {
+  ObjectMeta metadata = 1;
+  string sandbox_id = 2;
+  string sandbox = 3;
+  string name = 4;
+  uint32 target_port = 5;
+  bool domain = 6;
+  ServiceAuthorizationMode authorization_mode = 7;
+}
+
+message ServiceEndpointResponse {
+  ServiceEndpoint endpoint = 1;
+  string url = 2;
+}
+
 message Sandbox {
   ObjectMeta metadata = 1;
+  SandboxSpec spec = 2;
 }
 
 message ObjectMeta {
   string id = 1;
   string name = 2;
   map<string, string> labels = 4;
+  uint64 resource_version = 5;
+  map<string, string> annotations = 6;
   string workspace = 7;
 }
 
@@ -148,6 +184,7 @@ message Provider {
   string type = 2;
   map<string, string> credentials = 3;
   map<string, string> config = 4;
+  map<string, google.protobuf.Timestamp> credential_expiration_times = 105;
   string profile_workspace = 6;
 }
 
@@ -167,6 +204,7 @@ message UpdateProviderRequest {
   reserved 2;
   reserved "credential_expires_at_ms";
   Provider provider = 1;
+  map<string, google.protobuf.Timestamp> credential_expiration_times = 102;
   repeated string clear_credential_expiration_keys = 103;
   string request_id = 4;
 }
@@ -235,6 +273,13 @@ message ProviderProfile {
   map<string, string> annotations = 11;
   string source = 12;
   string scope = 13;
+  repeated ProviderProfileFile files = 14;
+}
+
+message ProviderProfileFile {
+  string path = 1;
+  string content = 2;
+  string env_var = 3;
 }
 
 message ProviderProfileImportItem {

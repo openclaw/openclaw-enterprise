@@ -99,7 +99,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
 
   const pluginsUrl = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
-  await login(page, fixture, pluginsUrl.pathname + pluginsUrl.search);
+  await login(page, fixture, pluginsUrl);
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   const people = page.getByRole("combobox", {
     name: "Default plugin approvers people",
@@ -261,7 +261,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     agentId: agent.id,
   });
 
-  await page.goto(`${fixture.origin}${pluginsUrl.pathname}${pluginsUrl.search}`);
+  await page.goto(pluginsUrl.href);
   await page
     .locator('.slack-directory-chip[data-value="team:TTEST123:user:UTEST123"]')
     .getByText("Alex")
@@ -292,7 +292,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   assert.deepEqual(savedAgent.plugins[pluginId].approvers, []);
   assert.deepEqual(savedAgent.plugins[pluginId].tools[toolId], { enabled: true });
 
-  await page.goto(`${fixture.origin}${pluginsUrl.pathname}${pluginsUrl.search}`);
+  await page.goto(pluginsUrl.href);
   await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
@@ -327,7 +327,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   );
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   assert.equal(await deploy.isDisabled(), false);
 
@@ -367,7 +367,7 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
   });
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   // Codex approval requests carry no plugin or tool identity, so the API refuses those
   // overrides and the Console must not offer them. The Agent default stays available.
   await page.getByLabel("Default plugin approvers mode").waitFor();

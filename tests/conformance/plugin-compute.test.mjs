@@ -10,7 +10,6 @@ import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
-  kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -34,6 +33,7 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
@@ -67,8 +67,8 @@ function pluginAppServerToken(baseToken, revisionId, startupId) {
     .digest("hex");
 }
 
-async function waitForCondition(description, condition) {
-  const deadline = Date.now() + 1_000;
+async function waitForCondition(description, condition, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await condition();
     if (result !== undefined && result !== false) {
@@ -135,16 +135,6 @@ const agent = Object.freeze({
   createdAt: tenant.createdAt,
 });
 
-function context(mode) {
-  return {
-    namespace: tenant,
-    agent: { ...agent, executionMode: mode },
-    harness: { id: mode === "embedded" ? "openclaw" : "codex", version: "2026.9.0", mode },
-    configuration: {},
-    signal: AbortSignal.timeout(1_000),
-  };
-}
-
 function revision(overrides = {}) {
   const native = createHarnessConfiguration(overrides.harness?.id ?? "codex", "gpt-4.1");
   delete native.gateway.auth;
@@ -180,7 +170,7 @@ function harnessAuthContext(candidate) {
     harnessAuth: {
       ...candidate.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(tenant.id),
+        namespaceName: kubernetesNamespaceName(tenant.id),
         name: "plugin-model-key",
         key: "value",
         uid: "plugin-model-key-uid",
@@ -231,43 +221,15 @@ function codexLinearPluginState(overrides = {}) {
 }
 
 function kubernetesOptions(overrides = {}) {
-  const resources = {
-    requests: { cpu: "100m", memory: "64Mi" },
-    limits: { cpu: "250m", memory: "128Mi" },
-  };
   return {
-    authentication: {
-      mode: "kubeconfig",
-      kubeconfigPath: "/tmp/openclaw-enterprise-conformance/kubeconfig",
-      context: "openclaw-enterprise-local",
-    },
-    images: {
-      gateway: "openclaw-enterprise/gateway-fixture:local",
-      agent: "openclaw-enterprise/agent-fixture:local",
-      requireImmutableDigest: false,
-    },
-    resources: {
-      gateway: resources,
-      agent: resources,
-      namespace: {
-        quota: { pods: "10", "requests.cpu": "2", "requests.memory": "1Gi" },
-        containerDefaults: resources,
-      },
-    },
-    network: {
-      dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
-      gatewayPort: 8080,
+    ...conformanceKubernetesOptions({
       gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
-      gatewayClients: [
-        { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
-      ],
-    },
-    servicePrincipalCredentials: { mode: "disabled" },
-    runtime: {
-      transportSecretPrefix: "transport",
-      gatewayStorageClassName: "local-path",
-      gatewayNodeSelector: { "openclaw.dev/plane": "control" },
-    },
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        gatewayNodeSelector: { "openclaw.dev/plane": "control" },
+      },
+    }),
     ...overrides,
   };
 }
@@ -507,6 +469,20 @@ test("plugin-free revisions apply explicit Slack approvers for configured Slack 
     [
       revision({
         harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        pluginApprovers: rawSlackApprovers,
+      }),
+      ["U456", "W789"],
+    ],
+    [
+      revision({
+        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        pluginApprovers: [],
+      }),
+      [],
+    ],
+    [
+      revision({
+        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
         pluginApprovers: rawSlackApprovers,
       }),
       ["U456", "W789"],
@@ -2221,7 +2197,7 @@ test("embedded plugin preparation applies runtime egress before gateway readines
 
   // This fresh Agent has no prior authentication-probe workloads to retire.
   const credentialObjects = new Map();
-  const cp = kubernetesGatewayNamespaceName(tenant.id);
+  const cp = kubernetesNamespaceName(tenant.id);
   credentialObjects.set(`${cp}:plugin-model-key`, {
     apiVersion: "v1",
     kind: "Secret",
@@ -2501,9 +2477,17 @@ test("embedded plugin preparation applies runtime egress before gateway readines
 test("Kubernetes plugin runtime status requires the exact ready Pod report", async (t) => {
   const driver = createKubernetesComputeDriver(kubernetesOptions());
   const candidate = revision({
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
-    plugins: openClawPluginState(),
+    plugins: {
+      ...codexLinearPluginState(),
+      plugins: {
+        ...codexSelection(),
+        [`codex-plugin:${CODEX_ASANA_NATIVE_ID}`]: {
+          enabled: true,
+          toolDefaults: { approval: "provider_default" },
+        },
+      },
+    },
   });
   const namespace = kubernetesNamespaceName(tenant.id);
   const pod = {
@@ -2511,7 +2495,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     kind: "Pod",
     metadata: {
       name: "gateway-plugin-status",
-      namespace,
+      namespace: kubernetesNamespaceName(tenant.id),
       uid: "pod-plugin-status-1",
       labels: {
         "openclaw.dev/agent": candidate.agentId,
@@ -2526,17 +2510,41 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     startupId: "startup-plugin-status-1",
     podUid: "pod-plugin-status-1",
     phase: "ready",
-    successfulPluginIds: ["occ-plugin:diffs"],
+    successfulPluginIds: [
+      `codex-plugin:${CODEX_LINEAR_NATIVE_ID}`,
+      `codex-plugin:${CODEX_ASANA_NATIVE_ID}`,
+    ],
     failures: [],
   };
+  // Gateway readiness requires the Harness's complete warning set, regardless of order.
+  const warningReport = {
+    ...readyReport,
+    successfulPluginIds: [],
+    failures: [
+      { pluginId: `codex-plugin:${CODEX_ASANA_NATIVE_ID}`, code: "PLUGIN_INSTALL_FAILED" },
+      { pluginId: `codex-plugin:${CODEX_LINEAR_NATIVE_ID}`, code: "PLUGIN_AUTH_REQUIRED" },
+    ],
+  };
 
-  for (const [name, response, expected] of [
+  for (const [name, response, expected, expectedWarnings = []] of [
     ["missing proxy", Object.assign(new Error("not found"), { code: 404 }), "not-ready"],
     ["starting phase", { ...readyReport, phase: "starting" }, "not-ready"],
     ["wrong revision", { ...readyReport, revisionId: "another-revision" }, "rejects"],
     ["wrong container", { ...readyReport, container: "agent" }, "rejects"],
     ["malformed report", { ...readyReport, successfulPluginIds: "occ-plugin:diffs" }, "rejects"],
     ["ready", readyReport, readyReport],
+    [
+      "matching warnings in another order",
+      { ...warningReport, failures: [...warningReport.failures].reverse() },
+      warningReport,
+      warningReport.failures,
+    ],
+    [
+      "different warning code keeps the runtime unready",
+      warningReport,
+      "not-ready",
+      [{ ...warningReport.failures[0], code: "PLUGIN_AUTH_REQUIRED" }, warningReport.failures[1]],
+    ],
   ]) {
     await t.test(name, async () => {
       driver.clients = async () => ({
@@ -2557,7 +2565,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
               candidate,
               { name: namespace, plane: "execution" },
               "gateway",
-              [],
+              expectedWarnings,
             ),
           DependencyUnavailableError,
         );
@@ -2566,7 +2574,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
           candidate,
           { name: namespace, plane: "execution" },
           "gateway",
-          [],
+          expectedWarnings,
         );
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
@@ -2633,6 +2641,31 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
       path: "openclaw/runtime/status",
     },
   ]);
+
+  // A model-probe cause crosses the runtime boundary only inside its closed
+  // vocabulary. Anything else is dropped and the failure code still stands.
+  const reports = [
+    [{ kind: "PROBE_STATUS", detail: "rate_limit" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "WRAPPER_ERROR" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "PROCESS_EXIT", detail: "exit-1" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "PROBE_STATUS", detail: "sk-fixture-credential" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROCESS_EXIT", detail: "HTTP 404 model not found" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "WRAPPER_ERROR", detail: "json" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROVIDER_SAID", detail: "format" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROBE_STATUS", detail: "format", text: "raw" }, "MODEL_PROBE_FAILED", false],
+    ["PROBE_STATUS", "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROBE_STATUS", detail: "format" }, "AUTHENTICATION_FAILED", false],
+  ];
+  for (const [cause, code, kept] of reports) {
+    failure.code = code;
+    failure.cause = cause;
+    const evidence = await driver.safeRuntimeFailureObservation(candidate, {
+      name: namespace,
+      plane: "execution",
+    });
+    const { cause: _reported, ...withoutCause } = failure;
+    assert.deepEqual(evidence, kept ? failure : withoutCause, `${code} ${JSON.stringify(cause)}`);
+  }
 });
 
 test("gateway runtime status maps native Slack channel status without provider data", async () => {
@@ -2640,10 +2673,11 @@ test("gateway runtime status maps native Slack channel status without provider d
   let statusHandler;
   let channelStatus;
   let channelStatusCalls = 0;
+  let channelError;
+  const transportError = new Error("connection refused");
   let holdChannelStatusResponse = false;
-  let pendingChannelStatusListeners;
-  let childTimeout;
-  const childKillSignals = [];
+  let pendingChannelSignal;
+  let rpcTimeout;
   const sandbox = {
     AbortController,
     AbortSignal,
@@ -2669,7 +2703,7 @@ test("gateway runtime status maps native Slack channel status without provider d
     },
     setTimeout(callback, timeoutMs) {
       if (timeoutMs === 6000) {
-        childTimeout = callback;
+        rpcTimeout = callback;
       }
       return { unref() {} };
     },
@@ -2703,50 +2737,27 @@ test("gateway runtime status maps native Slack channel status without provider d
           writeFileSync() {},
         };
       }
-      if (specifier === "node:child_process") {
+      if (specifier === "openclaw/plugin-sdk/gateway-runtime") {
         return {
-          spawn(command, args) {
-            if (args?.[1] !== "channels") {
-              return { on() {}, kill() {} };
-            }
-            assert.equal(command, "node");
-            assert.deepEqual(plain(args), [
-              "/app/openclaw.mjs",
-              "channels",
-              "status",
-              "--channel",
-              "slack",
-              "--json",
-              "--probe",
-              "--timeout",
-              "5000",
-            ]);
+          isGatewayTransportError: (error) => error === transportError,
+          async callGatewayFromCli(method, options, params, { signal }) {
+            assert.equal(method, "channels.status");
+            assert.deepEqual(plain(params), { channel: "slack", probe: true, timeoutMs: 5000 });
             channelStatusCalls += 1;
-            const listeners = {};
-            const child = {
-              stdout: {
-                on(event, listener) {
-                  listeners["stdout:" + event] = listener;
-                },
-              },
-              kill(signal) {
-                childKillSignals.push(signal);
-              },
-              on(event, listener) {
-                listeners[event] = listener;
-              },
-            };
-            if (holdChannelStatusResponse) {
-              pendingChannelStatusListeners = listeners;
-            } else {
-              queueMicrotask(() => {
-                listeners["stdout:data"]?.(Buffer.from(JSON.stringify(channelStatus)));
-                listeners.close?.(0, null);
-              });
+            pendingChannelSignal = signal;
+            if (channelError) {
+              throw channelError;
             }
-            return child;
+            // A stuck transport must not hold the HTTP response or the next probe.
+            if (holdChannelStatusResponse) {
+              return new Promise(() => {});
+            }
+            return channelStatus;
           },
         };
+      }
+      if (specifier === "node:child_process") {
+        return { spawn: () => ({ on() {}, kill() {} }) };
       }
       return nodeRequire(specifier);
     },
@@ -2791,23 +2802,17 @@ test("gateway runtime status maps native Slack channel status without provider d
   );
 
   await assertSlackDiagnostics(
-    { configOnly: true, configuredChannels: [] },
+    {
+      channels: { slack: { configured: false } },
+      channelAccounts: { slack: [{ accountId: "default", configured: false }] },
+      channelDefaultAccountId: { slack: "default" },
+    },
     [
       { check: "configuration", state: "failed", code: "NOT_CONFIGURED" },
       { check: "authentication", state: "unknown", code: undefined },
       { check: "connectivity", state: "unknown", code: undefined },
     ],
     "disabled",
-  );
-
-  await assertSlackDiagnostics(
-    { gatewayReachable: false, configOnly: true, configuredChannels: ["slack"] },
-    [
-      { check: "configuration", state: "succeeded", code: undefined },
-      { check: "authentication", state: "unknown", code: "UNAVAILABLE" },
-      { check: "connectivity", state: "unknown", code: "UNAVAILABLE" },
-    ],
-    "configured but gateway unavailable",
   );
 
   for (const error of [
@@ -2871,22 +2876,34 @@ test("gateway runtime status maps native Slack channel status without provider d
   );
 
   await assertSlackDiagnostics(
-    { configOnly: true },
+    { channels: [] },
     [
       { check: "configuration", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
       { check: "authentication", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
       { check: "connectivity", state: "unknown", code: "INCOMPATIBLE_RESPONSE" },
     ],
-    "malformed config fallback",
+    "malformed live response",
   );
+
+  for (const [error, code] of [
+    [transportError, "UNAVAILABLE"],
+    [new Error("RPC failed"), "PROBE_FAILED"],
+  ]) {
+    channelError = error;
+    const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
+    assert.deepEqual(
+      diagnostics.checks.map(({ state, code }) => ({ state, code })),
+      Array.from({ length: 3 }, () => ({ state: "unknown", code })),
+    );
+  }
+  channelError = undefined;
 
   holdChannelStatusResponse = true;
   const timedOutRequest = readRuntimeChannelChecksFromHandler(statusHandler);
   await Promise.resolve();
-  assert.equal(typeof childTimeout, "function");
-  childTimeout();
-  assert.deepEqual(childKillSignals.slice(-1), ["SIGTERM"]);
-  pendingChannelStatusListeners.close?.(null, "SIGTERM");
+  assert.equal(typeof rpcTimeout, "function");
+  rpcTimeout();
+  assert.equal(pendingChannelSignal.aborted, true);
   const timedOutDiagnostics = await timedOutRequest;
   assert.deepEqual(
     timedOutDiagnostics.checks.map(({ state, code }) => ({ state, code })),
@@ -2918,13 +2935,12 @@ test("gateway runtime status maps native Slack channel status without provider d
     },
   );
   await Promise.resolve();
-  assert.ok(pendingChannelStatusListeners);
+  assert.ok(pendingChannelSignal);
   requestListeners.aborted();
-  assert.deepEqual(childKillSignals.slice(-1), ["SIGTERM"]);
-  pendingChannelStatusListeners.close?.(null, "SIGTERM");
+  assert.equal(pendingChannelSignal.aborted, true);
   await abortedRequest;
   responseListeners.close?.();
-  assert.equal(channelStatusCalls, 10);
+  assert.equal(channelStatusCalls, 11);
 });
 
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
@@ -2945,6 +2961,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   };
   const scenarios = [
     {
+      name: "verifier-only app server starts without exposing either token input",
+      tokenVerifier: true,
+      events: [started, assistant, completed],
+      ready: true,
+    },
+    {
       name: "delayed retry uses only the remaining budget",
       probeTimeouts: 2,
       retryDelayMs: 30500,
@@ -2960,16 +2982,19 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "tool output followed by timeout is not retried",
+      cause: { kind: "PROBE_STATUS", detail: "tool-event" },
       probeError: "ETIMEDOUT",
       events: [started, { type: "item.completed", item: { type: "command_execution" } }],
     },
     {
       name: "rejection followed by timeout is not retried",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       probeError: "ETIMEDOUT",
       events: [{ type: "error", message: "authentication rejected" }],
     },
     {
       name: "malformed output followed by timeout is not retried",
+      cause: { kind: "INVALID_OUTPUT", detail: "json" },
       probeError: "ETIMEDOUT",
       probeOutput: "not-json",
     },
@@ -2984,8 +3009,21 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       probeTimeouts: 2,
       failureCode: "MODEL_PROBE_TIMEOUT",
     },
-    { name: "external SIGKILL is not a timeout or retried", probeSignal: "SIGKILL" },
-    { name: "malformed model output is not retried", probeOutput: "not-json" },
+    {
+      name: "external SIGKILL is not a timeout or retried",
+      probeSignal: "SIGKILL",
+      cause: { kind: "PROCESS_EXIT", detail: "signal-SIGKILL" },
+    },
+    {
+      name: "malformed model output is not retried",
+      probeOutput: "not-json",
+      cause: { kind: "INVALID_OUTPUT", detail: "json" },
+    },
+    {
+      name: "non-event model output is not retried",
+      probeOutput: "null",
+      cause: { kind: "INVALID_OUTPUT", detail: "shape" },
+    },
     { name: "failed login", loginStatus: 1 },
     {
       name: "API-key login timeout is not retried",
@@ -3047,10 +3085,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "fatal top-level error despite assistant output",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [started, assistant, { type: "error", message: "authentication failed" }, completed],
     },
     {
       name: "reconnecting error with auth marker remains fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [
         started,
         {
@@ -3077,10 +3117,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "reconnecting error after completed turn remains fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [started, assistant, completed, recoveredStreamError],
     },
     {
       name: "reconnecting error before the turn starts remains fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [recoveredStreamError, started, assistant, completed],
     },
     ...[
@@ -3101,9 +3143,11 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     ].map(([description, message]) => ({
       name: `reconnecting error ${description} remains fatal`,
       events: [started, { type: "error", message }, assistant, completed],
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
     })),
     {
       name: "unbounded reconnecting errors remain fatal",
+      cause: { kind: "PROBE_STATUS", detail: "error-event" },
       events: [
         started,
         ...Array.from({ length: 11 }, () => recoveredStreamError),
@@ -3113,6 +3157,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "failed turn",
+      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
       events: [
         started,
         assistant,
@@ -3138,15 +3183,36 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "provider server error is not an authentication failure",
+      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
       events: [
         started,
         { type: "turn.failed", error: { message: "unexpected status 503 Service Unavailable" } },
       ],
       probeStatus: 1,
     },
-    { name: "completed turn without visible assistant", events: [started, advisory, completed] },
+    {
+      name: "completed turn without visible assistant",
+      events: [started, advisory, completed],
+      cause: { kind: "PROBE_STATUS", detail: "no-reply" },
+    },
+    {
+      // Provider text that echoes the credential never reaches the cause.
+      name: "provider text in a failed turn stays out of the cause",
+      events: [
+        started,
+        {
+          type: "turn.failed",
+          error: {
+            message: "unexpected status 400 Bad Request: model rejected for fixture-api-key",
+          },
+        },
+      ],
+      probeStatus: 1,
+      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+    },
     {
       name: "tool event despite completed assistant turn",
+      cause: { kind: "PROBE_STATUS", detail: "tool-event" },
       events: [
         started,
         {
@@ -3159,6 +3225,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
     },
     {
       name: "nonzero native exit despite completed assistant turn",
+      cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
       events: [started, assistant, completed],
       probeStatus: 1,
     },
@@ -3205,7 +3272,9 @@ test("Codex runtime gates startup and readiness on a successful native authentic
               OPENCLAW_RUNTIME_STATUS_PORT: "18791",
               OPENCLAW_POD_UID: "pod-runtime-auth-gate",
               OPENCLAW_PLUGIN_READY_MARKER: marker,
-              APP_SERVER_TOKEN: "fixture-transport-token",
+              ...(scenario.tokenVerifier
+                ? { APP_TOKEN_SHA: sha256("fixture-transport-token") }
+                : { APP_SERVER_TOKEN: "fixture-transport-token" }),
               APP_SERVER_PORT: "4500",
             },
             on() {},
@@ -3245,11 +3314,19 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                     loginCalls++;
                     const loginEnvironment = options.env ?? sandbox.process.env;
                     assert.equal(Object.hasOwn(loginEnvironment, "APP_SERVER_TOKEN"), false);
+                    assert.equal(Object.hasOwn(loginEnvironment, "APP_TOKEN_SHA"), false);
                     assert.equal(
                       loginEnvironment.CODEX_LOGIN_MODE,
                       sandbox.process.env.CODEX_LOGIN_MODE,
                     );
-                    assert.equal(sandbox.process.env.APP_SERVER_TOKEN, "fixture-transport-token");
+                    if (scenario.tokenVerifier) {
+                      assert.equal(
+                        sandbox.process.env.APP_TOKEN_SHA,
+                        sha256("fixture-transport-token"),
+                      );
+                    } else {
+                      assert.equal(sandbox.process.env.APP_SERVER_TOKEN, "fixture-transport-token");
+                    }
                   }
                   if (isLogin && scenario.pat) {
                     assert.equal(command, "codex");
@@ -3300,8 +3377,12 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                       scenario.events.map((event) => JSON.stringify(event)).join("\n"),
                   };
                 },
-                spawn(_command, args) {
+                spawn(_command, args, options) {
                   assert.ok(args.includes("app-server"));
+                  const tokenDigest = args[args.indexOf("--ws-token-sha256") + 1];
+                  assert.equal(tokenDigest, sha256("fixture-transport-token"));
+                  assert.equal(Object.hasOwn(options.env, "APP_SERVER_TOKEN"), false);
+                  assert.equal(Object.hasOwn(options.env, "APP_TOKEN_SHA"), false);
                   appServerStarts++;
                   return { on() {}, kill() {} };
                 },
@@ -3402,6 +3483,17 @@ test("Codex runtime gates startup and readiness on a successful native authentic
             scenario.failureCode ?? (loginFailed ? "LOGIN_FAILED" : "MODEL_PROBE_FAILED"),
           );
           assert.match(runtimeStatus.runtimeFailure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
+          // Only a failed model probe carries a cause: a closed kind and a fixed
+          // token, never native output, provider text or the credential.
+          if (runtimeStatus.runtimeFailure.code === "MODEL_PROBE_FAILED") {
+            assert.ok(scenario.cause, "every model-probe failure scenario names its cause");
+          }
+          assert.deepEqual(runtimeStatus.runtimeFailure.cause, scenario.cause);
+          assert.deepEqual(probeDiagnostics.at(-1)?.cause, scenario.cause);
+          assert.doesNotMatch(
+            JSON.stringify(runtimeStatus) + JSON.stringify(probeDiagnostics),
+            /fixture-api-key|at-fixture-token|Bad Request|Unauthorized|Unavailable|Reconnecting/,
+          );
         }
       } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -3735,9 +3827,11 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
     },
     peerAvailable: true,
     serving: true,
+    readinessProbes: [],
     children: [],
     exits: [],
     intervals: [],
+    logs: [],
     signalHandlers: {},
     statusHandler: undefined,
     files: new Map([
@@ -3763,8 +3857,12 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
     t.after(() => new Promise((resolve) => server.close(resolve)));
     return server.address().port;
   };
-  const peerPort = await listen((request, response) => {
+  const peerPort = await listen(async (request, response) => {
     assert.equal(request.url, "/openclaw/plugin-runtime/status");
+    if (fixture.peerGate !== undefined) {
+      fixture.peerRequestPending = true;
+      await fixture.peerGate;
+    }
     if (!fixture.peerAvailable) {
       response.writeHead(503).end();
       return;
@@ -3776,7 +3874,9 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
   const gatewayPort = await listen((request, response) => {
     assert.equal(request.url, "/readyz");
     const live = fixture.children.at(-1);
-    response.writeHead(fixture.serving && live?.exited === undefined ? 200 : 503).end();
+    const status = fixture.serving && live?.exited === undefined ? 200 : 503;
+    fixture.readinessProbes.push({ child: fixture.children.length, status });
+    response.writeHead(status).end();
   });
   fixture.gatewayPort = gatewayPort;
   const sandbox = {
@@ -3784,7 +3884,11 @@ async function startCodexGatewaySupervisor(t, { bindingDeviceId } = {}) {
     Buffer,
     JSON,
     URL,
-    console: { error() {} },
+    console: {
+      error(value) {
+        fixture.logs.push(value);
+      },
+    },
     fetch,
     process: {
       env: {
@@ -3921,6 +4025,7 @@ test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness 
     ...gateway.peerStatus,
     startupId: "agent-startup-2",
     podUid: "agent-pod-2",
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
     failures: [],
   };
   gateway.serving = false;
@@ -3941,8 +4046,15 @@ test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness 
     second.config.plugins.entries.codex.config.codexPlugins.plugins.linear.enabled,
     true,
   );
-  // Spawned but not yet serving: still unready.
-  await new Promise((resolve) => setTimeout(resolve, 700));
+  // Spawned but not yet serving: still unready. The second refused probe shows
+  // that the supervisor handled the first one and kept waiting.
+  await waitForCondition(
+    "two refused readiness probes of the respawned Gateway",
+    () =>
+      gateway.readinessProbes.filter(({ child, status }) => child === 2 && status === 503).length >=
+      2,
+    10_000,
+  );
   assert.equal(gateway.status().phase, "starting");
 
   gateway.serving = true;
@@ -4033,6 +4145,136 @@ test("Codex gateway supervisor re-applies the workspace node binding on respawn"
   assert.equal(gateway.status().phase, "ready");
   assert.deepEqual(gateway.exits, []);
 });
+
+test("Codex gateway supervisor rejects changed plugin successes while its replacement starts", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t);
+  const first = gateway.children[0];
+  gateway.peerStatus = {
+    ...gateway.peerStatus,
+    startupId: "agent-startup-2",
+    failures: [],
+    successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
+  };
+  gateway.serving = false;
+  const respawn = gateway.pollPeer();
+  await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+  first.exit(null, "SIGTERM");
+  await waitForCondition("the replacement Gateway", () => gateway.children.length === 2);
+  const replacement = gateway.children[1];
+  try {
+    // Same peer identity and failure set, but its reported success set changed.
+    gateway.peerStatus = { ...gateway.peerStatus, successfulPluginIds: [] };
+    gateway.serving = true;
+    await respawn;
+    assert.equal(gateway.status().phase, "starting");
+    assert.deepEqual(replacement.killed, ["SIGTERM"]);
+    assert.ok(
+      gateway.logs.some((line) => {
+        try {
+          const entry = JSON.parse(line);
+          return entry.phase === "peer-verification-changed" && entry.outcome === "failed";
+        } catch {
+          return false;
+        }
+      }),
+    );
+  } finally {
+    replacement.exit(null, "SIGTERM");
+  }
+  assert.deepEqual(gateway.exits, [1]);
+});
+
+for (const [changedField, change] of [
+  ["startup", { startupId: "agent-startup-3" }],
+  ["pod", { podUid: "agent-pod-3" }],
+  ["plugin failure set", { failures: [] }],
+]) {
+  test(`Codex gateway supervisor rejects a changed ${changedField} while its replacement starts`, async (t) => {
+    const gateway = await startCodexGatewaySupervisor(t);
+    const first = gateway.children[0];
+    gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+    gateway.serving = false;
+    const respawn = gateway.pollPeer();
+    await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+    first.exit(null, "SIGTERM");
+    await waitForCondition("the replacement Gateway", () => gateway.children.length === 2);
+    gateway.peerStatus = { ...gateway.peerStatus, ...change };
+    gateway.serving = true;
+    await respawn;
+
+    const replacement = gateway.children[1];
+    assert.equal(gateway.status().phase, "starting");
+    assert.deepEqual(replacement.killed, ["SIGTERM"]);
+    assert.ok(
+      gateway.logs.some((line) => {
+        try {
+          const entry = JSON.parse(line);
+          return entry.phase === "peer-verification-changed" && entry.outcome === "failed";
+        } catch {
+          return false;
+        }
+      }),
+    );
+    replacement.exit(null, "SIGTERM");
+    assert.deepEqual(gateway.exits, [1]);
+  });
+}
+
+test("Codex gateway supervisor fails closed if peer status disappears during replacement startup", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t);
+  const first = gateway.children[0];
+  gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+  gateway.serving = false;
+  const respawn = gateway.pollPeer();
+  await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+  first.exit(null, "SIGTERM");
+  await waitForCondition("the replacement Gateway", () => gateway.children.length === 2);
+  gateway.peerAvailable = false;
+  gateway.serving = true;
+  await respawn;
+
+  const replacement = gateway.children[1];
+  assert.equal(gateway.status().phase, "starting");
+  assert.deepEqual(replacement.killed, ["SIGTERM"]);
+  replacement.exit(null, "SIGTERM");
+  assert.deepEqual(gateway.exits, [1]);
+});
+
+for (const termination of ["crash", "SIGTERM", "SIGINT"]) {
+  test(`Codex gateway supervisor handles ${termination} while verifying the replacement peer`, async (t) => {
+    const gateway = await startCodexGatewaySupervisor(t);
+    const first = gateway.children[0];
+    gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+    gateway.serving = false;
+    const respawn = gateway.pollPeer();
+    await waitForCondition("the stale Gateway stop", () => first.killed.length === 1);
+    first.exit(null, "SIGTERM");
+    await waitForCondition("the replacement Gateway", () => gateway.children.length === 2);
+    let releasePeer;
+    gateway.peerGate = new Promise((resolve) => {
+      releasePeer = resolve;
+    });
+    gateway.serving = true;
+    await waitForCondition("the peer verification request", () => gateway.peerRequestPending);
+
+    const replacement = gateway.children[1];
+    try {
+      if (termination !== "crash") {
+        gateway.signalHandlers[termination]();
+        assert.deepEqual(replacement.killed, [termination]);
+        replacement.exit(null, termination);
+      } else {
+        replacement.exit(1, null);
+      }
+    } finally {
+      releasePeer();
+    }
+    await respawn;
+    assert.equal(gateway.status().phase, "starting");
+    assert.deepEqual(gateway.exits, [termination === "SIGTERM" ? 0 : 1]);
+    assert.equal(gateway.children.length, 2);
+  });
+}
 
 test("Codex gateway supervisor bounds respawn retries and falls back to a container restart", async (t) => {
   const gateway = await startCodexGatewaySupervisor(t);
@@ -4239,7 +4481,7 @@ test("Kubernetes dedicated Codex agent mounts plugin-free runtime without plugin
     false,
     undefined,
     driver.harnessAuthForRevision(candidate, harnessAuthContext(candidate), {
-      name: kubernetesGatewayNamespaceName(tenant.id),
+      name: kubernetesNamespaceName(tenant.id),
       plane: "control",
     }),
     [],
@@ -4456,7 +4698,7 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
   let candidateRevisionName;
 
   const credentialObjects = new Map();
-  const cp = kubernetesGatewayNamespaceName(tenant.id);
+  const cp = kubernetesNamespaceName(tenant.id);
   credentialObjects.set(`${cp}:plugin-model-key`, {
     apiVersion: "v1",
     kind: "Secret",

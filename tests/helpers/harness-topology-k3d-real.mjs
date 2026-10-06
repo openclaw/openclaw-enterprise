@@ -1,7 +1,6 @@
-import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
@@ -10,7 +9,6 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { promisify } from "node:util";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   authenticatedHeaders,
@@ -18,6 +16,7 @@ import {
   signInWithEmailPassword,
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { attachPostgresToK3d } from "./k3d-postgres-network.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertGatewayModelTurn,
@@ -34,6 +33,7 @@ import {
   createOtelLogObservation,
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
+import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -96,7 +96,6 @@ const deniedPort = 18791;
 const sharedWorkspaceVolumeName = "openclaw-workspace";
 const harnessWorkspaceClaimSize = "40Gi";
 const harnessWorkspaceSubPaths = Object.freeze(["codex-sessions", "generated-images", "workspace"]);
-const executeFile = promisify(execFile);
 const {
   kubectl,
   kubectlArguments,
@@ -202,75 +201,6 @@ async function createAuthenticatedControllerUrlRequest(origin, credentials, requ
     const body = await response.text();
     return { status: response.status, ...(body.length === 0 ? {} : JSON.parse(body)) };
   };
-}
-
-async function attachPostgresToK3d(registerCleanup) {
-  const statePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
-  const containerBin = process.env.OCC_DOCKER_BIN ?? "docker";
-  assert.ok(statePath, "OPENCLAW_ENTERPRISE_CI_STATE is required for in-cluster OCC");
-  const state = JSON.parse(await readFile(statePath, "utf8"));
-  const cluster = state.resources?.find(
-    ({ kind, status }) => kind === "k3d-cluster" && status === "ready",
-  );
-  const postgres = state.resources?.find(
-    ({ kind, status }) => kind === "compose-postgres" && status === "ready",
-  );
-  assert.ok(cluster?.name, "prepared state must identify the owned k3d cluster");
-  assert.ok(postgres?.name, "prepared state must identify the owned PostgreSQL service");
-  const { stdout: containerOutput } = await executeFile(containerBin, [
-    "ps",
-    "--filter",
-    `label=com.docker.compose.project=${postgres.name}`,
-    "--filter",
-    "label=com.docker.compose.service=postgres",
-    "--format",
-    "{{.Names}}",
-  ]);
-  const containers = containerOutput.trim().split(/\r?\n/).filter(Boolean);
-  assert.equal(containers.length, 1, "prepared PostgreSQL must have exactly one container");
-  const postgresContainer = containers[0];
-  const serverContainer = `k3d-${cluster.name}-server-0`;
-  const { stdout: serverNetworksOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    serverContainer,
-  ]);
-  const serverNetworks = JSON.parse(serverNetworksOutput);
-  const network = Object.keys(serverNetworks).find((name) =>
-    name.startsWith(`k3d-${cluster.name}`),
-  );
-  assert.ok(network, "owned k3d server network must be inspectable");
-  const { stdout: postgresNetworksOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    postgresContainer,
-  ]);
-  const alreadyAttached = Object.hasOwn(JSON.parse(postgresNetworksOutput), network);
-  if (!alreadyAttached) {
-    await executeFile(containerBin, ["network", "connect", network, postgresContainer]);
-  }
-  registerCleanup(async () => {
-    if (!alreadyAttached) {
-      await executeFile(containerBin, [
-        "network",
-        "disconnect",
-        "--force",
-        network,
-        postgresContainer,
-      ]).catch(() => undefined);
-    }
-  });
-  const { stdout: attachedOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    `{{(index .NetworkSettings.Networks ${JSON.stringify(network)}).IPAddress}}`,
-    postgresContainer,
-  ]);
-  const address = attachedOutput.trim();
-  assert.equal(isIP(address), 4, "PostgreSQL must have an IPv4 address on the k3d network");
-  return address;
 }
 
 async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
@@ -431,6 +361,7 @@ async function startInClusterControllers(
     nativeAdminDomain,
     nativeAdminSharedCookieDomain,
     platformNamespace,
+    workerOptions,
     workspaceGateway,
   },
 ) {
@@ -722,9 +653,20 @@ async function startInClusterControllers(
                   ].includes(name),
                 ),
                 { name: "OCC_WORKER_READINESS_PATH", value: "/var/run/openclaw/ready" },
-                { name: "OCC_WORKER_POLL_INTERVAL_MS", value: "50" },
-                { name: "OCC_WORKER_LEASE_DURATION_MS", value: "60000" },
-                { name: "OCC_WORKER_MAX_ATTEMPTS", value: "30" },
+                { name: "OCC_WORKER_LIVENESS_PATH", value: "/var/run/openclaw/alive" },
+                {
+                  name: "OCC_WORKER_POLL_INTERVAL_MS",
+                  value: String(workerOptions.pollIntervalMs),
+                },
+                {
+                  name: "OCC_WORKER_LEASE_DURATION_MS",
+                  value: String(workerOptions.leaseDurationMs),
+                },
+                { name: "OCC_WORKER_MAX_ATTEMPTS", value: String(workerOptions.maxAttempts) },
+                {
+                  name: "OCC_WORKER_CONVERGENCE_TIMEOUT_MS",
+                  value: String(workerOptions.convergenceTimeoutMs),
+                },
               ],
               volumeMounts: [
                 ...apiContainer.volumeMounts.filter(({ name }) => workerVolumes.includes(name)),
@@ -774,7 +716,7 @@ async function startInClusterControllers(
       .join(","),
   );
   assert.equal(pods.length, 1, "in-cluster OCC API Deployment must have one Pod");
-  const forwarding = await startPortForwardTarget(
+  let forwarding = await startPortForwardTarget(
     platformNamespace,
     `pod/${pods[0].metadata.name}`,
     `${controllerPort ?? 0}:18080`,
@@ -801,6 +743,7 @@ async function startInClusterControllers(
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let logError;
+  let logStderr = "";
   let stopping = false;
   logs.once("error", (error) => {
     logError = error;
@@ -808,12 +751,14 @@ async function startInClusterControllers(
   const logExit = new Promise((resolve) =>
     logs.once("close", (code) => {
       if (!stopping) {
-        logError ??= new Error(`Worker log stream exited unexpectedly (${code}).`);
+        logError ??= new Error(`Worker log stream exited unexpectedly (${code}): ${logStderr}`);
       }
       resolve();
     }),
   );
-  logs.stderr.resume();
+  logs.stderr.on("data", (chunk) => {
+    logStderr = `${logStderr}${chunk}`.slice(-2048);
+  });
   const lines = createInterface({ input: logs.stdout });
   lines.on("line", (line) => {
     try {
@@ -822,10 +767,17 @@ async function startInClusterControllers(
         events.push(event);
       }
     } catch {
-      logError ??= new Error("Worker emitted an invalid structured log record.");
+      if (!stopping) {
+        logError ??= new Error("Worker emitted an invalid structured log record.");
+      }
     }
   });
   const worker = {
+    assertHealthy() {
+      if (logError !== undefined) {
+        throw logError;
+      }
+    },
     async stop() {
       if (stopping) {
         return;
@@ -854,7 +806,43 @@ async function startInClusterControllers(
   };
   context.after(() => worker.stop());
   await once(logs, "spawn");
-  return { pod: pods[0], url: forwarding.url, worker };
+  let activeApiPod = pods[0];
+  return {
+    pod: pods[0],
+    url: forwarding.url,
+    worker,
+    async restart() {
+      const previousUid = activeApiPod.metadata.uid;
+      const port = Number(new URL(forwarding.url).port);
+      await forwarding.stop();
+      await kubectl("rollout", "restart", `deployment/${name}`, "--namespace", platformNamespace);
+      await kubectl(
+        "rollout",
+        "status",
+        `deployment/${name}`,
+        "--namespace",
+        platformNamespace,
+        "--timeout=180s",
+      );
+      const pod = await waitFor("replacement OCC API Pod", async () => {
+        const current = await resources("pods", platformNamespace);
+        return current.find(
+          ({ metadata, status }) =>
+            metadata.uid !== previousUid &&
+            metadata.deletionTimestamp === undefined &&
+            Object.entries(labels).every(([key, value]) => metadata.labels?.[key] === value) &&
+            status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+        );
+      });
+      forwarding = await startPortForwardTarget(
+        platformNamespace,
+        `pod/${pod.metadata.name}`,
+        `${port}:18080`,
+      );
+      activeApiPod = pod;
+      return { pod, url: forwarding.url };
+    },
+  };
 }
 
 function installationConfiguration(authentication, platformNamespace, slack, options = {}) {
@@ -1361,28 +1349,6 @@ async function storedAgent(pool, namespaceId, agentId) {
   };
 }
 
-async function grantGatewayWorkerTarget(target, role, account, platformNamespace) {
-  await waitFor(`Gateway runtime namespace ${target}`, async () => {
-    try {
-      return await resource("namespace", target);
-    } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
-        return undefined;
-      }
-      throw error;
-    }
-  });
-  await kubectl(
-    "create",
-    "rolebinding",
-    "openclaw-gateway-worker",
-    "--namespace",
-    target,
-    `--clusterrole=${role}`,
-    `--serviceaccount=${platformNamespace}:${account}`,
-  );
-}
-
 async function topologyPods(topology) {
   const targets = [...new Set([topology.placement, topology.gatewayPlacement])];
   return (await Promise.all(targets.map((target) => resources("pods", target)))).flat();
@@ -1414,6 +1380,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   const gatewayPassword =
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
+  let restartInClusterApi;
+  const workerOptions = {
+    pollIntervalMs: 50,
+    leaseDurationMs: 60_000,
+    maxAttempts: 30,
+    convergenceTimeoutMs: 900_000,
+    ...options.worker,
+  };
   const platformNamespace = `oce-production-${mode}-${hash(identifier)}`;
   await kubectl("create", "namespace", platformNamespace);
   context.after(async () => {
@@ -1561,7 +1535,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       }
       await observerPool.end();
       await detachPostgres?.();
-      if (gatewayRuntimeNamespace !== undefined) {
+      if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
         await kubectl(
           "delete",
           "namespace",
@@ -1641,9 +1615,11 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       nativeAdminDomain: options.nativeAdmin?.domain,
       nativeAdminSharedCookieDomain: options.nativeAdmin?.sharedCookieDomain,
       platformNamespace,
+      workerOptions,
       workspaceGateway,
     });
     inClusterWorker = controllerApi.worker;
+    restartInClusterApi = controllerApi.restart;
     controllerApiPod = controllerApi.pod;
     controllerUrl = controllerApi.url;
     requestFactory = (requestCredentials) =>
@@ -1703,7 +1679,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     namespaceId = createdNamespace.data.id;
   }
   placement = kubernetesNamespaceName(namespaceId);
-  gatewayRuntimeNamespace = kubernetesGatewayNamespaceName(namespaceId);
+  gatewayRuntimeNamespace = kubernetesNamespaceName(namespaceId);
   gatewayPlacement = mode === "dedicated" ? gatewayRuntimeNamespace : placement;
   if (workspaceGateway === undefined) {
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
@@ -1711,9 +1687,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       mode: "production",
       pool: workerPool,
       drivers: workerDrivers,
-      pollIntervalMs: 50,
-      leaseDurationMs: 60_000,
-      maxAttempts: 30,
+      ...workerOptions,
       emit: (event) => events.push(event),
     });
     await worker.start();
@@ -1757,23 +1731,6 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     `--clusterrole=${controller.apiConfigurationRole}`,
     `--serviceaccount=${platformNamespace}:${controller.apiAccount}`,
   );
-  await grantGatewayWorkerTarget(
-    gatewayRuntimeNamespace,
-    controller.tenantRole,
-    controller.account,
-    platformNamespace,
-  );
-  for (const role of [controller.apiSecretRole, controller.apiConfigurationRole]) {
-    await kubectl(
-      "create",
-      "rolebinding",
-      `canonical-${role}`,
-      "--namespace",
-      gatewayRuntimeNamespace,
-      `--clusterrole=${role}`,
-      `--serviceaccount=${platformNamespace}:${controller.apiAccount}`,
-    );
-  }
   for (const verb of ["get", "create"]) {
     const secretAccess = await kubectl(
       "auth",
@@ -1985,14 +1942,8 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     workspaceGateway === undefined
       ? options.nativeOptions
       : { ...options.nativeOptions, ...workspaceGateway.nativeOptions };
-  if (gatewayPassword !== undefined) {
-    assert.ok(
-      selectedNativeOptions?.gatewayAuth,
-      "gateway password requires explicit native gateway authentication",
-    );
-  }
   const nativeOptions =
-    gatewayPassword === undefined
+    gatewayPassword === undefined || selectedNativeOptions?.gatewayAuth === undefined
       ? selectedNativeOptions
       : {
           ...selectedNativeOptions,
@@ -2011,6 +1962,13 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
   const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  if (gatewayPassword !== undefined) {
+    assert.deepEqual(launchValues.gateway.auth.password, {
+      source: "env",
+      provider: "default",
+      id: "OPENCLAW_GATEWAY_PASSWORD",
+    });
+  }
   const templateValues = structuredClone(launchValues);
   const modelReference = templateValues.agents.defaults.model;
   templateValues.agents.defaults.model = "{{ vars.model }}";
@@ -2080,10 +2038,15 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     agent.data.id,
     {
       gatewayPassword,
-      executionMode: mode,
+      legacyCombined: options.legacyRuntimeCredentials === true,
     },
   );
   assert.equal(provisionedGatewayPassword, gatewayPassword);
+  const legacyTransportName = `openclaw-agent-transport-${hash(agent.data.id)}`;
+  const legacyTransport =
+    options.legacyRuntimeCredentials === true
+      ? await resource("secret", legacyTransportName, placement)
+      : undefined;
   {
     const revisionsBefore = await request(
       "GET",
@@ -2161,14 +2124,15 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     assert.equal(observation.status, 200);
     return observation.data.activeRevisionId === deployed.data.id ? observation.data : undefined;
   });
-  await waitFor(`production worker completion of ${deployed.data.id}`, () =>
-    events.find(
+  await waitFor(`production worker completion of ${deployed.data.id}`, () => {
+    inClusterWorker?.assertHealthy();
+    return events.find(
       (event) =>
         event.event === "worker.completed" &&
         event.revisionId === deployed.data.id &&
         event.outcome === "success",
-    ),
-  );
+    );
+  });
   const observedRevision = await request(
     "GET",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions/${deployed.data.id}`,
@@ -2298,6 +2262,18 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`,
   );
 
+  if (legacyTransport !== undefined) {
+    const retained = await resource("secret", legacyTransportName, placement);
+    const password = await resource("secret", `gateway-password-${hash(agent.data.id)}`, placement);
+    assert.equal(retained.metadata.uid, legacyTransport.metadata.uid);
+    assert.deepEqual(retained.data, legacyTransport.data);
+    assert.deepEqual(Object.keys(password.data), ["gateway-password"]);
+    assert.equal(password.data["gateway-password"], retained.data["gateway-password"]);
+    context.diagnostic(
+      "legacy combined credentials retained their UID and bytes; the real worker delivered the separate Gateway password source",
+    );
+  }
+
   const startGatewayForward = () =>
     options.gatewayPort === undefined
       ? startPortForward(gatewayPlacement, gatewayServiceName)
@@ -2310,11 +2286,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     forwarding = await startGatewayForward();
   }
   const restartControllerApi = async () => {
-    assert.equal(
-      workspaceGateway,
-      undefined,
-      "controller restart proof is scoped to the local Fastify production harness",
-    );
+    if (workspaceGateway !== undefined) {
+      const restarted = await restartInClusterApi();
+      controllerUrl = restarted.url;
+      controllerApiPod = restarted.pod;
+      adminRequest = await requestFactory(credentials);
+      request = adminRequest;
+      return;
+    }
     const previousUrl = controllerUrl;
     await productionApp.close();
     productionApp = await composeProduction({
@@ -2616,7 +2595,6 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology, options =
   assert.equal(rebound.status, 200, JSON.stringify(rebound.error));
   const serviceName =
     topology.mode === "dedicated" ? topology.agentServiceName : topology.gatewayServiceName;
-  const servingService = await resource("service", serviceName, topology.placement);
   const candidate = await topology.request("POST", `${agentPath}/deploy`);
   assertNoSecretMaterial(candidate, [invalidKey], "invalid-key deployment response");
   assert.equal(candidate.status, 202, JSON.stringify(candidate.error));
@@ -2724,12 +2702,18 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology, options =
       "openclaw.dev/agent": topology.agent.id,
       "openclaw.dev/revision": candidate.data.id,
       "openclaw.dev/workload-role": "agent",
+      "openclaw.dev/network-profile": "broad-egress-v1",
     });
   } else {
     assert.deepEqual(
       currentService.spec.selector,
-      servingService.spec.selector,
-      "the Service keeps its existing topology selector through failed authentication",
+      {
+        "app.kubernetes.io/name": topology.gatewayServiceName,
+        "openclaw.dev/namespace": topology.agent.namespaceId,
+        "openclaw.dev/agent": topology.agent.id,
+        "openclaw.dev/workload-role": "gateway",
+      },
+      "failed authentication must keep the Service scoped to the exact Agent Gateway",
     );
   }
   const slices = await resources("endpointslices", topology.placement);
@@ -2825,19 +2809,6 @@ async function assertInvalidHarnessAuthStaysUnready(context, topology, options =
   );
 }
 
-function assertRuntimeFailureEvidence(value) {
-  assert.deepEqual(
-    Object.keys(value).sort(),
-    ["check", "checkedAt", "code", "component"],
-    "startup failure evidence must contain only the allowlisted runtime fields",
-  );
-  for (const key of ["component", "check", "code"]) {
-    assert.equal(typeof value[key], "string", `runtime failure ${key} must be a string`);
-    assert.match(value[key], /^[A-Za-z0-9._~:@-]{1,64}$/);
-  }
-  assert.equal(Number.isNaN(Date.parse(value.checkedAt)), false);
-}
-
 async function deploymentStatus(topology, revisionId) {
   const response = await topology.request(
     "GET",
@@ -2895,21 +2866,27 @@ async function assertStartupFailureDeploymentStatusDurable(context, topology, op
     plugins,
     recover: false,
   });
-  const failed = await deploymentStatus(topology, failure.revision.id);
+  const failed = await waitFor("durable terminal authentication failure", async () => {
+    const status = await deploymentStatus(topology, failure.revision.id);
+    assert.notEqual(status.status, "succeeded", "invalid credentials must never succeed");
+    return status.status === "failed" ? status : undefined;
+  });
   assert.deepEqual(
     Object.keys(failed).sort(),
-    ["agentId", "deploymentId", "error", "namespaceId", "status", "warnings"],
+    ["agentId", "deploymentId", "error", "namespaceId", "progress", "status", "warnings"],
     "deployment status must use the approved durable status shape",
   );
   assert.equal(failed.deploymentId, failure.revision.id);
   assert.equal(failed.namespaceId, topology.agent.namespaceId);
   assert.equal(failed.agentId, topology.agent.id);
   assert.equal(failed.status, "failed");
-  assert.equal(failed.error.code, "CONVERGENCE_DEADLINE_EXCEEDED");
+  assert.equal(
+    failed.progress,
+    null,
+    "terminal deployment status must not expose pending progress",
+  );
+  assert.equal(failed.error.code, "RUNTIME_AUTHENTICATION_FAILED");
   assert.equal(typeof failed.error.message, "string");
-  assert.equal(typeof failed.error.data.timeoutMs, "number");
-  assert.ok(failed.error.data.timeoutMs > 0);
-  assertRuntimeFailureEvidence(failed.error.data.runtimeFailure);
   assert.ok(Array.isArray(failed.warnings));
   const deletedPods = await deleteRevisionPods(topology, failure.revision.id);
   assert.ok(
@@ -2922,13 +2899,15 @@ async function assertStartupFailureDeploymentStatusDurable(context, topology, op
     failed,
     "failed deployment status must survive native Pod deletion and restart opportunities",
   );
-  await topology.restartControllerApi();
-  const afterControllerRestart = await deploymentStatus(topology, failure.revision.id);
-  assert.deepEqual(
-    afterControllerRestart,
-    failed,
-    "failed deployment status must survive controller API restart",
-  );
+  for (let restart = 1; restart <= 2; restart += 1) {
+    await topology.restartControllerApi();
+    const afterControllerRestart = await deploymentStatus(topology, failure.revision.id);
+    assert.deepEqual(
+      afterControllerRestart,
+      failed,
+      `failed deployment status must survive controller API restart ${restart}`,
+    );
+  }
   context.diagnostic(
     `startup failure durability: ${failure.revision.id} plugins ${
       options.pluginsEnabled ? "enabled" : "disabled"
@@ -3154,6 +3133,77 @@ async function gatewayCall(topology, method, params) {
     throw new Error(result.error.message, { cause: result.error });
   }
   return result;
+}
+
+async function assertDedicatedSkillSources(topology) {
+  const configurationPath = `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`;
+  const original = await topology.request("GET", configurationPath);
+  assert.equal(original.status, 200);
+  const enabled = structuredClone(original.data.values);
+  (enabled.skills ??= {}).install ??= {};
+  enabled.skills.install.allowUploadedArchives = true;
+  async function deploy(values) {
+    const updated = await topology.request("PATCH", configurationPath, { values });
+    assert.equal(updated.status, 200, JSON.stringify(updated.error));
+    const revision = await topology.request(
+      "POST",
+      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
+    );
+    assert.equal(revision.status, 202, JSON.stringify(revision.error));
+    await waitFor(`Skill policy deployment ${revision.data.id}`, () =>
+      topology.events.find(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === revision.data.id &&
+          event.outcome === "success",
+      ),
+    );
+    topology.gatewayPod = await waitForReadyGatewayPod(topology, revision.data.id);
+    topology.harnessPod = await waitForReadyAgentPod(topology, revision.data.id);
+    topology.revision = revision.data;
+  }
+  async function readFileOrMissing(namespace, pod, path) {
+    return JSON.parse(
+      await execNode(
+        namespace,
+        pod,
+        `try { process.stdout.write(JSON.stringify(require("node:fs").readFileSync(${JSON.stringify(path)}, "utf8"))); }
+         catch (error) { if (error.code !== "ENOENT") throw error; process.stdout.write("null"); }`,
+      ),
+    );
+  }
+  try {
+    await deploy(enabled);
+    return await assertDedicatedSkillSourceLifecycle({
+      callGateway: (method, params) => gatewayCall(topology, method, params),
+      readHarnessFile: (path) =>
+        readFileOrMissing(topology.placement, topology.harnessPod.metadata.name, path),
+      readGatewayFile: (path) =>
+        readFileOrMissing(topology.gatewayPlacement, topology.gatewayPod.metadata.name, path),
+      withNodeWritesDenied: async (run) => {
+        const snapshot = await gatewayCall(topology, "config.get", {});
+        const effective = snapshot.config.plugins.entries["file-transfer"].config;
+        const nodeId = effective.workspaces.main.nodeId;
+        assert.equal(typeof nodeId, "string");
+        const policy = effective.nodes[nodeId] ?? effective.nodes["*"];
+        assert.ok(policy, "the workspace must have an effective node policy");
+        const denied = structuredClone(enabled);
+        const transfer = (denied.plugins.entries["file-transfer"] ??= {});
+        transfer.enabled = true;
+        (transfer.config ??= {}).nodes = {
+          "*": { ...structuredClone(policy), allowWritePaths: [] },
+        };
+        try {
+          await deploy(denied);
+          await run();
+        } finally {
+          await deploy(enabled);
+        }
+      },
+    });
+  } finally {
+    await deploy(original.data.values);
+  }
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
@@ -4195,9 +4245,7 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
   });
   assert.equal(namespace.status, 201, JSON.stringify(namespace.error));
   const placement = topology.kubernetesNamespaceName(namespace.data.id);
-  const gatewayTarget = kubernetesGatewayNamespaceName(namespace.data.id);
   context.after(async () => {
-    await kubectl("delete", "namespace", gatewayTarget, "--ignore-not-found=true", "--wait=true");
     await kubectl(
       "delete",
       "namespace",
@@ -4232,21 +4280,6 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     "openclaw-production-secret-api",
     "--namespace",
     placement,
-    `--clusterrole=${topology.apiSecretRole}`,
-    `--serviceaccount=${topology.platformNamespace}:${topology.apiAccount}`,
-  );
-  await grantGatewayWorkerTarget(
-    gatewayTarget,
-    topology.controllerTenantRole,
-    topology.controllerAccount,
-    topology.platformNamespace,
-  );
-  await kubectl(
-    "create",
-    "rolebinding",
-    "canonical-secret-api",
-    "--namespace",
-    gatewayTarget,
     `--clusterrole=${topology.apiSecretRole}`,
     `--serviceaccount=${topology.platformNamespace}:${topology.apiAccount}`,
   );
@@ -4770,7 +4803,8 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
     { present: true, matches: false },
   );
 
-  // Deleting only this task-owned Pod proves an already-admitted revision restarts with the latest Secret.
+  // A Pod restart reads the existing revision projection; only explicit OCE
+  // deployment delivers updated canonical values to a new revision.
   await kubectl(
     "delete",
     "pod",
@@ -4786,9 +4820,10 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
       topology.gatewayPlacement,
       topology.gatewayPod.metadata.name,
       secretRotationProbe,
-      rotatedProbeValue,
+      initialProbeValue,
     ),
     { present: true, matches: true },
+    "same-revision Pod replacement must retain the admitted Secret projection",
   );
 
   // A different OCC Secret reference containing the same authorized key proves draft/revision
@@ -4885,7 +4920,7 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
   );
   assert.equal(deleteBound.status, 409);
   context.diagnostic(
-    `secret-api rotation: stable ref ${probe.ref.id}; same-revision restart and explicit deploy consumed latest value`,
+    `secret-api rotation: stable ref ${probe.ref.id}; same-revision restart retained its projection; explicit deploy consumed the latest value`,
   );
 }
 
@@ -4953,6 +4988,116 @@ async function assertNativeReferenceNegativeControl(context, topology) {
   await assertActualModelTurn(topology);
   context.diagnostic(
     "competing native credential selector denied before revision admission; canonical reference served a real model turn",
+  );
+}
+
+async function assertDedicatedToEmbeddedCutover(context, topology) {
+  const predecessor = topology.revision;
+  const oldHarness = topology.harnessPod;
+  const oldProjectionName = oldHarness.spec.containers[0].env.find(
+    ({ name }) => name === "OPENAI_API_KEY",
+  ).valueFrom.secretKeyRef.name;
+  const oldProjectionUid = (await resource("secret", oldProjectionName, topology.placement))
+    .metadata.uid;
+  const currentConfiguration = await topology.request(
+    "GET",
+    `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
+  );
+  assert.equal(currentConfiguration.status, 200);
+  const values = nativeConfiguration("openclaw");
+  values.gateway = currentConfiguration.data.values.gateway;
+  // The successor uses the existing authenticated Envoy route. It does not need
+  // the dedicated Gateway's optional direct-loopback password or transport token.
+  delete values.gateway.auth.password;
+  const configuration = await topology.request(
+    "POST",
+    `/namespaces/${topology.agent.namespaceId}/configurations`,
+    { kind: "agent", values },
+  );
+  assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
+  const updated = await topology.request(
+    "PATCH",
+    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    {
+      configurationId: configuration.data.id,
+      executionMode: "embedded",
+    },
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.error));
+
+  const deployed = await topology.request(
+    "POST",
+    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
+  );
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  let observedLivePredecessor = false;
+  await waitFor("embedded cutover and dedicated predecessor termination", async () => {
+    const gateway = await resource(
+      "deployment",
+      topology.gatewayServiceName,
+      topology.gatewayPlacement,
+    );
+    const oldPodStillExists = (await resources("pods", topology.placement)).some(
+      ({ metadata }) => metadata.uid === oldHarness.metadata.uid,
+    );
+    if (oldPodStillExists) {
+      let projection;
+      try {
+        projection = await resource("secret", oldProjectionName, topology.placement);
+      } catch (error) {
+        if (!/NotFound|not found/i.test(error.stderr ?? error.message)) {
+          throw error;
+        }
+        const stillExists = (await resources("pods", topology.placement)).some(
+          ({ metadata }) => metadata.uid === oldHarness.metadata.uid,
+        );
+        assert.equal(
+          stillExists,
+          false,
+          "cutover must retain credentials until the predecessor Harness Pod is gone",
+        );
+      }
+      if (projection !== undefined) {
+        assert.equal(projection.metadata.uid, oldProjectionUid);
+        if (gateway.metadata.annotations?.["openclaw.dev/agent-revision-id"] === deployed.data.id) {
+          observedLivePredecessor = true;
+        }
+      }
+    }
+    const observed = await topology.request(
+      "GET",
+      `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    );
+    assert.equal(observed.status, 200);
+    return !oldPodStillExists && observed.data.activeRevisionId === deployed.data.id
+      ? observed.data
+      : undefined;
+  });
+  assert.equal(
+    observedLivePredecessor,
+    true,
+    "the real cutover must overlap the new Gateway template with the old dedicated Harness",
+  );
+  await waitFor("retired dedicated predecessor credential removal", async () => {
+    try {
+      await resource("secret", oldProjectionName, topology.placement);
+      return false;
+    } catch (error) {
+      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+        return true;
+      }
+      throw error;
+    }
+  });
+  topology.mode = "embedded";
+  topology.harnessId = "openclaw";
+  topology.harnessPod = undefined;
+  topology.agent = updated.data;
+  topology.revision = deployed.data;
+  topology.gatewayPod = await waitForReadyGatewayPod(topology, deployed.data.id);
+  await assertOpenAiKeyProjectedFromSecret(topology, topology.gatewayPod);
+  context.diagnostic(
+    `dedicated-to-embedded cutover retained ${predecessor.id} credentials until Harness termination, then retired them after the embedded Gateway became ready`,
   );
 }
 
@@ -5443,8 +5588,10 @@ export {
   assertActualModelTurn,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertLegacyModelSecretBindingDenied,
+  assertDedicatedToEmbeddedCutover,
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
+  assertDedicatedSkillSources,
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,

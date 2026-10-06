@@ -238,6 +238,31 @@ test(
   },
 );
 
+test("the API accepts exactly the GitHub allowlist the chart renders", tooling, async () => {
+  const objects = await renderChart({
+    ...githubUpgradeValues(recoveryUserId),
+    "auth.github.allowedOrgs[0]": "Acme",
+    "auth.github.allowedOrgs[1]": "acme-labs",
+    "auth.github.allowedTeams[0]": "other/platform_team",
+  });
+  const rendered = signInSettings(deploymentEnv(objects, "api"));
+  assert.deepEqual(rendered, {
+    ...githubUpgradeSettings(recoveryUserId),
+    OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme,acme-labs",
+    OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform_team",
+  });
+  assert.deepEqual(githubLoginConfiguration(resolveSecrets(rendered)), {
+    clientId: secrets["occ-github-login/client-id"],
+    clientSecret: secrets["occ-github-login/client-secret"],
+    recoveryUserId,
+    allowedOrgs: ["acme", "acme-labs"],
+    allowedTeams: ["other/platform_team"],
+  });
+  assert.ok(
+    !deploymentEnv(objects, "worker").some(({ name }) => name.startsWith("OCC_AUTH_GITHUB_")),
+  );
+});
+
 test(
   "the API accepts exactly the Google sign-in settings the chart renders, alone and with GitHub",
   tooling,
@@ -436,20 +461,22 @@ test(
           egress,
           label,
         );
-        // The default OIDC egress is any address except link-local, on TCP 443 only.
-        const oidcEgress = policies.find(({ metadata }) =>
-          metadata.name.endsWith("-api-oidc-login-egress"),
-        );
-        assert.deepEqual(
-          oidcEgress.spec.egress,
-          [
-            {
-              to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
-              ports: [{ protocol: "TCP", port: 443 }],
-            },
-          ],
-          label,
-        );
+        // Every default sign-in egress is any address except link-local, on TCP 443 only.
+        for (const provider of egress) {
+          const providerEgress = policies.find(({ metadata }) =>
+            metadata.name.endsWith(`-api-${provider}-login-egress`),
+          );
+          assert.deepEqual(
+            providerEgress.spec.egress,
+            [
+              {
+                to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
+                ports: [{ protocol: "TCP", port: 443 }],
+              },
+            ],
+            `${label}: ${provider}`,
+          );
+        }
         assert.ok(
           !deploymentEnv(objects, "worker").some(({ name }) => /^OCC_AUTH_OIDC_/.test(name)),
           label,
@@ -459,15 +486,27 @@ test(
         assert.equal(await startupCode(directory, environment), "PERSISTENCE_UNAVAILABLE", label);
       }),
     );
+    // A listed CIDR replaces the default, link-local included, for each provider.
     const narrowed = await renderChart({
+      ...githubUpgradeValues(recoveryUserId),
+      ...googleUpgradeValues(recoveryUserId),
       ...oidcUpgradeValues(recoveryUserId),
+      "auth.github.egressCidrs[0]": "140.82.112.0/20",
+      "auth.google.egressCidrs[0]": "169.254.10.0/24",
       "auth.oidc.egressCidrs[0]": "198.51.100.0/24",
     });
-    assert.deepEqual(
-      narrowed.find(({ metadata }) => metadata.name.endsWith("-api-oidc-login-egress")).spec
-        .egress[0].to,
-      [{ ipBlock: { cidr: "198.51.100.0/24" } }],
-    );
+    for (const [provider, cidr] of [
+      ["github", "140.82.112.0/20"],
+      ["google", "169.254.10.0/24"],
+      ["oidc", "198.51.100.0/24"],
+    ]) {
+      assert.deepEqual(
+        narrowed.find(({ metadata }) => metadata.name.endsWith(`-api-${provider}-login-egress`))
+          .spec.egress[0].to,
+        [{ ipBlock: { cidr } }],
+        provider,
+      );
+    }
   },
 );
 
@@ -591,6 +630,90 @@ const invalid = [
     github: true,
     env: { OCC_AUTH_PASSWORD_SIGN_IN: "none" },
     parser: /OCC_AUTH_PASSWORD_SIGN_IN must be all or recovery-only/,
+  },
+  {
+    name: "GitHub with an allowed organization that is not a login",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedOrgs[0]": "acme/platform",
+    },
+    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme/platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
+    name: "GitHub with an allowed team without its organization",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      "auth.github.allowedTeams[0]": "platform",
+    },
+    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
+    github: true,
+    env: { OCC_AUTH_GITHUB_ALLOWED_TEAMS: "platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
+  },
+  {
+    name: "GitHub with more than ten allowlist entries",
+    values: {
+      ...githubOn,
+      "agentNativeAdmin.enabled": "false",
+      ...Object.fromEntries(
+        Array.from({ length: 11 }, (_, index) => [
+          `auth.github.allowedOrgs[${index}]`,
+          `org${index}`,
+        ]),
+      ),
+    },
+    chart:
+      /auth\.github\.allowedOrgs and auth\.github\.allowedTeams list at most 10 entries together/,
+    github: true,
+    env: {
+      OCC_AUTH_GITHUB_ALLOWED_ORGS: Array.from({ length: 11 }, (_, index) => `org${index}`).join(
+        ",",
+      ),
+    },
+    parser: /list at most 10 entries together/,
+  },
+  // An allowlist without its provider is refused, never dropped: an operator who sets one
+  // expects it to limit sign-in. Entries are checked first, as the API does.
+  ...[
+    ["organization", "auth.github.allowedOrgs[0]", "OCC_AUTH_GITHUB_ALLOWED_ORGS", "acme"],
+    ["team", "auth.github.allowedTeams[0]", "OCC_AUTH_GITHUB_ALLOWED_TEAMS", "acme/platform"],
+  ].map(([kind, key, variable, value]) => ({
+    name: `an allowed GitHub ${kind} without GitHub sign-in`,
+    values: { [key]: value },
+    chart:
+      /auth\.github\.allowedOrgs and auth\.github\.allowedTeams require auth\.github\.enabled: true/,
+    env: { [variable]: value },
+    parser: /requires client ID, client secret and recovery user ID/,
+  })),
+  {
+    name: "an allowed GitHub organization that is not a login, without GitHub sign-in",
+    values: { "auth.github.allowedOrgs[0]": "acme/platform" },
+    chart: /auth\.github\.allowedOrgs requires GitHub organization logins/,
+    env: { OCC_AUTH_GITHUB_ALLOWED_ORGS: "acme/platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_ORGS must be a comma-separated list of GitHub organization logins/,
+  },
+  {
+    name: "an allowed GitHub team without its organization, without GitHub sign-in",
+    values: { "auth.github.allowedTeams[0]": "platform" },
+    chart: /auth\.github\.allowedTeams requires org\/team-slug entries/,
+    env: { OCC_AUTH_GITHUB_ALLOWED_TEAMS: "platform" },
+    parser:
+      /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
+  },
+  {
+    name: "an allowed Google domain without Google sign-in",
+    values: { "auth.google.allowedDomains[0]": "example.com" },
+    chart: /auth\.google\.allowedDomains requires auth\.google\.enabled: true/,
+    env: { OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: "example.com" },
+    parser: /Google sign-in requires both client ID and client secret/,
   },
   {
     name: "Google without a recovery user",
@@ -805,6 +928,16 @@ test(
         /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
       ],
       [
+        "an empty-string egress list",
+        { ...google, "auth.google.egressCidrs": "" },
+        /auth\.google\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
+      ],
+      [
+        "an empty-string domain allowlist",
+        { ...google, "auth.google.allowedDomains": "" },
+        /auth\.google\.allowedDomains must be a list of DNS domain names/,
+      ],
+      [
         "an HTTP base URL",
         { ...google, "auth.baseUrl": "http://oce.example.internal" },
         /auth\.google requires an HTTPS auth\.baseUrl/,
@@ -852,6 +985,11 @@ test(
         /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
       ],
       [
+        "an empty-string egress list",
+        { ...oidc, "auth.oidc.egressCidrs": "" },
+        /auth\.oidc\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \[\] in a values file or with --set-json,/,
+      ],
+      [
         "an HTTP base URL",
         { ...oidc, "auth.baseUrl": "http://oce.example.internal" },
         /auth\.oidc requires an HTTPS auth\.baseUrl/,
@@ -888,3 +1026,20 @@ test(
     }
   },
 );
+
+test("a null optional sign-in map renders like an absent one", tooling, async () => {
+  // `auth.github: null` (or `--set auth.github=null`) deletes the map's defaults. The chart
+  // must then render the password-only install without a trusted proxy, as validation and
+  // the install notes already assume, instead of failing with a template nil pointer.
+  for (const key of ["auth.github", "auth.google", "auth.oidc", "api.trustedProxy"]) {
+    const objects = await renderChart({ [key]: "null" });
+    assert.deepEqual(signInSettings(deploymentEnv(objects, "api")), defaultInstallSettings, key);
+    assert.equal(
+      objects.filter(
+        ({ kind, metadata }) => kind === "NetworkPolicy" && /-login-egress$/.test(metadata.name),
+      ).length,
+      0,
+      key,
+    );
+  }
+});

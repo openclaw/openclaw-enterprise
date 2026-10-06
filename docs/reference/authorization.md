@@ -94,6 +94,16 @@ principal. OCC token verification, identity exchange, and ServicePrincipal
 workload authentication through the controller API remain deferred. Ordinary
 service keys are deliberately unavailable to Agent-owned principals.
 
+A Kubernetes ServiceAccount token is evidence from its issuing cluster and
+ServiceAccount; it is not a portable OCE Agent identity. In particular, a
+Gateway and dedicated Harness in different cluster trust domains cannot use one
+cluster's ServiceAccount as their shared identity. A future workload-authentication
+path must verify each environment's local evidence, exchange it for a
+short-lived credential scoped to the existing OCE Agent ServicePrincipal and
+revision, and authenticate the Gateway and Harness independently. Until OCC has
+that verifier, exchange, authorization, and a runtime client, projecting the
+token does not authenticate an Agent request.
+
 An unknown identity is denied. Email addresses, display names, caller-supplied
 identity headers, or membership in another Namespace do not grant access.
 
@@ -244,10 +254,17 @@ create child resources. Human enrollment and grant creation are separate steps.
 
 Roles and bindings cannot be updated. Create replacements and explicitly
 remove old bindings. A referenced Role cannot be deleted (`409`), and deleting
-one binding preserves equivalent and unrelated bindings. Deleting an Agent,
+one binding preserves equivalent and unrelated bindings. Deleting a
 Configuration, Preset, Secret, credential source, or ServiceAccount removes the
 bindings that target it in the same transaction, and its delete audit event lists
-them (`removedAccessBindings`; for an Agent, `accessBindingsRemovedOnCompletion`).
+them (`removedAccessBindings`). Agent deletion completes asynchronously and then
+removes the bindings that target the Agent or its AgentRevisions or name its
+ServicePrincipal as subject; its accepted delete event lists all of them in
+`accessBindingsRemovedOnCompletion`. A deleting Agent admits no new binding of
+those kinds. Completion also removes the deny Restrictions on the Agent or its
+AgentRevisions, at Installation or Namespace scope; the same event lists them in
+`restrictionsRemovedOnCompletion`. Each of these three audit lists appears only
+when it is nonempty.
 Namespace teardown removes the Namespace's bindings and Roles with the tombstone
 and records them in the lifecycle event. After an unknown
 creation outcome, list and inspect policy before retrying; equivalent bindings
@@ -350,6 +367,10 @@ For a working authenticated request, see the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 15:40: Agent-targeting bindings are removed on deletion completion; the audit lists appear only when nonempty. (dogfood-r37)
+
+- 2026-10-03 16:45: The Agent delete event lists the Restrictions its completion removes. (deletion-audit-restrictions)
 
 - 2026-09-19 20:53: Document Namespace Role and exact identity AccessBinding management. (codex/01a0bce5-9f29-7110-85fd-6b140674d362 - 06c23b9cf60915ba58baa38b23cf304562e674a1)
 

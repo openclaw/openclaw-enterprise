@@ -10,7 +10,7 @@ requires approval for Create issue. This remains simulated UI evidence, not live
 plugin access, credential readiness, or runtime policy enforcement.
 
 The current DevDay Storybook fixture keeps that catalog available regardless of
-the create path: Start without Preset, every DevDay Preset, both standard
+the create path: Start with default Preset, every DevDay Preset, both standard
 Presets, new model Secret entry, and existing model Secret selection. The
 checkpoint exercises the same Linear policy steps and reaches the Workspace tab.
 

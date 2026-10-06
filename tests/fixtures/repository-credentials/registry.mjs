@@ -55,18 +55,23 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       githubProviderModule("registry-factory"),
       githubProviderModule("material"),
     ]);
-    const config = validateServiceConfig(
+    const configured = validateServiceConfig(
       serviceConfigurationData({
         gateway: {
           publicOrigin: "https://credentials.example.test",
           listen: "0.0.0.0:443",
           controlSocket: join(directory, "control.sock"),
-          ...options.gateway,
         },
         sessionPolicy: { maximumDurationSeconds },
         limits: options.limits,
       }),
     );
+    // Test listeners can ask the kernel for a port without relaxing production
+    // configuration validation, as in the standalone service fixture.
+    const config =
+      options.gateway === undefined
+        ? configured
+        : { ...configured, gateway: { ...configured.gateway, ...options.gateway } };
     const { repositories, apiOrigin, gitOrigin } = await startRegistryProviderFixtures(resources, {
       definitions,
       clock,

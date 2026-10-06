@@ -1,4 +1,4 @@
-import type { AuditEvent, ComputeDriver } from "@openclaw-enterprise/contracts";
+import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
   validatePersistedNativeIAMState,
@@ -17,6 +17,7 @@ import {
   type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
+  type PasswordSlowLaneFloors,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
@@ -52,6 +53,8 @@ export interface ProductionConfig {
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
   readonly passwordSignIn?: "recovery-only";
   readonly clientAddress?: ClientAddressConfiguration;
+  /** Test seam: shortens or observes sign-in pacing; unset in the server (see auth/index.ts). */
+  readonly passwordSlowLaneFloors?: PasswordSlowLaneFloors;
   readonly poolMax?: number;
   readonly drivers: InstallationRuntimeDrivers;
   readonly logger?: OccLogger;
@@ -63,7 +66,12 @@ export interface ProductionConfig {
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  /** Receives each composition phase's wall-clock duration, in order, for the startup log. */
+  readonly onStartupPhase?: (phase: ProductionStartupPhase, durationMs: number) => void;
 }
+
+export type ProductionStartupPhase =
+  "database" | "authentication" | "identity" | "computePreflight" | "controller" | "routes";
 
 export async function composeProduction(config: ProductionConfig) {
   if (config.mode !== "production") {
@@ -100,6 +108,13 @@ export async function composeProduction(config: ProductionConfig) {
     throw new Error("OIDC sign-in does not support native administration.");
   }
 
+  let phaseStartedAt = performance.now();
+  const phaseCompleted = (phase: ProductionStartupPhase) => {
+    const now = performance.now();
+    config.onStartupPhase?.(phase, Math.round(now - phaseStartedAt));
+    phaseStartedAt = now;
+  };
+
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
@@ -113,6 +128,7 @@ export async function composeProduction(config: ProductionConfig) {
 
     const iamState = await state.loadNativeIAMState(persistedInstallation.id);
     validatePersistedNativeIAMState(iamState);
+    phaseCompleted("database");
     const iamDriver = createIAMDriver(state);
     const auth = await createPostgresControllerAuth({
       mode: config.mode,
@@ -133,9 +149,18 @@ export async function composeProduction(config: ProductionConfig) {
         ? {}
         : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
       ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
+      ...(config.passwordSlowLaneFloors === undefined
+        ? {}
+        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
       ...(config.logger === undefined
         ? {}
         : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
+          }),
     });
     if (config.clientAddress === undefined && config.logger !== undefined) {
       // No trusted proxy: every browser behind the ingress shares its address, so failed
@@ -162,6 +187,7 @@ export async function composeProduction(config: ProductionConfig) {
         ...skippedUserLogFields(auth.withoutExternalIdentity),
       });
     }
+    phaseCompleted("authentication");
     const humanAuthentication = new PostgresHumanAuthentication(
       state,
       persistedInstallation.id,
@@ -196,6 +222,7 @@ export async function composeProduction(config: ProductionConfig) {
     if (!resolved || resolved.kind !== "principal" || resolved.id !== principal.id) {
       throw new Error("The persisted IAM Principal cannot be resolved uniquely.");
     }
+    phaseCompleted("identity");
 
     const preflight = computeDriver.preflight;
     if (preflight !== undefined && typeof preflight !== "function") {
@@ -220,11 +247,14 @@ export async function composeProduction(config: ProductionConfig) {
       }
     }
 
+    phaseCompleted("computePreflight");
     const controller = new OpenClawController(persistedInstallation, {
       state,
       recordOperations: true,
       backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
+      bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
+      refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
       loggingLevel: config.drivers.installation.logging.level,
       ...(installation.runtime === undefined
         ? {}
@@ -270,11 +300,19 @@ export async function composeProduction(config: ProductionConfig) {
       controller.selectDriver("repo", repoDriver.id);
     }
     await controller.validateBackendConfiguration();
+    if (config.logger !== undefined) {
+      for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
+        emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });
+      }
+    }
     await initializeInstallationPresets(
       controller,
       iamDriver,
       iamState.identities,
       config.drivers.defaultPresets ?? [],
+      config.logger === undefined
+        ? undefined
+        : (warning) => emitOccLogEvent(config.logger!, warning),
     );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;
@@ -287,6 +325,7 @@ export async function composeProduction(config: ProductionConfig) {
       throw new Error("Native admin UI access requires OCC_GATEWAY_API_KEY_PATH.");
     }
 
+    phaseCompleted("controller");
     const app = createFastifyApp({
       ...(config.metrics === undefined ? {} : { metrics: config.metrics }),
       controller,
@@ -327,6 +366,7 @@ export async function composeProduction(config: ProductionConfig) {
       return { status: "ready" };
     });
     app.addHook("onClose", async () => state.close());
+    phaseCompleted("routes");
     return app;
   } catch (error) {
     await pool.end();

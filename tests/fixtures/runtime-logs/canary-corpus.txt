@@ -22,6 +22,7 @@ MY_SERVICE_KEY={{SERVICE_KEY}}
 {"time":"2026-09-30T12:00:00.006+00:00","level":"info","message":"{{REPLY}}"}
 {"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"t1","delta":"{{RPC}}"}}
 {"jsonrpc":"2.0","id":7,"result":{"items":[{"type":"message","text":"{{RPC}}"}]}}
-{"timestamp":"2026-09-30T12:00:00.100Z","level":"WARN","target":"codex_core::client","fields":{"message":"retrying model request","prompt":"{{CODEX_PROMPT}}","attempt":2}}
+{"timestamp":"2026-09-30T12:00:00.100Z","level":"WARN","target":"codex_core::responses_retry","fields":{"message":"stream connection failed; waiting to retry","prompt":"{{CODEX_PROMPT}}","attempt":2}}
+{"timestamp":"2026-09-30T12:00:00.101Z","level":"WARN","target":"codex_core::event_mapping","fields":{"message":"Output text in user message: {{CODEX_CHAT}}"}}
 {"event":"runtime.startup_phase","container":"gateway","phase":"config","outcome":"ok","ms":12,"sinceStartMs":40,"note":"{{WRAPPER_EXTRA}}"}
 {"message": "{{MALFORMED}}", "level": "info"

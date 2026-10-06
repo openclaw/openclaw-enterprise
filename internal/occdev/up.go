@@ -70,6 +70,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 	required := []string{"k3d", "kubectl"}
 	if sandboxDriver == "none" {
 		required = append(required, "node")
+	} else {
+		required = append(required, "helm")
 	}
 	for _, name := range required {
 		if _, err := exec.LookPath(name); err != nil {
@@ -104,6 +106,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	if err := setKubernetesBridgeGateway(rendered); err != nil {
 		return err
+	}
+	if sandboxDriver == "openshell" {
+		if err := addComposeGatewayRouting(rendered, state); err != nil {
+			return err
+		}
 	}
 	if err := r.validateResourceOwnership(ctx, rendered, state); err != nil {
 		return err
@@ -204,6 +211,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		clusterCreationFailed = true
 		return err
 	}
+	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
+		return err
+	}
 	if err := r.writeKubeconfigs(ctx, state); err != nil {
 		return err
 	}
@@ -225,6 +235,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return err
 		}
 	}
+	var routing *composeDevelopmentRouting
+	if sandboxDriver == "openshell" {
+		fmt.Fprintln(r.opts.Out, "Installing pinned private routing for the Compose control plane...")
+		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, apiURL, time.Duration(timeout)*time.Second)
+		if err != nil {
+			return err
+		}
+	}
 	var codexSeccompProfile string
 	if sandboxDriver == "none" {
 		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
@@ -236,12 +254,29 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	if err := writeInstallation(state, reference, openShellAssets, codexSeccompProfile, statusProxySource); err != nil {
+	openShellGatewayAddress := ""
+	if sandboxDriver == "openshell" {
+		openShellGatewayAddress, err = r.openShellGatewayAddress(ctx, openShellGatewayNamespace)
+		if err != nil {
+			return err
+		}
+	}
+	if err := writeInstallation(state, reference, openShellAssets, openShellGatewayAddress, codexSeccompProfile, statusProxySource); err != nil {
 		return err
+	}
+	if routing != nil {
+		if err := configureDevelopmentRouting(state, routing.trustedProxyCIDRs, routing.endpoint); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
 	if err := r.compose(ctx, state, "up", "--build", "-d", "controller", "worker-kubernetes"); err != nil {
 		return err
+	}
+	if routing != nil {
+		if err := r.finalizeComposeDevelopmentRouting(ctx, state, routing, time.Duration(timeout)*time.Second); err != nil {
+			return err
+		}
 	}
 	if err := r.waitReady(ctx, state, apiURL, time.Duration(timeout)*time.Second); err != nil {
 		return err
@@ -498,8 +533,8 @@ func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url 
 }
 
 func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, namespaceID string, timeout time.Duration) error {
-	return poll(ctx, timeout, func(context.Context) (bool, error) {
-		value, err := client.GetNamespace(namespaceID)
+	return poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		value, err := client.WithContext(ctx).GetNamespace(namespaceID)
 		if err != nil {
 			return false, nil
 		}

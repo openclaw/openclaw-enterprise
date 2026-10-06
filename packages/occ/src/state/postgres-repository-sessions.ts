@@ -144,6 +144,13 @@ export function postgresRepositorySessions(
       );
       return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
     },
+    fenceBrokerReceipt: async (input) => {
+      const result = await client.query(
+        `UPDATE occ.repository_broker_receipts SET state = 'fenced' WHERE admission_id = $1 AND state = 'reserved' AND generation = $2 RETURNING ${receiptColumns}`,
+        [input.admissionId, input.generation],
+      );
+      return result.rows[0] === undefined ? undefined : receiptFromRow(result.rows[0]);
+    },
     findAttempt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1`,

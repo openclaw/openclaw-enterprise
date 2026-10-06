@@ -427,10 +427,3 @@ function attachmentState(state: string): CredentialAttachmentStatus["state"] {
       return "pending";
   }
 }
-
-export function createOpenShellCredentialGatewayDriver(
-  options: OpenShellCredentialGatewayOptions,
-  selection: OpenShellCredentialGatewaySelection,
-): OpenShellCredentialGatewayDriver {
-  return new OpenShellCredentialGatewayDriver(options, selection);
-}

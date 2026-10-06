@@ -40,6 +40,10 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
   Do not replace the live Installation ID with another ID. Follow
   [binding the Installation](production-upgrade.md#bind-the-installation-once)
   if its Secret lacks the required annotation.
+- Run the [split-layout check](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+  If it reports split-layout tenants, do not upgrade: keep the existing release.
+  The script's startup preflight also refuses split-layout tenants and stops
+  before it scales the API and worker to zero.
 - Meet the [upgrade permissions and concurrency requirements](production-upgrade.md#prepare-the-release).
   For runtime upgrades, review saved drafts and stop other deployments and edits:
   new revisions use the current drafts. Schedule an interruption window and
@@ -113,14 +117,18 @@ owners; object names alone do not prove retention.
 
 This procedure keeps the existing Installation and refuses every Installation
 change except the Plugin Driver selection. A release that changes launcher or
-profile Installation values, such as the `1280Mi` Gateway memory request, does
+profile Installation values, such as the Gateway and Harness memory sizes, does
 not change an existing installation. Diff `internal/occdev/kubernetes.go`,
 `scripts/render-installation-profile.mjs` and
 `deploy/examples/production/installation.yaml` between the deployed and candidate
 source. Apply the changes you adopt before or after the upgrade as in
 [apply other Installation changes](production-upgrade.md#apply-other-installation-changes),
-with this page's variables, or for a `dev-up` installation as described below.
-Gateway resources apply when an Agent is next deployed.
+with this page's `INSTALLATION`, `VALUES`, kubeconfig, context, release and
+namespace, including for an installation created by `dev-up`. Do not apply with
+the launcher state's `helm-values.json` after this page has upgraded the
+installation: it still names the bring-up images and lacks the upgraded values,
+such as the selected images and checksum, so Helm would roll the controller back. Gateway and Harness resources apply when
+an Agent is next deployed.
 
 It also never adds fields that `scripts/dev-up` writes only at bring-up. An installation created by `dev-up`
 before `network.pluginStatusProxySourceCidrs` existed still lacks it after an
@@ -144,13 +152,10 @@ docker exec "$K3D_SERVER" ip route get 10.42.0.2
 
 The route must name `dev cni0`; another device means no Pod runs on the node
 yet. Add its `src` address as a single `/32` entry, for example `10.42.0.1/32`,
-under `drivers.compute.configuration.network.pluginStatusProxySourceCidrs` in the
-launcher state's `installation.yaml`. Apply it as described in
-[require both proxies before enabling Slack](local-kubernetes-development.md#require-both-proxies-before-enabling-slack):
-replace the Installation Secret, refresh `controlPlane.installationChecksum`, and
-run Helm. Then recover `INSTALLATION` and `VALUES` again before upgrading, because the
-script stops while they differ from live state. Agents deployed afterward get the
-API-proxy rule. Recreating with `occ dev down` and `scripts/dev-up` also adds the
+under `drivers.compute.configuration.network.pluginStatusProxySourceCidrs` in
+`INSTALLATION` and apply it as above. That leaves `INSTALLATION` and `VALUES`
+equal to the live state, so the script accepts them. Agents deployed afterward
+get the API-proxy rule. Recreating with `occ dev down` and `scripts/dev-up` also adds the
 field, but discards the database, Agents, and volumes.
 
 ## Select and make the published images available

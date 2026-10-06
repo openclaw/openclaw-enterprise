@@ -8,11 +8,7 @@ import {
 } from "../../packages/iam/src/index.ts";
 import { AuthorizationDeniedError, OpenClawController } from "../../packages/occ/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const requiresPostgres = {
-  skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-};
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -551,10 +547,26 @@ test(
       createState.transact((unit) =>
         iam.createNamespaceAccessBinding(
           { policy: unit.iamPolicy },
-          { ...agentBinding, id: identifier("binding") },
+          { ...agentBinding, id: identifier("binding"), subjectId: principal.id },
         ),
       ),
       /target does not exist in this Namespace or is being deleted/,
+    );
+    // Deletion also removes bindings for the Agent's ServicePrincipal, so a deleting
+    // Agent's ServicePrincipal is no longer a bindable subject for any target.
+    await assert.rejects(
+      createState.transact((unit) =>
+        iam.createNamespaceAccessBinding(
+          { policy: unit.iamPolicy },
+          {
+            ...agentBinding,
+            id: identifier("binding"),
+            resourceKind: "secret",
+            resourceId: secret.id,
+          },
+        ),
+      ),
+      /the ServicePrincipal of a live Agent here/,
     );
 
     assert.equal(

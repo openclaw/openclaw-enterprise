@@ -31,7 +31,7 @@ export function renderWorkspaceFiles(context, agent, path) {
     element(
       "p",
       { className: "notice" },
-      "These files belong to the Agent's live workspace. Saving replaces one file immediately and does not change Configuration or AgentRevisions. Concurrent writes use the last saved contents.",
+      "These files belong to the Agent's live workspace. Saving replaces one file immediately and does not change Configuration or Agent versions. Concurrent writes use the last saved contents.",
     ),
   );
   if (!agent.activeRevisionId) {
@@ -39,7 +39,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       element(
         "p",
         { className: "muted", role: "status" },
-        "Workspace files require a deployed Agent with an active revision and a reachable gateway.",
+        "Workspace files require a deployed Agent with a current version and a reachable gateway.",
       ),
     );
     return section;

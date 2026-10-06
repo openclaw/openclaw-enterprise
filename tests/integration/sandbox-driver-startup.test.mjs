@@ -1,33 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import {
+  OpenShellProviderAlreadyExistsError,
+  OpenShellRequestReplayRefusedError,
+  OpenShellSandboxAlreadyExistsError,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
+import {
+  SandboxRevisionUnsupportedError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
 const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
 
-async function fixture(t, configuration) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-sandbox-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
-  const path = join(directory, "installation.yaml");
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  return path;
-}
-
 function sandboxInstallation() {
   const configuration = installation();
+  configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
   configuration.backend = [
     {
       id: "openshell",
@@ -82,11 +82,19 @@ function backendFor(gatewayClient) {
   };
 }
 
+function harnessRuntimeCommand(program) {
+  return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(program)];
+}
+
 function workspaceGatewayClient(seed = [], events = []) {
   const workspaces = new Map(seed.map((workspace) => [workspace.name, structuredClone(workspace)]));
+  const profiles = new Map();
+  const providers = new Map();
   const calls = [];
   return {
     calls,
+    profiles,
+    providers,
     workspaces,
     async health() {
       calls.push(["health"]);
@@ -112,7 +120,75 @@ function workspaceGatewayClient(seed = [], events = []) {
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },
+    async getSandbox() {
+      return undefined;
+    },
+    async getService() {
+      return undefined;
+    },
     async deleteSandbox() {},
+    async getProviderProfile(_workspace, id) {
+      return profiles.get(id);
+    },
+    async importProviderProfile(_workspace, profile) {
+      profiles.set(profile.id, {
+        id: profile.id,
+        resourceVersion: "1",
+        annotations: structuredClone(profile.annotations),
+        profile: structuredClone(profile),
+      });
+    },
+    async updateProviderProfile(_workspace, profile) {
+      profiles.set(profile.id, {
+        id: profile.id,
+        resourceVersion: "2",
+        annotations: structuredClone(profile.annotations),
+        profile: structuredClone(profile),
+      });
+    },
+    async deleteProviderProfile(_workspace, id) {
+      profiles.delete(id);
+    },
+    async createProvider(request) {
+      calls.push(["createProvider", structuredClone(request)]);
+      if (providers.has(request.name)) {
+        throw new Error(`Provider ${request.name} already exists.`);
+      }
+      const provider = {
+        name: request.name,
+        type: request.type,
+        labels: structuredClone(request.labels),
+        config: structuredClone(request.config ?? {}),
+        resourceVersion: "1",
+      };
+      providers.set(request.name, provider);
+      return provider;
+    },
+    async getProvider(_workspace, name) {
+      return providers.get(name);
+    },
+    async listProviders() {
+      return [...providers.values()];
+    },
+    async deleteProvider(_workspace, name) {
+      providers.delete(name);
+    },
+    async updateProviderCredentials(_workspace, name, credentials) {
+      calls.push(["updateProviderCredentials", name, structuredClone(credentials)]);
+    },
+    async updateProviderConfig(_workspace, name, config, expectedResourceVersion) {
+      calls.push(["updateProviderConfig", name, structuredClone(config), expectedResourceVersion]);
+      const provider = providers.get(name);
+      assert.ok(provider, `Provider ${name} must exist before an update.`);
+      assert.equal(provider.resourceVersion, expectedResourceVersion);
+      const updated = {
+        ...provider,
+        config: { ...provider.config, ...structuredClone(config) },
+        resourceVersion: String(Number(provider.resourceVersion) + 1),
+      };
+      providers.set(name, updated);
+      return updated;
+    },
     close() {},
   };
 }
@@ -154,11 +230,146 @@ function namespaceContext(name = "oce-123456789012345") {
   };
 }
 
-test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
-  const createdDriver = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, sandboxInstallation()) },
+function codexRequirements(revision, environment = []) {
+  return {
+    loginMode: "api_key",
+    image: "codex-runtime@sha256:synthetic",
+    command: harnessRuntimeCommand('console.error("codex runtime");'),
+    serviceAccountName: "agent-codex",
+    serviceAccountToken: {
+      audience: "openclaw-enterprise",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw-enterprise",
+      path: "token",
+      readOnly: true,
+    },
+    workspaceMounts: [
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "workspace",
+        mountPath: "/home/node/workspace",
+        readOnly: false,
+      },
+    ],
+    credentialAttachments: [],
+    environment: [
+      { name: "APP_SERVER_PORT", value: "8080" },
+      { name: "APP_TOKEN_SHA", value: "a".repeat(64) },
+      ...environment,
+    ],
+    files: [
+      {
+        name: "runtime.json",
+        content: JSON.stringify({ kind: "codex", selections: {} }),
+        environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+      },
+      {
+        name: "config.toml",
+        content: "[features]\nplugins = false\n",
+        environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
+      },
+    ],
+    labels: { "openclaw.dev/revision": revision.id },
+  };
+}
+
+function codexSandboxFixture(
+  driver,
+  {
+    runtimeManifest = JSON.stringify({ kind: "codex", selections: {} }),
+    codexConfig = "[features]\nplugins = false\n",
+    files,
+  } = {},
+) {
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000003",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000000003",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const nodeSetup = {
+    url: "wss://gateway.example.test/node",
+    bootstrapToken: "one-shot-node-setup",
+    expiresAtMs: Date.now() + 600_000,
+    tlsFingerprint: "sha256:test",
+  };
+  const setupCode = Buffer.from(JSON.stringify(nodeSetup)).toString("base64url");
+  const kubernetes = Object.create(KubernetesObjectApi.prototype);
+  kubernetes.read = async ({ metadata }) => ({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      ...metadata,
+      labels: {
+        "openclaw.dev/namespace": context.namespace.id,
+        "openclaw.dev/agent": revision.agentId,
+      },
+    },
+    data: { setupCode: Buffer.from(setupCode).toString("base64") },
   });
+  context.kubernetes = kubernetes;
+  const requirements = {
+    loginMode: "api_key",
+    image: "codex-runtime@sha256:synthetic",
+    command: harnessRuntimeCommand('console.error("codex runtime");'),
+    workspaceMounts: [
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "workspace",
+        mountPath: "/home/node/workspace",
+        readOnly: false,
+      },
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "workspace-node-codex",
+        mountPath: "/home/node/.openclaw-node",
+        readOnly: false,
+      },
+      {
+        claimName: "harness-workspace-codex",
+        subPath: "codex-sessions",
+        mountPath: "/home/node/.codex/sessions",
+        readOnly: false,
+      },
+    ],
+    credentialAttachments: [{ sourceId: "cs_test", ref: `oce-cs-${"b".repeat(24)}` }],
+    environment: [
+      { name: "HOME", value: "/home/node" },
+      { name: "CODEX_HOME", value: "/home/node/.codex" },
+      { name: "OPENCLAW_NODE_STATE_DIR", value: "/home/node/.openclaw-node" },
+      { name: "OPENCLAW_WORKSPACE_DIR", value: "/home/node/workspace" },
+      {
+        name: "OPENCLAW_NODE_CA_PEM",
+        value: "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----\n",
+      },
+      { name: "APP_SERVER_PORT", value: "8080" },
+      { name: "APP_TOKEN_SHA", value: "a".repeat(64) },
+      {
+        name: "OPENCLAW_NODE_SETUP_CODE",
+        valueFrom: { secretKeyRef: { name: "workspace-node", key: "setupCode" } },
+      },
+    ],
+    files: files ?? [
+      {
+        name: "runtime.json",
+        content: runtimeManifest,
+        environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+      },
+      {
+        name: "config.toml",
+        content: codexConfig,
+        environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
+      },
+    ],
+    labels: { "openclaw.dev/revision": revision.id },
+  };
+  return { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup };
+}
+
+test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
+  const createdDriver = await loadInstallationFile(t, sandboxInstallation());
 
   assert.equal(createdDriver.installation.drivers.sandbox.id, "openshell-sandbox");
   assert.equal(createdDriver.installation.drivers.sandbox.implementation, "openshell");
@@ -179,10 +390,10 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
 });
 
 test("startup composes both OpenShell members from one Backend", async (t) => {
-  const createdDriver = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t, sandboxInstallation()) },
-  });
+  // An explicit hard_requirement composes like the omitted default above.
+  const configuration = sandboxInstallation();
+  configuration.drivers.sandbox.configuration.policy.landlockCompatibility = "hard_requirement";
+  const createdDriver = await loadInstallationFile(t, configuration);
 
   assert.ok(createdDriver.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
   assert.equal(createdDriver.credentialGatewayDriver.id, "openshell-credentials");
@@ -197,20 +408,14 @@ test("startup rejects an OpenShell Backend whose members are not both selected",
   const missingGateway = sandboxInstallation();
   delete missingGateway.drivers.credential_gateway;
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, missingGateway) },
-    }),
+    loadInstallationFile(t, missingGateway),
     /drivers\.credential_gateway must match the selected drivers\.credential_gateway\.id/,
   );
 
   const foreignSandbox = sandboxInstallation();
   foreignSandbox.backend[0].drivers.sandbox = "another-sandbox";
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, foreignSandbox) },
-    }),
+    loadInstallationFile(t, foreignSandbox),
     /drivers\.sandbox must match the selected bundled OpenShell drivers\.sandbox\.id/,
   );
 
@@ -218,20 +423,13 @@ test("startup rejects an OpenShell Backend whose members are not both selected",
   const legacyEndpoint = sandboxInstallation();
   legacyEndpoint.drivers.sandbox.configuration.gateway.endpoint = "http://127.0.0.1:1";
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, legacyEndpoint) },
-    }),
+    loadInstallationFile(t, legacyEndpoint),
     /OpenShell gateway option endpoint belongs to the openshell Backend/,
   );
 });
 
 test("startup requires protected OpenShell transport or an explicit NetworkPolicy boundary", async (t) => {
-  const load = async (configuration) =>
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    });
+  const load = (configuration) => loadInstallationFile(t, configuration);
   // Credential registration sends resolved values, so plain or unauthenticated transport
   // must be declared rather than accepted by default.
   const undeclared = sandboxInstallation();
@@ -307,7 +505,13 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
       serviceUrls: {},
     };
   };
-  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.policy.filesystem = {
+    includeWorkdir: false,
+    readOnly: ["/app"],
+    readWrite: ["/var/tmp/openclaw"],
+  };
+  const driver = new OpenShellSandboxDriver(configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
     backend: backendFor(gatewayClient),
@@ -327,7 +531,7 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     "openclaw.dev/revision": revision.id,
     "openclaw.dev/workload-role": "agent",
   };
-  const command = ["/usr/bin/tini", "-s", "--", "node", "-e", "worker-entrypoint"];
+  const command = harnessRuntimeCommand('console.error("native runtime");');
   const sandbox = await driver.provisionHarness({
     ...context,
     revision,
@@ -335,14 +539,6 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
       loginMode: "api_key",
       image: "openclaw-runtime@sha256:synthetic",
       command,
-      serviceAccountName: "agent-native-openclaw",
-      serviceAccountToken: {
-        audience: "openclaw-enterprise",
-        expirationSeconds: 900,
-        mountPath: "/var/run/secrets/openclaw-enterprise",
-        path: "token",
-        readOnly: true,
-      },
       workspaceMounts: [
         {
           claimName: "harness-workspace-native-openclaw",
@@ -366,11 +562,357 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   assert.equal(sandbox.revisionId, revisionId);
   assert.equal(requests.length, 1);
   assert.deepEqual(requests[0].serviceExposures, []);
-  assert.deepEqual(requests[0].spec.command, command);
+  assert.deepEqual(
+    requests[0].spec.command.slice(0, RUNTIME_WRAPPER_COMMAND.length),
+    RUNTIME_WRAPPER_COMMAND,
+  );
+  assert.notEqual(requests[0].spec.command[RUNTIME_WRAPPER_COMMAND.length], command.at(-2));
+  assert.match(
+    requests[0].spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /OpenShell workspace link conflicts/,
+  );
   assert.deepEqual(requests[0].labels, labels);
+  assert.equal(requests[0].spec.environment.TMPDIR, "/tmp");
+  assert.equal(requests[0].spec.policy.filesystem.include_workdir, false);
+  assert.deepEqual(requests[0].spec.policy.filesystem.read_only, ["/app"]);
+  assert.ok(requests[0].spec.policy.filesystem.read_write.includes("/var/tmp/openclaw"));
+  assert.ok(requests[0].spec.policy.filesystem.read_write.includes("/tmp"));
+  assert.equal(requests[0].spec.policy.filesystem.read_only.includes("/bin"), false);
+  // The real Gateway receives this mode with the Sandbox request; a weaker
+  // Landlock setting could let a ready Harness run without filesystem policy.
+  assert.equal(requests[0].spec.policy.landlock.compatibility, "hard_requirement");
 });
 
-test("OpenShell rejects Secret-backed Harness environment as a permanent revision failure", async () => {
+test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {
+  // The gateway's request_id replay refuses a changed spec and forgets a create after
+  // 24 h, so a reconcile pass must find the existing Sandbox rather than create again.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const services = new Map();
+  const calls = [];
+  let createError;
+  gatewayClient.getSandbox = async ({ name, workspace }) => {
+    calls.push(["getSandbox", name, workspace]);
+    return sandboxes.get(name);
+  };
+  gatewayClient.getService = async (workspace, sandbox, service) => {
+    calls.push(["getService", sandbox, workspace, service]);
+    const url = services.get(sandbox);
+    return url === undefined
+      ? undefined
+      : {
+          sandbox,
+          name: service,
+          targetPort: 8080,
+          authorizationMode: 2,
+          advertisedUrl: url,
+          url,
+        };
+  };
+  gatewayClient.createSandbox = async (request) => {
+    calls.push(["createSandbox", request.name, request.requestId]);
+    const sandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: { ...request.annotations, "internal.openshell.ai/runtime-identity": "opaque" },
+      spec: request.spec,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    services.set(request.name, sandbox.serviceUrls[""]);
+    if (createError !== undefined) {
+      throw createError;
+    }
+    return sandbox;
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000003",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000000003",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const provision = (environment = [], target = revision) =>
+    driver.provisionHarness({
+      ...context,
+      revision: target,
+      requirements: codexRequirements(revision, environment),
+    });
+
+  const first = await provision();
+  const name = first.resourceName;
+  assert.deepEqual(
+    calls.map(([call]) => call),
+    ["getSandbox", "createSandbox"],
+  );
+  // A later pass with a different spec rejects the stale Sandbox and never creates.
+  calls.length = 0;
+  await assert.rejects(
+    provision([{ name: "CUSTOM_SETTING", value: "changed" }]),
+    /without exact AgentRevision ownership and content/,
+  );
+  assert.deepEqual(calls, [["getSandbox", name, calls[0][2]]]);
+
+  // ALREADY_EXISTS (a create that outlived its 24 h replay record) adopts this revision's Sandbox.
+  sandboxes.clear();
+  services.clear();
+  createError = new OpenShellSandboxAlreadyExistsError(name);
+  calls.length = 0;
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(
+    calls.map(([call]) => call),
+    ["getSandbox", "createSandbox", "getSandbox", "getService"],
+  );
+  createError = undefined;
+
+  // Another revision's Sandbox, or one without its Harness service, is never adopted.
+  sandboxes.set(name, {
+    ...sandboxes.get(name),
+    annotations: { ...sandboxes.get(name).annotations, "openclaw.dev/revision-id": "rev_other" },
+  });
+  await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  sandboxes.set(name, {
+    ...sandboxes.get(name),
+    annotations: { ...sandboxes.get(name).annotations, "openclaw.dev/revision-id": revision.id },
+  });
+  // A Sandbox on its way out is never adopted as this revision's Harness.
+  for (const [phase, message] of [
+    ["SANDBOX_PHASE_DELETING", /is being deleted; it can be created again once deletion finishes/],
+    ["SANDBOX_PHASE_STOPPED", /has stopped; remove the stale Sandbox/],
+    ["SANDBOX_PHASE_COMPLETED", /has stopped; remove the stale Sandbox/],
+  ]) {
+    sandboxes.set(name, { ...sandboxes.get(name), phase });
+    await assert.rejects(provision(), message);
+  }
+  sandboxes.set(name, { ...sandboxes.get(name), phase: "SANDBOX_PHASE_READY" });
+  services.delete(name);
+  await assert.rejects(provision(), /exists without its exact bearer-passthrough Harness service/);
+});
+
+test("OpenShell moves a revision's create to a fresh request_id after the gateway refuses the old one", async () => {
+  // OpenShell admits a request_id before running CreateSandbox and leaves it unresolved
+  // forever if the handler errors, so reusing the revision UUID would never provision.
+  const gatewayClient = workspaceGatewayClient();
+  const sandboxes = new Map();
+  const admissions = new Map();
+  const calls = [];
+  let handlerError;
+  let refuseEverything;
+  let onRefusal;
+  let holdHandler;
+  let nextId = 0;
+  const refused = (reason) => new OpenShellRequestReplayRefusedError(reason, reason);
+  gatewayClient.getSandbox = async ({ name }) => {
+    calls.push(["getSandbox"]);
+    return sandboxes.get(name);
+  };
+  gatewayClient.getService = async (_workspace, sandbox, service) => {
+    calls.push(["getService"]);
+    const url = sandboxes.get(sandbox)?.serviceUrls[""];
+    return url === undefined
+      ? undefined
+      : {
+          sandbox,
+          name: service,
+          targetPort: 8080,
+          authorizationMode: 2,
+          advertisedUrl: url,
+          url,
+        };
+  };
+  gatewayClient.createSandbox = async (request) => {
+    calls.push(["createSandbox", request.requestId]);
+    const payload = JSON.stringify({ ...request, requestId: undefined });
+    const admitted = admissions.get(request.requestId);
+    let refusal;
+    if (refuseEverything !== undefined) {
+      refusal = refused(refuseEverything);
+    } else if (admitted !== undefined) {
+      if (admitted.payload !== payload) {
+        refusal = refused("REQUEST_ID_PAYLOAD_MISMATCH");
+      } else if (admitted.sandboxId === undefined) {
+        refusal = refused("REQUEST_OUTCOME_UNCERTAIN");
+      } else if (sandboxes.get(request.name)?.id !== admitted.sandboxId) {
+        refusal = refused("REQUEST_REPLAY_UNAVAILABLE");
+      } else {
+        return sandboxes.get(request.name);
+      }
+    }
+    if (refusal !== undefined) {
+      onRefusal?.(request);
+      onRefusal = undefined;
+      throw refusal;
+    }
+    admissions.set(request.requestId, { payload });
+    if (handlerError !== undefined) {
+      const error = handlerError;
+      handlerError = undefined;
+      throw error;
+    }
+    if (holdHandler !== undefined) {
+      const held = holdHandler;
+      holdHandler = undefined;
+      await held;
+    }
+    // OpenShell keeps Sandbox names unique per Workspace.
+    if (sandboxes.has(request.name)) {
+      throw new OpenShellSandboxAlreadyExistsError(request.name);
+    }
+    const sandbox = {
+      id: `sandbox-${nextId++}`,
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: request.annotations,
+      spec: request.spec,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    };
+    sandboxes.set(request.name, sandbox);
+    admissions.get(request.requestId).sandboxId = sandbox.id;
+    return sandbox;
+  };
+  const driverFor = () =>
+    new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+    });
+  const driver = driverFor();
+  const context = namespaceContext();
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000004",
+    namespaceId: context.namespace.id,
+    agentId: "agt_00000000-0000-4000-8000-000000000004",
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: driver.id,
+  };
+  const provision = (target = driver) =>
+    target.provisionHarness({
+      ...context,
+      revision,
+      requirements: codexRequirements(revision),
+    });
+  const trace = () => {
+    const seen = calls.map(([call, id]) => (id === undefined ? call : `${call}:${id}`));
+    calls.length = 0;
+    return seen;
+  };
+  const id0 = "00000000-0000-4000-8000-000000000004";
+
+  // A create that errors server-side leaves its request_id unresolved.
+  handlerError = new Error("provider 'model' not found");
+  await assert.rejects(provision(), /provider 'model' not found/);
+  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`]);
+
+  // The next pass sees the refusal and no Sandbox, then creates with the next request_id.
+  const first = await provision();
+  const [, refusedCreate, , freshCreate] = trace();
+  assert.equal(refusedCreate, `createSandbox:${id0}`);
+  const id1 = freshCreate.slice("createSandbox:".length);
+  assert.match(id1, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(id1, id0);
+  assert.equal(sandboxes.size, 1);
+
+  // Each failing pass spends at most one new request_id.
+  sandboxes.clear();
+  handlerError = new Error("compute driver unavailable");
+  await assert.rejects(provision(), /compute driver unavailable/);
+  const failed = trace();
+  assert.deepEqual(failed.slice(0, 4), [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    `createSandbox:${id1}`,
+  ]);
+  assert.equal(failed.length, 6);
+  const id2 = failed[5].slice("createSandbox:".length);
+
+  // A restarted controller derives the same request_ids; a deleted Sandbox whose create
+  // succeeded (REQUEST_REPLAY_UNAVAILABLE) is replaced under the next one.
+  const restarted = driverFor();
+  assert.deepEqual(await provision(restarted), first);
+  const recreated = trace();
+  assert.deepEqual(recreated, [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    `createSandbox:${id1}`,
+    "getSandbox",
+    `createSandbox:${id2}`,
+    "getSandbox",
+    recreated[7],
+  ]);
+  assert.equal(sandboxes.size, 1);
+  assert.equal(new Set(recreated.filter((call) => call.startsWith("createSandbox"))).size, 4);
+
+  // The live Sandbox is adopted without any create.
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(trace(), ["getSandbox", "getService"]);
+
+  // A refused request_id whose earlier call creates the Sandbox meanwhile is adopted;
+  // no further request_id is tried.
+  sandboxes.clear();
+  onRefusal = (request) => {
+    sandboxes.set(request.name, {
+      id: "sandbox-late",
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: request.annotations,
+      spec: request.spec,
+      serviceUrls: { "": `http://${request.workspace}--${request.name}.openshell.test/` },
+    });
+  };
+  assert.deepEqual(await provision(), first);
+  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`, "getSandbox", "getService"]);
+
+  // Two concurrent passes: the later one is refused the held request_id, advances, and
+  // creates; the held create then loses the name and adopts the same Sandbox.
+  sandboxes.clear();
+  let release;
+  holdHandler = new Promise((resolve) => {
+    release = resolve;
+  });
+  const held = provision();
+  for (let turn = 0; holdHandler !== undefined; turn++) {
+    if (turn === 1000) {
+      assert.fail("the first pass never reached CreateSandbox");
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(await provision(), first);
+  release();
+  assert.deepEqual(await held, first);
+  assert.equal(sandboxes.size, 1);
+  const creates = trace().filter((call) => call.startsWith("createSandbox"));
+  // The held pass walks to request_id X; the other walks the same IDs, is refused X, and
+  // creates under the next one, Y.
+  const walked = (creates.length - 1) / 2;
+  assert.deepEqual(creates.slice(walked, -1), creates.slice(0, walked));
+  assert.equal(new Set(creates).size, walked + 1);
+
+  // The request_ids are bounded; exhausting them never creates a Sandbox.
+  sandboxes.clear();
+  refuseEverything = "REQUEST_OUTCOME_UNCERTAIN";
+  await assert.rejects(provision(), /refused all 16 create request IDs .*deploy a new revision/);
+  const exhausted = trace().filter((call) => call.startsWith("createSandbox"));
+  assert.equal(exhausted.length, 16);
+  assert.equal(new Set(exhausted).size, 16);
+  assert.equal(sandboxes.size, 0);
+  // Every ID refused as unreplayable also points at the gateway's key material.
+  refuseEverything = "REQUEST_REPLAY_UNAVAILABLE";
+  await assert.rejects(provision(), /refused all 16 .*key material is readable/);
+  assert.equal(sandboxes.size, 0);
+});
+
+test("OpenShell rejects raw app-server tokens as a permanent revision failure", async () => {
   const gatewayClient = workspaceGatewayClient();
   gatewayClient.createSandbox = async () => {
     throw new Error("OpenShell must not receive a Sandbox it cannot configure.");
@@ -392,42 +934,18 @@ test("OpenShell rejects Secret-backed Harness environment as a permanent revisio
     driver.provisionHarness({
       ...context,
       revision: { ...revision, harness },
-      requirements: {
-        loginMode: "api_key",
-        image: "codex-runtime@sha256:synthetic",
-        command: ["codex"],
-        serviceAccountName: "agent-codex",
-        serviceAccountToken: {
-          audience: "openclaw-enterprise",
-          expirationSeconds: 900,
-          mountPath: "/var/run/secrets/openclaw-enterprise",
-          path: "token",
-          readOnly: true,
+      requirements: codexRequirements(revision, [
+        {
+          name: "APP_SERVER_TOKEN",
+          valueFrom: { secretKeyRef: { name: "agent-codex-token", key: "token" } },
         },
-        workspaceMounts: [
-          {
-            claimName: "harness-workspace-codex",
-            subPath: "workspace",
-            mountPath: "/home/node/workspace",
-            readOnly: false,
-          },
-        ],
-        credentialAttachments: [],
-        environment: [
-          { name: "APP_SERVER_PORT", value: "8080" },
-          {
-            name: "APP_SERVER_TOKEN",
-            valueFrom: { secretKeyRef: { name: "agent-codex-token", key: "token" } },
-          },
-        ],
-        labels: { "openclaw.dev/revision": revision.id },
-      },
+      ]),
     });
 
   await assert.rejects(provision(revision.harness), (error) => {
     assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
     assert.equal(error.code, "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED");
-    assert.match(error.message, /secretKeyRef environment APP_SERVER_TOKEN/);
+    assert.match(error.message, /cannot receive APP_SERVER_TOKEN/);
     return true;
   });
   await assert.rejects(provision({ id: "codex", version: "1.0.0", mode: "embedded" }), (error) => {
@@ -435,6 +953,561 @@ test("OpenShell rejects Secret-backed Harness environment as a permanent revisio
     assert.equal(error.code, "SANDBOX_HARNESS_UNSUPPORTED");
     return true;
   });
+});
+
+test("OpenShell rejects projected Agent identity before gateway mutation", async () => {
+  const gatewayClient = workspaceGatewayClient();
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+  requirements.workloadIdentity = {
+    serviceAccountName: "agent-codex",
+    token: {
+      audience: "openclaw-enterprise",
+      expirationSeconds: 900,
+      mountPath: "/var/run/secrets/openclaw-enterprise",
+      path: "token",
+      readOnly: true,
+    },
+  };
+
+  await assert.rejects(driver.provisionHarness({ ...context, revision, requirements }), (error) => {
+    assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
+    assert.equal(error.code, "SANDBOX_HARNESS_UNSUPPORTED");
+    assert.match(error.message, /cannot preserve an Agent ServiceAccount/);
+    return true;
+  });
+  assert.deepEqual(gatewayClient.calls, []);
+});
+
+test("OpenShell provisions dedicated Codex with bearer passthrough and provider files", async () => {
+  const requests = [];
+  let getServiceCalls = 0;
+  let storedSandbox;
+  const withProtobufKinds = (value) => {
+    if (Array.isArray(value)) {
+      return value.map(withProtobufKinds);
+    }
+    if (value === null || typeof value !== "object") {
+      return value;
+    }
+    const normalized = Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, withProtobufKinds(entry)]),
+    );
+    const kind = [
+      "nullValue",
+      "numberValue",
+      "stringValue",
+      "boolValue",
+      "structValue",
+      "listValue",
+    ].find((key) => Object.hasOwn(normalized, key));
+    return kind === undefined ? normalized : { ...normalized, kind };
+  };
+  const gatewayClient = workspaceGatewayClient();
+  gatewayClient.createSandbox = async (request) => {
+    requests.push(structuredClone(request));
+    storedSandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: structuredClone(request.labels),
+      annotations: {
+        ...structuredClone(request.annotations),
+        "internal.openshell.ai/auth-epoch": "1",
+        "internal.openshell.ai/runtime-generation": "runtime-generation",
+      },
+      spec: {
+        ...structuredClone(request.spec),
+        template: {
+          ...structuredClone(request.spec.template),
+          driver_config: withProtobufKinds(request.spec.template.driver_config),
+        },
+      },
+      serviceUrls: {},
+    };
+    return {
+      ...storedSandbox,
+      serviceUrls: { "": "http://codex.example.test" },
+    };
+  };
+  gatewayClient.getSandbox = async () => storedSandbox;
+  gatewayClient.getService = async () => {
+    getServiceCalls++;
+    return {
+      sandbox: storedSandbox.name,
+      name: "",
+      targetPort: 8080,
+      authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+      advertisedUrl: "http://codex.example.test:8080/",
+      url: "http://codex.example.test",
+    };
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup } =
+    codexSandboxFixture(driver);
+
+  await driver.ensureNamespace(context);
+  await driver.provisionHarness({ ...context, revision, requirements });
+  await driver.provisionHarness({ ...context, revision, requirements });
+  assert.deepEqual(await driver.harnessEndpoint({ ...context, revision, requirements }), {
+    url: "ws://codex.example.test:8080/",
+    workspaceRoot: "/sandbox/enterprise",
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(getServiceCalls, 2);
+  assert.equal(requests[0].spec.tty, undefined);
+  assert.equal(requests[0].spec.template.annotations, undefined);
+  assert.deepEqual(requests[0].serviceExposures, [
+    { service: "", targetPort: 8080, authorizationMode: "bearer_passthrough" },
+  ]);
+  assert.equal(requests[0].spec.environment.APP_TOKEN_SHA, "a".repeat(64));
+  assert.equal(requests[0].spec.environment.APP_SERVER_TOKEN, undefined);
+  assert.equal(requests[0].spec.environment.OPENCLAW_NODE_SETUP_CODE, undefined);
+  assert.equal(requests[0].spec.environment.OPENCLAW_NODE_CA_PEM, undefined);
+  assert.equal(requests[0].spec.environment.HOME, "/sandbox/.openclaw-runtime/home");
+  assert.equal(requests[0].spec.environment.TMPDIR, "/tmp");
+  assert.equal(requests[0].spec.environment.CODEX_HOME, "/sandbox/.openclaw-runtime/home/.codex");
+  const nodeStateDirectory = requests[0].spec.environment.OPENCLAW_NODE_STATE_DIR;
+  assert.match(nodeStateDirectory, /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u);
+  assert.equal(requests[0].spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
+  const kubernetesDriver =
+    requests[0].spec.template.driver_config.fields.kubernetes.structValue.fields;
+  const agentContainer = kubernetesDriver.containers.structValue.fields.agent.structValue.fields;
+  assert.deepEqual(
+    agentContainer.resources.structValue.fields.requests.structValue.fields["ephemeral-storage"],
+    { stringValue: "256Mi" },
+  );
+  assert.deepEqual(
+    agentContainer.resources.structValue.fields.limits.structValue.fields["ephemeral-storage"],
+    { stringValue: "1Gi" },
+  );
+  assert.equal(
+    agentContainer.volume_mounts.listValue.values.some(
+      ({ structValue }) => structValue.fields.mount_path?.stringValue === "/home/node/workspace",
+    ),
+    false,
+  );
+  const runtimeMount = agentContainer.volume_mounts.listValue.values.find(
+    ({ structValue }) =>
+      structValue.fields.mount_path?.stringValue === "/sandbox/.openclaw-runtime",
+  )?.structValue.fields;
+  assert.ok(runtimeMount, "OpenShell requires a writable runtime root mount.");
+  assert.match(runtimeMount.sub_path.stringValue, /^openshell-runtime-[a-f0-9]{16}$/);
+  assert.equal(runtimeMount.read_only.boolValue, false);
+  assert.ok(
+    agentContainer.volume_mounts.listValue.values.some(({ structValue }) =>
+      /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}$/u.test(
+        structValue.fields.mount_path?.stringValue ?? "",
+      ),
+    ),
+  );
+  assert.ok(
+    agentContainer.volume_mounts.listValue.values.some(
+      ({ structValue }) =>
+        `${structValue.fields.mount_path?.stringValue}/state` === nodeStateDirectory &&
+        structValue.fields.read_only?.boolValue === false,
+    ),
+    "the node-state environment must name a process-owned child of its real writable PVC mount",
+  );
+  assert.equal(
+    agentContainer.volume_mounts.listValue.values.some(({ structValue }) =>
+      (structValue.fields.mount_path?.stringValue ?? "").startsWith("/sandbox/.openclaw-runtime/"),
+    ),
+    false,
+  );
+  assert.match(
+    requests[0].spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /\/sandbox\/\.openclaw-runtime\/home\/\.codex\/sessions/,
+  );
+  assert.match(
+    requests[0].spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}/,
+  );
+  assert.doesNotMatch(
+    requests[0].spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /\.openclaw-node/,
+    "node state must not use a symlink because OpenClaw atomically replaces files below it",
+  );
+  assert.ok(requests[0].spec.policy.filesystem.read_write.includes("/sandbox/.openclaw-runtime"));
+  assert.ok(requests[0].spec.policy.filesystem.read_write.includes("/sandbox/enterprise"));
+  assert.ok(requests[0].spec.policy.filesystem.read_write.includes("/tmp"));
+  assert.ok(requests[0].spec.policy.filesystem.read_write.includes("/dev/null"));
+  assert.deepEqual(requests[0].spec.policy.filesystem.read_only, [
+    "/bin",
+    "/usr",
+    "/lib",
+    "/proc",
+    "/dev/urandom",
+    "/etc",
+    "/var/log",
+    "/app",
+  ]);
+  assert.ok(requests[0].spec.providers.includes(`oce-cs-${"b".repeat(24)}`));
+  const runtimeProvider = requests[0].spec.providers.find((name) =>
+    name.startsWith("oce-runtime-"),
+  );
+  assert.ok(runtimeProvider);
+  assert.deepEqual(gatewayClient.providers.get(runtimeProvider).config, {
+    runtime_json: runtimeManifest,
+    config_toml: codexConfig,
+    node_ca_pem: "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----\n",
+    node_setup_json: JSON.stringify({
+      url: nodeSetup.url,
+      bootstrapToken: nodeSetup.bootstrapToken,
+      expiresAtMs: nodeSetup.expiresAtMs,
+      tlsFingerprint: nodeSetup.tlsFingerprint,
+    }),
+  });
+  const providerCreate = gatewayClient.calls.find(([operation]) => operation === "createProvider");
+  assert.deepEqual(providerCreate[1].credentials, {});
+  assert.deepEqual(providerCreate[1].credentialExpirationTimes, {});
+  const runtimeProfile = gatewayClient.profiles.get("oce-codex-runtime").profile;
+  // OpenShell v0.1.3-pre.2 hashes protobuf maps without canonical ordering. Keeping
+  // ownership and content identity in one entry prevents startup revision churn.
+  assert.deepEqual(Object.keys(runtimeProfile.annotations), ["openclaw.dev/managed-by"]);
+  assert.match(
+    runtimeProfile.annotations["openclaw.dev/managed-by"],
+    /^openclaw-enterprise:[a-f0-9]{64}$/,
+  );
+  assert.deepEqual(runtimeProfile.files, [
+    {
+      path: "runtime.json",
+      content: "{{config.runtime_json}}",
+      environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+    },
+    {
+      path: "config.toml",
+      content: "{{config.config_toml}}",
+      environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
+    },
+    {
+      path: "node-setup.json",
+      content: "{{config.node_setup_json}}",
+      environmentVariable: "OPENCLAW_NODE_SETUP_ENVELOPE",
+    },
+    {
+      path: "node-ca.pem",
+      content: "{{config.node_ca_pem}}",
+      environmentVariable: "OPENCLAW_NODE_CA_PATH",
+    },
+  ]);
+  // A wss setup URL keeps TLS end to end to the Gateway route the node's CA pins;
+  // OpenShell must not terminate it, so the rule binds only binary, host, and port.
+  assert.deepEqual(requests[0].spec.policy.network_policies["workspace-node-enrollment"], {
+    name: "workspace-node-enrollment",
+    binaries: [{ path: "/usr/local/bin/node" }],
+    endpoints: [
+      {
+        host: "gateway.example.test",
+        ports: [443],
+        tls: "NETWORK_TLS_MODE_SKIP",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      },
+    ],
+  });
+
+  await driver.cleanup({ ...context, revision });
+  assert.equal(gatewayClient.providers.has(runtimeProvider), false);
+  assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), true);
+
+  await driver.cleanup(context);
+  assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
+});
+
+test("OpenShell retains the revision provider when Sandbox creation has an unknown outcome", async () => {
+  let sandboxCreates = 0;
+  const gatewayClient = workspaceGatewayClient();
+  gatewayClient.createSandbox = async (request) => {
+    sandboxCreates++;
+    if (sandboxCreates === 1) {
+      throw new Error("CreateSandbox deadline exceeded");
+    }
+    return {
+      name: request.name,
+      workspace: request.workspace,
+      labels: request.labels,
+      annotations: request.annotations,
+      spec: request.spec,
+      serviceUrls: { "": "http://codex.example.test" },
+    };
+  };
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+
+  await assert.rejects(
+    driver.provisionHarness({ ...context, revision, requirements }),
+    /deadline exceeded/,
+  );
+  const [runtimeProvider] = [...gatewayClient.providers.keys()];
+  assert.match(runtimeProvider, /^oce-runtime-/);
+
+  await driver.provisionHarness({ ...context, revision, requirements });
+
+  assert.equal(sandboxCreates, 2);
+  assert.equal(
+    gatewayClient.calls.filter(([operation]) => operation === "createProvider").length,
+    1,
+  );
+  assert.equal(
+    gatewayClient.calls.filter(([operation]) => operation === "updateProviderCredentials").length,
+    0,
+  );
+  assert.equal(gatewayClient.providers.has(runtimeProvider), true);
+});
+
+test("OpenShell reconciles renewed workspace-node setup into its revision provider", async () => {
+  let storedSandbox;
+  const gatewayClient = workspaceGatewayClient();
+  gatewayClient.createSandbox = async (request) => {
+    storedSandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: structuredClone(request.labels),
+      annotations: structuredClone(request.annotations),
+      spec: structuredClone(request.spec),
+      serviceUrls: {},
+    };
+    return { ...storedSandbox, serviceUrls: { "": "http://codex.example.test:8080/" } };
+  };
+  gatewayClient.getSandbox = async () => storedSandbox;
+  gatewayClient.getService = async () => ({
+    sandbox: storedSandbox.name,
+    name: "",
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    advertisedUrl: "http://codex.example.test:8080/",
+    url: "http://codex.example.test:8080/",
+  });
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+
+  await provision();
+  const [runtimeProviderName] = [...gatewayClient.providers.keys()];
+  const initialProvider = gatewayClient.providers.get(runtimeProviderName);
+  const initialSetup = JSON.parse(initialProvider.config.node_setup_json);
+  gatewayClient.providers.set(runtimeProviderName, {
+    ...initialProvider,
+    config: {
+      ...initialProvider.config,
+      node_setup_json: JSON.stringify({ ...initialSetup, expiresAtMs: Date.now() - 1 }),
+    },
+  });
+  const renewedSetup = {
+    ...initialSetup,
+    bootstrapToken: "renewed-node-setup",
+    expiresAtMs: Date.now() + 600_000,
+  };
+  const renewedCode = Buffer.from(JSON.stringify(renewedSetup)).toString("base64url");
+  context.kubernetes.read = async ({ metadata }) => ({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      ...metadata,
+      labels: {
+        "openclaw.dev/namespace": context.namespace.id,
+        "openclaw.dev/agent": revision.agentId,
+      },
+    },
+    data: { setupCode: Buffer.from(renewedCode).toString("base64") },
+  });
+
+  // A retry must update the revision-owned provider rather than strand the
+  // revision after Compute replaces its expired setup Secret.
+  await provision();
+  const updates = gatewayClient.calls.filter(([operation]) => operation === "updateProviderConfig");
+  assert.deepEqual(updates, [
+    [
+      "updateProviderConfig",
+      runtimeProviderName,
+      { node_setup_json: JSON.stringify(renewedSetup) },
+      "1",
+    ],
+  ]);
+  assert.equal(
+    gatewayClient.providers.get(runtimeProviderName).config.node_setup_json,
+    JSON.stringify(renewedSetup),
+  );
+  assert.equal(
+    gatewayClient.calls.filter(([operation]) => operation === "createProvider").length,
+    1,
+  );
+
+  // Renewal authority covers only the setup envelope. It must not repair or
+  // conceal drift in the revision's immutable runtime files.
+  const renewedProvider = gatewayClient.providers.get(runtimeProviderName);
+  gatewayClient.providers.set(runtimeProviderName, {
+    ...renewedProvider,
+    config: { ...renewedProvider.config, runtime_json: '{"kind":"foreign"}' },
+  });
+  await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+  assert.equal(
+    gatewayClient.calls.filter(([operation]) => operation === "updateProviderConfig").length,
+    1,
+  );
+});
+
+test("OpenShell rejects unexpected annotations on an existing Sandbox", async () => {
+  let storedSandbox;
+  const gatewayClient = workspaceGatewayClient();
+  gatewayClient.createSandbox = async (request) => {
+    storedSandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: structuredClone(request.labels),
+      annotations: {
+        ...structuredClone(request.annotations),
+        "example.test/foreign-owner": "foreign",
+      },
+      spec: structuredClone(request.spec),
+      serviceUrls: {},
+    };
+    return { ...storedSandbox, serviceUrls: { "": "http://codex.example.test" } };
+  };
+  gatewayClient.getSandbox = async () => storedSandbox;
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+  });
+  const { context, revision, requirements } = codexSandboxFixture(driver);
+
+  await driver.provisionHarness({ ...context, revision, requirements });
+  await assert.rejects(
+    driver.provisionHarness({ ...context, revision, requirements }),
+    /without exact AgentRevision ownership and content/,
+  );
+});
+
+test("OpenShell rejects malformed or expired node setup before gateway mutation", async (t) => {
+  for (const [name, setupCode, expected] of [
+    ["malformed", "not-a-setup-code", /malformed setup envelope/],
+    [
+      "expired",
+      Buffer.from(
+        JSON.stringify({
+          url: "wss://gateway.example.test/node",
+          bootstrapToken: "expired-token",
+          expiresAtMs: Date.now() - 1,
+        }),
+      ).toString("base64url"),
+      /expired or has no bounded expiry/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const gatewayClient = workspaceGatewayClient();
+      const driver = new OpenShellSandboxDriver(
+        sandboxInstallation().drivers.sandbox.configuration,
+        {
+          id: "openshell-sandbox",
+          implementation: "openshell",
+          backend: backendFor(gatewayClient),
+        },
+      );
+      const { context, revision, requirements } = codexSandboxFixture(driver);
+      const originalRead = context.kubernetes.read;
+      context.kubernetes.read = async (request) => {
+        const secret = await originalRead(request);
+        return { ...secret, data: { setupCode: Buffer.from(setupCode).toString("base64") } };
+      };
+
+      await assert.rejects(
+        driver.provisionHarness({ ...context, revision, requirements }),
+        expected,
+      );
+      assert.deepEqual(gatewayClient.calls, []);
+    });
+  }
+});
+
+test("OpenShell rejects unsupported or foreign Codex runtime providers before Sandbox creation", async (t) => {
+  const scenarios = [
+    {
+      name: "missing managed file",
+      mutate({ requirements }) {
+        requirements.files = requirements.files.slice(0, 1);
+      },
+      expected: /requires its exact bounded plugin-runtime files/,
+    },
+    {
+      name: "oversized managed file",
+      fixture: { codexConfig: "x".repeat(65_537) },
+      expected: /requires its exact bounded plugin-runtime files/,
+    },
+    {
+      name: "selected plugin",
+      fixture: {
+        runtimeManifest: JSON.stringify({
+          kind: "codex",
+          selections: { slack: { enabled: true } },
+        }),
+      },
+      expected: /does not yet support selected plugins or repository credentials/,
+    },
+    {
+      name: "foreign provider collision",
+      foreignProvider: true,
+      expected: /without exact AgentRevision ownership and content/,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      let sandboxCreates = 0;
+      const gatewayClient = workspaceGatewayClient();
+      gatewayClient.createSandbox = async () => {
+        sandboxCreates++;
+        throw new Error("an invalid runtime provider must not reach Sandbox creation");
+      };
+      if (scenario.foreignProvider) {
+        gatewayClient.createProvider = async (request) => ({
+          name: request.name,
+          type: request.type,
+          labels: { ...request.labels, "openclaw.dev/agent-id": "agt_foreign" },
+          config: structuredClone(request.config),
+        });
+      }
+      const driver = new OpenShellSandboxDriver(
+        sandboxInstallation().drivers.sandbox.configuration,
+        {
+          id: "openshell-sandbox",
+          implementation: "openshell",
+          backend: backendFor(gatewayClient),
+        },
+      );
+      const fixture = codexSandboxFixture(driver, scenario.fixture);
+      scenario.mutate?.(fixture);
+
+      await assert.rejects(
+        driver.provisionHarness({
+          ...fixture.context,
+          revision: fixture.revision,
+          requirements: fixture.requirements,
+        }),
+        (error) => {
+          assert.match(String(error), scenario.expected);
+          return true;
+        },
+      );
+      assert.equal(sandboxCreates, 0);
+    });
+  }
 });
 
 test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact operator Workspace", async () => {
@@ -565,19 +1638,21 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.unsupported = true;
   let invokedFactory = false;
+  const options = {
+    createSandboxDriver() {
+      invokedFactory = true;
+      throw new Error("An injected factory must not bypass provider configuration validation.");
+    },
+  };
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      createSandboxDriver() {
-        invokedFactory = true;
-        throw new Error("An injected factory must not bypass provider configuration validation.");
-      },
-    }),
+    loadInstallationFile(t, configuration, options),
     /drivers\.sandbox\.configuration does not match its Driver configuration schema/,
   );
   assert.equal(invokedFactory, false);
+  // Control: the same factory is reached once the configuration is valid.
+  await assert.rejects(loadInstallationFile(t, sandboxInstallation(), options), /injected factory/);
+  assert.equal(invokedFactory, true);
 });
 
 test("startup rejects OpenShell network values outside the v0.1 protocol enums", async (t) => {
@@ -586,12 +1661,21 @@ test("startup rejects OpenShell network values outside the v0.1 protocol enums",
     "inspect";
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/,
   );
+});
+
+test("startup refuses OpenShell filesystem modes that can weaken containment", async (t) => {
+  for (const mode of ["best_effort", "hard-requirement"]) {
+    const configuration = sandboxInstallation();
+    configuration.drivers.sandbox.configuration.policy.landlockCompatibility = mode;
+
+    await assert.rejects(
+      loadInstallationFile(t, configuration),
+      /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/,
+    );
+  }
 });
 
 test("startup rejects OpenShell network policies without binary identities", async (t) => {
@@ -599,10 +1683,7 @@ test("startup rejects OpenShell network policies without binary identities", asy
   configuration.drivers.sandbox.configuration.policy.networkPolicies[0].binaries = [];
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell network policy model-egress requires at least one binary path/,
   );
 });
@@ -618,13 +1699,7 @@ test("startup rejects inherited OpenShell network enum property names", async (t
     const configuration = sandboxInstallation();
     configuration.drivers.sandbox.configuration.policy.networkPolicies[0].endpoints[0][field] =
       value;
-    await assert.rejects(
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-      }),
-      expected,
-    );
+    await assert.rejects(loadInstallationFile(t, configuration), expected);
   }
 });
 
@@ -634,10 +1709,7 @@ test("startup rejects the deprecated OpenShell passthrough spelling", async (t) 
     "passthrough";
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/,
   );
 });
@@ -647,10 +1719,7 @@ test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", as
   configuration.drivers.sandbox.configuration.kubernetes.serviceAccount.mode = "driverConfig";
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell serviceAccount mode must be gatewayConfigured/,
   );
 });
@@ -664,10 +1733,155 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
   };
 
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
-    }),
+    loadInstallationFile(t, configuration),
     /OpenShell gateway readiness timeout must be a positive safe integer/,
   );
+});
+
+/**
+ * The OpenShell Credential Gateway over a recording provider store. Each provider's labels say
+ * which credential source owns it; the gateway may act only on its own source's provider.
+ * Kept beside the OpenShell Sandbox cases: both members come from one OpenShell Backend.
+ */
+function credentialGatewayOverProviders({ keepDeleted = false } = {}) {
+  const providers = new Map();
+  const calls = [];
+  const client = {
+    async getProviderProfile() {
+      return undefined;
+    },
+    async importProviderProfile() {},
+    async updateProviderProfile() {},
+    async deleteProviderProfile() {},
+    async createProvider(provider) {
+      calls.push(["createProvider", provider.name]);
+      if (providers.has(provider.name)) {
+        throw new OpenShellProviderAlreadyExistsError(provider.name);
+      }
+      providers.set(provider.name, { ...provider });
+    },
+    async getProvider(_workspace, name) {
+      return providers.get(name);
+    },
+    async listProviders() {
+      return [...providers.values()];
+    },
+    async updateProviderCredentials(_workspace, name, credentials) {
+      calls.push(["updateProviderCredentials", name]);
+      providers.set(name, { ...providers.get(name), credentials });
+    },
+    async deleteProvider(_workspace, name) {
+      calls.push(["deleteProvider", name]);
+      if (!keepDeleted) {
+        providers.delete(name);
+      }
+    },
+  };
+  const driver = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/usr/local/bin/codex"] },
+    {
+      backend: {
+        drivers: { credential_gateway: "credential-gateway-openshell" },
+        client: { clientForNamespace: () => client },
+      },
+    },
+  );
+  const namespace = { id: "ns_00000000-0000-4000-8000-0000000000aa", name: "placed-tenant" };
+  const signal = new AbortController().signal;
+  const source = (id, namespaceId = namespace.id) => ({
+    id,
+    namespaceId,
+    name: "openai",
+    type: "openai",
+    config: {},
+    secrets: {},
+    driverId: driver.id,
+    state: "ready",
+  });
+  return {
+    calls,
+    driver,
+    providers,
+    source,
+    context: (id) => ({ namespace, source: source(id), signal }),
+    revisionContext: (sources) => ({
+      namespace,
+      revision: { harness: { id: "codex", mode: "dedicated" } },
+      sources,
+      signal,
+    }),
+    input: (apiKey = "synthetic-openai-key") => ({
+      type: "openai",
+      config: {},
+      secrets: { api_key: apiKey },
+    }),
+  };
+}
+
+test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
+  const { calls, context, driver, input, providers, revisionContext, source } =
+    credentialGatewayOverProviders();
+  const owner = "cs_00000000-0000-4000-8000-0000000000b1";
+  const other = "cs_00000000-0000-4000-8000-0000000000b2";
+  assert.deepEqual(await driver.registerSource(context(owner), input()), { state: "ready" });
+  const [stored] = providers.values();
+  assert.equal(stored.labels["openclaw.dev/credential-source-id"], owner);
+  // Another source's provider stored under this source's name: same manager and type, other id.
+  providers.set(stored.name, {
+    ...stored,
+    labels: { ...stored.labels, "openclaw.dev/credential-source-id": other },
+  });
+  calls.length = 0;
+  await assert.rejects(driver.registerSource(context(owner), input()), ScopeViolationError);
+  await assert.rejects(
+    driver.updateSource(context(owner), input("replacement")),
+    ScopeViolationError,
+  );
+  assert.equal((await driver.sourceStatus(context(owner))).state, "failed");
+  await assert.rejects(driver.removeSource(context(owner)), ScopeViolationError);
+  await assert.rejects(
+    driver.attachForRevision(revisionContext([source(owner)])),
+    /provider for a bound credential source is unavailable/,
+  );
+  // Only the replayed create reached the store, and it was refused; nothing was overwritten.
+  assert.deepEqual(
+    calls.map(([operation]) => operation),
+    ["createProvider"],
+  );
+  assert.deepEqual(providers.get(stored.name).credentials, stored.credentials);
+});
+
+test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
+  const { context, driver, input, revisionContext, source } = credentialGatewayOverProviders();
+  const owner = "cs_00000000-0000-4000-8000-0000000000c1";
+  await driver.registerSource(context(owner), input());
+  // The provider is genuinely owned, so only the Namespace check can refuse.
+  const foreign = source(owner, "ns_00000000-0000-4000-8000-0000000000ff");
+  await assert.rejects(
+    driver.attachForRevision(revisionContext([foreign])),
+    (error) =>
+      error instanceof ScopeViolationError &&
+      error.message === "The credential source is not owned by this gateway.",
+  );
+  assert.equal((await driver.attachForRevision(revisionContext([source(owner)]))).length, 1);
+});
+
+test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
+  const { calls, context, driver, input, providers } = credentialGatewayOverProviders();
+  await assert.rejects(
+    driver.registerSource(context("cs_00000000-0000-4000-8000-0000000000d1"), input("")),
+    ScopeViolationError,
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(providers.size, 0);
+});
+
+test("OpenShell credential source removal fails while the provider survives deletion", async () => {
+  const { context, driver, input, providers } = credentialGatewayOverProviders({
+    keepDeleted: true,
+  });
+  const owner = "cs_00000000-0000-4000-8000-0000000000e1";
+  await driver.registerSource(context(owner), input());
+  await assert.rejects(driver.removeSource(context(owner)), /was not deleted/);
+  assert.equal(providers.size, 1);
 });

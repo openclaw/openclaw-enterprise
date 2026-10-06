@@ -90,6 +90,38 @@ the API refuses the same values at startup. The chart adds the API-only NetworkP
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `egressCidrs` allows any
 address except link-local `169.254.0.0/16`; list the IdP's ranges to narrow it.
 
+The policy matches the destination Pod port after the Service forwards the connection,
+not the Service port. An IdP outside the cluster is reached on 443. For an IdP that runs
+in the cluster behind a Service whose `targetPort` is not 443 (for example, an ingress
+gateway Service mapping 443 to Pod port 10443), the API's connection is refused, and
+sign-in fails with audit reason `PROVIDER_UNAVAILABLE`. `egressCidrs` cannot help,
+because the port is fixed. Add your own egress policy for the API Pod to the IdP's Pods
+on their target port:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-api-in-cluster-idp-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: idp-gateway # the IdP Service's Namespace
+          podSelector:
+            matchLabels:
+              app: idp-gateway # the Pods behind the IdP Service
+      ports:
+        - protocol: TCP
+          port: 10443 # the Service's targetPort
+```
+
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#oidc-sign-in):
 
@@ -122,27 +154,39 @@ OCE identifies an IdP account only by the ID token's `sub` claim for this issuer
 
 ## Attach and detach
 
-Read the account version with `GET /api/auth/accounts/:userId`, then attach:
+As a human Installation administrator, [sign in as a human administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
+so `OCC_URL`, `OCC_ORIGIN` and `OCC_SESSION_COOKIE_JAR` are set, and set `USER_ID` to the
+account's `id`. Read the account version, then attach:
 
 ```bash
-curl -sS -X POST "$OCC_AUTH_BASE_URL/api/auth/accounts/$USER_ID/providers/oidc" \
-  -H "Origin: $OCC_AUTH_BASE_URL" -H 'Content-Type: application/json' \
-  -b "$COOKIE_JAR" \
-  --data '{"subject":"<sub>","expectedVersion":1}'
+VERSION="$(curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/api/auth/accounts/$USER_ID" | jq -er .data.version)" &&
+jq -n --arg subject '<sub>' --argjson version "$VERSION" \
+  '{subject: $subject, expectedVersion: $version}' |
+  curl --fail-with-body --silent --show-error \
+    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "$OCC_URL/api/auth/accounts/$USER_ID/providers/oidc"
 ```
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
-when OIDC is off, the version is stale or the account is disabled, and `404` when
-another account holds the subject. Attachment advances the account version and ends the
-account's sessions. The method's `providerId` starts with `oidc:`; detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`.
+when OIDC is off, the version is stale, the account is disabled, or another account
+holds the subject ("The external identity is already assigned."). Attachment advances
+the account version and ends the account's sessions. The method's `providerId` starts
+with `oidc:`; detach it with `POST /api/auth/accounts/:userId/methods/:methodId/detach`,
+which ends every session of the account, password sessions included.
+
+Accounts are created with a password, and an OIDC identity can be attached only
+afterwards. To add someone who should sign in only through the IdP, follow
+[Add a person](../topics/iam.md#add-a-person), which covers the password left behind.
 
 ## Changes, rotation and outages
 
 - The provider instance is derived from the issuer and client ID. Changing either is a
   new instance: attach every identity again, then detach the old methods. Sessions
   signed in through the old instance, or through OIDC once it is removed, end on their
-  next request; password sessions and other providers' sessions are unaffected.
+  next request. Detaching an old method ends every session of that account.
 - Rotating only the client secret keeps attachments and voids pending sign-ins.
 - The API reads the JWKS on every callback, so IdP key rotation needs no restart.
 - OCE does not learn when the IdP disables someone: offboarding also means detaching or
@@ -151,7 +195,8 @@ account's sessions. The method's `providerId` starts with `oidc:`; detach it wit
 - An IdP outage, blocked egress or a rejected ID token fails that sign-in closed and
   returns the browser to `/console/?authError=oidc`; the recovery account's password
   still signs in. OIDC shares the external sign-in budgets with GitHub and Google.
-  An IdP that cannot answer also logs `authentication.provider-unavailable-warning`
+  An IdP that cannot answer, or that refuses the configured client
+  (`cause: client_rejected`), also logs `authentication.provider-unavailable-warning`
   with the failing step and cause; see the
   [external sign-in reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
 

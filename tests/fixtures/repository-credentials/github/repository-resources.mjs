@@ -239,6 +239,10 @@ export function createRepositoryResources({
         issue: graphItem(issues.get(number)),
         issueOrPullRequest: graphItem(issues.get(number) ?? pulls.get(number), pulls.has(number)),
         ref: { name: "native-feature", target: { oid: "a".repeat(40) } },
+        // GitHub fills this clone credential for private repositories when selected.
+        ...(query.includes("tempCloneToken")
+          ? { tempCloneToken: "synthetic-graphql-cloning-credential" }
+          : {}),
       };
       return json(200, {
         data: {

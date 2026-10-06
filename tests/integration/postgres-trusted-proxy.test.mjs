@@ -11,14 +11,11 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "sign-in admission keys on the client behind a trusted ingress and ignores other peers' headers",
-  {
-    skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof.",
-  },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;

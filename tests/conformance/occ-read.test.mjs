@@ -5,14 +5,14 @@ import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
-  NamespaceNotReadyError,
   OpenClawController,
   ResourceConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { bindRole, grantRole, permissionsFor, principalIAMState } from "../helpers/iam-grants.mjs";
 
 const installation = Object.freeze({
   id: "installation-read-test",
@@ -20,88 +20,51 @@ const installation = Object.freeze({
   createdAt: "2026-08-17T00:00:00.000Z",
 });
 async function createFixture() {
-  const identities = ["principal-admin", "principal-exact-a", "principal-scoped-b"].map((id) => ({
-    kind: "principal",
-    id,
-    issuer: "https://identity.example.com",
-    subject: id,
-  }));
-  const roles = [
-    {
-      id: "role-admin",
-      permissions: [
-        { action: "read", resourceKind: "installation" },
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent_revision" },
-        { action: "create", resourceKind: "secret" },
-        { action: "operate", resourceKind: "secret" },
-        { action: "create", resourceKind: "namespace" },
-        { action: "create", resourceKind: "configuration" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "create", resourceKind: "agent" },
-        { action: "update", resourceKind: "agent" },
-        { action: "deploy", resourceKind: "agent" },
-      ],
+  const exactNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const scopedNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
+  const iamState = principalIAMState(
+    ["principal-admin", "principal-exact-a", "principal-scoped-b"],
+    "https://identity.example.com",
+  );
+  const { identities, roles } = iamState;
+  grantRole(iamState, "principal-admin", {
+    id: "role-admin",
+    bindingId: "binding-admin",
+    permissions: {
+      installation: ["read"],
+      namespace: ["read", "create"],
+      agent: ["read", "create", "update", "deploy"],
+      agent_revision: ["read"],
+      secret: ["create", "operate"],
+      configuration: ["create", "read"],
     },
-    {
-      id: "role-principal-exact-a",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    },
-    {
-      id: "role-principal-scoped-b",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000002",
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent_revision" },
-      ],
-    },
-  ];
-  const bindings = [
-    {
-      id: "binding-admin",
-      subjectKind: "identity",
-      subjectId: "principal-admin",
-      roleId: "role-admin",
-    },
-    ...[
-      ["namespace", "ns_00000000-0000-4000-8000-000000000001"],
-      ["agent", "agent-3"],
-      ["agent_revision", "agent_revision-6"],
-    ].map(([resourceKind, resourceId]) => ({
-      id: `binding-a-${resourceKind}`,
-      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-      subjectKind: "identity",
-      subjectId: "principal-exact-a",
+  });
+  const reads = { namespace: ["read"], agent: ["read"], agent_revision: ["read"] };
+  roles.push({
+    id: "role-principal-exact-a",
+    namespaceId: exactNamespaceId,
+    permissions: permissionsFor(reads),
+  });
+  for (const [kind, id] of [
+    ["namespace", exactNamespaceId],
+    ["agent", "agent-3"],
+    ["agent_revision", "agent_revision-6"],
+  ]) {
+    bindRole(iamState, "principal-exact-a", {
+      id: `binding-a-${kind}`,
       roleId: "role-principal-exact-a",
-      resourceKind,
-      resourceId,
-    })),
-    {
-      id: "binding-scoped-b",
-      namespaceId: "ns_00000000-0000-4000-8000-000000000002",
-      subjectKind: "identity",
-      subjectId: "principal-scoped-b",
-      roleId: "role-principal-scoped-b",
-    },
-  ];
+      namespaceId: exactNamespaceId,
+      resource: { kind, id },
+    });
+  }
+  grantRole(iamState, "principal-scoped-b", {
+    id: "role-principal-scoped-b",
+    bindingId: "binding-scoped-b",
+    namespaceId: scopedNamespaceId,
+    permissions: reads,
+  });
   const iam = new NativeIAMDriver(
-    {
-      loadNativeIAMState: async () => ({
-        identities,
-        groups: [],
-        memberships: [],
-        roles,
-        bindings,
-        restrictions: [],
-      }),
-    },
+    { loadNativeIAMState: async () => iamState },
     { id: "iam-read-test" },
   );
   let sequence = 0;
@@ -123,25 +86,9 @@ async function createFixture() {
   controller.registerDriver(configurationDriver);
   controller.selectDriver("configuration", configurationDriver.id);
   const compute = {
+    ...createDevelopmentComputeDriver(),
     id: "compute-read-test",
-    capability: "compute",
     implementation: "deterministic-read-test",
-    validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
   };
   controller.registerDriver(compute);
   controller.selectDriver("compute", compute.id);
@@ -197,14 +144,11 @@ async function createFixture() {
       id: `role-${agent.id}`,
       permissions: [{ action: "operate", resourceKind: "secret" }],
     });
-    bindings.push({
+    bindRole(iamState, agent.servicePrincipalId, {
       id: `binding-${agent.id}`,
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
       roleId: `role-${agent.id}`,
       namespaceId: agent.namespaceId,
-      resourceKind: "secret",
-      resourceId: secret.id,
+      resource: { kind: "secret", id: secret.id },
     });
     await controller.updateAgent("principal-admin", {
       namespaceId: agent.namespaceId,
@@ -257,23 +201,10 @@ async function createFixture() {
   };
 }
 
-test("selecting an existing namespace requires installation administration and completed provisioning", async () => {
+// The HTTP fixture in occ-api-security.test.mjs records no operations, so the
+// controller-level proof that a refused adoption queues nothing stays here.
+test("a refused existing-namespace adoption leaves Namespaces and pending operations unchanged", async () => {
   const { controller, roles } = await createFixture();
-
-  // A principal allowed to create managed Namespaces cannot claim operator-owned infrastructure.
-  await assert.rejects(
-    controller.createNamespace("principal-admin", {
-      name: "Unauthorized existing tenant",
-      existingNamespace: "operator-owned",
-    }),
-    (error) =>
-      error instanceof AuthorizationDeniedError &&
-      error.authorization.action === "administer" &&
-      error.authorization.resource.kind === "installation" &&
-      error.authorization.resource.id === installation.id,
-  );
-
-  // Native IAM reads current roles, but an administrator still cannot adopt through another Driver.
   roles[0].permissions.push({ action: "administer", resourceKind: "installation" });
   const existingNamespaces = await controller.listNamespaces("principal-admin");
   const pendingOperations = controller.pendingOperations().length;
@@ -286,43 +217,6 @@ test("selecting an existing namespace requires installation administration and c
   );
   assert.deepEqual(await controller.listNamespaces("principal-admin"), existingNamespaces);
   assert.equal(controller.pendingOperations().length, pendingOperations);
-
-  const kubernetes = createTestKubernetesComputeDriver("compute-existing-namespace");
-  controller.registerDriver(kubernetes);
-  controller.selectDriver("compute", kubernetes.id);
-  const selected = await controller.createNamespace("principal-admin", {
-    name: "Selected existing tenant",
-    existingNamespace: "operator-owned",
-  });
-  assert.equal(selected.existingNamespace, "operator-owned");
-
-  await assert.rejects(
-    controller.createConfiguration("principal-exact-a", {
-      namespaceId: selected.id,
-      kind: "agent",
-      values: {},
-    }),
-    AuthorizationDeniedError,
-  );
-
-  await assert.rejects(
-    controller.createConfiguration("principal-admin", {
-      namespaceId: selected.id,
-      kind: "agent",
-      values: {},
-    }),
-    NamespaceNotReadyError,
-  );
-
-  await controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(selected.id, "provisioning", "ready"),
-  );
-  const configuration = await controller.createConfiguration("principal-admin", {
-    namespaceId: selected.id,
-    kind: "agent",
-    values: {},
-  });
-  assert.equal(configuration.namespaceId, selected.id);
 });
 
 test("installation and exact resource reads require their own explicit authorization", async () => {

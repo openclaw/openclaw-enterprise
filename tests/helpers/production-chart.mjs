@@ -5,6 +5,17 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
+/** `test` options: skip unless Helm and yq can render the production chart. */
+export async function chartTooling() {
+  try {
+    await execute(helm, ["version", "--short"], { cwd: repository });
+    await execute("yq", ["--version"], { cwd: repository });
+    return { skip: false };
+  } catch {
+    return { skip: "Install Helm and yq, or set OCC_HELM_BIN, to render the production chart." };
+  }
+}
+
 export const productionValues = {
   "images.controller": `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
   "auth.baseUrl": "https://occ.example.invalid",
@@ -40,6 +51,9 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   }
   for (const [key, value] of Object.entries({ ...productionValues, ...overrides })) {
     args.push("--set", `${key}=${value}`);
+  }
+  for (const [key, value] of Object.entries(options.strings ?? {})) {
+    args.push("--set-string", `${key}=${value}`);
   }
   return execute(helm, args, { cwd: repository, maxBuffer: 2_000_000 });
 }

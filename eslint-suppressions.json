@@ -1,9 +1,4 @@
 {
-  "apps/controller/src/composition/production.ts": {
-    "@typescript-eslint/no-unused-vars": {
-      "count": 1
-    }
-  },
   "apps/controller/src/console/agents/detail.mjs": {
     "preserve-caught-error": {
       "count": 1
@@ -54,20 +49,12 @@
   },
   "packages/contracts/src/api/common.ts": {
     "no-control-regex": {
-      "count": 2
-    }
-  },
-  "packages/occ/src/backends.ts": {
-    "@typescript-eslint/no-unused-vars": {
-      "count": 1
-    },
-    "no-control-regex": {
       "count": 1
     }
   },
   "packages/occ/src/state/platform-state.ts": {
     "no-control-regex": {
-      "count": 4
+      "count": 3
     }
   },
   "packages/occ/src/state/postgres-state.ts": {
@@ -107,11 +94,6 @@
   },
   "scripts/generate-occ-openapi.mjs": {
     "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "tests/conformance/plugin-compute.test.mjs": {
-    "no-unused-vars": {
       "count": 1
     }
   },

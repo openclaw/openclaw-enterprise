@@ -11,9 +11,14 @@ import {
   OpenClawController,
   ResourceConflictError,
   ScopeViolationError,
+  SecretValueError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
+import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const administrator = "principal-secret-administrator";
@@ -47,102 +52,37 @@ function adminPermissions() {
 }
 
 async function fixture(options = {}) {
-  const iamState = {
-    identities: [
-      administrator,
-      deployer,
-      noSecretOperator,
-      secretConsumer,
-      metadataReader,
-      zeroGrant,
-    ].map((id) => ({
-      kind: "principal",
-      id,
-      issuer: "secret-occ-conformance",
-      subject: id,
-    })),
-    groups: [],
-    memberships: [],
-    roles: [
-      {
-        id: "secret-occ-administrator-role",
-        permissions: Object.entries(adminPermissions()).flatMap(([resourceKind, actions]) =>
-          actions.map((action) => ({ action, resourceKind })),
-        ),
-      },
-      {
-        id: "secret-occ-deployer-role",
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "read", resourceKind: "configuration" },
-          { action: "read", resourceKind: "agent" },
-          { action: "deploy", resourceKind: "agent" },
-          { action: "operate", resourceKind: "secret" },
-          { action: "read", resourceKind: "agent_revision" },
-        ],
-      },
-      {
-        id: "secret-occ-no-secret-role",
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "read", resourceKind: "configuration" },
-          { action: "read", resourceKind: "agent" },
-          { action: "deploy", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent_revision" },
-        ],
-      },
-      {
-        id: "secret-occ-agent-secret-role",
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      },
-      {
-        id: "secret-occ-metadata-reader-role",
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "create", resourceKind: "configuration" },
-          { action: "read", resourceKind: "configuration" },
-          { action: "update", resourceKind: "configuration" },
-          { action: "create", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent" },
-          { action: "update", resourceKind: "agent" },
-          { action: "read", resourceKind: "secret" },
-        ],
-      },
-    ],
-    bindings: [
-      {
-        id: "secret-occ-administrator-binding",
-        subjectKind: "identity",
-        subjectId: administrator,
-        roleId: "secret-occ-administrator-role",
-      },
-      {
-        id: "secret-occ-deployer-binding",
-        subjectKind: "identity",
-        subjectId: deployer,
-        roleId: "secret-occ-deployer-role",
-      },
-      {
-        id: "secret-occ-no-secret-binding",
-        subjectKind: "identity",
-        subjectId: noSecretOperator,
-        roleId: "secret-occ-no-secret-role",
-      },
-      {
-        id: "secret-occ-secret-consumer-binding",
-        subjectKind: "identity",
-        subjectId: secretConsumer,
-        roleId: "secret-occ-agent-secret-role",
-      },
-      {
-        id: "secret-occ-metadata-reader-binding",
-        subjectKind: "identity",
-        subjectId: metadataReader,
-        roleId: "secret-occ-metadata-reader-role",
-      },
-    ],
-    restrictions: [],
-  };
+  const iamState = principalIAMState(
+    [administrator, deployer, noSecretOperator, secretConsumer, metadataReader, zeroGrant],
+    "secret-occ-conformance",
+  );
+  const grant = (subjectId, name, permissions, bindingName = name) =>
+    grantRole(iamState, subjectId, {
+      id: `secret-occ-${name}-role`,
+      bindingId: `secret-occ-${bindingName}-binding`,
+      permissions,
+    });
+  grant(administrator, "administrator", adminPermissions());
+  grant(deployer, "deployer", {
+    namespace: ["read"],
+    configuration: ["read"],
+    agent: ["read", "deploy"],
+    secret: ["operate"],
+    agent_revision: ["read"],
+  });
+  grant(noSecretOperator, "no-secret", {
+    namespace: ["read"],
+    configuration: ["read"],
+    agent: ["read", "deploy"],
+    agent_revision: ["read"],
+  });
+  grant(secretConsumer, "agent-secret", { secret: ["operate"] }, "secret-consumer");
+  grant(metadataReader, "metadata-reader", {
+    namespace: ["read"],
+    configuration: ["create", "read", "update"],
+    agent: ["create", "read", "update"],
+    secret: ["read"],
+  });
   const iam = new NativeIAMDriver(
     { loadNativeIAMState: async () => iamState },
     { id: "secret-occ-iam" },
@@ -153,10 +93,7 @@ async function fixture(options = {}) {
   const configurationDriver = createTestConfigurationDriver({ id: "secret-occ-configuration" });
   const secretDriver = options.secretDriver ?? createTestSecretDriver();
 
-  for (const driver of [iam, compute, configurationDriver, secretDriver]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  registerAndSelectDrivers(controller, [iam, compute, configurationDriver, secretDriver]);
 
   const namespace = await controller.createNamespace(administrator, {
     name: options.namespaceName ?? "Secret OCC tenant",
@@ -188,14 +125,11 @@ async function fixture(options = {}) {
         value: "synthetic-harness-key",
       });
       grantAgentSecretOperate(agent, modelSecret);
-      iamState.bindings.push({
+      bindRole(iamState, noSecretOperator, {
         id: "fixture-harness-consumer",
-        subjectKind: "identity",
-        subjectId: noSecretOperator,
         roleId: "secret-occ-agent-secret-role",
         namespaceId: namespace.id,
-        resourceKind: "secret",
-        resourceId: modelSecret.id,
+        resource: { kind: "secret", id: modelSecret.id },
       });
       await controller.updateAgent(administrator, {
         namespaceId: namespace.id,
@@ -215,14 +149,11 @@ async function fixture(options = {}) {
         agentId: targetAgent.id,
       });
     }
-    iamState.bindings.push({
+    bindRole(iamState, targetAgent.servicePrincipalId, {
       id: `secret-occ-agent-binding-${targetAgent.id}-${secret.id}`,
-      namespaceId: targetAgent.namespaceId,
-      subjectKind: "identity",
-      subjectId: targetAgent.servicePrincipalId,
       roleId: "secret-occ-agent-secret-role",
-      resourceKind: "secret",
-      resourceId: secret.id,
+      namespaceId: targetAgent.namespaceId,
+      resource: { kind: "secret", id: secret.id },
     });
   }
 
@@ -513,6 +444,23 @@ test("Secret material, metadata, and binding permissions stay separate", async (
     }),
     AuthorizationDeniedError,
   );
+  // Without a Harness Secret to recheck first, the refusal comes from the bound Secret itself.
+  const withoutHarnessAuth = await controller.createAgent(administrator, {
+    namespaceId: namespace.id,
+    name: "binding-check-agent",
+    configurationId: unboundConfiguration.id,
+  });
+  await assert.rejects(
+    controller.updateAgent(metadataReader, {
+      namespaceId: namespace.id,
+      agentId: withoutHarnessAuth.id,
+      configurationId: retainedBindings.id,
+    }),
+    (error) =>
+      error instanceof AuthorizationDeniedError &&
+      error.authorization?.action === "operate" &&
+      error.authorization.resource.id === secret.id,
+  );
 });
 
 test("listing Secrets requires Namespace read before filtering each Secret", async () => {
@@ -705,6 +653,22 @@ test("Secret binding admission fails closed for missing selection and backend id
     ),
     DependencyUnavailableError,
   );
+  // The Harness authentication Secret is held to the same backend identity as a bound Secret.
+  secretDriver.setResolveOverride((stored) =>
+    stored.name === "fixture-harness-key"
+      ? { ...stored.backendRef, uid: "uid-foreign" }
+      : stored.backendRef,
+  );
+  await assert.rejects(
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The Harness Secret backend identity changed.",
+  );
   assert.deepEqual(await controller.listRevisions(administrator, namespace.id, agent.id), []);
 });
 
@@ -785,4 +749,172 @@ test("failed Secret updates do not roll back or leak the old value", async () =>
   assert.equal(secretDriver.valueFor(secret), "sk-test-v1");
   assert.equal(JSON.stringify(secretDriver.calls.at(-1).secret).includes("sk-test-v1"), false);
   assert.equal(JSON.stringify(secretDriver.calls.at(-1).secret).includes("sk-test-v2"), false);
+});
+
+test("channel directory lookup refuses saved IDs with C0 controls or DEL before authorization", async () => {
+  const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
+  const lookup = (id) =>
+    controller.lookupChannelDirectory(administrator, "ns_directory", {
+      secretId: "secret_directory",
+      kind: "users",
+      ids: ["U0001", id],
+    });
+  // The controller uses the shared @openclaw-enterprise/utils check, swept over every code
+  // unit in utils.test.mjs; these are its boundaries as seen through the lookup input.
+  for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1b, 0x1f, 0x7f]) {
+    const character = String.fromCharCode(code);
+    for (const id of [`${character}U2`, `U${character}2`, `U2${character}`]) {
+      await assert.rejects(
+        lookup(id),
+        (error) =>
+          error instanceof ScopeViolationError &&
+          error.message === "The channel directory lookup input is invalid.",
+        code.toString(16),
+      );
+    }
+  }
+  // C1 controls, line separators, lone surrogates and other Unicode pass the input check and
+  // reach authorization, which this bare controller cannot provide.
+  for (const id of [
+    "U 2",
+    "U~2",
+    "U\u00802",
+    "U\u00852",
+    "U\u009f2",
+    "U\u00a02",
+    "U\u20282",
+    "U\u20292",
+    "U\ufeff2",
+    "U\ud8002",
+    "U\u{1f600}2",
+  ]) {
+    await assert.rejects(
+      lookup(id),
+      (error) =>
+        error instanceof DependencyUnavailableError &&
+        error.message === "The selected authorization Driver is unavailable.",
+      JSON.stringify(id),
+    );
+  }
+});
+
+test("channel directory lookup measures the query and saved IDs in characters, as the contract does", async () => {
+  const controller = new OpenClawController(installation, { state: new InMemoryPlatformState() });
+  const lookup = (input) =>
+    controller.lookupChannelDirectory(administrator, "ns_directory", {
+      secretId: "secret_directory",
+      kind: "users",
+      ...input,
+    });
+  const refused = (error) =>
+    error instanceof ScopeViolationError &&
+    error.message === "The channel directory lookup input is invalid.";
+  // Within the contract's 200 characters the input passes and reaches authorization,
+  // which this bare controller cannot provide.
+  const admitted = (error) =>
+    error instanceof DependencyUnavailableError &&
+    error.message === "The selected authorization Driver is unavailable.";
+  // Each emoji is one character (code point) but two UTF-16 code units.
+  const emoji = (count) => "\u{1f600}".repeat(count);
+  await assert.rejects(lookup({ query: emoji(200) }), admitted, "200-character query");
+  await assert.rejects(lookup({ query: emoji(201) }), refused, "201-character query");
+  await assert.rejects(lookup({ ids: ["U0001", emoji(200)] }), admitted, "200-character ID");
+  await assert.rejects(lookup({ ids: ["U0001", emoji(201)] }), refused, "201-character ID");
+});
+
+test("Secret values are checked before the Secret Driver sees them, on create and update", async () => {
+  const { controller, makeReady, namespace, secretDriver } = await fixture({ skipAgent: true });
+  await makeReady();
+  const largest = "x".repeat(65_536);
+  const secret = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "largest-value",
+    value: largest,
+  });
+  assert.equal(secretDriver.valueFor(secret), largest);
+  const writes = secretDriver.calls.length;
+
+  // Internal callers (device login sessions) reach this check without the HTTP schema.
+  for (const [value, code] of [
+    ["bad\u0000value", "INVALID_VALUE"],
+    ["lone \ud800 surrogate", "INVALID_VALUE"],
+    [`${largest}x`, "TOO_LONG"],
+    ["\u00e9".repeat(32_769), "TOO_LONG"],
+  ]) {
+    await assert.rejects(
+      controller.createSecret(administrator, {
+        namespaceId: namespace.id,
+        name: `rejected-${code}`,
+        value,
+      }),
+      (error) => error instanceof SecretValueError && error.code === code,
+    );
+    await assert.rejects(
+      controller.updateSecret(administrator, {
+        namespaceId: namespace.id,
+        secretId: secret.id,
+        value,
+      }),
+      (error) => error instanceof SecretValueError && error.code === code,
+    );
+  }
+  assert.equal(secretDriver.calls.length, writes);
+  assert.equal(secretDriver.valueFor(secret), largest);
+  assert.deepEqual(
+    (await controller.listSecrets(administrator, namespace.id)).map(({ name }) => name),
+    ["largest-value"],
+  );
+});
+
+test("a Secret whose metadata does not commit leaves no backend copy behind", async () => {
+  const { controller, makeReady, namespace, secretDriver } = await fixture({ skipAgent: true });
+  await makeReady();
+  const kept = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "model-key",
+    value: "sk-test-kept",
+  });
+  // The duplicate name is refused by State after the driver stored the second value.
+  await assert.rejects(
+    controller.createSecret(administrator, {
+      namespaceId: namespace.id,
+      name: "model-key",
+      value: "sk-test-orphan",
+    }),
+    ResourceConflictError,
+  );
+  const [, orphan] = secretDriver.calls.filter(({ operation }) => operation === "create");
+  assert.equal(orphan.value, "sk-test-orphan");
+  assert.equal(secretDriver.has(orphan.identity), false);
+  assert.deepEqual(
+    secretDriver.calls
+      .filter(({ operation }) => operation === "delete")
+      .map(({ secret }) => secret.id),
+    [orphan.identity.id],
+  );
+  assert.equal(secretDriver.valueFor(kept), "sk-test-kept");
+});
+
+test("a Secret update refuses a Secret that another Secret Driver owns", async () => {
+  const { controller, makeReady, namespace, secretDriver } = await fixture({ skipAgent: true });
+  await makeReady();
+  const secret = await controller.createSecret(administrator, {
+    namespaceId: namespace.id,
+    name: "model-key",
+    value: "sk-test-original",
+  });
+  // A reconfigured Installation selects a new driver; it must not write the old driver's Secret.
+  const replacement = createTestSecretDriver({ id: "secret-replacement" });
+  controller.registerDriver(replacement);
+  controller.selectDriver("secret", replacement.id);
+  await assert.rejects(
+    controller.updateSecret(administrator, {
+      namespaceId: namespace.id,
+      secretId: secret.id,
+      value: "sk-test-rotated",
+    }),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(replacement.calls, []);
+  assert.equal(secretDriver.valueFor(secret), "sk-test-original");
 });

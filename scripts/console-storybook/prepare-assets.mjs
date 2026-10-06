@@ -28,6 +28,7 @@ await writeFile(
 
 // Preview shipped Presets so screenshots follow their current contracts.
 for (const [name, file] of [
+  ["default-codex", "default-codex"],
   ["standard-codex", "standard-codex"],
   ["standard-openclaw", "standard-openclaw"],
   ["swe", "swe-preset"],

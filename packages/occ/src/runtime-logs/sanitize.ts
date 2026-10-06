@@ -14,6 +14,7 @@ import {
   redactRuntimeLogText,
   stripRuntimeLogControls,
 } from "./redact.ts";
+import { runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 declare const sanitizedRuntimeLogRecord: unique symbol;
 
@@ -119,6 +120,16 @@ const GAP_REMEDIES: Readonly<Record<RuntimeLogGapReason, string>> = Object.freez
   buffer_lost:
     "The source no longer holds the lines after the previous page: its in-memory buffer rolled over or restarted. Showing what it still holds.",
 });
+
+// A resumed view whose next line does not fit in the rest of the 1 MiB read limit
+// (typically one oversized line): requesting fewer lines cannot reach the lines behind
+// it, so these remedies say what is lost instead.
+const STALLED_READ_REMEDIES = Object.freeze({
+  window_exceeded:
+    "A line longer than the rest of the 1 MiB read limit could not be read. It and the lines logged after it, up to this page, were skipped.",
+  truncated:
+    "A line longer than the rest of the 1 MiB read limit fills this page and cannot be read. A following page skips it and the lines logged right after it.",
+} satisfies Partial<Record<RuntimeLogGapReason, string>>);
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type LineRecord = Extract<RuntimeLogRecord, { type: "line" }>;
@@ -229,6 +240,19 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
     const settings = overridden ? overriddenSettings(value.settings) : undefined;
     if (settings !== undefined) {
       fields = Object.freeze({ ...fields, settings });
+    }
+    // A failed model probe names its cause from the closed vocabulary the deployment
+    // error uses; anything outside it is dropped, as Compute drops it there.
+    const cause =
+      event.endsWith("model_probe") && value.code === "MODEL_PROBE_FAILED"
+        ? runtimeFailureCause(value.cause)
+        : undefined;
+    if (cause !== undefined) {
+      fields = Object.freeze({
+        ...fields,
+        causeKind: cause.kind,
+        ...(cause.detail === undefined ? {} : { causeDetail: cause.detail }),
+      });
     }
     const failed =
       value.outcome === "failed" ||
@@ -350,14 +374,77 @@ function codexSpanLifecycle(
   };
 }
 
+// Codex messages shown as written. `codex_core` formats can interpolate chat text and
+// model-proposed values (`event_mapping` logs `Output text in user message: <text>`),
+// so only reviewed operational targets (app-server and its listener and remote-control
+// loops, login, CA setup, plugin manifests) and reviewed fixed-format messages keep
+// their text. Every other target, `codex_otel` included, shows a fixed message.
+// The Collector keeps message text only from `codex_app_server`.
+const CODEX_MESSAGE_TARGET =
+  /^(?:codex_app_server|codex_app_server_transport::transport::(?:websocket|remote_control)|codex_login|codex_http_client::custom_ca|codex_core_plugins)(?:::|$)/;
+// A configured model endpoint (provider base URL plus path) or a loopback listener.
+const CODEX_ENDPOINT_URL = String.raw`wss?://\S{1,2048}`;
+const CODEX_SOCKET_ADDRESS = String.raw`(?:\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:.]{2,45}\]):\d{1,5}`;
+// A WebSocket connect error as tungstenite's Display prints it: its error kind, then an
+// OS error, an HTTP status code and reason (never the body), or a proxy, URL or TLS
+// diagnostic. Anchored to the kinds so a changed error type falls back to withholding.
+const CODEX_CONNECT_ERROR = String.raw`(?:Connection closed normally|Trying to work with closed connection|Write buffer is full|Attack attempt detected|(?:IO|TLS|URL|HTTP|HTTP format|UTF-8 encoding) error: [^\n]{1,1000}|WebSocket protocol error: [^\n]{1,1000}|Space limit exceeded: [^\n]{1,1000})`;
+// Reviewed fixed-format diagnostics (codex-cli 0.160.0) from targets that also log
+// payloads, so the target as a whole is never kept: `responses_websocket` logs
+// `failed to parse websocket event: <err>, data: <event>`, and the network proxy logs
+// the hosts and paths of sandboxed requests. The variable parts allowed here are a
+// configured endpoint URL, a socket address, counts, durations and a WebSocket
+// connect error.
+const CODEX_FIXED_MESSAGES: Readonly<Record<string, readonly (string | RegExp)[]>> = Object.freeze({
+  "codex_api::endpoint::responses_websocket": Object.freeze([
+    new RegExp(`^connecting to websocket: ${CODEX_ENDPOINT_URL}$`),
+    new RegExp(`^successfully connected to websocket: ${CODEX_ENDPOINT_URL}$`),
+    new RegExp(
+      `^failed to connect to websocket: ${CODEX_CONNECT_ERROR}, url: ${CODEX_ENDPOINT_URL}$`,
+    ),
+  ]),
+  "codex_core::client": Object.freeze(["falling back to HTTP"]),
+  "codex_core::responses_retry": Object.freeze([
+    "stream connection failed; waiting to retry",
+    "remote compaction v2 stream failed; retrying request after delay",
+    /^stream disconnected - retrying sampling request \(\d{1,10}\/\d{1,10} in [\d.]{1,24}(?:ns|µs|ms|s)\)\.\.\.$/,
+  ]),
+  "codex_core::tools::parallel": Object.freeze(["tool call completed"]),
+  "codex_network_proxy::certs": Object.freeze(["generated process-local MITM CA"]),
+  "codex_network_proxy::http_proxy": Object.freeze([
+    new RegExp(`^HTTP proxy listening on ${CODEX_SOCKET_ADDRESS}$`),
+  ]),
+  "codex_network_proxy::proxy": Object.freeze([
+    "allowUnixSockets and dangerouslyAllowAllUnixSockets are macOS-only; requests will be rejected on this platform",
+    "network.enabled is false; skipping proxy listeners",
+  ]),
+  "codex_network_proxy::socks5": Object.freeze([
+    new RegExp(`^SOCKS5 proxy listening on ${CODEX_SOCKET_ADDRESS}$`),
+    "SOCKS5 UDP and non-HTTPS SOCKS5 TCP are blocked in limited mode; HTTPS SOCKS5 TCP requires MITM inspection",
+  ]),
+});
+const CODEX_WITHHELD_MESSAGE = "Codex message withheld";
+
+function codexMessage(target: string, message: string): string {
+  if (CODEX_MESSAGE_TARGET.test(target)) {
+    return message;
+  }
+  const formats = Object.hasOwn(CODEX_FIXED_MESSAGES, target) ? CODEX_FIXED_MESSAGES[target]! : [];
+  const fixed = formats.some((format) =>
+    typeof format === "string" ? format === message : format.test(message),
+  );
+  return fixed ? message : CODEX_WITHHELD_MESSAGE;
+}
+
 function codexRecord(value: Readonly<Record<string, unknown>>, message: string): Classified {
   const fields = pickFields(value, [...STRUCTURED_FIELDS, ...CODEX_FIELDS]);
+  const target = value.target as string;
   return {
     type: "line",
     kind: "codex",
     level: level(value.level),
-    message,
-    subsystem: value.target as string,
+    message: codexMessage(target, message),
+    subsystem: target,
     ...(fields === undefined ? {} : { fields }),
   };
 }
@@ -671,11 +758,7 @@ function sandboxFields(
     if (typeof value !== "string" || value.length === 0) {
       continue;
     }
-    if (key === "cmd_line") {
-      // argv credentials (`-u user:pass`, `-p pass`) have no key the text rules can see.
-      const command = redactArgvCredentials(stripRuntimeLogControls(value));
-      fields[key] = sanitizeRuntimeLogText(command, SANDBOX_REDACTED_FIELD_BYTES).text;
-    } else if (SANDBOX_REDACTED_FIELDS.has(key)) {
+    if (SANDBOX_REDACTED_FIELDS.has(key)) {
       fields[key] = sanitizeRuntimeLogText(value, SANDBOX_REDACTED_FIELD_BYTES).text;
     } else if (SANDBOX_FIELDS.has(key)) {
       fields[key] = sanitizeRuntimeLogText(value, MAX_FIELD_CHARS).text;
@@ -747,9 +830,7 @@ export function sanitizeSandboxLogLines(
       const url = sanitizeRuntimeLogText(parsed.fields.url, SANDBOX_REDACTED_FIELD_BYTES).text;
       shown = shown.replace(parsed.fields.url, () => url);
     }
-    // A PROC line whose `[cmd:` was not recovered, or a tracing message quoting a
-    // command, still carries argv; mask credential flags in the message too.
-    const message = sanitizeRuntimeLogText(redactArgvCredentials(shown));
+    const message = sanitizeRuntimeLogText(shown);
     const subsystem =
       line.target.length === 0
         ? undefined
@@ -776,11 +857,15 @@ export function sanitizeSandboxLogLines(
   return Object.freeze({ records: Object.freeze(records), withheld });
 }
 
-/** A labelled gap for loss the API observed. Remedy text is fixed. */
+/**
+ * A labelled gap for loss the API observed. Remedy text is fixed; `stalled` selects
+ * the text for a resumed read stuck behind a line that does not fit the read limit.
+ */
 export function runtimeLogGap(
   reason: RuntimeLogGapReason,
   stream: RuntimeLogStream,
   time: string | null = null,
+  stalled = false,
 ): SanitizedRuntimeLogRecord {
   return brand({
     type: "gap",
@@ -788,9 +873,11 @@ export function runtimeLogGap(
     stream: cleanStream(stream),
     reason,
     remedy:
-      reason === "stream_replaced" && stream.source === "sandbox"
-        ? "The Sandbox was recreated; showing the new one."
-        : GAP_REMEDIES[reason],
+      stalled && (reason === "window_exceeded" || reason === "truncated")
+        ? STALLED_READ_REMEDIES[reason]
+        : reason === "stream_replaced" && stream.source === "sandbox"
+          ? "The Sandbox was recreated; showing the new one."
+          : GAP_REMEDIES[reason],
   });
 }
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-09-25
-last_updated_session: authoring-run/e9e7299c-b7ba-46de-9e24-fd8bb4b76388
+updated: 2026-10-01
+last_updated_session: authoring-run/0cfc470c-ba88-4a95-86e0-35123f0de703
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -79,7 +79,21 @@ API RoleBinding instead makes subsequent Configuration operations return `503`.
 Compute reconciles its owned quota, limit range, and isolation policies; no
 worker pause, restart, or Installation setting is needed.
 
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.networkPolicies`
+renders `allow-dns` with UDP and TCP ports `53` and `5353`, scoped to the
+[configured DNS peer](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+
 ### 3. Colocate Configuration and workload resources
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.reconcileDnsPorts`
+
+When preparing an Agent in a ready Namespace, Compute extends the installed
+tenant and dedicated Gateway DNS policies with missing ports. It verifies exact
+ownership and the configured DNS peer, then patches with the observed UID and
+resource version. The patch preserves the installed Pod selector, existing
+ports, peers, and other rules; policies from before network profiles continue
+to admit other Agents' unprofiled Pods. Conflicts fail the preparation pass
+without overwriting concurrent changes. A complete DNS grant causes no write.
 
 `apps/controller/src/drivers/configuration/kubernetes/index.ts:KubernetesConfigurationDriver`
 
@@ -113,7 +127,12 @@ leaves the external namespace untouched; partial or foreign markers fail
 closed. An already-missing namespace counts as deleted. After deleting an
 unclaimed failed tenant, an administrator can correct preparation and retry.
 Previously claimed namespaces cannot be readopted until an operator deliberately
-clears both old tenant markers. Managed namespaces retain their existing
+clears the old `openclaw.dev/namespace` label, `openclaw.dev/namespace-id`
+annotation and, in single-cluster Compute, `openclaw.dev/gateway-namespace`
+label. Deleting a failed selection whose namespace still carries another
+tenant's `openclaw.dev/namespace` label or `namespace-id` annotation fails
+permanently and leaves the Namespace `deleting`; clear those markers, then have
+the initiator repeat `DELETE`. Managed namespaces retain their existing
 complete-deletion lifecycle.
 
 ## Debugging and Verification
@@ -122,11 +141,16 @@ complete-deletion lifecycle.
   restricted Pod Security labels, tenant-local RoleBindings, NetworkPolicies,
   and Installation `administer` authorization. After provisioning, verify exact
   `openclaw.dev/namespace` identity and the `namespace-id` annotation.
+- A refused selection reports only `status: "failed"`; the worker's
+  `worker.completed` line for `namespace.ensure` carries
+  `code: NAMESPACE_INCOMPLETE` and no reason. Recheck the items above, including
+  old tenant markers left by an earlier OCC Namespace on the same Kubernetes
+  namespace.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
   through the resolved namespace.
-- Run `node --test tests/integration/kubernetes-compute-real.test.mjs` against
+- Run `node --test tests/integration/kubernetes-compute-provisioning-real.test.mjs` against
   the explicitly selected disposable cluster documented in `AGENTS.md`.
   Missing cluster infrastructure is an explicit verification gap.
 
@@ -144,6 +168,9 @@ complete-deletion lifecycle.
 
 ## Changelog
 
+- 2026-10-06 18:40: Name all three tenant markers that block readoption, the stuck deletion of a failed selection over foreign markers, and the reasonless `failed` status. (dogfood-r38)
+- 2026-10-01 16:45: Trace additive DNS port updates during Agent preparation in already-ready Namespaces. (authoring-run/0cfc470c-ba88-4a95-86e0-35123f0de703 - d419e4e49513233c39f8975328902141a52d0a96)
+- 2026-10-01 15:40: Documented the accompanying allow-dns change to permit UDP and TCP port 5353 alongside port 53. (authoring-run/a4c4fa72-fa88-4660-a8ef-25b347c15dcc - 4cab4887b863904bb7190599fc27cd93ecdef246)
 - 2026-09-25 01:58: Documented managed namespace-name upgrade compatibility and resolved-namespace cleanup. (authoring-run/e9e7299c-b7ba-46de-9e24-fd8bb4b76388 - 8d256c22f13a0c79f1b7b9db617e895a503f1305)
 - 2026-09-01 19:09: Corrected existing-namespace storage cleanup to final gateway teardown and removed the PR-number prefix from the title. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 21:20: Removed the retired local-test Compute Driver from current selection boundaries. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 3ec166eb5fae39ed0f51ffb5ebd93338c4a2db94)

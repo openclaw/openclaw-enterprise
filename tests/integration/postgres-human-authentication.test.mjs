@@ -11,11 +11,7 @@ import {
   createPostgresControllerAuth,
 } from "../../apps/controller/src/auth/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const requiresPostgres = {
-  skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-};
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function sessionRecord(userId) {
   const createdAt = new Date();
@@ -300,7 +296,11 @@ test(
       // The unguarded composition is what a pre-activation image runs: plain
       // Better Auth sessions over the same database, with no binding rows.
       const before = await sessionCount(person.id);
-      await assert.rejects(auth.auth.api.signInEmail({ body: { email: person.email, password } }));
+      // The session insert reaches the database fence, which Drizzle wraps.
+      await assert.rejects(
+        auth.auth.api.signInEmail({ body: { email: person.email, password } }),
+        (error) => fenceMessage.test(error.cause?.message),
+      );
       assert.equal(await sessionCount(person.id), before);
     });
 
@@ -348,6 +348,10 @@ test(
             installation.id,
             issuer,
           ).provisionPasswordAccount(failing, failingSeed),
+          {
+            name: "DependencyUnavailableError",
+            message: "The platform persistence repository is unavailable.",
+          },
         );
         assert.deepEqual(await rowCounts(failing.id, failingSeed.principal.id), {
           users: 0,
@@ -413,6 +417,11 @@ test(
           target.version,
         );
         assert.equal(await peer.currentSession(oldSession.token), undefined);
+        // Attach deletes the account's sessions; the version bump alone leaves stale rows.
+        assert.equal(
+          (await pool.query("SELECT 1 FROM occ.session WHERE id = $1", [oldSession.id])).rowCount,
+          0,
+        );
         await assert.rejects(
           persistence.issueSession(passwordProof, sessionRecord(person.id)),
           /no longer current/,
@@ -473,6 +482,24 @@ test(
         assert.equal(await persistence.snapshotExternal(providerId, "missing"), undefined);
       },
     );
+
+    await context.test("an external subject resolves only under its own provider", async () => {
+      // attachExternal and snapshotExternal do not consult the configured provider list;
+      // only issuance and session reads do, so an unconfigured second provider is enough here.
+      const secondProvider = `second-${suffix}`;
+      await persistence.attachExternal(
+        early.id,
+        secondProvider,
+        subject,
+        admin,
+        (await persistence.readAccount(early.id, admin)).version,
+      );
+      assert.equal((await persistence.snapshotExternal(providerId, subject))?.user.id, person.id);
+      assert.equal(
+        (await persistence.snapshotExternal(secondProvider, subject))?.user.id,
+        early.id,
+      );
+    });
 
     await context.test(
       "attempts require the exact browser and destination and are consumed once across controllers",
@@ -647,6 +674,11 @@ test(
         fresh.proof.methodId,
         fresh.proof.passwordHash,
       ]);
+      // The original hash is back, but under a new method version: the proof stays stale.
+      await assert.rejects(
+        persistence.issueSession(fresh.proof, sessionRecord(person.id)),
+        /no longer current/,
+      );
     });
 
     await context.test("the shared user lock serializes issuance before revocation", async () => {

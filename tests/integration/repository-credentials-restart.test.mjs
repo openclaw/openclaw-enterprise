@@ -5,15 +5,13 @@ import { chmod, lstat, readFile, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { appRoot, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 
 async function configuration(t) {
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const tls = await createTlsMaterial(resources);
-  const base = await createServiceConfiguration(resources);
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+  const config = await createLoopbackServiceConfiguration(resources);
   return { resources, config, tls };
 }
 

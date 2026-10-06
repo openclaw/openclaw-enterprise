@@ -5,7 +5,7 @@ import type {
   ProvisioningEffectReceipt,
   ProvisioningEffectTarget,
 } from "../provisioning-effects.ts";
-import type { WorkClaim } from "./controller-work.ts";
+import type { ControllerWork, WorkClaim } from "./controller-work.ts";
 
 export type ControllerWorkKind = "lifecycle" | "provisioning";
 
@@ -61,8 +61,15 @@ export interface AgentProvisioningReplay {
   readonly replayed: boolean;
 }
 
+export interface AgentProvisioningWithWork {
+  readonly record: Readonly<AgentProvisioningRecord>;
+  readonly work?: Readonly<ControllerWork>;
+}
+
 export interface AgentProvisioningReadRepository {
   findByWorkId(workId: string): Promise<Readonly<AgentProvisioningRecord> | undefined>;
+  /** The job and its queue row from one statement, so both reflect the same commits. */
+  findWithWork(workId: string): Promise<Readonly<AgentProvisioningWithWork> | undefined>;
   hasPendingNamespaceProvisioning(namespaceId: string): Promise<boolean>;
   findByAgent(
     namespaceId: string,
@@ -112,6 +119,11 @@ export interface AgentProvisioningRepository extends AgentProvisioningReadReposi
     workId: string,
     actorId: string,
   ): Promise<Readonly<AgentProvisioningRecord>>;
+  /**
+   * Clears a succeeded record's Configuration once its Agent selects another one, so that
+   * Configuration can be deleted. Returns false when the record still holds it.
+   */
+  releaseConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
 const PHASE_ORDER: Record<AgentProvisioningPhase, number> = Object.freeze({
@@ -263,5 +275,3 @@ export function copyProvisioningRecord(
 ): Readonly<AgentProvisioningRecord> {
   return immutableCopy(record);
 }
-
-export const provisioningPhaseOrder = Object.freeze({ ...PHASE_ORDER });

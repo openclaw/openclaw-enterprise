@@ -40,6 +40,8 @@ function run(root, args, env = {}) {
       ...process.env,
       GITHUB_SHA: currentSha(),
       CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
+      // Fixture failures quote this value; the reporter must redact env values.
+      CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
       ...env,
     },
   });
@@ -280,7 +282,13 @@ test("run records a sanitized file failure after all reported cases pass", async
   assert.equal(summary.counts.passed, 2);
   assert.equal(summary.counts.failed, 0);
   assert.deepEqual(summary.files[0].fileFailure, {
-    error: { code: "ERR_TEST_FAILURE", name: "Error", failureType: "testCodeFailure", exitCode: 1 },
+    error: {
+      code: "ERR_TEST_FAILURE",
+      name: "Error",
+      failureType: "testCodeFailure",
+      exitCode: 1,
+      message: "test failed",
+    },
     diagnosticKind: "post-test-async-activity",
   });
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
@@ -363,6 +371,14 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  // Every issue is named in the job log, which keeps every attempt.
+  for (const line of [
+    "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
+    "run-tests: issue expected-test-not-passed tests/integration/skips.test.mjs: expected test did not pass: expected but skipped",
+    "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected test did not run to completion: todo case",
+  ]) {
+    assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
 });
 
 test("run records failed, skipped, todo, and passed dispositions separately", async (t) => {
@@ -861,6 +877,9 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
       `  console.error("${secret}-stderr");`,
       `  assert.equal("${secret}-actual", "expected");`,
       "});",
+      'test("job env redaction", () => {',
+      '  throw new Error("owner openclaw-public-owner strippedjobvalue42");',
+      "});",
       'test("redacted custom error", () => {',
       `  console.log("${secret}-custom-stdout");`,
       `  console.error("${secret}-custom-stderr");`,
@@ -992,6 +1011,22 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "allowlisted credential service startup reason",
+          diagnostic: {
+            kind: "repository-platform-setup",
+            stage: "credential-service-startup",
+            credentialService: "gateway-listener",
+          },
+        },
+        {
+          name: "rejects unsafe credential service startup reason",
+          diagnostic: {
+            kind: "repository-platform-setup",
+            stage: "credential-service-startup",
+            credentialService: `${secret}-reason`,
+          },
+        },
+        {
           name: "rejects unsafe repository platform setup stage",
           diagnostic: { kind: "repository-platform-setup", stage: `${secret}-stage` },
         },
@@ -1036,22 +1071,31 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     },
   });
 
-  const result = run(root, [
-    "run",
-    "redacted",
-    "--manifest",
-    "manifest.json",
-    "--root",
+  const result = run(
     root,
-    "--state",
-    "state/redacted.jsonl",
-    "--results",
-    resultsPath,
-  ]);
+    [
+      "run",
+      "redacted",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/redacted.jsonl",
+      "--results",
+      resultsPath,
+    ],
+    {
+      // Public runner metadata stays readable; the runner strips OCC_TEST_* from
+      // the test child, so only its own second pass can redact this value.
+      GITHUB_REPOSITORY_OWNER: "openclaw-public-owner",
+      OCC_TEST_STRIPPED_VALUE: "strippedjobvalue42",
+    },
+  );
 
   assert.equal(result.status, 1);
   const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`;
-  assert.doesNotMatch(cliAndArtifact, /secretauthvalue/);
+  assert.doesNotMatch(cliAndArtifact, /secretauthvalue|strippedjobvalue42/);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
   assert.equal(summary.files[0].tests[0].line, 3);
@@ -1066,12 +1110,25 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   );
   assert.equal(failure.location.line, 6);
   assert.ok(failure.location.column > 0);
+  // The bounded message and top frame name the failure; env values never survive.
+  assert.match(failure.message, /'\[env:CI_RUNNER_FIXTURE_CREDENTIAL\]-actual'/);
+  assert.match(failure.message, /'expected'/);
+  assert.match(failure.frame, /\(tests\/integration\/redacted\.test\.mjs:6:\d+\)$/);
+  assert.match(
+    result.stderr,
+    /run-tests: failed tests\/integration\/redacted\.test\.mjs:6 "redacted failure locator": Expected values/,
+  );
   const customFailure = summary.files[0].tests.find(
     (entry) => entry.name === "redacted custom error",
   );
   assert.equal(customFailure.status, "failed");
   assert.equal(customFailure.error.cause, undefined);
-  assert.equal(customFailure.error.location.line, 11);
+  assert.equal(customFailure.error.location.line, 14);
+  assert.equal(customFailure.error.message, "[env:CI_RUNNER_FIXTURE_CREDENTIAL]-message");
+  assert.equal(
+    summary.files[0].tests.find((entry) => entry.name === "job env redaction").error.message,
+    "owner openclaw-public-owner [env:OCC_TEST_STRIPPED_VALUE]",
+  );
   const httpFailure = summary.files[0].tests.find(
     (entry) => entry.name === "allowlisted controller HTTP diagnostic",
   );
@@ -1171,6 +1228,22 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     kind: "repository-platform-setup",
     stage: "relay-readiness",
   });
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "allowlisted credential service startup reason",
+    ).error.diagnostic,
+    {
+      kind: "repository-platform-setup",
+      stage: "credential-service-startup",
+      credentialService: "gateway-listener",
+    },
+  );
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "rejects unsafe credential service startup reason",
+    ).error.diagnostic,
+    { kind: "repository-platform-setup", stage: "credential-service-startup" },
+  );
   for (const { name, stage = "relay-readiness", expected } of relayPodCases) {
     const relayFailure = summary.files[0].tests.find((entry) => entry.name === name);
     assert.equal(relayFailure.status, "failed");
@@ -1194,7 +1267,80 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   }
 });
 
-test("run keeps bounded Agent namespace activity from a passing k3d file", async (t) => {
+test("failure text is bounded and redacts env values and credential shapes", async () => {
+  const { default: reporter } = await import("../../scripts/ci/reporter.mjs");
+  const { failureSecrets, redactFailure } = await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([
+    { GITHUB_REPOSITORY_OWNER: "openclaw", JOB_ONLY_KEY: "jobonlyopaque123" },
+    { CHILD_URL: "postgres://app:childpw77@db/app", JOB_ONLY_KEY: "otheropaque456" },
+  ]);
+  const render = async (cause) => {
+    let text = "";
+    for await (const chunk of reporter([
+      { type: "test:fail", data: { name: "case", details: { error: { cause } } } },
+    ])) {
+      text += chunk;
+    }
+    return redactFailure(JSON.parse(text).data.error, secrets, "/repo");
+  };
+  const credentials = [
+    "Authorization: Bearer abcdefghijklmnop0123",
+    "postgres://occ:hunter2pass@db.internal:5432/occ",
+    "token=ghp_0123456789abcdefghijABCDEFGHIJ",
+    'password: "correct-horse"',
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.c2lnbmF0dXJl",
+    "sk-proj-0123456789abcdef",
+    "xoxb-1234-5678-abcdefgh",
+    "xapp-1-A0123-4567-abcdef",
+    "redis://:redispw99@cache:6379 https://tokenvalue123@git.example",
+    '{"privateKey":"pkvalue123"}',
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEabc\n-----END RSA PRIVATE KEY-----",
+    "job jobonlyopaque123 child otheropaque456 password childpw77",
+  ];
+  const error = await render(
+    new Error(`request failed for openclaw at /repo/x.mjs\n${credentials.join("\n")}`),
+  );
+  // Public runner metadata stays readable; the repository path is stripped.
+  assert.match(error.message, /^request failed for openclaw at x\.mjs\n/);
+  assert.match(
+    error.message,
+    /job \[env:JOB_ONLY_KEY\] child \[env:JOB_ONLY_KEY\] password \[env:CHILD_URL\]/,
+  );
+  for (const leaked of [
+    "abcdefghijklmnop0123",
+    "hunter2pass",
+    "ghp_0123",
+    "correct-horse",
+    "eyJhbGci",
+    "sk-proj",
+    "xoxb-",
+    "MIIEabc",
+    "xapp-1",
+    "redispw99",
+    "tokenvalue123",
+    "pkvalue123",
+  ]) {
+    assert.doesNotMatch(error.message, new RegExp(leaked));
+  }
+  assert.match(error.frame, /^at /);
+  // A stack quoted in the message is not the frame.
+  const quoted = await render({
+    message: "child failed\n    at quoted (/elsewhere/child.js:1:1)",
+    stack:
+      "Error: child failed\n    at quoted (/elsewhere/child.js:1:1)\n    at real (helper.mjs:2:3)",
+  });
+  assert.equal(quoted.frame, "at real (helper.mjs:2:3)");
+  // A value split by the cut survives as neither the value nor a prefix of it.
+  const long = await render(new Error(`${"x".repeat(16_370)} jobonlyopaque123`));
+  assert.ok(long.message.length < 700);
+  assert.match(long.message, /\.\.\. \[truncated\]$/);
+  const straddle = await render(new Error(`${"y ".repeat(296)}key jobonlyopaque123 tail`));
+  assert.doesNotMatch(straddle.message, /jobonly/);
+  assert.equal((await render("thrown string")).message, "thrown string");
+  assert.equal((await render(undefined)).message, undefined);
+});
+
+test("run keeps bounded Agent namespace activity from passing k3d files, alone and side by side", async (t) => {
   const root = await fixture(t);
   const clusterDirectory = join(root, "cluster");
   await mkdir(clusterDirectory);
@@ -1270,7 +1416,8 @@ test("run keeps bounded Agent namespace activity from a passing k3d file", async
       `const lines = query.startsWith("/api/v1/pods?") ? ${JSON.stringify(pods)} : ${JSON.stringify(events)};`,
       "for (const line of lines) process.stdout.write(JSON.stringify(line) + '\\n');",
       'process.stdout.write(\'{"type":"MODIFIED","object":\');',
-      "setInterval(() => {}, 1000);",
+      // A live watch runs until stopped; a stranded one exits on its own after a minute.
+      "setTimeout(() => {}, 60_000);",
       "",
     ].join("\n"),
   );
@@ -1340,6 +1487,122 @@ test("run keeps bounded Agent namespace activity from a passing k3d file", async
   assert.doesNotMatch(text, /do-not-publish|unrelated system event/);
   // Raw watch streams hold full Pod specs; only the projection survives.
   assert.deepEqual(await readdir(clusterDirectory), []);
+
+  // Two files sharing the runner under fileConcurrency watch the same cluster at once. Each
+  // keeps its own watch streams, so neither truncates nor deletes the other's capture.
+  await writeFile(
+    join(root, "tests/integration/agent-sibling.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { setTimeout as delay } from "node:timers/promises";',
+      'test("sibling file passes", () => delay(300));',
+      "",
+    ].join("\n"),
+  );
+  const pairFiles = [
+    "tests/integration/agent.test.mjs",
+    "tests/integration/agent-sibling.test.mjs",
+  ];
+  await writeJson(join(root, "scripts/ci/pair-suites.json"), {
+    version: 1,
+    lanes: {
+      "k3d-pair": {
+        fileConcurrency: 2,
+        parallelFiles: pairFiles,
+        files: [
+          { path: pairFiles[0], expectedTests: ["agent file passes"] },
+          { path: pairFiles[1], expectedTests: ["sibling file passes"] },
+        ],
+      },
+    },
+    groups: {},
+  });
+  const pairStatePath = join(root, "state/k3d-pair.json");
+  await writeJson(pairStatePath, {
+    lane: "k3d-pair",
+    resources: JSON.parse(await readFile(statePath, "utf8")).resources,
+  });
+  const pairResultsPath = join(root, "results/k3d-pair.json");
+  const pair = run(
+    root,
+    [
+      "run",
+      "k3d-pair",
+      "--manifest",
+      join(root, "scripts/ci/pair-suites.json"),
+      "--root",
+      root,
+      "--state",
+      pairStatePath,
+      "--results",
+      pairResultsPath,
+    ],
+    { OCC_KUBECTL_BIN: kubectl, CI_RUNNER_FILE_CONCURRENCY: "2" },
+  );
+  assert.equal(pair.status, 0, pair.stderr);
+  const pairSummary = JSON.parse(await readFile(pairResultsPath, "utf8"));
+  assert.deepEqual(
+    pairSummary.files.map(({ mode }) => mode),
+    ["parallel", "parallel"],
+  );
+  const pairReport = JSON.parse(await readFile(`${pairStatePath}.diagnostics.json`, "utf8"));
+  assert.deepEqual(
+    // Files finish in either order; each appends its own record.
+    pairReport.agentNamespaces
+      .map(({ file, namespaces, pods }) => [file, namespaces, pods.length])
+      .sort(([left], [right]) => left.localeCompare(right)),
+    pairFiles
+      .map((file) => [file, ["occ-agent-a"], 3])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+  assert.deepEqual(await readdir(clusterDirectory), []);
+
+  // A second cluster whose directory is gone fails the capture after the first cluster's
+  // watches started. The file still runs, and those watches are stopped: left running,
+  // their child processes would hold the runner until the watch timeout.
+  const brokenStatePath = join(root, "state/k3d-broken.json");
+  await writeJson(brokenStatePath, {
+    lane: "k3d-lane",
+    resources: [
+      ...JSON.parse(await readFile(statePath, "utf8")).resources,
+      {
+        kind: "k3d-cluster",
+        status: "ready",
+        name: "removed-cluster",
+        directory: join(root, "removed-cluster"),
+        kubeconfig: join(root, "removed-cluster/kubeconfig"),
+        context: "k3d-removed-cluster",
+      },
+    ],
+  });
+  const broken = spawnSync(
+    process.execPath,
+    [
+      runnerPath,
+      "run",
+      "k3d-lane",
+      "--manifest",
+      join(root, "scripts/ci/suites.json"),
+      "--root",
+      root,
+      "--state",
+      brokenStatePath,
+      "--results",
+      join(root, "results/k3d-broken.json"),
+    ],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_SHA: currentSha(), OCC_KUBECTL_BIN: kubectl },
+      timeout: 30_000,
+    },
+  );
+  assert.equal(broken.status, 0, broken.stderr);
+  assert.match(
+    broken.stderr,
+    /Agent namespace activity unavailable for tests\/integration\/agent\.test\.mjs/,
+  );
+  assert.deepEqual(await readdir(clusterDirectory), []);
 });
 
 test("audit fails when a referenced lane cannot be loaded", async (t) => {
@@ -1386,10 +1649,194 @@ test("audit rejects obsolete manifest selectors", async (t) => {
   ]);
 });
 
+test("audit rejects invalid file concurrency marks", async (t) => {
+  const root = await fixture(t);
+  for (const name of ["one", "two"]) {
+    await writeFile(join(root, `tests/integration/${name}.test.mjs`), "import 'node:test';\n");
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      marks: {
+        fileConcurrency: 0,
+        parallelFiles: [
+          "tests/integration/one.test.mjs",
+          "tests/integration/one.test.mjs",
+          "tests/integration/two.test.mjs",
+          "tests/integration/other.test.mjs",
+        ],
+        serialFiles: {
+          "tests/integration/two.test.mjs": "shared port",
+          "tests/integration/one.test.mjs": " ",
+          "tests/integration/gone.test.mjs": "moved",
+        },
+        files: [
+          { path: "tests/integration/one.test.mjs" },
+          { path: "tests/integration/two.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["marks"] },
+  });
+
+  const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+  assert.equal(result.status, 1);
+  assert.deepEqual(
+    JSON.parse(result.stdout)
+      .issues.map((entry) => entry.message)
+      .sort(),
+    [
+      "lanes.marks.fileConcurrency must be an integer from 1 to 32",
+      "lanes.marks.parallelFiles lists tests/integration/one.test.mjs twice",
+      "lanes.marks.parallelFiles tests/integration/one.test.mjs is also serial",
+      "lanes.marks.parallelFiles tests/integration/other.test.mjs is not a lane file",
+      "lanes.marks.parallelFiles tests/integration/two.test.mjs is also serial",
+      "lanes.marks.serialFiles.tests/integration/gone.test.mjs is not a lane file",
+      "lanes.marks.serialFiles.tests/integration/one.test.mjs must name a reason",
+    ],
+  );
+});
+
+// Each fixture file holds a marker in `running/` while it runs. A parallel file waits
+// for its partner's marker, so it passes only if both share slots; a file that must
+// run alone fails if any other marker exists. Neither depends on timing.
+function concurrencyProbe(name, partner) {
+  return [
+    'import assert from "node:assert/strict";',
+    'import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
+    'import { setTimeout as sleep } from "node:timers/promises";',
+    'import test from "node:test";',
+    "const running = process.env.CI_RUNNER_PROBE_DIR;",
+    `test(${JSON.stringify(`${name} probe`)}, async () => {`,
+    `  writeFileSync(running + "/${name}", "");`,
+    "  try {",
+    partner
+      ? [
+          '    const deadline = Date.now() + Number(process.env.CI_RUNNER_PROBE_WAIT_MS ?? "20000");',
+          `    while (!existsSync(running + "/${partner}")) {`,
+          `      assert.ok(Date.now() < deadline, "${partner} never ran beside ${name}");`,
+          "      await sleep(10);",
+          "    }",
+        ].join("\n")
+      : `    assert.deepEqual(readdirSync(running), ["${name}"]);`,
+    "    await sleep(50);",
+    "  } finally {",
+    `    rmSync(running + "/${name}", { force: true });`,
+    "  }",
+    "});",
+    "",
+  ].join("\n");
+}
+
+test("run shares slots only between audited parallel files and runs the rest alone", async (t) => {
+  const root = await fixture(t);
+  const running = join(root, "running");
+  await mkdir(running);
+  const probes = {
+    unmarked: null,
+    left: "right",
+    serial: null,
+    right: "left",
+  };
+  for (const [name, partner] of Object.entries(probes)) {
+    await writeFile(
+      join(root, `tests/integration/${name}.test.mjs`),
+      concurrencyProbe(name, partner),
+    );
+  }
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      shared: {
+        fileConcurrency: 4,
+        parallelFiles: ["tests/integration/right.test.mjs", "tests/integration/left.test.mjs"],
+        serialFiles: { "tests/integration/serial.test.mjs": "writes a fixed path" },
+        files: [
+          { path: "tests/integration/unmarked.test.mjs" },
+          { path: "tests/integration/left.test.mjs" },
+          { path: "tests/integration/serial.test.mjs" },
+          { path: "tests/integration/right.test.mjs" },
+        ],
+      },
+    },
+    groups: { ci: ["shared"] },
+  });
+  const args = (name) => [
+    "run",
+    "shared",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    `state/${name}.jsonl`,
+    "--results",
+    `results/${name}.json`,
+  ];
+  const env = { CI_RUNNER_PROBE_DIR: running, CI_RUNNER_FILE_CONCURRENCY: "2" };
+
+  const result = run(root, args("shared"), env);
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(await readFile(join(root, "results/shared.json"), "utf8"));
+  assert.equal(summary.fileConcurrency, 2);
+  assert.equal(summary.counts.passed, 4);
+  // Results keep manifest order; serial files ran first, before the shared slots.
+  assert.deepEqual(
+    summary.files.map((file) => [file.path.split("/").at(-1), file.mode]),
+    [
+      ["unmarked.test.mjs", "serial"],
+      ["left.test.mjs", "parallel"],
+      ["serial.test.mjs", "serial"],
+      ["right.test.mjs", "parallel"],
+    ],
+  );
+  const [unmarked, left, serial, right] = summary.files;
+  assert.ok(unmarked.startOffsetMs < serial.startOffsetMs);
+  assert.ok(serial.startOffsetMs + serial.wallDurationMs <= left.startOffsetMs);
+  assert.ok(serial.startOffsetMs + serial.wallDurationMs <= right.startOffsetMs);
+  // Shared slots start in parallelFiles order.
+  assert.ok(right.startOffsetMs <= left.startOffsetMs);
+  assert.match(
+    result.stderr,
+    /^run-tests: passed tests\/integration\/left\.test\.mjs \d+\.\ds \(parallel\)$/m,
+  );
+
+  // One slot runs every file alone; the partners then cannot meet, and the
+  // result says so instead of passing.
+  const alone = run(root, args("alone"), {
+    ...env,
+    CI_RUNNER_FILE_CONCURRENCY: "1",
+    CI_RUNNER_PROBE_WAIT_MS: "300",
+  });
+  assert.equal(alone.status, 1);
+  const aloneSummary = JSON.parse(await readFile(join(root, "results/alone.json"), "utf8"));
+  assert.equal(aloneSummary.fileConcurrency, 1);
+  assert.deepEqual(
+    aloneSummary.files.map((file) => [file.mode, file.status]),
+    [
+      ["serial", "passed"],
+      ["serial", "failed"],
+      ["serial", "passed"],
+      ["serial", "failed"],
+    ],
+  );
+
+  const invalid = run(root, args("invalid"), { ...env, CI_RUNNER_FILE_CONCURRENCY: "many" });
+  assert.equal(invalid.status, 1);
+  const invalidSummary = JSON.parse(await readFile(join(root, "results/invalid.json"), "utf8"));
+  assert.deepEqual(invalidSummary.files, []);
+  assert.deepEqual(
+    invalidSummary.issues.map((entry) => entry.code),
+    ["invalid-env"],
+  );
+});
+
 test("audit requires current discovered test files and rejects duplicate ownership", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/mapped.test.mjs"), "import 'node:test';\n");
   await writeFile(join(root, "tests/integration/unmapped.test.mjs"), "import 'node:test';\n");
+  await mkdir(join(root, "tests/docs"), { recursive: true });
+  await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
   await writeJson(join(root, "manifest.json"), {
     version: 1,
     lanes: {
@@ -1423,7 +1870,15 @@ test("audit requires current discovered test files and rejects duplicate ownersh
     "missing-lane",
     "selected-zero",
     "unmapped-file",
+    "unmapped-file",
   ]);
+  assert.deepEqual(
+    summary.issues
+      .filter((entry) => entry.code === "unmapped-file")
+      .map((entry) => entry.file)
+      .sort(),
+    ["tests/docs/unmapped.test.mjs", "tests/integration/unmapped.test.mjs"],
+  );
 });
 
 test("aggregate requires fixed lane outputs, successful needs, and matching source SHA", async (t) => {

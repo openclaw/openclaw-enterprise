@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { readClientConfiguration, type ClientFiles } from "./config.ts";
-import { normalizePushRefAllowlist } from "../../../credentials/client-contracts.ts";
+import {
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+} from "../../../credentials/client-contracts.ts";
 import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
 
 export const repositoryMaterialRoot = "/run/oce/repository-credentials";
@@ -117,9 +120,7 @@ export async function readRuntimeRepositoryManifest(
       !isAbsolute(directory) ||
       resolve(directory) !== directory ||
       directory.length > 4096 ||
-      [...directory].some(
-        (character) => character.charCodeAt(0) <= 0x1f || character.charCodeAt(0) === 0x7f,
-      )
+      hasControlCharacter(directory)
     ) {
       throw new Error("invalid-repository-material");
     }

@@ -353,6 +353,38 @@
       "tag": "0043_credential_withdrawals",
       "breakpoints": true,
       "sha256": "b6e6f106e0ca67b35e8ddbb2357d75d88fed70ed565054ae003e674d45a4bbf3"
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1787000000045,
+      "tag": "0045_repository_broker_receipt_fence",
+      "breakpoints": true,
+      "sha256": "cc247fd19743d2b1b6c0f852e1a431be321bc7da5cd5de940ec43f285d11d8c7"
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1787000000046,
+      "tag": "0046_model_probe_failure_cause",
+      "breakpoints": true,
+      "sha256": "e473cfc3bb84581023b982f94d6f3d3b2090e96c76da6b4dd0da13b519670a7f"
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1787000000047,
+      "tag": "0047_provisioning_configuration_release",
+      "breakpoints": true,
+      "sha256": "17ce01049bea0830128faef1602c567cbb8c117c2feab1907be6f3df55cd9d30"
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787000000048,
+      "tag": "0048_administrator_credential_source_grants",
+      "breakpoints": true,
+      "sha256": "90e15104a8bf967a6a25e455e6c40b0f7201aacdce004f7565fea8991a3e11b4"
     }
   ],
   "initialSchemaStates": {
@@ -380,7 +412,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539",
+    "completed": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -396,7 +428,11 @@
     "preRepositoryAccess": "89dee96b21e37a8e67afd09c3d8096672ed2825ce7bdccd62153da5965e984bd",
     "preRestrictionReadLogs": "e3eb8e9d95e40f6e2356b6b9318f50b20ce929bbef582d42b7be56d2407f8337",
     "preOAuth": "6344a29afa54e754a9d8b7362146e0c1edde77f2a1b7d9d2b323d82ad0f20e8d",
-    "preCredentialWithdrawals": "bdb958966896575964ac9c1d23c51759a7a11b23bc7d5980cdf0496fab1a8b8f"
+    "preCredentialWithdrawals": "bdb958966896575964ac9c1d23c51759a7a11b23bc7d5980cdf0496fab1a8b8f",
+    "preBrokerReceiptFence": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539",
+    "preModelProbeFailureCause": "038d68892adeb6cf41001617b9ec55ca8a32115c04cfa487f0674b3756294bc2",
+    "preProvisioningConfigurationRelease": "3db47081c1e1f671c51aff211ae1fe560dfffe1f80b2176d16b76838cf8f3b30",
+    "preAdministratorCredentialSourceGrants": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

@@ -1,26 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
+  assertProviderAttached,
   assertReservedLane,
-  bootstrapProductionInstallation,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
-  currentSession,
-  defaultInstallSettings,
   githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
   memoryLogger,
+  onboardPasswordAccounts,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "replacement-recovery@example.test";
 const password = "replacement-member-password";
 const authSecret = "replacement-auth-test-secret-at-least-32-bytes";
@@ -30,61 +27,47 @@ const secrets = {
   "occ-github-login/client-secret": "replacement-client-secret",
 };
 const secondSubject = "9200002";
+// The production slow lane with shorter floors (250 ms doubling to a 500 ms cap instead of
+// 1 s doubling to 8 s). This suite spends password budgets but does not measure pacing, and
+// each reserved-lane check waits about 5 s of real floors otherwise.
+const slowLane = { floorMs: 250, maxFloorMs: 500 };
 
 // Online recovery replacement (#520): the reserved password lane follows the stored
 // designation at once, and a controller restarted with the original
 // OCC_AUTH_GITHUB_RECOVERY_USER_ID keeps that designation instead of the seed.
 test(
   "online recovery replacement moves the reserved lane and survives a restart with the original seed",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     await startFakeGitHub(t);
     const address = clientAddresses();
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    const {
+      admin,
+      accounts: { second, third, member },
+    } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: {
+        second: { email: "replacement-second@example.test", role: "admin" },
+        third: { email: "replacement-third@example.test", role: "admin" },
+        member: { email: "replacement-member@example.test" },
+      },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const accounts = {};
-    for (const [name, role] of [
-      ["second", roles.admin],
-      ["third", roles.admin],
-      ["member", roles.reader],
-    ]) {
-      const email = `replacement-${name}@example.test`;
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: role.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      accounts[name] = { id: created.json().data.id, email, password };
-    }
-    const { second, third, member } = accounts;
-    await app.close();
     app = await composeProductionSignIn(t, {
       databaseUrl,
       settings: githubUpgradeSettings(admin.id),
       secrets,
+      passwordSlowLaneFloors: slowLane,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
+    let adminHeaders = await signedInHeaders(app, origin, admin, address());
     const readRecovery = async (headers) => {
       const response = await app.inject({ url: "/api/auth/recovery", headers });
       assert.equal(response.statusCode, 200, response.body);
@@ -98,16 +81,7 @@ test(
       );
 
     // The second administrator works through GitHub while it is up.
-    const attached = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${second.id}/providers/github`,
-      headers: adminHeaders,
-      payload: {
-        subject: secondSubject,
-        expectedVersion: (await readAccount(app, adminHeaders, second.id)).version,
-      },
-    });
-    assert.equal(attached.statusCode, 200, attached.body);
+    await assertProviderAttached(app, adminHeaders, second.id, "github", secondSubject);
     const { callback } = await githubSignIn(app, origin, secondSubject, address());
     assert.equal(callback.headers.location, "/console/", callback.body);
     const secondHeaders = {
@@ -232,6 +206,7 @@ test(
           settings: githubUpgradeSettings(admin.id),
           secrets,
           logger: log.logger,
+          passwordSlowLaneFloors: slowLane,
         });
         assert.deepEqual(
           log.events

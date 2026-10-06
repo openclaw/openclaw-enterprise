@@ -1,11 +1,15 @@
 import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import { ModelCredentialValueError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 export class ConfigurationValidationError extends Error {}
 
+const pointer = (...segments: readonly string[]): string =>
+  segments.map((segment) => `/${segment.replaceAll("~", "~0").replaceAll("/", "~1")}`).join("");
+
 /** Known native model credential slots must store unresolved references, never values. */
 export function validateModelCredentialReferences(values: OpenClawConfigurationDocument): void {
-  const validateReference = (value: unknown, authorizationHeader = false): void => {
+  const validateReference = (value: unknown, path: string, authorizationHeader = false): void => {
     if (value === undefined || value === null) {
       return;
     }
@@ -27,23 +31,28 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
     ) {
       return;
     }
-    throw new ConfigurationValidationError(
-      "Model credentials must use unresolved references; supply credential values through Harness authentication sources.",
-    );
+    throw new ModelCredentialValueError(path);
   };
 
   const providers = asRecord(asRecord(values.models)?.providers);
-  for (const provider of Object.values(providers ?? {})) {
+  for (const [providerName, provider] of Object.entries(providers ?? {})) {
     const config = asRecord(provider);
-    validateReference(config?.apiKey);
+    validateReference(config?.apiKey, pointer("models", "providers", providerName, "apiKey"));
     for (const [name, value] of Object.entries(asRecord(config?.headers) ?? {})) {
       if (/^(?:authorization|api-key|x-api-key)$/i.test(name)) {
-        validateReference(value, name.toLowerCase() === "authorization");
+        validateReference(
+          value,
+          pointer("models", "providers", providerName, "headers", name),
+          name.toLowerCase() === "authorization",
+        );
       }
     }
   }
   const env = asRecord(values.env);
-  for (const settings of [env, asRecord(env?.vars)]) {
+  for (const [prefix, settings] of [
+    [["env"], env],
+    [["env", "vars"], asRecord(env?.vars)],
+  ] as const) {
     for (const [name, value] of Object.entries(settings ?? {})) {
       if (
         [
@@ -53,7 +62,7 @@ export function validateModelCredentialReferences(values: OpenClawConfigurationD
           "CODEX_ACCESS_TOKEN",
         ].includes(name)
       ) {
-        validateReference(value);
+        validateReference(value, pointer(...prefix, name));
       }
     }
   }

@@ -48,7 +48,7 @@ not persisted as an Installation resource or used as an OTLP export target.
 
 ### 2. Resolve the browser link
 
-`loadPage` reads `GET /observability` with the Namespace collection after the session check. `apps/controller/src/index.ts:perform` calls `requireInstallationAdmin`, which authorizes the exact Installation through the selected IAM Driver and records denial evidence. An allowed response contains the startup URL or `null`. Denial or an unavailable optional read leaves the link hidden. A session `401` clears private console state.
+`loadPage` reads `GET /observability` (through `apps/controller/src/console/console.mjs:probeInstallationAccess`) with the Namespace collection after the session check. The read outlives the view: a navigation while it is in flight joins it instead of aborting it and asking again. `apps/controller/src/index.ts:perform` calls `requireInstallationAdmin`, which authorizes the exact Installation through the selected IAM Driver and records denial evidence. An allowed response contains the startup URL or `null`. Denial or an unavailable optional read leaves the link hidden. A session `401` clears private console state.
 
 The console settles the read once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab, so a Namespace-only user produces one audited denial per session and tab rather than one per page. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking or granting administration takes effect in the console at the next sign-in or in a new tab; the API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel.
 
@@ -72,6 +72,8 @@ The console settles the read once per session owner: an allowed response or a `4
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 01:30: A navigation joins the in-flight probe instead of repeating it. (flake-hunt-8)
 
 - 2026-09-29 12:00: Read the destination once per session owner. (obs-495 - 6858f3c0)
 

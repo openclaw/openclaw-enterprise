@@ -2,18 +2,20 @@
   "env": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
+  "fileConcurrency": 8,
+  "parallelFiles": [
+    "tests/browser/console-agent-detail.test.mjs",
+    "tests/browser/console.test.mjs",
+    "tests/browser/console-agent-logs.test.mjs",
+    "tests/browser/console-agent-repositories.test.mjs",
+    "tests/integration/repository-credentials-github-token.test.mjs",
+    "tests/integration/repository-credentials-client-config.test.mjs",
+    "tests/browser/console-agent-plugin-approvers.test.mjs",
+    "tests/browser/docs-compute-matrix.test.mjs"
+  ],
   "files": [
     {
-      "path": "tests/browser/console-agents.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-codex-oauth.test.mjs"
-    },
-    {
       "path": "tests/browser/console-agent-repositories.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-agent-draft-guards.test.mjs"
     },
     {
       "path": "tests/browser/console-agent-detail.test.mjs"
@@ -22,28 +24,19 @@
       "path": "tests/browser/console-agent-logs.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-state.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-agent-presets.test.mjs"
-    },
-    {
       "path": "tests/browser/console-agent-plugin-approvers.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-agent-channels.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-repository-dedicated.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-runtime-credentials.test.mjs"
     },
     {
       "path": "tests/browser/console.test.mjs"
     },
     {
       "path": "tests/browser/docs-compute-matrix.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-github-token.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-client-config.test.mjs"
     }
   ]
 }

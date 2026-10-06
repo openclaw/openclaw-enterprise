@@ -1,5 +1,6 @@
 import { request as httpsRequest } from "node:https";
 import type { ClientRequest, IncomingMessage, ServerResponse } from "node:http";
+import type { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import type { Clock, HeaderFields, RequestHead } from "../backend-contracts.ts";
@@ -11,6 +12,8 @@ import { createUpstreamHeaders } from "./request-headers.ts";
 
 export interface UpstreamSenderOptions {
   readonly request: IncomingMessage;
+  /** A body already read from `request` under the plan's input bounds. */
+  readonly input?: Readable;
   readonly response: ServerResponse;
   readonly head: RequestHead;
   readonly trustedUpstreamOrigins: ReadonlySet<string>;
@@ -154,10 +157,11 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       }
       const wire = new ByteLimit(plan.limits.inputWireBytes, inputStall.reset);
       const decoded = new ByteLimit(plan.limits.inputDecodedBytes, inputStall.reset);
+      const source = options.input ?? options.request;
       const input =
         options.head.contentEncoding === "gzip"
-          ? pipeline(options.request, wire, createGunzip(), decoded, outbound)
-          : pipeline(options.request, wire, decoded, outbound);
+          ? pipeline(source, wire, createGunzip(), decoded, outbound)
+          : pipeline(source, wire, decoded, outbound);
       const inputDone = input.then(
         () => {
           stopInput?.();

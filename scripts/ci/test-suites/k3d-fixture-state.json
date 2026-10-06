@@ -13,7 +13,17 @@
     "k3d": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/postgres-platform-state-kubernetes.test.mjs",
+    "tests/integration/production-network-access.test.mjs",
+    "tests/integration/kubernetes-compute-provisioning-real.test.mjs"
+  ],
   "files": [
+    {
+      "path": "tests/integration/production-network-access.test.mjs",
+      "expectedTests": ["production Helm policies enforce workload network access levels"]
+    },
     {
       "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
       "expectedTests": [
@@ -21,6 +31,13 @@
         "real OCC creates concurrent Namespace Agents and durably associates revisions with their owner",
         "independent PostgreSQL API and worker provision isolated Namespaces, activate admitted revisions, and tombstone deletion",
         "PostgreSQL API and worker preserve immutable deployments, stable identities, and tenant isolation"
+      ]
+    },
+    {
+      "path": "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
+      "expectedTests": [
+        "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
+        "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage"
       ]
     }
   ]

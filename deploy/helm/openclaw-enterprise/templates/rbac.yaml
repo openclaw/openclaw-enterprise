@@ -27,7 +27,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: openclaw-enterprise-worker
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ .Release.Namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -40,7 +40,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: openclaw-enterprise-api
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ .Release.Namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

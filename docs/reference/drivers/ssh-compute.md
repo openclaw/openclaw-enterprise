@@ -196,6 +196,9 @@ Home, state, operator credentials, and other revisions remain.
 stops/disables their units, removes the unit files, reloads systemd, and removes
 the Namespace tree including state and its owned runtime accounts. If the Namespace tree is already gone, deletion retries cleanup of any remaining
 owned account markers.
+Agent deletion retires every revision, then `deleteAgentRuntimeCredentials`
+verifies ownership, removes the Agent's unit, directory (home, state, operator
+file, port allocation) and runtime account. Absence is success.
 Foreign ownership or configuration failures are permanent; transport, timeouts,
 and unexpected helper failures are retryable.
 
@@ -228,8 +231,7 @@ while its model credentials are invalid. Verify model access separately.
 
 Redeployment, stop, and revision retirement preserve the operator file. Changing
 it can affect an existing revision without redeployment; restart the process to
-load changed environment values. Namespace deletion removes the owned Namespace
-tree, including this file.
+load changed environment values. Agent and Namespace deletion remove this file.
 
 Embedded Agents may use any channel provider supported by the host's OpenClaw
 build. Separate Unix users and private groups protect sibling state and native

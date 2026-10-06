@@ -3,22 +3,23 @@
 Use `pnpm auth:maintain` when external sign-in (GitHub, Google, or OIDC) needs a change the online API
 cannot make: the recovery administrator is locked out, an account was never
 enrolled, sessions must be ended at once, or the Installation must return to
-password-only sign-in. The command ships in the controller image and connects
-with the migration credential, never the application credential.
+password-only sign-in. `purge-sessions` also works on a password-only
+Installation. The command ships in the controller image and connects with the
+migration credential, never the application credential.
 
 The [authentication reference](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
 owns the profile's rules; this page is the operator procedure.
 
 ## Choose the operation
 
-| Command                                                            | Use it when                                                                                                                                                                                                                             |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`                                                           | Read the profile (`legacy` or `guarded`), recovery designation, enrolled, disabled, and unenrolled accounts, session counts, linked external identities per provider (`externalMethods`), and other connected clients. Changes nothing. |
-| `activate --recovery-user <userId> --writers-stopped`              | Activate external sign-in before the new API starts. Same checks as startup activation: the recovery account needs a password, its Principal, and Installation `administer`.                                                            |
-| `enrol <userId> --writers-stopped`                                 | An account exists but is not enrolled (for example, an older controller created it after activation). Requires the account's Principal and exactly one password; the account's sessions are ended.                                      |
-| `reset-recovery-password --password-file <path> --writers-stopped` | The recovery administrator lost the password. Reads the new password (12 to 128 characters; one trailing newline is ignored) and ends the recovery account's sessions.                                                                  |
-| `purge-sessions [--user <userId>] --writers-stopped`               | End every session, or one account's sessions. Service keys are not affected.                                                                                                                                                            |
-| `deactivate [--purge-disabled] --writers-stopped`                  | Return to password-only sign-in. See [Deactivate](#deactivate-external-sign-in).                                                                                                                                                        |
+| Command                                                            | Use it when                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`                                                           | Read the profile (`legacy` or `guarded`), recovery designation, enrolled, disabled, and unenrolled accounts, session counts, linked external identities per provider instance (`externalMethods`, keyed by `providerId`), and other connected clients. Changes nothing. |
+| `activate --recovery-user <userId> --writers-stopped`              | Activate external sign-in before the new API starts. Same checks as startup activation: the recovery account needs a password, its Principal, and Installation `administer`.                                                                                            |
+| `enrol <userId> --writers-stopped`                                 | An account exists but is not enrolled (for example, an older controller created it after activation). Requires the account's Principal and exactly one password; the account's sessions are ended.                                                                      |
+| `reset-recovery-password --password-file <path> --writers-stopped` | The recovery administrator lost the password. Reads the new password (12 to 128 characters; one trailing newline is ignored) and ends the recovery account's sessions.                                                                                                  |
+| `purge-sessions [--user <userId>] --writers-stopped`               | End every session, or one account's sessions. Service keys are not affected.                                                                                                                                                                                            |
+| `deactivate [--purge-disabled] --writers-stopped`                  | Return to password-only sign-in. See [Deactivate](#deactivate-external-sign-in).                                                                                                                                                                                        |
 
 Every change writes an audit event attributed to `maintenance:<database role>`.
 `activate` also records startup's own activation event, attributed to the

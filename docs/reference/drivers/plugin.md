@@ -78,8 +78,9 @@ Both routes require Agent `create` in the Namespace. A Secret reference must
 belong to that Namespace and additionally requires caller `operate` on the exact
 Secret. OCC reads the current value through the selected SecretDriver and passes
 it to the PluginDriver in server memory. The bundled Codex Driver derives the
-account ID from that PAT; clients do not provide an account ID. A deleted or
-foreign Secret or backend ownership mismatch returns `404`, a denied grant returns
+account ID from that PAT; clients do not provide an account ID. A Secret reference
+to another Namespace returns `400 INVALID_REQUEST`. A deleted Secret or backend
+ownership mismatch returns `404`, a denied grant returns
 `403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
 `PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
 

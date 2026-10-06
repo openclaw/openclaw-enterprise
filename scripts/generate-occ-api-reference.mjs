@@ -6,7 +6,16 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
 const referenceDirectoryPath = new URL("../docs/reference/api/", import.meta.url);
-const httpMethods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+export const httpMethods = new Set([
+  "get",
+  "put",
+  "post",
+  "delete",
+  "options",
+  "head",
+  "patch",
+  "trace",
+]);
 
 // Curated entity order and subdivisions; unmatched operations keep their OpenAPI tag.
 const cheatSheetEntities = [
@@ -208,7 +217,9 @@ function operationReference(path, method, operation, document, { headingLevel = 
                   ? " (when bound)"
                   : condition === "read_logs_alternative"
                     ? " (instead of `read_logs`)"
-                    : "";
+                    : condition === "provisioning_work"
+                      ? " (once created)"
+                      : "";
           return `| \`${action}\` | \`${resourceKind}\` | \`${scope}\`${qualifier} |`;
         }),
       ].join("\n"),
@@ -289,22 +300,17 @@ function operationRows(operations) {
 }
 
 function errorSchema(document, entries) {
-  const operations = entries.map(({ operation }) => operation);
-  return (
-    operations
-      .flatMap((operation) => Object.entries(operation.responses))
-      .find(([status, response]) => {
-        const schema = resolveSchema(response.content?.["application/json"]?.schema, document);
-        return !status.startsWith("2") && schema?.properties?.error?.properties?.details;
-      })
-      ?.at(1).content["application/json"].schema ??
-    operations
-      .flatMap((operation) => Object.entries(operation.responses))
-      .find(([status, response]) => {
-        return !status.startsWith("2") && response.content?.["application/json"]?.schema;
-      })
-      ?.at(1).content["application/json"].schema
+  const schemas = entries
+    .flatMap(({ operation }) => Object.entries(operation.responses))
+    .filter(([status, response]) => {
+      return !status.startsWith("2") && response.content?.["application/json"]?.schema;
+    })
+    .map(([, response]) => response.content["application/json"].schema);
+  const detailed = schemas.filter(
+    (schema) => resolveSchema(schema, document)?.properties?.error?.properties?.details,
   );
+  // Prefer the shared envelope component over a route's inline copy of it.
+  return detailed.find((schema) => schema.$ref) ?? detailed[0] ?? schemas[0];
 }
 
 function generatedComment() {
@@ -384,6 +390,24 @@ function referencePage(document, groups, entries) {
       [
         "Non-success JSON responses use the following envelope.",
         "Each operation lists its supported status codes.",
+        "A NUL character or an unpaired UTF-16 surrogate in any request body string,",
+        "object key or path parameter is refused with `400 INVALID_REQUEST`.",
+        "Operations that take a request body list `413` and `415`. Any request whose",
+        "declared body size exceeds the route's limit is refused with",
+        "`413 PAYLOAD_TOO_LARGE`, and any POST, PUT, PATCH or DELETE request with a",
+        "body that is not JSON with `415 UNSUPPORTED_MEDIA_TYPE`, even on an",
+        "operation that takes no body. A query string sent to an operation that lists",
+        "no query parameters is refused with `400 INVALID_REQUEST`, except on the",
+        "sign-in, sign-out, session and provider operations under `/api/auth`, which",
+        "do not refuse one; most operations that take no body refuse a JSON body the",
+        "same way.",
+        "A detail path longer than 512 characters is cut to its leading whole",
+        "segments (or the start of a long first key, keeping whole `~0` and `~1`",
+        "escapes). When whole segments were dropped, a contract validation message",
+        "says that the cut path contains the offending field. To fit the",
+        "256-character message cap, a message cuts long paths (ending them with `…`)",
+        "and shows fewer problems before it cuts any problem wording; `details` keeps",
+        "the paths.",
       ].join("\n"),
       schemaTable(schema, document),
     );

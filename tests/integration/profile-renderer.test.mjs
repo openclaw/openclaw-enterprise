@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { loadStartupConfigurationSnapshot } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -96,6 +97,20 @@ function managedCodexInput(overrides = {}) {
       ...(overrides.codex ?? {}),
     },
   });
+}
+
+function repositoryConfiguration(upstreamCidrs = ["192.0.2.30/32"]) {
+  return {
+    enabled: true,
+    image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
+    backendId: "github-primary",
+    registryConfigMapName: "occ-repository-registry-v1",
+    serviceConfigSecretName: "occ-repository-service-config",
+    appKeySecretName: "occ-repository-app-key",
+    tlsSecretName: "occ-repository-tls",
+    publicCaSecretName: "occ-repository-public-ca",
+    upstreamCidrs,
+  };
 }
 
 function render(
@@ -228,16 +243,20 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
 
 // Tenant runtimes may burst to four cores; 100m requests keep the scheduling
 // reservation unchanged. The production example carries the same values.
-const tenantRuntimeResources = {
+const containerDefaultResources = {
   requests: { cpu: "100m", memory: "128Mi" },
   limits: { cpu: "4", memory: "2Gi" },
 };
-// An OpenClaw Gateway settles near 1.2 GiB once it has served a few turns, so
-// its memory request reserves that much. A dedicated Codex Gateway with native
-// admin chat peaked at 1.9 GiB and was OOM-killed at 2Gi, so its limit is 3Gi.
+// Memory requests cover measured use between turns and limits cover measured
+// peaks (see the renderer): Gateways hold 1.2-1.6 GiB and peak at 2.2 GiB; a
+// Codex Harness holds about 0.5 GiB and reached a 4 GiB limit building and testing.
 const gatewayResources = {
-  requests: { cpu: "100m", memory: "1280Mi" },
+  requests: { cpu: "100m", memory: "1792Mi" },
   limits: { cpu: "4", memory: "3Gi" },
+};
+const harnessResources = {
+  requests: { cpu: "100m", memory: "768Mi" },
+  limits: { cpu: "4", memory: "6Gi" },
 };
 
 test("profiles give tenant runtimes four-core CPU limits over unchanged 100m requests", () => {
@@ -254,10 +273,10 @@ test("profiles give tenant runtimes four-core CPU limits over unchanged 100m req
   ]) {
     const { resources } = installation.drivers.compute.configuration;
     assert.deepEqual(resources.gateway, gatewayResources, `${name} Gateway`);
-    assert.deepEqual(resources.agent, tenantRuntimeResources, `${name} Harness`);
+    assert.deepEqual(resources.agent, harnessResources, `${name} Harness`);
     assert.deepEqual(
       resources.namespace.containerDefaults,
-      tenantRuntimeResources,
+      containerDefaultResources,
       `${name} namespace container default`,
     );
     assert.deepEqual(resources.namespace.quota, { pods: "10" }, `${name} quota`);
@@ -291,7 +310,7 @@ test(
           .split(/\n---\n/)
           .find((document) => /\nkind: Gateway\n/.test(document));
         assert.ok(gateway, "Helm must render the Gateway referenced by Compute");
-        const gatewayName = gateway.match(/^ {2}name: (\S+)$/m)?.[1];
+        const gatewayName = gateway.match(/^ {2}name: "([^"]+)"$/m)?.[1];
         const routingName = output.installation.match(/^\s+gatewayName: (\S+)$/m)?.[1];
         assert.ok(gatewayName && gatewayName.length <= 63);
         assert.equal(routingName, gatewayName, `${profile}: release length ${length}`);
@@ -351,17 +370,7 @@ test("both profiles preserve provider ranges and public Slack egress", { skip: h
   for (const profile of ["openclaw", "codex"]) {
     // Provider ranges must survive rendering; individual DNS answers are not stable.
     const input = profile === "codex" ? codexInput() : baseInput();
-    input.repository = {
-      enabled: true,
-      image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
-      backendId: "github-primary",
-      registryConfigMapName: "occ-repository-registry-v1",
-      serviceConfigSecretName: "occ-repository-service-config",
-      appKeySecretName: "occ-repository-app-key",
-      tlsSecretName: "occ-repository-tls",
-      publicCaSecretName: "occ-repository-public-ca",
-      upstreamCidrs: ["140.82.112.0/20", "192.30.252.0/22"],
-    };
+    input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
     const output = render(profile, input);
     const manifests = helmTemplate(output);
     assert.match(manifests, /repository-credentials/);
@@ -445,17 +454,7 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
   const repositoryOutput = render(
     "codex",
     managedCodexInput({
-      repository: {
-        enabled: true,
-        image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
-        backendId: "github-primary",
-        registryConfigMapName: "occ-repository-registry-v1",
-        serviceConfigSecretName: "occ-repository-service-config",
-        appKeySecretName: "occ-repository-app-key",
-        tlsSecretName: "occ-repository-tls",
-        publicCaSecretName: "occ-repository-public-ca",
-        upstreamCidrs: ["192.0.2.30/32"],
-      },
+      repository: repositoryConfiguration(),
     }),
   );
   const collision = join(repositoryOutput.directory, "secret-collision.yaml");
@@ -517,17 +516,7 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
   const output = render(
     "codex",
     codexInput({
-      repository: {
-        enabled: true,
-        image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
-        backendId: "github-primary",
-        registryConfigMapName: "occ-repository-registry-v1",
-        serviceConfigSecretName: "occ-repository-service-config",
-        appKeySecretName: "occ-repository-app-key",
-        tlsSecretName: "occ-repository-tls",
-        publicCaSecretName: "occ-repository-public-ca",
-        upstreamCidrs: ["192.0.2.30/32"],
-      },
+      repository: repositoryConfiguration(),
     }),
   );
   assert.equal(output.summary.ok, true);
@@ -545,21 +534,11 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
 });
 
 test("repository serviceName is left to the chart so its upgrade guard applies", () => {
-  const repositoryInput = {
-    enabled: true,
-    image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
-    backendId: "github-primary",
-    registryConfigMapName: "occ-repository-registry-v1",
-    serviceConfigSecretName: "occ-repository-service-config",
-    appKeySecretName: "occ-repository-app-key",
-    tlsSecretName: "occ-repository-tls",
-    publicCaSecretName: "occ-repository-public-ca",
-    upstreamCidrs: ["192.0.2.30/32"],
-  };
+  const repositoryInput = repositoryConfiguration();
   const omitted = render("codex", codexInput({ repository: repositoryInput }));
   assert.doesNotMatch(omitted.values, /serviceName: git/);
   if (!helmSkip) {
-    assert.match(helmTemplate(omitted), /name: git\n/);
+    assert.match(helmTemplate(omitted), /name: "git"\n/);
     const error = renderError(() => helmTemplate(omitted, [], "oce", ["--is-upgrade"]));
     assert.match(
       `${error.stdout ?? ""}${error.stderr ?? ""}`,
@@ -573,7 +552,7 @@ test("repository serviceName is left to the chart so its upgrade guard applies",
   );
   assert.match(kept.values, /serviceName: oce-git/);
   if (!helmSkip) {
-    assert.match(helmTemplate(kept, [], "oce", ["--is-upgrade"]), /name: oce-git\n/);
+    assert.match(helmTemplate(kept, [], "oce", ["--is-upgrade"]), /name: "oce-git"\n/);
   }
 });
 
@@ -685,7 +664,11 @@ test("profiles pass an optional observability URL to Installation startup YAML",
 
   for (const invalid of [
     "javascript:alert(1)",
-    "https://user:pass@grafana.example.internal",
+    syntheticCredentialUrl({
+      username: "user",
+      password: "pass",
+      host: "grafana.example.internal",
+    }),
     "https://grafana.example.internal/#fragment",
     "grafana.example.internal",
   ]) {
@@ -731,6 +714,25 @@ test(
     assert.match(manifests, /name: OCC_AUTH_GITHUB_CLIENT_ID/);
     assert.match(manifests, /name: OCC_AUTH_GITHUB_RECOVERY_USER_ID\n\s+value: "recovery-admin_1"/);
     assert.match(manifests, /name: OCC_AUTH_TRUSTED_PROXY_CIDRS\n\s+value: "10\.42\.0\.0\/16"/);
+    assert.doesNotMatch(manifests, /OCC_AUTH_GITHUB_ALLOWED_/);
+    const allowlisted = render(
+      "openclaw",
+      externalSignInInput({
+        trustedProxy,
+        github: { allowedOrgs: ["acme"], allowedTeams: ["other/platform"] },
+      }),
+    );
+    assert.equal(allowlisted.summary.ok, true, allowlisted.preflight.errors.join("\n"));
+    assert.match(
+      allowlisted.values,
+      /allowedOrgs:\n {6}- acme\n {4}allowedTeams:\n {6}- other\/platform/,
+    );
+    const allowlistManifests = helmTemplate(allowlisted);
+    assert.match(allowlistManifests, /name: OCC_AUTH_GITHUB_ALLOWED_ORGS\n\s+value: "acme"/);
+    assert.match(
+      allowlistManifests,
+      /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
+    );
     // Password sign-in stays open to every account unless recovery-only is chosen.
     assert.doesNotMatch(github.values, /passwordSignIn/);
     assert.doesNotMatch(manifests, /OCC_AUTH_PASSWORD_SIGN_IN/);
@@ -822,6 +824,18 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", () => {
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ github: { allowedTeams: ["platform"] } }),
+    /controlPlane.github.allowedTeams\[0\] must be a lowercase org\/team-slug entry/,
+  );
+  assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({
+      github: { allowedOrgs: Array.from({ length: 11 }, (_, index) => `org${index}`) },
+    }),
+    /allowedOrgs and allowedTeams list at most 10 entries together/,
+  );
   assertPreflightFailure(
     "openclaw",
     externalSignInInput({ recoveryUserId: undefined }),

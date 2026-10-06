@@ -10,16 +10,7 @@ const execute = promisify(execFile);
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
 
-/** `test` options: skip unless Helm and yq can render the production chart. */
-export async function chartTooling() {
-  try {
-    await execute(helm, ["version", "--short"], { cwd: repository });
-    await execute("yq", ["--version"], { cwd: repository });
-    return { skip: false };
-  } catch {
-    return { skip: "Install Helm and yq, or set OCC_HELM_BIN, to render the production chart." };
-  }
-}
+export { chartTooling } from "./production-chart.mjs";
 
 function templateArguments(overrides) {
   const args = [

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-09-29"
-last_updated_session: "PR-187"
+updated: "2026-10-01"
+last_updated_session: "authoring-run/e288dbbe-6d08-4251-adaa-860443c31b44"
 ---
 
 # Production Startup Flow
@@ -116,6 +116,12 @@ retrieve generated credentials, or change controller configuration.
 
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`
 
+`deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
+installs initialization isolation before the Job starts. Its scoped DNS grant
+and the later dependency, collector, Slack proxy, and Envoy policies allow
+UDP/TCP ports `53` and `5353` to the configured DNS peer; see the
+[Helm DNS contract](../reference/settings/production.md#required-production-controller-environment).
+
 `helm upgrade --install --wait --timeout 5m` renders the chart with native
 values. If `database.caSecretName` is set, the Pod mounts that CA Secret
 read-only into both containers before they connect. The initialization hook first
@@ -159,13 +165,26 @@ Deployments. The API validates production listener settings, Better Auth,
 database access, trusted Installation YAML, selected Drivers, Backend
 membership, and Kubernetes Compute preflight before readiness. It serves private
 controller routes, `/healthz`, and database-backed `/readyz` behind the
-operator-managed endpoint.
+operator-managed endpoint. A `/healthz` startup probe (1-second period, 120
+failures) gives the API 2 minutes to listen and lets readiness start within a
+second of listening.
+
+`apps/controller/src/index.ts:createFastifyApp`
+
+On `SIGTERM` the API stops accepting connections and finishes admitted requests.
+Their responses carry `Connection: close` (a streamed one closes its connection
+when it ends), so the process exits without waiting out the 72-second keep-alive.
+The single `Recreate` replica keeps the default 30-second termination grace and
+no `preStop` hook, since no peer takes its traffic; a request still running after
+30 seconds is cut off. The API logs `shutdown.started` with the `signal`, then
+`shutdown.completed` with `durationMs` once every close hook has finished; a
+failed close logs `shutdown.failed` and exits `1`. A log ending at
+`shutdown.started` means the grace period cut the drain off.
 
 When `controlPlane.nodeSelector` is non-empty, the chart places the API and
 worker Pods with that selector. The same selector applies to the initialization
-Job that runs the migration init container and bootstrap container, so production
-operators can keep migration, bootstrap, API, and worker Pods on a reviewed
-control-plane node pool.
+Job (migration and bootstrap), so all four stay on a reviewed control-plane node
+pool.
 `deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
 that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
 so the credential-checking private proxy stays on the trusted pool.
@@ -205,10 +224,9 @@ minimum versions in its message and continues. An invalid version response,
 unreachable API, or failed Namespace access still fails preflight.
 
 The worker independently validates production settings, opens the same
-application-role database, loads the selected Driver bundle, validates IAM, runs
-Compute preflight, emits the same advisory warning for an older Kubernetes
-server, emits `worker.started`, and polls durable Namespace and AgentRevision
-work. Worker readiness depends on fresh queue-health observations. Neither
+application-role database, loads the selected Drivers, validates IAM, runs
+Compute preflight (with the same advisory warning), emits `worker.started`, and
+polls durable Namespace and AgentRevision work. Worker readiness depends on fresh queue-health observations. Neither
 process mounts the bootstrap PVC.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
@@ -262,18 +280,20 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 - `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
   should succeed before API and worker rollout checks.
 - `pnpm db:migrate:production --check` reports the accepted database history
-  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` requires inspection of
-  the selected database; initialization does not repair or rewrite its ledger.
+  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
+  inspected; initialization never repairs its ledger.
 - The API should emit `listening`; the worker should emit `worker.started`
-  followed by `worker.health`.
-- `compute.preflight-warning` with code `KUBERNETES_VERSION_BELOW_MINIMUM`
-  identifies a server below the supported Kubernetes 1.35 baseline; startup
-  continues, but operators should upgrade before treating the deployment as
-  supported.
+  followed by `worker.health`. `listening` carries `startupMs` since process
+  start and `phasesMs` per startup phase, so a slow boot names its slow phase.
+  A stopping API emits `shutdown.started` and then `shutdown.completed`.
+- `compute.preflight-warning` with code `KUBERNETES_VERSION_BELOW_MINIMUM`:
+  startup continues, but upgrade to Kubernetes 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE` means the Compute preflight got no answer from
   the Kubernetes API server named by `host` and `port`. Check that
   `cluster.cidrs` still lists that address; a restarted cluster can move it.
+- Code `PRESET_FILE_INVALID`: a bad `presets.files` list or file (missing,
+  unreadable, malformed, invalid, duplicate).
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing output files, database-role
   failures, auth origin errors, and administrator/IAM mismatch.
@@ -281,10 +301,9 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
   from the retrieved key file.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
-- Packaging checks such as
-  `node --test tests/integration/production-kubernetes-packaging.test.mjs`
-  render chart behavior but do not prove a live Helm install, protected storage
-  retrieval, tenant runtime, or model turn.
+- `tests/integration/production-kubernetes-packaging.test.mjs` renders the
+  chart; it does not prove a live install, key retrieval, tenant runtime, or
+  model turn.
 
 ## Related docs
 
@@ -304,6 +323,13 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 
 ## Changelog
 
+- 2026-10-05: Name Preset file failures `PRESET_FILE_INVALID`.
+- 2026-10-04: Poll the startup probe every second.
+- 2026-10-04: Time API startup phases in `listening`.
+- 2026-10-04: Add the API startup probe.
+- 2026-10-04: Log the API's shutdown start and completion.
+- 2026-10-04: Describe API shutdown timing against the Pod termination grace.
+- 2026-10-01 16:32: Trace scoped OpenShift DNS backend grants for Helm-managed production workloads. (authoring-run/e288dbbe-6d08-4251-adaa-860443c31b44 - 4070b6ad5ec6aff03c9c5e49e504a90393ffe091)
 - 2026-09-29: Merge current main into release-scoped shared egress documentation. (PR-187)
 
 - 2026-09-24 08:54: Describe release-scoped shared egress and dedicated collector/bootstrap policies. (PR-187 - 5ebd7305b0876db33276a249934bc82073b63424)

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -15,24 +14,13 @@ import {
 } from "../helpers/metrics-monitoring-readiness.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { startMetricsListener } from "../../apps/controller/src/metrics/listener.ts";
+import { availablePort } from "../helpers/available-port.mjs";
+
+import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 
 const run = promisify(execFile);
 const engine = process.env.OCC_METRICS_TEST_ENGINE ?? "docker";
-const prometheusImage =
-  "docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0";
-const grafanaImage =
-  "docker.io/grafana/grafana@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0";
-
-async function port() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const value = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return value;
-}
+const { prometheus: prometheusImage, grafana: grafanaImage } = metricsMonitoringImages;
 
 async function containerState(name) {
   const { stdout } = await run(engine, ["inspect", "--format", "{{json .State}}", name]);
@@ -71,7 +59,7 @@ test(
     await fixture.bootstrap();
     // Select each candidate port as late as possible; Docker still owns the
     // final bind, so an exited container is reported by the readiness wait.
-    const promPort = await port();
+    const promPort = await availablePort();
     const promURL = `http://127.0.0.1:${promPort}`;
     await writeFile(
       join(directory, "prometheus.yaml"),
@@ -147,7 +135,7 @@ test(
       ],
       ["--tmpfs", "/tmp:rw,mode=1777"],
     );
-    const agentPort = await port();
+    const agentPort = await availablePort();
     const agent = await container(
       "agent",
       prometheusImage,
@@ -197,7 +185,7 @@ test(
       await query("occ-request", panel.targets[0].expr);
     }
 
-    const grafanaPort = await port();
+    const grafanaPort = await availablePort();
     const grafana = await container(
       "grafana",
       grafanaImage,

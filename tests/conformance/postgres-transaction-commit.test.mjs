@@ -8,12 +8,13 @@ import {
 } from "../../packages/occ/src/state/postgres-state.ts";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/errors.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 // A transport protocol fixture for the actual outer owner, not a SQL database
 // emulator. No repository reads/writes, authentication, custody or PG evidence.
 function protocol({ on, begin, commit, query, release, removeListener } = {}) {
   const calls = [];
-  let releases = 0;
+  const releases = [];
   let transportListener;
   const client = {
     on(event, listener) {
@@ -45,7 +46,7 @@ function protocol({ on, begin, commit, query, release, removeListener } = {}) {
       throw new Error("This fixture does not simulate persistence queries.");
     },
     release(destroy) {
-      releases++;
+      releases.push(destroy);
       release?.(destroy);
     },
   };
@@ -59,7 +60,7 @@ function protocol({ on, begin, commit, query, release, removeListener } = {}) {
   return {
     state,
     calls,
-    releases: () => releases,
+    releases,
     emitTransportError: (error) => transportListener?.(error),
     hasTransportListener: () => transportListener !== undefined,
   };
@@ -69,12 +70,23 @@ function serverError(code) {
   return Object.assign(new pg.DatabaseError("server rejection", 0, "error"), { code });
 }
 
+// The transaction reports an unknown COMMIT outcome, sends nothing after COMMIT
+// and discards its client.
+async function assertCommitUnknown(p) {
+  await assert.rejects(
+    p.state.transact(async () => 1),
+    PostgresCommitOutcomeUnknownError,
+  );
+  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
+  assert.equal(p.releases.at(-1), true);
+}
+
 test("known outer acknowledgment returns the original value after cleanup", async () => {
   const p = protocol();
   const value = Object.freeze({ result: "unchanged" });
   assert.equal(await p.state.transact(async () => value), value);
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases(), 1);
+  assert.equal(p.releases.length, 1);
 });
 
 test("definite server rejection at COMMIT remains a known no-commit failure", async () => {
@@ -92,13 +104,9 @@ test("definite server rejection at COMMIT remains a known no-commit failure", as
 
 test("serialization failure at COMMIT rolls back as a definite failure", async () => {
   const failure = serverError("40001");
-  let discarded;
   const p = protocol({
     commit: () => {
       throw failure;
-    },
-    release: (destroy) => {
-      discarded = destroy;
     },
   });
   await assert.rejects(
@@ -106,7 +114,7 @@ test("serialization failure at COMMIT rolls back as a definite failure", async (
     (error) => error instanceof DependencyUnavailableError && /conflict/.test(error.message),
   );
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT", "ROLLBACK"]);
-  assert.equal(discarded, false);
+  assert.equal(p.releases.at(-1), false);
 });
 
 for (const code of ["40P01", "40001"]) {
@@ -164,50 +172,27 @@ for (const [name, failure] of [
 }
 
 test("a client error with a server-looking code leaves COMMIT unknown", async () => {
-  let discarded;
   const p = protocol({
     commit: () => {
       throw Object.assign(new Error("client failure"), { code: "23514" });
     },
-    release: (destroy) => {
-      discarded = destroy;
-    },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(discarded, true);
+  await assertCommitUnknown(p);
 });
 
 test("a transport failure during COMMIT leaves even a server-looking rejection unknown", async () => {
-  let discarded;
   const p = protocol({
     commit: () => {
       p.emitTransportError(new Error("transport failure"));
       throw serverError("40001");
     },
-    release: (destroy) => {
-      discarded = destroy;
-    },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(discarded, true);
+  await assertCommitUnknown(p);
 });
 
 test("a known-bad client is discarded without attempting pre-COMMIT rollback", async () => {
-  let discarded;
   const failure = new Error("transport failure");
-  const p = protocol({
-    release: (destroy) => {
-      discarded = destroy;
-    },
-  });
+  const p = protocol();
   await assert.rejects(
     p.state.transact(async () => {
       p.emitTransportError(failure);
@@ -215,15 +200,13 @@ test("a known-bad client is discarded without attempting pre-COMMIT rollback", a
     DependencyUnavailableError,
   );
   assert.deepEqual(p.calls, ["BEGIN"]);
-  assert.equal(discarded, true);
+  assert.equal(p.releases.at(-1), true);
 });
 
 test("observed client error during listener registration prevents admission", async () => {
   const failure = new Error("registration transport failure");
-  const discards = [];
   const p = protocol({
     on: (listener) => listener(failure),
-    release: (destroy) => discards.push(destroy),
   });
   let called = false;
   await assert.rejects(
@@ -234,18 +217,16 @@ test("observed client error during listener registration prevents admission", as
   );
   assert.equal(called, false);
   assert.deepEqual(p.calls, []);
-  assert.deepEqual(discards, [true]);
-  assert.equal(p.releases(), 1);
+  assert.deepEqual(p.releases, [true]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("listener registration failure discards the checked-out client exactly once", async () => {
   const failure = new Error("listener registration failed");
-  const discards = [];
   const p = protocol({
     on: () => {
       throw failure;
     },
-    release: (destroy) => discards.push(destroy),
   });
   let called = false;
   await assert.rejects(
@@ -256,19 +237,17 @@ test("listener registration failure discards the checked-out client exactly once
   );
   assert.equal(called, false);
   assert.deepEqual(p.calls, []);
-  assert.deepEqual(discards, [true]);
-  assert.equal(p.releases(), 1);
+  assert.deepEqual(p.releases, [true]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("observed client error during a resolved BEGIN prevents callback and later SQL", async () => {
   const failure = new Error("BEGIN transport failure");
-  const discards = [];
   const p = protocol({
     begin: () => {
       p.emitTransportError(failure);
       return { command: "BEGIN", rows: [], rowCount: 0 };
     },
-    release: (destroy) => discards.push(destroy),
   });
   let called = false;
   await assert.rejects(
@@ -279,8 +258,8 @@ test("observed client error during a resolved BEGIN prevents callback and later 
   );
   assert.equal(called, false);
   assert.deepEqual(p.calls, ["BEGIN"]);
-  assert.deepEqual(discards, [true]);
-  assert.equal(p.releases(), 1);
+  assert.deepEqual(p.releases, [true]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("an observed client error is unavailable even with a server-looking code", async () => {
@@ -292,19 +271,17 @@ test("an observed client error is unavailable even with a server-looking code", 
       error instanceof DependencyUnavailableError && !(error instanceof ScopeViolationError),
   );
   assert.deepEqual(p.calls, []);
-  assert.equal(p.releases(), 1);
+  assert.equal(p.releases.length, 1);
   assert.equal(p.hasTransportListener(), false);
 });
 
 test("observed client error during a repository query blocks result and subsequent SQL", async () => {
   const failure = new Error("query transport failure");
-  const discards = [];
   const p = protocol({
     query: () => {
       p.emitTransportError(failure);
       return { rows: [], rowCount: 0 };
     },
-    release: (destroy) => discards.push(destroy),
   });
   let effect = false;
   await assert.rejects(
@@ -320,8 +297,8 @@ test("observed client error during a repository query blocks result and subseque
   assert.equal(p.calls.length, 2);
   assert.equal(p.calls[0], "BEGIN");
   assert.match(p.calls[1], /SELECT id, name, created_at FROM occ\.installation/);
-  assert.deepEqual(discards, [true]);
-  assert.equal(p.releases(), 1);
+  assert.deepEqual(p.releases, [true]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("observed client error after a resolved repository query blocks following work", async () => {
@@ -342,34 +319,30 @@ test("observed client error after a resolved repository query blocks following w
   );
   assert.equal(effect, false);
   assert.equal(p.calls.length, 2);
-  assert.equal(p.releases(), 1);
+  assert.equal(p.releases.length, 1);
 });
 
 test("a coded transport error that also rejects the active query is unavailable", async () => {
   // pg rejects the active query with the same object it emits on "error".
   const failure = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
-  const discards = [];
   const p = protocol({
     query: () => {
       p.emitTransportError(failure);
       throw failure;
     },
-    release: (destroy) => discards.push(destroy),
   });
   await assert.rejects(
     p.state.transact(async (unit) => unit.audit.list()),
     DependencyUnavailableError,
   );
   assert.equal(p.calls.length, 2);
-  assert.deepEqual(discards, [true]);
-  assert.equal(p.releases(), 1);
+  assert.deepEqual(p.releases, [true]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("a healthy repository query still returns before the ordinary COMMIT", async () => {
-  const discards = [];
   const p = protocol({
     query: () => ({ rows: [], rowCount: 0 }),
-    release: (destroy) => discards.push(destroy),
   });
   const result = await p.state.transact(async (unit) => unit.audit.list());
   assert.deepEqual(result, []);
@@ -377,8 +350,8 @@ test("a healthy repository query still returns before the ordinary COMMIT", asyn
   assert.equal(p.calls[0], "BEGIN");
   assert.match(p.calls[1], /SELECT id, name, created_at FROM occ\.installation/);
   assert.equal(p.calls[2], "COMMIT");
-  assert.deepEqual(discards, [false]);
-  assert.equal(p.releases(), 1);
+  assert.deepEqual(p.releases, [false]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("observed client error during resolved COMMIT remains unknown", async () => {
@@ -393,7 +366,7 @@ test("observed client error during resolved COMMIT remains unknown", async () =>
     PostgresCommitOutcomeUnknownError,
   );
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(p.releases(), 1);
+  assert.equal(p.releases.length, 1);
 });
 
 test("observed client error during release after acknowledged COMMIT remains unknown", async () => {
@@ -411,7 +384,7 @@ test("observed client error during release after acknowledged COMMIT remains unk
   );
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
   assert.deepEqual(order, ["release", "removeListener"]);
-  assert.equal(p.releases(), 1);
+  assert.equal(p.releases.length, 1);
   assert.equal(p.hasTransportListener(), false);
 });
 
@@ -433,56 +406,25 @@ test("observed client error during release preserves an earlier callback failure
   );
   assert.deepEqual(p.calls, ["BEGIN", "ROLLBACK"]);
   assert.deepEqual(order, ["release", "removeListener"]);
-  assert.equal(p.releases(), 1);
-});
-
-test("lost acknowledgment remains unknown without a follow-up query", async () => {
-  const p = protocol({
-    commit: () => {
-      throw Object.assign(new Error("connection lost"), { code: "ECONNRESET" });
-    },
-  });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
+  assert.equal(p.releases.length, 1);
 });
 
 test("40003 statement completion unknown does not issue a follow-up query", async () => {
-  let discarded;
   const p = protocol({
     commit: () => {
       throw serverError("40003");
     },
-    release: (destroy) => {
-      discarded = destroy;
-    },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(discarded, true);
+  await assertCommitUnknown(p);
 });
 
 test("an unclassified valid SQLSTATE does not establish no commit", async () => {
-  let discarded;
   const p = protocol({
     commit: () => {
       throw serverError("XX000");
     },
-    release: (destroy) => {
-      discarded = destroy;
-    },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(discarded, true);
+  await assertCommitUnknown(p);
 });
 
 test("actual ROLLBACK command acknowledgment establishes no commit", async () => {
@@ -497,39 +439,21 @@ test("actual ROLLBACK command acknowledgment establishes no commit", async () =>
 });
 
 test("unrecognized acknowledgment does not establish rollback", async () => {
-  let discarded;
   const p = protocol({
     commit: () => ({ rows: [], rowCount: 0 }),
-    release: (destroy) => {
-      discarded = destroy;
-    },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(discarded, true);
+  await assertCommitUnknown(p);
 });
 
 test("a throwing acknowledgment projection remains unknown even with a definite SQLSTATE", async () => {
-  let discarded;
   const p = protocol({
     commit: () => ({
       get command() {
         throw Object.assign(new Error("invalid acknowledgment"), { code: "40001" });
       },
     }),
-    release: (destroy) => {
-      discarded = destroy;
-    },
   });
-  await assert.rejects(
-    p.state.transact(async () => 1),
-    PostgresCommitOutcomeUnknownError,
-  );
-  assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.equal(discarded, true);
+  await assertCommitUnknown(p);
 });
 
 test("release failure after acknowledged COMMIT is unknown and cleanup continues", async () => {
@@ -547,7 +471,7 @@ test("release failure after acknowledged COMMIT is unknown and cleanup continues
     PostgresCommitOutcomeUnknownError,
   );
   assert.equal(detached, true);
-  assert.equal(p.releases(), 1);
+  assert.equal(p.releases.length, 1);
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
 });
 
@@ -568,8 +492,16 @@ test("cleanup failure cannot replace an earlier callback failure", async () => {
 });
 
 test("commit fault URL routes the actual pg client through the proxy", async () => {
-  const original =
-    "postgresql://fixture:fixture@127.0.0.1:1/example?host=127.0.0.1&port=55432&user=override&password=override&application_name=commit-fixture&sslmode=disable";
+  const original = syntheticCredentialUrl({
+    protocol: "postgresql",
+    username: "fixture",
+    password: "fixture",
+    host: "127.0.0.1",
+    port: 1,
+    pathname: "/example",
+    search:
+      "?host=127.0.0.1&port=55432&user=override&password=override&application_name=commit-fixture&sslmode=disable",
+  });
   const before = new pg.Client({ connectionString: original });
   const proxy = await commitAckProxy(original);
   try {
@@ -592,51 +524,61 @@ test("commit fault URL routes the actual pg client through the proxy", async () 
 test("commit fault rejects an effective remote override and preserves TLS intent", async () => {
   await assert.rejects(
     commitAckProxy(
-      "postgresql://fixture:fixture@127.0.0.1/example?host=remote.invalid&sslmode=disable",
+      syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "fixture",
+        password: "fixture",
+        host: "127.0.0.1",
+        pathname: "/example",
+        search: "?host=remote.invalid&sslmode=disable",
+      }),
     ),
     /loopback/,
   );
   await assert.rejects(
-    commitAckProxy("postgresql://fixture:fixture@127.0.0.1/example?ssl=true"),
+    commitAckProxy(
+      syntheticCredentialUrl({
+        protocol: "postgresql",
+        username: "fixture",
+        password: "fixture",
+        host: "127.0.0.1",
+        pathname: "/example",
+        search: "?ssl=true",
+      }),
+    ),
     /non-TLS/,
   );
 });
 
 test("a single read statement runs outside any transaction on one pooled connection", async () => {
-  const destroyed = [];
   const p = protocol({
     query: () => ({ rows: [{ user_id: "u" }], rowCount: 1 }),
-    release: (destroy) => destroyed.push(destroy),
   });
   assert.deepEqual(await p.state.readStatement("SELECT 1", []), [{ user_id: "u" }]);
   assert.deepEqual(p.calls, ["SELECT 1"]);
-  assert.deepEqual(destroyed, [false]);
+  assert.deepEqual(p.releases, [false]);
   assert.equal(p.hasTransportListener(), false);
 });
 
 test("a rejected read statement is classified and discards its connection", async () => {
-  const destroyed = [];
   const p = protocol({
     query: () => {
       throw serverError("55P03");
     },
-    release: (destroy) => destroyed.push(destroy),
   });
   await assert.rejects(p.state.readStatement("SELECT 1"), DependencyUnavailableError);
   assert.deepEqual(p.calls, ["SELECT 1"]);
-  assert.deepEqual(destroyed, [true]);
+  assert.deepEqual(p.releases, [true]);
   assert.equal(p.hasTransportListener(), false);
 });
 
 test("a client error during a read statement is unavailable and discards the connection", async () => {
-  const destroyed = [];
   let p;
   p = protocol({
     query: () => {
       p.emitTransportError(serverError("23514"));
       return { rows: [{ leaked: true }], rowCount: 1 };
     },
-    release: (destroy) => destroyed.push(destroy),
   });
   await assert.rejects(
     p.state.readStatement("SELECT 1"),
@@ -644,7 +586,7 @@ test("a client error during a read statement is unavailable and discards the con
       error instanceof DependencyUnavailableError &&
       error.message === "The platform persistence repository is unavailable.",
   );
-  assert.deepEqual(destroyed, [true]);
+  assert.deepEqual(p.releases, [true]);
   assert.equal(p.hasTransportListener(), false);
 });
 

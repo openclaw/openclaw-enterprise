@@ -33,9 +33,8 @@ images; individual Agents cannot choose their own implementations.
 
 Default Docker or Podman Compose can run the control plane for development,
 but its Docker Compute Driver rejects the authentication used for new Agents.
-Stock OpenShell cannot provide the app-server token and workload-identity
-projections needed to deploy a sandboxed Agent; see its
-[current upstream blockers](openshell-sandbox.md#current-upstream-preconditions).
+The OpenShell development path remains experimental and unqualified; see its
+[qualification requirements](openshell-sandbox.md#qualification-contract).
 
 ## Supported selections
 
@@ -253,5 +252,7 @@ that installed Compute isolates workloads; operator review remains mandatory.
 - [Compute comparison](compute-matrix.md)
 - [Packaged-driver testing](../../testing/local.md#packaged-driver-integration)
 
-The package resolver and startup checks live in
-[Installation composition](../../../apps/controller/src/composition/installation-config.ts).
+The [Driver package loader](../../../apps/controller/src/composition/driver-packages.ts)
+resolves installed packages and checks their factories;
+[Installation composition](../../../apps/controller/src/composition/installation-config.ts)
+validates selections and constructs the runtime bundle.

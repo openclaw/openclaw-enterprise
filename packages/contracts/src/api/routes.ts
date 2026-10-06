@@ -192,7 +192,7 @@ export const occApiRoutes = [
         { namespaceId: NamespaceId, secretId: SecretId },
         { additionalProperties: false },
       ),
-      response: { 204: Type.Null(), 501: ErrorResponseRef, ...createErrors },
+      response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
     },
   },
   {
@@ -254,7 +254,7 @@ export const occApiRoutes = [
         { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
         { additionalProperties: false },
       ),
-      response: { 204: Type.Null(), 501: ErrorResponseRef, ...createErrors },
+      response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
     },
   },
 
@@ -282,7 +282,7 @@ export const occApiRoutes = [
     action: "openclaw.presets.list",
     iamAction: "read",
     resourceKind: "preset",
-    authorizationTarget: "preset_candidates",
+    authorizationTarget: "namespace_and_preset_candidates",
     summary: "List readable Presets in one Namespace",
     tags: ["Presets"],
     schema: {
@@ -831,7 +831,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: CredentialSourceParams,
       body: UpdateCredentialSourceBody,
-      response: { 200: CredentialSourceResponseRef, ...mutationErrors },
+      response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
   {
@@ -1086,7 +1086,7 @@ export const occApiRoutes = [
       response: {
         200: AgentPluginPolicyCapabilitiesResponse,
         501: ErrorResponseRef,
-        ...createErrors,
+        ...mutationErrors,
       },
     },
   },
@@ -1277,7 +1277,9 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentProvisioningParams,
-      response: { 200: AgentProvisioningStatusResponse, ...readErrors },
+      // A failed plan whose Secret or ServiceAccount was deleted, or whose Harness
+      // authentication no longer fits, is a conflict naming the cause.
+      response: { 200: AgentProvisioningStatusResponse, ...readErrors, 409: ErrorResponseRef },
     },
   },
   {

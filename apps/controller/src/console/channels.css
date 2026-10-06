@@ -91,10 +91,6 @@
   cursor: default;
 }
 
-.channel-label {
-  font-weight: 600;
-}
-
 .channel-field code {
   display: block;
   width: 100%;

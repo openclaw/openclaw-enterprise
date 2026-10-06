@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-09-29
-last_updated_session: authoring-run/1ca6a40a-a247-465f-9a83-182dbcb6ff4e
+updated: 2026-10-03
+last_updated_session: 01a10328-9de5-7081-ada2-d88ff80161e4
 ---
 
 # Platform console request flow
@@ -126,7 +126,8 @@ Controls stay inert until admission succeeds; navigation remains available.
 
 Completed views retain their DOM, handlers, and draft capture callbacks. On return,
 `loadPage` rereads their GET dependencies and compares data and user identity.
-Unchanged views reactivate without rebuilding panels; changed data rebuilds them.
+Unchanged views reactivate without rebuilding panels; changed data rebuilds them,
+as does a first readable Namespace for a view retained without a selection.
 Pending reads, read failures, password input, or mutations prevent reuse. Read-only
 catalog and diagnostic POSTs do not invalidate views. Refresh always rebuilds.
 Debug runtime disclosures follow the same validation and retain expanded state.
@@ -142,7 +143,10 @@ provider-error advice from "use your password" to asking an administrator. Pendi
 all; generations reject late redirects. With `sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
-`authError=<provider>` shows a generic, one-time error. The
+`authError=<provider>` shows a generic, one-time error; with `authError=github`, an
+`authReason` of `membership` or `membership-unavailable` explains a GitHub
+[allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
+refusal instead. The
 [authentication flow](local-password-authentication.md#3-construct-session-authentication)
 owns the server side.
 
@@ -156,7 +160,7 @@ unavailable; selection never becomes an API query selector.
 
 `shell.mjs:namespaceSelector` disables and hides choices through session and
 Namespace checks for loads, Refresh, and admission-starting navigation;
-retained-view validation can extend this.
+retained-view reads do not extend this.
 Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
@@ -191,7 +195,19 @@ Secret server-side. Pagination is upstream; filtering is local. Selecting a plug
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
 `create.mjs:MODEL_CHOICES` supplies unauthenticated static model lists and manual
-entry.
+entry. In `renderAgentForm`, the model-entry button switches `manualModel` and
+calls `updateModelConfiguration` and `updateControls`. Entering manual mode
+keeps `model.value` and clears the hidden dropdown selection.
+Returning to the list uses `resetModelChoices` to rebuild the current provider's
+options, including after Configuration JSON changes the provider. It retains
+the model only if that provider's list contains it; otherwise it clears both
+inputs. Provider and authentication changes call the same reset without a model
+to retain. `model.value` supplies one Configuration model, and submission checks
+that its primary model matches that value.
+`updateControls` updates the button label, visibility, and required input; focus moves
+to that input. Switching back to the list preserves credentials and unrelated
+Configuration values. Saved Configuration and pending-request locks apply to
+both directions.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication; Presets replace the starter unchanged.
@@ -330,6 +346,9 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
+- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
+- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
 - 2026-09-30 19:00: Remember denied Agent detail snapshot reads per tab so reloads do not add an audited denial per view.
 - 2026-09-29 20:00: Trace repository descriptions and inherited access. (public-pr/374)
 

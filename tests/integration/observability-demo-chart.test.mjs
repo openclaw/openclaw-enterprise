@@ -69,6 +69,43 @@ test(
   },
 );
 
+test(
+  "demo chart refuses image digests that are not lowercase SHA-256",
+  await helmAvailable(),
+  async () => {
+    const render = (overrides) =>
+      execute(
+        helm,
+        [
+          "template",
+          "demo",
+          "deploy/helm/openclaw-observability-demo",
+          ...[
+            "occ.namespace=openclaw-system",
+            "occ.release=oce",
+            "cluster.cidrs[0]=10.43.0.1/32",
+            "grafana.adminSecretName=grafana-admin",
+            ...overrides,
+          ].flatMap((value) => ["--set", value]),
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+    await render([]);
+    // OCI SHA-256 digests are `sha256` and lowercase hex; containerd refuses other
+    // spellings at pull time, so the chart refuses them at render time. The uppercase
+    // algorithm was already refused; uppercase hex was not.
+    for (const name of ["prometheus", "grafana", "loki"]) {
+      for (const digest of [`sha256:${"A".repeat(64)}`, `SHA256:${"a".repeat(64)}`]) {
+        await assert.rejects(
+          render([`images.${name}=registry.example.invalid/${name}@${digest}`]),
+          ({ stderr }) => stderr.includes(`images.${name} must use an immutable SHA-256 reference`),
+          `${name} ${digest.slice(0, 8)}`,
+        );
+      }
+    }
+  },
+);
+
 test("demo guide install can be rerun after a cold-cache wait timeout", async () => {
   const guide = await readFile(`${repository}docs/guides/observability/demo.md`, "utf8");
   // A cold image cache can overrun the wait and leave a failed release. Plain

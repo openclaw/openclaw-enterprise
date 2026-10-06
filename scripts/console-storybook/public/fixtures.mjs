@@ -1,3 +1,4 @@
+import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
 import swePreset from "/console/swe-preset.mjs";
@@ -61,6 +62,38 @@ function configurationValues(scenario) {
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
+function candidateDeploymentError(scenario, checkedAt) {
+  if (scenario.candidateModelProbeCause) {
+    return {
+      code: "RUNTIME_MODEL_PROBE_FAILED",
+      message: "Deployment runtime startup model check failed.",
+      data: {
+        runtimeFailure: {
+          component: "gateway",
+          check: "model-probe",
+          code: "MODEL_PROBE_FAILED",
+          checkedAt,
+          cause: scenario.candidateModelProbeCause,
+        },
+      },
+    };
+  }
+  if (scenario.candidateSelected) {
+    return {
+      code: "REVISION_FINALIZATION_INCOMPLETE",
+      message: "Deployment reconciliation failed.",
+    };
+  }
+  return {
+    code: "CONVERGENCE_DEADLINE_EXCEEDED",
+    message: "Deployment convergence deadline exceeded.",
+    data: {
+      timeoutMs: 60000,
+      runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },
+    },
+  };
+}
+
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
   let signedIn = !scenario.signedOut;
@@ -296,24 +329,7 @@ export function installFixture(scenario, evidence) {
           : null,
         error:
           scenario.candidateDeploymentStatus === "failed"
-            ? scenario.candidateSelected
-              ? {
-                  code: "REVISION_FINALIZATION_INCOMPLETE",
-                  message: "Deployment reconciliation failed.",
-                }
-              : {
-                  code: "CONVERGENCE_DEADLINE_EXCEEDED",
-                  message: "Deployment convergence deadline exceeded.",
-                  data: {
-                    timeoutMs: 60000,
-                    runtimeFailure: {
-                      component: "harness",
-                      check: "readiness",
-                      code: "TIMEOUT",
-                      checkedAt: candidate.createdAt,
-                    },
-                  },
-                }
+            ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
       });
@@ -391,7 +407,14 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
-  const presets = [preset];
+  const presets = [
+    preset,
+    {
+      ...structuredClone(defaultCodexPreset),
+      id: "pre_default_codex",
+      namespaceId,
+    },
+  ];
   if (scenario.swePreset) {
     for (const [name, definition] of [
       ["standard-codex", standardCodexPreset],
@@ -986,6 +1009,7 @@ export function installFixture(scenario, evidence) {
           if (!revisions.has(revisionId)) {
             return error(404);
           }
+          const startup = scenario.runtimePod === "startupWarnings";
           const pod = {
             role: "gateway",
             cluster: "control",
@@ -1000,24 +1024,38 @@ export function installFixture(scenario, evidence) {
                 state: "running",
                 reason: null,
                 ready: true,
-                restartCount: 1,
+                restartCount: startup ? 0 : 1,
                 startedAt: "2026-09-27T11:40:00.000Z",
-                lastTermination: {
-                  reason: "OOMKilled",
-                  exitCode: 137,
-                  finishedAt: "2026-09-27T11:39:58.000Z",
-                },
+                lastTermination: startup
+                  ? null
+                  : {
+                      reason: "OOMKilled",
+                      exitCode: 137,
+                      finishedAt: "2026-09-27T11:39:58.000Z",
+                    },
               },
             ],
-            events: [
-              {
-                type: "Warning",
-                reason: "BackOff",
-                message: "Back-off restarting failed container gateway",
-                count: 2,
-                lastObservedAt: "2026-09-27T11:39:59.000Z",
-              },
-            ],
+            // A healthy first deploy: readiness probes failed while the Gateway started.
+            events: startup
+              ? [
+                  {
+                    type: "Warning",
+                    container: "gateway",
+                    reason: "Unhealthy",
+                    message: "Readiness probe failed: Gateway /readyz unavailable: ECONNREFUSED",
+                    count: 8,
+                    lastObservedAt: "2026-09-27T11:40:20.000Z",
+                  },
+                ]
+              : [
+                  {
+                    type: "Warning",
+                    reason: "BackOff",
+                    message: "Back-off restarting failed container gateway",
+                    count: 2,
+                    lastObservedAt: "2026-09-27T11:39:59.000Z",
+                  },
+                ],
           };
           return response({
             revisionId,

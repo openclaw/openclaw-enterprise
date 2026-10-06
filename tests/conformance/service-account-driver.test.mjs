@@ -211,3 +211,34 @@ test("outer transaction failure compensates selected Driver account and credenti
     undefined,
   );
 });
+
+test("the ChatGPT account name is cut by whole characters, never half of a surrogate pair", async () => {
+  const { ChatGPTServiceAccountDriver } =
+    await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
+  const names = [];
+  const stop = new Error("stop after the provider call");
+  const driver = new ChatGPTServiceAccountDriver(
+    {
+      id: "openai",
+      drivers: { service_account: "chatgpt-service-accounts" },
+      client: {
+        async createServiceAccount({ name }) {
+          names.push(name);
+          throw stop;
+        },
+      },
+    },
+    {},
+    {},
+    {},
+  );
+  const id = "sa_11111111-1111-4111-8111-111111111111";
+  // One ASCII character puts every emoji on an odd UTF-16 offset, so a 160-unit cut would
+  // fall inside the last emoji that starts before it.
+  const name = `x${"\u{1F600}".repeat(199)}`;
+  await assert.rejects(driver.create({ id, namespaceId: "ns_x", name }), stop);
+  const [sent] = names;
+  assert.equal(sent, `x${"\u{1F600}".repeat(79)}-${id}`);
+  assert.ok(sent.length <= 200);
+  assert.doesNotMatch(sent, /\p{Cs}/u);
+});

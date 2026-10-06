@@ -25,6 +25,9 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       mode: ${{ steps.select.outputs.mode }}
+      lanes: ${{ steps.select.outputs.lanes }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      fixture: ${{ steps.matrix.outputs.fixture }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -57,10 +60,19 @@ jobs:
             reason=bootstrap_git_inspection_failed
             parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
             reason=bootstrap_checkout_mismatch
-            [ "$parents" = "$base $head" ] || return 1
+            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+            merge_base=${BASH_REMATCH[1]}
             reason=bootstrap_git_inspection_failed
-            git cat-file -e "$base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            entry=$(git ls-tree "$base" -- scripts/ci/impact.mjs) || return 1
+            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+            # GitHub merges onto the base tip at merge time; base.sha lags it
+            # when the base moved after the push and is then not fetched.
+            reason=bootstrap_checkout_mismatch
+            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            fi
+            reason=bootstrap_git_inspection_failed
+            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
             reason=bootstrap_policy_unavailable
             [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.mjs$ ]] || return 1
             reason=bootstrap_git_inspection_failed
@@ -71,6 +83,8 @@ jobs:
           if trusted_policy; then
             if [ "$IMPACT_ACTION" = select ]; then
               node "$policy" --github-output "$GITHUB_OUTPUT"
+            elif [ "$EXPECTED_MODE" = tests ]; then
+              node "$policy" --verify-mode tests --lanes "$EXPECTED_LANES"
             else
               node "$policy" --verify-mode "$EXPECTED_MODE"
             fi
@@ -82,22 +96,76 @@ jobs:
             printf 'CI impact: full (trusted base policy unavailable)\n'
           fi
 
+      # One row per pr-safe lane (runtime-image-fixture is its own job). Full
+      # mode runs every row; tests mode runs the rows the policy selected.
+      # The baseline tests are split in two, balanced by measured file
+      # durations; only part 1 runs the type and Go CLI checks (Static Checks
+      # runs lint, format, OpenAPI and docs beside the lanes).
+      # Image Runtime Startup is split from Images and Packaging, which it
+      # would otherwise lengthen by about five minutes. The runtime image
+      # startup tests are split in two, balanced by measured case durations;
+      # only part 1 runs the Codex sandbox, so only it needs the k3d tools for
+      # the seccomp profile.
+      - id: matrix
+        name: Build lane matrix
+        env:
+          SELECT_MODE: ${{ steps.select.outputs.mode }}
+          SELECT_LANES: ${{ steps.select.outputs.lanes }}
+          LANE_TABLE: |
+            [
+              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25},
+              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25},
+              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25},
+              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25},
+              {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25},
+              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25},
+              {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25},
+              {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25},
+              {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45},
+              {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25},
+              {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30},
+              {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30},
+              {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45},
+              {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45},
+              {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45},
+              {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45},
+              {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30},
+              {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40},
+              {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60}
+            ]
+        run: |
+          table=$(jq -ce 'if type == "array" and length > 0 then . else error("invalid lane table") end' <<<"$LANE_TABLE")
+          if [ "$SELECT_MODE" = tests ]; then
+            lanes=$(jq -ce 'if type == "array" and length > 0 and all(.[]; type == "string") then . else error("invalid lanes") end' <<<"$SELECT_LANES")
+            # Every selected lane needs a runner; CI Required checks each one's results.
+            jq -e --argjson table "$table" 'all(.[]; . as $lane | $lane == "runtime-image-fixture" or ($table | any(.[]; .lane == $lane)))' <<<"$lanes" >/dev/null
+            matrix=$(jq -ce --argjson lanes "$lanes" '[.[] | select(.lane as $lane | $lanes | any(.[]; . == $lane))] | if length > 0 then . else error("no matrix lanes") end' <<<"$table")
+            fixture=$(jq -r 'if any(.[]; . == "runtime-image-fixture") then "true" else "false" end' <<<"$lanes")
+          else
+            matrix=$table
+            fixture=true
+          fi
+          printf 'matrix=%s\nfixture=%s\n' "$matrix" "$fixture" >> "$GITHUB_OUTPUT"
+
       - name: Summarize impact selection
         if: ${{ always() }}
         env:
           SELECT_OUTCOME: ${{ steps.select.outcome }}
           SELECT_MODE: ${{ steps.select.outputs.mode }}
           SELECT_REASON: ${{ steps.select.outputs.reason }}
+          SELECT_LANES: ${{ steps.select.outputs.lanes }}
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
         run: |
           # Output only fixed literals, even when workflow inputs are untrusted.
           mode=unavailable
           reason=unavailable
           if [ "$SELECT_OUTCOME" = success ]; then
             case "$SELECT_MODE" in
-              docs|full) mode="$SELECT_MODE" ;;
+              docs|full|tests) mode="$SELECT_MODE" ;;
             esac
             case "$mode:$SELECT_REASON" in
               docs:docs_only) reason=docs_only ;;
+              tests:tests_only) reason=tests_only ;;
               full:non_pr_event) reason=non_pr_event ;;
               full:bootstrap_non_pr_event) reason=bootstrap_non_pr_event ;;
               full:invalid_event) reason=invalid_event ;;
@@ -115,12 +183,27 @@ jobs:
               full:unsupported_change) reason=unsupported_change ;;
               full:filename_not_utf8) reason=filename_not_utf8 ;;
               full:ineligible_change) reason=ineligible_change ;;
+              full:manifest_change) reason=manifest_change ;;
+              full:manifest_unavailable) reason=manifest_unavailable ;;
+              full:unmapped_test) reason=unmapped_test ;;
+              full:referenced_test) reason=referenced_test ;;
             esac
+          fi
+          lanes=
+          if [ "$mode:$reason" = tests:tests_only ]; then
+            lanes=unavailable
+            # Only lane names the matrix step accepted; never raw selector output.
+            if [ "$MATRIX_OUTCOME" = success ] && [[ $SELECT_LANES =~ ^\[\"[a-z0-9-]+\"(,\"[a-z0-9-]+\")*\]$ ]]; then
+              lanes=$(jq -r 'join(", ")' <<<"$SELECT_LANES")
+            fi
           fi
           {
             printf '### CI impact selection (advisory)\n\n'
             printf 'Mode: %s\n\n' "$mode"
             printf 'Reason category: %s\n\n' "$reason"
+            if [ -n "$lanes" ]; then
+              printf 'Selected lanes: %s\n\n' "$lanes"
+            fi
             printf 'This PR-controlled workflow is not trusted enforcement.\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -152,12 +235,15 @@ jobs:
       - name: Audit suite manifest and workflows
         run: node scripts/ci/run-tests.mjs audit
 
-  docs-checks:
-    name: Documentation Checks
+  static-checks:
+    name: Static Checks
     needs: impact
-    if: ${{ needs.impact.outputs.mode == 'docs' }}
+    # Workspace boundary, lint, format, OpenAPI and documentation checks need no
+    # test fixture, so they run beside the test lanes in every mode instead of
+    # before Checks and Conformance 1's tests (about 40 s of its critical path).
+    if: ${{ needs.impact.outputs.mode == 'docs' || needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -167,97 +253,65 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: openclaw/openclaw/.github/actions/setup-pnpm-store-cache@ee0cf16623068ff535cc20f4a1ce175c8c5b8d25
+      - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache-mode: read-write
+          # This job only restores the store; it has no save step.
+          cache-mode: restore
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run workspace boundary check
+        run: pnpm check:workspace
+      - name: Run lint check
+        run: pnpm lint
       - name: Check formatting
         run: pnpm format:check
+      - name: Run OpenAPI check
+        run: pnpm openapi:check
       - name: Check and build documentation
         run: pnpm docs:install && pnpm docs:check && pnpm docs:build
 
-  checks-baseline:
-    name: Checks and Conformance
+  affected-packages:
+    name: Affected Packages (advisory)
     needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 25
+    if: ${{ github.event_name == 'pull_request' && needs.impact.outputs.mode == 'full' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
+    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 2
           persist-credentials: false
-      - uses: ./.github/actions/run-ci-lane
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          lane: checks-baseline
-          profile: baseline
           node-version: ${{ env.NODE_VERSION }}
-          artifact-prefix: ci-results
+      - uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache-mode: "off"
+      - name: Report affected workspace packages
+        if: ${{ always() }}
+        run: |
+          # Print to the log too: step summaries are not readable through the API.
+          report=$(node scripts/ci/pnpm-impact.mjs --summary) || report='Affected workspace packages: unavailable.'
+          printf '%s\n' "$report"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
 
   pr-safe:
     name: ${{ matrix.title }}
     needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' }}
+    if: ${{ needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests' }}
     # NetworkPolicy proofs need a runner kernel with bridge netfilter support.
     runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability') && 'ubuntu-22.04' || matrix.lane == 'repository-credentials-platform' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - lane: checks-browser
-            title: Console Browser
-            profile: baseline
-            timeout: 25
-          - lane: postgres
-            title: PostgreSQL Migrations
-            profile: postgres
-            timeout: 25
-          - lane: postgres-application
-            title: PostgreSQL Application
-            profile: postgres
-            timeout: 25
-          - lane: postgres-auth
-            title: PostgreSQL Authentication
-            profile: postgres
-            timeout: 25
-          - lane: images-packaging
-            title: Images and Packaging
-            profile: full
-            timeout: 45
-          - lane: images-model-probes
-            title: Image Model Probes
-            profile: images
-            timeout: 25
-          - lane: k3d-fixture-configuration
-            title: k3d Fixture and Configuration
-            profile: k3d
-            timeout: 45
-          - lane: k3d-fixture-state
-            title: k3d State and Lifecycle
-            profile: k3d
-            timeout: 45
-          - lane: k3d-fixture-plugins
-            title: k3d Plugin Status
-            profile: k3d
-            timeout: 45
-          - lane: k3d-observability
-            title: Production Observability
-            profile: k3d
-            timeout: 45
-          - lane: logging-collector
-            title: Logging Collector
-            profile: images
-            timeout: 30
-          - lane: repository-credentials-container
-            title: Repository Credentials
-            profile: images
-            timeout: 40
-          - lane: repository-credentials-platform
-            title: Repository Credentials Platform
-            profile: k3d
-            timeout: 60
+        # Lane rows live in the CI Impact "Build lane matrix" step.
+        include: ${{ fromJSON(needs.impact.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -268,6 +322,8 @@ jobs:
           profile: ${{ matrix.profile }}
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+          # Static Checks runs them in this workflow.
+          static-checks: "false"
       - name: Upload repository credential image identities
         if: always() && matrix.lane == 'repository-credentials-container'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -280,7 +336,7 @@ jobs:
   runtime-image-fixture:
     name: Runtime Image Fixture
     needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' }}
+    if: ${{ needs.impact.outputs.mode == 'full' || (needs.impact.outputs.mode == 'tests' && needs.impact.outputs.fixture == 'true') }}
     # GitHub-hosted jobs receive a fresh VM and the job's existing Docker engine.
     # Only this lane writes fixture tags; its process awaits each Docker command.
     runs-on: ubuntu-22.04
@@ -296,18 +352,89 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
 
+  # Real Local Setup install on every PR and merge, with a stand-in model
+  # provider and no secrets. Deliberately not a CI Required dependency yet.
+  first-agent-smoke:
+    name: First Agent Smoke
+    needs: impact
+    if: ${{ needs.impact.outputs.mode == 'full' }}
+    # Local Setup refuses gateway trust unless NetworkPolicies are enforced,
+    # which needs the bridge netfilter support of this runner kernel.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # The runner starts with about 90 GB free; the smoke uses far less, so it
+      # skips the SDK removal the large image lanes need.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up CI tools
+        run: bash scripts/ci/setup-tools.sh k3d
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # GitHub-hosted runners are per-job VMs; removing the builder took 8-33 s,
+          # which a superseding run also waits for on cancellation.
+          cleanup: false
+      - name: Enable Kubernetes bridge packet filtering
+        run: |
+          if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+            sudo modprobe br_netfilter
+          fi
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+      - name: Build OCC CLI
+        run: go build -trimpath -o bin/occ ./cmd/occ
+      - name: Expose image cache credentials
+        id: image-cache
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const url = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !url) {
+              throw new Error('GitHub Actions cache credentials are unavailable');
+            }
+            core.setSecret(token);
+            core.setOutput('token', token);
+            core.setOutput('url', url);
+      - name: Build checkout images
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
+          ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        run: node scripts/ci/first-agent-smoke.mjs images
+      - name: Install, deploy, chat, stop and start
+        run: node scripts/ci/first-agent-smoke.mjs run
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-22.04
     needs:
       - impact
       - audit
-      - docs-checks
-      - checks-baseline
+      - static-checks
       - pr-safe
       - runtime-image-fixture
+    # always(): a failed or skipped dependency must still produce a failed
+    # CI Required, never a skipped (passing) one.
     if: always()
     steps:
+      # A push that supersedes this run waits until this run has finished
+      # cancelling. cancelled() is false in a job that starts after the
+      # cancellation, so test the dependencies: fail at once instead of checking
+      # out and verifying jobs that never finished. Later steps then skip.
+      - name: Fail when a required job was cancelled
+        if: contains(needs.*.result, 'cancelled')
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          jq -r 'to_entries[] | select(.value.result == "cancelled") | "::error::\(.key) was cancelled (superseded run, manual cancel, or timeout-minutes exceeded; see that job)."' <<<"$NEEDS_JSON"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 2
@@ -319,6 +446,7 @@ jobs:
         env:
           IMPACT_ACTION: verify
           EXPECTED_MODE: ${{ needs.impact.outputs.mode }}
+          EXPECTED_LANES: ${{ needs.impact.outputs.lanes }}
         run: |
           # The workflow itself is PR-controlled; independent required-workflow
           # enforcement is needed to protect this bootstrap from workflow edits.
@@ -340,10 +468,19 @@ jobs:
             reason=bootstrap_git_inspection_failed
             parents=$(git show -s --format=%P "$GITHUB_SHA") || return 1
             reason=bootstrap_checkout_mismatch
-            [ "$parents" = "$base $head" ] || return 1
+            [[ $parents =~ ^([0-9a-f]{40}|[0-9a-f]{64})\ ([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
+            [ "${BASH_REMATCH[2]}" = "$head" ] || return 1
+            merge_base=${BASH_REMATCH[1]}
             reason=bootstrap_git_inspection_failed
-            git cat-file -e "$base^{commit}" && git cat-file -e "$head^{commit}" || return 1
-            entry=$(git ls-tree "$base" -- scripts/ci/impact.mjs) || return 1
+            git cat-file -e "$merge_base^{commit}" && git cat-file -e "$head^{commit}" || return 1
+            # GitHub merges onto the base tip at merge time; base.sha lags it
+            # when the base moved after the push and is then not fetched.
+            reason=bootstrap_checkout_mismatch
+            if [ "$base" != "$merge_base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+              git merge-base --is-ancestor "$base" "$merge_base" || return 1
+            fi
+            reason=bootstrap_git_inspection_failed
+            entry=$(git ls-tree "$merge_base" -- scripts/ci/impact.mjs) || return 1
             reason=bootstrap_policy_unavailable
             [[ $entry =~ ^100644\ blob\ ([0-9a-f]{40}|[0-9a-f]{64})[[:space:]]scripts/ci/impact\.mjs$ ]] || return 1
             reason=bootstrap_git_inspection_failed
@@ -354,6 +491,8 @@ jobs:
           if trusted_policy; then
             if [ "$IMPACT_ACTION" = select ]; then
               node "$policy" --github-output "$GITHUB_OUTPUT"
+            elif [ "$EXPECTED_MODE" = tests ]; then
+              node "$policy" --verify-mode tests --lanes "$EXPECTED_LANES"
             else
               node "$policy" --verify-mode "$EXPECTED_MODE"
             fi
@@ -365,20 +504,32 @@ jobs:
             printf 'CI impact: full (trusted base policy unavailable)\n'
           fi
       - name: Validate selected job state
-        if: always()
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') }}
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
           EXPECTED_MODE: ${{ needs.impact.outputs.mode }}
+          EXPECTED_LANES: ${{ needs.impact.outputs.lanes }}
         run: |
           printf '%s' "$NEEDS_JSON" > "$RUNNER_TEMP/raw-needs.json"
-          node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
+          if [ "$EXPECTED_MODE" = tests ]; then
+            node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode tests --output "$RUNNER_TEMP/needs.json" --lanes "$EXPECTED_LANES"
+          else
+            node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
+          fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        if: ${{ always() && needs.impact.outputs.mode == 'full' }}
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
         with:
           pattern: ci-results-*
           path: ${{ runner.temp }}/results
           merge-multiple: true
       - name: Aggregate CI results
-        if: ${{ always() && needs.impact.outputs.mode == 'full' }}
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
+        env:
+          EXPECTED_MODE: ${{ needs.impact.outputs.mode }}
+          EXPECTED_LANES: ${{ needs.impact.outputs.lanes }}
         run: |
-          node scripts/ci/run-tests.mjs aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+          if [ "$EXPECTED_MODE" = tests ]; then
+            node scripts/ci/run-tests.mjs aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json" --lanes "$EXPECTED_LANES"
+          else
+            node scripts/ci/run-tests.mjs aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+          fi

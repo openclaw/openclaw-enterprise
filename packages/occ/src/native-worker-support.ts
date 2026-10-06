@@ -2,7 +2,7 @@
  * Whether the OpenClaw commit pinned in deploy/runtime/Dockerfile accepts the
  * configuration dedicated native OpenClaw writes: required worker placement
  * (`cloudWorkers.requiredProfile`) and native worker inference
- * (`nodeHost.workerRuns.nativeInferenceConfig`). The images-packaging test
+ * (`nodeHost.workerRuns.nativeInferenceConfig`). The images-runtime-startup test
  * "runtime image validates the configuration dedicated native OpenClaw renders"
  * checks this value against the built image, so a pin that changes the answer
  * fails CI until this constant, the docs, and admission change with it.

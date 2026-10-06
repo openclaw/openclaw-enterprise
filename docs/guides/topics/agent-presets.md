@@ -100,7 +100,8 @@ selected runtime before relying on it.
    [Namespace IAM](../../reference/authorization.md#manage-namespace-policy).
 2. Choose your Preset in **Preset template**, fill its variables,
    and select **Use Preset**. The chooser closes and the Agent form opens with
-   the rendered copy. To use standard defaults, select **Start without Preset**.
+   the rendered copy. To load the installed `default-codex` copy, select **Start with default Preset**.
+   To create an Agent without a saved setup, select **Start without Preset** instead.
 3. Review the model, execution mode, native Configuration JSON, authentication,
    plugin selections, and workspace files under Advanced settings. Configure Slack
    Secrets in its channel drawer. Edit any copied setting and fill
@@ -129,7 +130,8 @@ an invalid plugin policy can fail when saving the Agent.
 ## Change or delete the template
 
 Use `PATCH /namespaces/:namespaceId/presets/:presetId` to rename a Preset or
-replace its complete `template`, and `DELETE` on the same path to remove it.
+replace its complete `template`, and `DELETE` on the same path, or
+`occ preset delete ID`, to remove it. `occ preset list` shows the IDs.
 You need the corresponding permission on the exact Preset. These operations
 affect future selections only. Already selected copies, saved Agents, and
 running revisions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).

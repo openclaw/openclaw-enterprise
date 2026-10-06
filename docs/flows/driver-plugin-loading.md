@@ -21,6 +21,7 @@ without startup YAML uses the defaults traced in [platform startup](platform-sta
   `apps/controller/src/worker.mjs` with trusted Installation configuration.
 - Source:
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
+  `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`,
   `apps/controller/src/composition/production.ts:composeProduction`, and
   `apps/controller/src/worker.ts:ControllerWorker.start`.
 - Assumptions: An operator has installed and selected the reviewed package;
@@ -54,7 +55,8 @@ graph TD
 
 ### 1. Resolve and validate selected Driver implementations
 
-`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
+`apps/controller/src/composition/driver-packages.ts:loadDriverPackage`
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
@@ -82,7 +84,8 @@ validation and lockfile integrity do not establish publisher trust.
 
 ### 2. Construct the single authoritative runtime bundle
 
-`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
+`apps/controller/src/composition/driver-packages.ts:createExternalDriver`
 
 The loader constructs Configuration, optional Sandbox, Compute, and Secret
 Drivers and returns them with the validated Installation and required

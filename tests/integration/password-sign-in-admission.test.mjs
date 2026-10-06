@@ -155,21 +155,102 @@ test("an administrator is slowed, never refused, and slow guesses are bounded", 
   assert.ok(performance.now() - started >= slow.maxFloorMs - 2, "the floor grew to its cap");
 });
 
+// One macrotask turn: every promise chain that needs no timer or I/O has settled by then.
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
 test("refusals take the growing floor whether or not the email administers", async () => {
-  const limiter = admission({ administrators: ["admin@example.test"] });
+  // Floors end only when the test ends them, so the order of events shows that a refusal
+  // waits for its whole floor and answers as soon as it ends, at any machine speed.
+  const floors = [];
+  const limiter = admission({
+    administrators: ["admin@example.test"],
+    slow: {
+      ...slow,
+      waitFloor: (floorMs) =>
+        new Promise((resolve) => floors.push({ floorMs, end: () => resolve() })),
+    },
+  });
   const client = "203.0.113.9";
   for (let index = 0; index < 4; index += 1) {
     assert.equal(await status(limiter, { clientAddress: client, email: `f-${index}@x.test` }), 401);
   }
+  assert.deepEqual(floors, []);
   const expected = [20, 40, 80, 80];
   const emails = ["member@x.test", "admin@example.test", "missing@x.test", "admin@example.test"];
   for (const [index, email] of emails.entries()) {
-    const started = performance.now();
-    assert.equal(await status(limiter, { clientAddress: client, email }), 429);
-    const elapsed = performance.now() - started;
-    assert.ok(elapsed >= expected[index] - 2, `refusal ${index}: ${elapsed} ms`);
-    assert.ok(elapsed < expected[index] + 60, `refusal ${index}: ${elapsed} ms`);
+    let answer;
+    const refusal = status(limiter, { clientAddress: client, email }).then(
+      (code) => {
+        answer = code;
+      },
+      (error) => {
+        answer = error;
+      },
+    );
+    await turn();
+    assert.deepEqual(
+      floors.map(({ floorMs }) => floorMs),
+      expected.slice(0, index + 1),
+      `refusal ${index} waits one floor of ${expected[index]} ms`,
+    );
+    assert.equal(answer, undefined, `refusal ${index} answered before its floor ended`);
+    floors[index].end();
+    await turn();
+    assert.equal(answer, 429, `refusal ${index} kept waiting after its floor ended`);
+    await refusal;
   }
+});
+
+test("Retry-After counts down to the end of the spent window", async () => {
+  const limiter = admission();
+  const email = "member@example.test";
+  const started = performance.now();
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(await status(limiter, { email }), 401);
+  }
+  const { error } = await outcome(limiter.admit({ email }, right));
+  assert.ok(error instanceof SignInRateLimited);
+  // The window opened with the first failure, so at most the time spent since then is gone
+  // from its minute, however slow the machine.
+  const elapsedSeconds = Math.ceil((performance.now() - started) / 1000);
+  assert.ok(
+    error.retryAfterSeconds >= 60 - elapsedSeconds && error.retryAfterSeconds <= 60,
+    `Retry-After ${error.retryAfterSeconds} after ${elapsedSeconds} s`,
+  );
+});
+
+test("slow attempts beyond the global occupancy are refused, an administrator's included", async () => {
+  const floors = [];
+  const limiter = admission({
+    administrators: ["a@example.test", "b@example.test"],
+    slow: {
+      ...slow,
+      occupancy: 1,
+      waitFloor: () => new Promise((resolve) => floors.push(resolve)),
+    },
+  });
+  for (const email of ["a@example.test", "b@example.test"]) {
+    for (let index = 0; index < 3; index += 1) {
+      assert.equal(await status(limiter, { email }), 401);
+    }
+  }
+  // The first administrator's slow attempt holds the only occupancy slot for its floor.
+  const held = status(limiter, { email: "a@example.test" }, right);
+  await turn();
+  assert.equal(floors.length, 1);
+  let answer;
+  const refused = status(limiter, { email: "b@example.test" }, right).then((code) => {
+    answer = code;
+  });
+  await turn();
+  // The second waits out its own floor and is refused without a password check.
+  assert.equal(floors.length, 2);
+  assert.equal(answer, undefined);
+  floors[1]();
+  await refused;
+  assert.equal(answer, 429);
+  floors[0]();
+  assert.equal(await held, 200);
 });
 
 test("a failing administrator lookup surfaces as a dependency error", async () => {
@@ -185,6 +266,43 @@ test("a failing administrator lookup surfaces as a dependency error", async () =
   }
   const { error } = await outcome(limiter.admit({ email }, right));
   assert.equal(error, outage);
+});
+
+test("concurrent guesses beyond a budget never reach the password check", async () => {
+  const limiter = admission();
+  let checks = 0;
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  // Every check waits until all guesses are in, so none has failed yet when the next arrives.
+  const guess = async () => {
+    checks += 1;
+    await held;
+    throw new WrongPassword("wrong");
+  };
+  const flood = (count, attempt) =>
+    Array.from({ length: count }, (_, index) => status(limiter, attempt(index), guess));
+  // Email budget 3: six guesses at one email from distinct addresses.
+  const byEmail = flood(6, (index) => ({ clientAddress: `203.0.113.${index}`, email: "a@x.test" }));
+  // Address budget 4: six guesses from one address at distinct emails.
+  const byAddress = flood(6, (index) => ({
+    clientAddress: "198.51.100.1",
+    email: `b-${index}@x.test`,
+  }));
+  // One turn lets any over-budget guess the slow lane wrongly admits reach the check too.
+  await turn();
+  assert.equal(checks, 3 + 4);
+  release();
+  const counts = (codes) => [
+    codes.filter((c) => c === 401).length,
+    codes.filter((c) => c === 429).length,
+  ];
+  assert.deepEqual(counts(await Promise.all(byEmail)), [3, 3]);
+  assert.deepEqual(counts(await Promise.all(byAddress)), [4, 2]);
+  // Released guesses recorded their failures: both budgets are spent.
+  assert.equal(await status(limiter, { email: "a@x.test" }, right), 429);
+  assert.equal(await status(limiter, { clientAddress: "198.51.100.1", email: "c@x.test" }), 429);
 });
 
 test("a success resets the email's failures but not the address's", async () => {
@@ -469,17 +587,20 @@ test("a spent key with fresh companions cannot churn a request budget out of the
   await limiter.admit(["victim"], async () => undefined);
   await limiter.admit(["spent"], async () => undefined);
   let ran = 0;
+  const limited = { name: "APIError", status: "TOO_MANY_REQUESTS", message: "Try again later." };
   for (let index = 0; index < 4200; index += 1) {
     await assert.rejects(
       limiter.admit([`fresh-${index}`, "spent"], async () => {
         ran += 1;
       }),
+      limited,
     );
   }
   await assert.rejects(
     limiter.admit(["victim"], async () => {
       ran += 1;
     }),
+    limited,
   );
   assert.equal(ran, 0);
 });

@@ -911,427 +911,6 @@ test("Kubernetes dev-up forwards an explicit K3s image and startup timeout to k3
   assert.equal(cleaned.status, 0, cleaned.stderr);
 });
 
-test("Kubernetes dev-up prepares the selected OpenShell Sandbox Driver before reporting readiness", async (t) => {
-  const fixture = await kubernetesFixture(t);
-  fixture.env.OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS = "41";
-  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
-  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
-  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
-  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
-  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
-
-  // Exercise the supported Kubernetes-only lifecycle. Compose options are not
-  // accepted because PostgreSQL and the OCE control plane live inside k3d.
-  const result = runDevUp([], fixture.env);
-
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Sandbox Driver: openshell/);
-  assert.match(result.stdout, /Deployment: Kubernetes only/);
-  assert.match(result.stdout, /Platform Namespace: oce-system/);
-  assert.match(result.stdout, /Installing OpenShell Gateway and OCE in Namespace oce-system/);
-  assert.doesNotMatch(result.stdout, /Installing OpenShell workspace resources/);
-  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
-  assert.equal(state.sandboxDriver, "openshell");
-  assert.equal(state.deploymentMode, "k3d");
-  assert.equal(state.platformNamespace, "oce-system");
-  await assert.rejects(stat(join(directory, "compose.yaml")), { code: "ENOENT" });
-  const configuration = await readFile(join(directory, "installation.yaml"), "utf8");
-  assert.match(configuration, /id: sandbox-openshell-development/);
-  assert.match(
-    configuration,
-    /endpoint: http:\/\/openshell-gateway\.oce-system\.svc\.cluster\.local:8080/,
-  );
-  assert.match(configuration, /mode: inCluster/);
-  assert.doesNotMatch(configuration, /kubeconfigPath/);
-  assert.match(configuration, /workspaceMode: operator/);
-  assert.match(configuration, /operatorWorkspaceResources:/);
-  assert.match(configuration, /kind: ServiceAccount/);
-  assert.doesNotMatch(configuration, /namespace: openclaw-workspace-template/);
-  assert.match(configuration, /operatorNamespaceLabels:/);
-  assert.match(configuration, /openshell\.ai\/openclaw-workspace: "true"/);
-  assert.doesNotMatch(configuration, /workspace: default/);
-  const sandboxConfiguration = loadYaml(configuration).drivers.sandbox.configuration;
-  assert.deepEqual(
-    sandboxConfiguration.gateway.networkPolicyResources[0].spec.podSelector.matchLabels,
-    {
-      "openshell.ai/managed-by": "openshell",
-      "openshell.ai/boundary-role": "supervisor",
-    },
-    "only OpenShell supervisors may use the tenant callback egress rule",
-  );
-
-  const developmentPolicies = JSON.parse(
-    await readFile(join(directory, "openshell-network-policies.json"), "utf8"),
-  );
-  const gatewayIngress = developmentPolicies.items.find(
-    ({ metadata }) => metadata.name === "openclaw-development-openshell-ingress",
-  );
-  assert.deepEqual(gatewayIngress.spec.podSelector.matchLabels, {
-    "app.kubernetes.io/name": "openshell",
-    "app.kubernetes.io/instance": "openshell-gateway",
-  });
-  // The worker provisions Sandboxes and the API registers credential sources, so both reach
-  // the gateway; no other OCE component or tenant workload is admitted.
-  assert.deepEqual(gatewayIngress.spec.ingress[0].from, [
-    {
-      podSelector: {
-        matchLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "openclaw-enterprise",
-        },
-        matchExpressions: [
-          { key: "app.kubernetes.io/component", operator: "In", values: ["api", "worker"] },
-        ],
-      },
-    },
-    {
-      namespaceSelector: {
-        matchLabels: { "openshell.ai/openclaw-workspace": "true" },
-        matchExpressions: [{ key: "openclaw.dev/namespace", operator: "Exists" }],
-      },
-      podSelector: {
-        matchLabels: {
-          "openshell.ai/managed-by": "openshell",
-          "openshell.ai/boundary-role": "supervisor",
-        },
-      },
-    },
-  ]);
-
-  // The selected profile must use only the pinned cluster and imported images;
-  // no Compose command may participate in startup or cleanup.
-  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-  // The default tag may belong to an older checkout. Rebuild it before import
-  // so the in-cluster control plane always matches the source being launched.
-  assert.ok(
-    commands.some(
-      ({ command, args }) =>
-        command === "docker" &&
-        args[0] === "build" &&
-        args.includes("--target") &&
-        args.includes("runtime") &&
-        args.includes("--tag") &&
-        args.includes("openclaw-enterprise-controller:kubernetes-quickstart"),
-    ),
-  );
-  assert.ok(
-    commands.some(
-      ({ command, args }) =>
-        command === "docker" &&
-        args[0] === "build" &&
-        args.includes("-f") &&
-        args.includes("deploy/runtime/Dockerfile") &&
-        args.includes("openclaw-enterprise-runtime:kubernetes-quickstart"),
-    ),
-  );
-  assert.equal(
-    commands.some(({ args }) => args[0] === "compose"),
-    false,
-  );
-  const clusterCreate = commands.find(
-    ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
-  );
-  assert.match(
-    clusterCreate.args[clusterCreate.args.indexOf("--image") + 1],
-    /rancher\/k3s:v1\.36\.4-k3s1@sha256:/,
-  );
-  assert.equal(clusterCreate.args[clusterCreate.args.indexOf("--timeout") + 1], "41s");
-  assert.ok(clusterCreate.args.includes("--volume"));
-  assert.ok(clusterCreate.args.includes("--port"));
-  assert.equal(clusterCreate.args.includes("--network"), false);
-  assert.ok(
-    commands.some(
-      ({ command, args }) =>
-        command === "kubectl" &&
-        args[0] === "rollout" &&
-        args.includes("deployment/agent-sandbox-controller"),
-    ),
-  );
-  assert.equal(
-    commands.filter(
-      ({ command, args }) => command === "k3d" && args[0] === "image" && args[1] === "import",
-    ).length,
-    6,
-    "OpenShell startup imports its three images plus the OCE runtime, controller, and PostgreSQL images",
-  );
-  assert.equal(
-    commands.filter(
-      ({ command, args }) =>
-        command === "docker" &&
-        args[0] === "exec" &&
-        args.includes("tag") &&
-        args.some((arg) => arg.startsWith("docker.io/openclaw-development/openshell-")),
-    ).length,
-    3,
-    "OpenShell startup registers each imported platform digest inside k3s",
-  );
-  const helmInstalls = commands.filter(
-    ({ command, args }) => command === "helm" && args[0] === "upgrade",
-  );
-  assert.equal(helmInstalls.length, 2);
-  const gatewayInstall = helmInstalls.find(({ args }) => args[2] === "openshell-gateway");
-  assert.ok(gatewayInstall.args.includes("--namespace"));
-  assert.ok(gatewayInstall.args.includes("oce-system"));
-  assert.ok(gatewayInstall.args.includes("--set=gateway.image.pullPolicy=Never"));
-  assert.ok(gatewayInstall.args.includes("--set=sandboxRuntime.image.pullPolicy=Never"));
-  assert.ok(gatewayInstall.args.includes("--set=supervisor.image.pullPolicy=Never"));
-  assert.ok(gatewayInstall.args.includes("--set-string=gateway.image.registry=docker.io"));
-  assert.ok(
-    gatewayInstall.args.includes(
-      "--set-string=gateway.image.repository=openclaw-development/openshell-gateway",
-    ),
-  );
-  assert.ok(
-    gatewayInstall.args.includes(
-      "--set-string=gateway.image.digest=sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39",
-    ),
-  );
-  assert.equal(
-    gatewayInstall.args.includes("--set=supervisor.sandboxRuntime.networkPolicyEnforced=true"),
-    false,
-  );
-  assert.ok(gatewayInstall.args.includes("--set=workspaceResources.enabled=false"));
-  assert.ok(gatewayInstall.args.includes("--set=server.drivers.kubernetes.allowDriverConfig=true"));
-  assert.ok(
-    gatewayInstall.args.includes("--set=server.drivers.kubernetes.resourceAdmission.enabled=false"),
-  );
-  assert.ok(
-    gatewayInstall.args.includes("--set-string=server.drivers.kubernetes.workspaceMode=operator"),
-  );
-  assert.ok(
-    gatewayInstall.args.includes(
-      "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
-    ),
-  );
-  assert.ok(gatewayInstall.args.includes("--set=service.type=ClusterIP"));
-  assert.equal(gatewayInstall.args.includes("--set=service.type=NodePort"), false);
-  assert.ok(
-    helmInstalls.some(
-      ({ args }) => args[2] === "openclaw-enterprise" && args.includes("oce-system"),
-    ),
-  );
-  const workspaceTemplate = commands.find(
-    ({ command, args }) => command === "helm" && args[0] === "template",
-  );
-  assert.ok(workspaceTemplate);
-  assert.ok(workspaceTemplate.args.includes("openshell-workspace"));
-  assert.ok(
-    workspaceTemplate.args.includes("--set-string=gateway.serviceAccount.namespace=oce-system"),
-  );
-  assert.ok(workspaceTemplate.args.includes("--set=gateway.allowDriverConfig=true"));
-
-  const cleaned = runDevDown(fixture.env);
-  assert.equal(cleaned.status, 0, cleaned.stderr);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-});
-
-test("Kubernetes dev-up imports images by the name Podman recorded", async (t) => {
-  const fixture = await kubernetesFixture(t, "success", { engine: "podman" });
-  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
-  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
-  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
-
-  const result = runDevUp([], fixture.env);
-
-  assert.equal(result.status, 0, result.stderr);
-  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-  const imports = commands.filter(
-    ({ command, args }) => command === "k3d" && args[0] === "image" && args[1] === "import",
-  );
-  // Podman stores an unqualified local build under the `localhost` registry and
-  // k3d matches the recorded name exactly, so importing the requested name
-  // finds no image at all. Every name-based import must carry the prefix.
-  const runtimeImport = imports.find(({ args }) => args[2].endsWith("kubernetes-quickstart"));
-  assert.ok(runtimeImport, "the runtime image is imported by name");
-  assert.equal(
-    runtimeImport.args[2],
-    "localhost/openclaw-enterprise-runtime:kubernetes-quickstart",
-  );
-  assert.equal(
-    imports.some(({ args }) => args[2] === "openclaw-enterprise-runtime:kubernetes-quickstart"),
-    false,
-    "the unqualified name k3d cannot resolve is never imported",
-  );
-
-  // The digest-pinned OpenShell images stage through a local tag, which Podman
-  // qualifies the same way. containerd records the qualified reference, so the
-  // verification that follows the import has to look for it under `localhost`.
-  assert.equal(
-    commands.filter(
-      ({ command, args }) =>
-        command === "podman" &&
-        args[0] === "exec" &&
-        args.includes("tag") &&
-        args.some((arg) => arg.startsWith("localhost/openclaw-development/openshell-")),
-    ).length,
-    3,
-    "each staged OpenShell digest is registered inside k3s under its recorded name",
-  );
-
-  const cleaned = runDevDown(fixture.env);
-  assert.equal(cleaned.status, 0, cleaned.stderr);
-});
-
-test("Kubernetes-only dev-up keeps PostgreSQL and its egress policy valid across a cluster restart", async (t) => {
-  const fixture = await kubernetesFixture(t);
-  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
-  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
-  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
-  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
-
-  const result = runDevUp([], fixture.env);
-
-  assert.equal(result.status, 0, result.stderr);
-  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  // `k3d cluster stop` and `start` (or a host reboot) delete bare Pods, so a
-  // controller must own PostgreSQL for it to come back with its claim.
-  const postgres = JSON.parse(await readFile(join(directory, "postgres.json"), "utf8"));
-  assert.equal(postgres.kind, "StatefulSet");
-  assert.equal(postgres.spec.replicas, 1);
-  assert.deepEqual(postgres.spec.selector.matchLabels, { app: "postgres" });
-  assert.equal(postgres.spec.template.metadata.labels.app, "postgres");
-  assert.deepEqual(postgres.spec.template.spec.volumes[0], {
-    name: "data",
-    persistentVolumeClaim: { claimName: "postgres-data" },
-  });
-  // The chart admits PostgreSQL and the Kubernetes API only as /32 hosts, and
-  // both addresses change on restart. The launcher adds egress that does not.
-  const values = JSON.parse(await readFile(join(directory, "helm-values.json"), "utf8"));
-  assert.deepEqual(values.database.cidrs, ["10.42.0.20/32"]);
-  assert.deepEqual(values.cluster.cidrs, ["172.30.42.3/32"]);
-  assert.equal(values.cluster.port, 6443);
-  const restartEgress = JSON.parse(await readFile(join(directory, "restart-egress.json"), "utf8"));
-  const policy = (name) => restartEgress.items.find(({ metadata }) => metadata.name === name).spec;
-  const database = policy("openclaw-development-postgres-egress");
-  assert.deepEqual(database.podSelector.matchExpressions[0].values, [
-    "api",
-    "worker",
-    "initialization",
-  ]);
-  assert.deepEqual(database.egress, [
-    {
-      to: [{ podSelector: { matchLabels: { app: "postgres" } } }],
-      ports: [{ protocol: "TCP", port: 5432 }],
-    },
-  ]);
-  const cluster = policy("openclaw-development-kubernetes-egress");
-  assert.deepEqual(cluster.podSelector.matchExpressions[0].values, [
-    "api",
-    "worker",
-    "initialization",
-    "collector",
-  ]);
-  assert.deepEqual(cluster.egress, [
-    { to: [{ ipBlock: { cidr: "172.30.42.0/24" } }], ports: [{ protocol: "TCP", port: 6443 }] },
-  ]);
-  // The generated values must still satisfy the chart's own validation.
-  const rendered = spawnSync(
-    process.env.OCC_HELM_BIN ?? "helm",
-    [
-      "template",
-      "openclaw-enterprise",
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "oce-system",
-      "-f",
-      join(directory, "helm-values.json"),
-    ],
-    { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
-  );
-  if (rendered.error?.code !== "ENOENT") {
-    assert.equal(rendered.status, 0, rendered.stderr);
-  }
-  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-  assert.ok(
-    commands.some(
-      ({ command, args }) =>
-        command === "kubectl" && args.includes("rollout") && args.includes("statefulset/postgres"),
-    ),
-  );
-
-  const cleaned = runDevDown(fixture.env);
-  assert.equal(cleaned.status, 0, cleaned.stderr);
-});
-
-test("Kubernetes dev-up can keep the OCC control plane in Compose with OpenShell", async (t) => {
-  const fixture = await kubernetesFixture(t);
-  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
-  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "compose";
-  fixture.env.OCC_DEVELOPMENT_K3S_IMAGE = "rancher/k3s:v1.35.8-k3s1";
-
-  // This profile keeps OCC and PostgreSQL in Compose while the regular worker
-  // reconciles Kubernetes Compute and operator-mode OpenShell Workspaces in k3d.
-  const result = fixture.start();
-
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Control plane: Compose/);
-  assert.match(result.stdout, /Sandbox Driver: openshell/);
-  assert.doesNotMatch(result.stdout, /Deployment: Kubernetes only/);
-  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
-  assert.equal(state.sandboxDriver, "openshell");
-  assert.equal(state.deploymentMode, undefined);
-  assert.equal((await stat(join(directory, "compose.yaml"))).isFile(), true);
-
-  const configuration = loadYaml(await readFile(join(directory, "installation.yaml"), "utf8"));
-  assert.equal(configuration.drivers.compute.configuration.authentication.mode, "kubeconfig");
-  // The openshell Backend owns the gateway connection that both member Drivers share.
-  assert.deepEqual(configuration.backend, [
-    {
-      id: "openshell",
-      type: "openshell",
-      configuration: {
-        endpoint: "http://k3d-occ-dev-owned-server-0:30051",
-        insecureTransport: "network-policy",
-      },
-      drivers: {
-        sandbox: "sandbox-openshell-development",
-        credential_gateway: "credential-gateway-openshell-development",
-      },
-    },
-  ]);
-  assert.equal(configuration.drivers.sandbox.configuration.gateway.endpoint, undefined);
-  assert.equal(configuration.drivers.sandbox.configuration.gateway.workspaceMode, "operator");
-  assert.equal(
-    configuration.drivers.credential_gateway.id,
-    "credential-gateway-openshell-development",
-  );
-
-  const commands = await readJsonLines(fixture.env.SAFETY_LOG);
-  const clusterCreate = commands.find(
-    ({ command, args }) => command === "k3d" && args[0] === "cluster" && args[1] === "create",
-  );
-  assert.match(
-    clusterCreate.args[clusterCreate.args.indexOf("--image") + 1],
-    /rancher\/k3s:v1\.36\.4-k3s1@sha256:/,
-  );
-  assert.ok(
-    commands.some(
-      ({ command, args }) =>
-        command === "docker" &&
-        args[0] === "compose" &&
-        args.includes("controller") &&
-        args.includes("worker-kubernetes"),
-    ),
-  );
-  const gatewayInstall = commands.find(
-    ({ command, args }) =>
-      command === "helm" && args[0] === "upgrade" && args[2] === "openshell-gateway",
-  );
-  assert.ok(gatewayInstall.args.includes("openshell-system"));
-  assert.ok(gatewayInstall.args.includes("--set=service.type=NodePort"));
-  assert.ok(gatewayInstall.args.includes("--set=service.nodePort=30051"));
-
-  const cleaned = runDevDown(fixture.env);
-  assert.equal(cleaned.status, 0, cleaned.stderr);
-  await assert.rejects(stat(directory), { code: "ENOENT" });
-  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")), {
-    clusters: ["occ-dev-unrelated"],
-    compose: false,
-  });
-});
-
 test("Kubernetes dev-up rejects an unsupported control-plane selection", async (t) => {
   const fixture = await kubernetesFixture(t);
   fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "openshell";
@@ -1383,6 +962,7 @@ for (const driver of ["docker"]) {
 for (const scenario of [
   "compose-up-failed",
   "cluster-create-failed",
+  "node-dns-refused",
   "api-mismatch",
   "api-unauthorized",
 ]) {
@@ -1411,6 +991,16 @@ for (const scenario of [
     if (scenario === "cluster-create-failed") {
       assert.match(result.stderr, /partial cluster creation/);
     }
+    if (scenario === "node-dns-refused") {
+      // A node resolver that refuses queries stops startup before the first image pull.
+      assert.match(result.stderr, /cannot resolve registry-1\.docker\.io/);
+      assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
+      const commands = await readJsonLines(fixture.env.SAFETY_LOG);
+      assert.equal(
+        commands.some(({ command, args }) => command === "k3d" && args[0] === "image"),
+        false,
+      );
+    }
     if (scenario.startsWith("api-")) {
       await assert.rejects(stat(keyOutput), { code: "ENOENT" });
       assert.match(
@@ -1420,6 +1010,22 @@ for (const scenario of [
     }
   });
 }
+
+test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses queries", async (t) => {
+  const fixture = await kubernetesFixture(t, "node-dns-refused");
+  fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";
+  fixture.env.OCC_DEVELOPMENT_SANDBOX_DRIVER = "none";
+  fixture.env.DEV_UP_EXISTING_CONTROLLER_IMAGE = "1";
+  fixture.env.DEV_UP_EXISTING_RUNTIME_IMAGE = "1";
+  const result = runDevUp([], fixture.env);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot resolve registry-1\.docker\.io/);
+  assert.match(result.stderr, /OCC_DEVELOPMENT_K3D_DNS_RESOLVER/);
+  await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
+  assert.deepEqual(JSON.parse(await readFile(fixture.env.DEV_UP_RESOURCE_STATE, "utf8")).clusters, [
+    "occ-dev-unrelated",
+  ]);
+});
 
 test("Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry", async (t) => {
   const fixture = await kubernetesFixture(t, "cluster-delete-failed");

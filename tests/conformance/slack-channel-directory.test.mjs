@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createServer } from "node:http";
 import net from "node:net";
 import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import {
+  connectThroughProxy,
+  requestThroughProxy,
+  startSlackProxy,
+} from "../helpers/slack-proxy.mjs";
 
 const token = "xoxb-fixture";
 
@@ -47,7 +49,13 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
     "http://slack-proxy:3128",
     "http://slack-proxy.openclaw-system.svc.cluster.local:3128",
-    "http://user:pass@openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+    syntheticCredentialUrl({
+      protocol: "http",
+      username: "user",
+      password: "pass",
+      host: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+      port: 3128,
+    }),
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128/path",
     "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:65536",
   ]) {
@@ -56,26 +64,17 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
 });
 
 test("bundled Slack proxy process restricts methods and CONNECT targets", async (t) => {
-  const proxyPort = await reservePort();
-  const upstreamPort = await reservePort();
   const upstream = net.createServer((socket) => {
     socket.on("error", () => {});
     socket.write("fixture-upstream");
   });
-  await new Promise((resolve) => upstream.listen(upstreamPort, "127.0.0.1", resolve));
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => upstream.close());
-  const dnsFixture = await writeDnsFixture(upstreamPort);
-  const child = spawn(
-    process.execPath,
-    ["--import", dnsFixture, "apps/controller/src/slack-proxy.mjs"],
-    {
-      cwd: new URL("../../", import.meta.url),
-      env: { ...process.env, OCC_SLACK_PROXY_PORT: String(proxyPort) },
-      stdio: ["ignore", "ignore", "pipe"],
-    },
-  );
-  t.after(() => child.kill());
-  await waitForProxy(proxyPort);
+  // A fixed proxy port, so the test proves the proxy honours OCC_SLACK_PROXY_PORT.
+  const { port: proxyPort } = await startSlackProxy(t, {
+    fixedPort: true,
+    upstreamPort: upstream.address().port,
+  });
 
   assert.match(
     await requestThroughProxy(proxyPort, "GET / HTTP/1.1\r\nHost: slack.com\r\n\r\n"),
@@ -96,99 +95,56 @@ test("bundled Slack proxy process restricts methods and CONNECT targets", async 
   );
 });
 
-async function writeDnsFixture(upstreamPort) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-slack-proxy-test-"));
-  const path = join(directory, "dns-fixture.mjs");
-  await writeFile(
-    path,
-    `import dns from "node:dns";
-const originalLookup = dns.lookup;
-dns.lookup = (hostname, options, callback) => {
-  if (hostname !== "slack.com") {
-    return originalLookup(hostname, options, callback);
-  }
-  if (typeof options === "function") {
-    options(null, "127.0.0.1", 4);
-    return;
-  }
-  if (options?.all) {
-    callback(null, [{ address: "127.0.0.1", family: 4 }]);
-    return;
-  }
-  callback(null, "127.0.0.1", 4);
-};
-import net from "node:net";
-const originalConnect = net.connect;
-net.connect = (...args) => {
-  if (args[0]?.host === "slack.com" && args[0]?.port === 443) {
-    return originalConnect({ ...args[0], host: "127.0.0.1", port: ${upstreamPort} }, ...args.slice(1));
-  }
-  return originalConnect(...args);
-};
-`,
+test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", async (t) => {
+  // In its Pod the proxy is PID 1 (ENTRYPOINT node, no init), where the kernel drops a
+  // SIGTERM that has no handler: the Pod would wait out its grace period for SIGKILL.
+  const upstream = net.createServer((socket) => {
+    socket.on("error", () => {});
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => upstream.close());
+  const { child, port: proxyPort } = await startSlackProxy(t, {
+    upstreamPort: upstream.address().port,
+  });
+  t.after(() => child.kill("SIGKILL"));
+  const exited = new Promise((resolve) =>
+    child.once("exit", (code, signal) => resolve({ code, signal })),
   );
-  return path;
-}
 
-async function reservePort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const port = address.port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
-async function waitForProxy(port) {
-  const started = Date.now();
-  while (Date.now() - started < 5_000) {
-    try {
-      const socket = net.connect({ host: "127.0.0.1", port });
-      await new Promise((resolve, reject) => {
-        socket.once("connect", resolve);
-        socket.once("error", reject);
-      });
-      socket.end();
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-  throw new Error("Slack proxy did not start.");
-}
-
-async function connectThroughProxy(port, target) {
-  return requestThroughProxy(port, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
-}
-
-async function requestThroughProxy(port, request) {
-  const socket = net.connect({ host: "127.0.0.1", port });
-  let response = "";
-  try {
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("proxy response timeout")), 10_000);
-      const finish = () => {
-        clearTimeout(timeout);
-        resolve();
-      };
-      socket.once("error", reject);
-      socket.once("connect", () => {
-        socket.write(request);
-      });
-      socket.on("data", (chunk) => {
-        response += chunk;
-        if (response.includes("\r\n\r\n")) {
-          finish();
+  const tunnel = net.connect({ host: "127.0.0.1", port: proxyPort });
+  tunnel.on("error", () => {});
+  t.after(() => tunnel.destroy());
+  const tunnelClosed = new Promise((resolve) => tunnel.once("close", resolve));
+  await new Promise((resolve, reject) => {
+    let response = "";
+    tunnel.once("connect", () =>
+      tunnel.write("CONNECT slack.com:443 HTTP/1.1\r\nHost: slack.com:443\r\n\r\n"),
+    );
+    tunnel.on("data", (chunk) => {
+      response += chunk;
+      if (response.includes("\r\n\r\n")) {
+        if (response.startsWith("HTTP/1.1 200 Connection Established")) {
+          resolve();
+        } else {
+          reject(new Error(`CONNECT was refused: ${response}`));
         }
-      });
-      socket.once("end", finish);
+      }
     });
-    return response;
-  } finally {
-    socket.destroy();
-  }
-}
+    tunnel.once("close", () => reject(new Error("tunnel closed before it was established")));
+  });
+
+  child.kill("SIGTERM");
+  const bound = (promise, what) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${what} within 5 s`)), 5_000);
+        timer.unref();
+      }),
+    ]);
+  assert.deepEqual(await bound(exited, "proxy exit"), { code: 0, signal: null });
+  await bound(tunnelClosed, "tunnel close");
+});
 
 function auth() {
   return Response.json({

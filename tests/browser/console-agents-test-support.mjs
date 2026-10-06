@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
@@ -6,6 +7,10 @@ import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+
+const defaultCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+);
 
 export const STARTER_CONTROL_UI = {
   enabled: true,
@@ -19,6 +24,8 @@ export async function openCreateSecretDialog(scope, label, options = {}) {
 }
 
 export async function createModelCredentialSecret(page, secretValue) {
+  // Preset quick-start reads the installed template before rendering its credential fields.
+  await page.locator("#create-agent-form").waitFor();
   const picker = page.locator("#provider-credential-secret");
   if ((await picker.count()) === 0 || !(await picker.isVisible())) {
     const legacyCredential = page.getByLabel("API key", { exact: true });
@@ -57,6 +64,23 @@ export async function openAdvancedSettings(page) {
   if (await summary.count()) {
     await summary.click();
   }
+}
+
+// Create Agent stays disabled while the form reads Installation capabilities and repository
+// choices. Waits until the live form has both; a retained preview of an earlier form is inert
+// and shows that form's settled reads. A capability retry keeps the failure text until it ends.
+export async function waitForCreateFormReads(page) {
+  await page.waitForFunction(() => {
+    const form = globalThis.document.querySelector("#create-agent-form");
+    return (
+      form !== null &&
+      form.closest("[inert]") === null &&
+      form.querySelector('.repository-options[aria-busy="false"]') !== null &&
+      ![...form.querySelectorAll('[role="status"]')].some(
+        (node) => node.textContent === "Checking installation capabilities…",
+      )
+    );
+  });
 }
 
 export async function expectNativeAdminHidden(page) {
@@ -186,6 +210,7 @@ export async function createRepositoryLaunchFixture(
   { reloadablePolicy = false } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
+    defaultPresets: [defaultCodexPreset],
     backends: [...backendFixtures, repositoryBackendFixture],
     repositoryCredentials: true,
   });

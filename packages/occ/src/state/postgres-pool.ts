@@ -25,7 +25,13 @@ export async function createPostgresPool(
 
 type PostgresPoolOptions = Pick<
   pg.PoolConfig,
-  "max" | "connectionTimeoutMillis" | "statement_timeout" | "query_timeout" | "options"
+  | "max"
+  | "connectionTimeoutMillis"
+  | "statement_timeout"
+  | "query_timeout"
+  | "options"
+  | "keepAlive"
+  | "keepAliveInitialDelayMillis"
 > & { readonly authMode?: string };
 
 async function constructPostgresPool(

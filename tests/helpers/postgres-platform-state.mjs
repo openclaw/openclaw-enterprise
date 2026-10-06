@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import {
-  kubernetesNamespaceName,
-  kubernetesGatewayNamespaceName,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
@@ -23,6 +18,8 @@ import {
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
+import { availablePort } from "./available-port.mjs";
+import { stopProcess } from "./stop-process.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
@@ -269,10 +266,7 @@ async function grantTenantAccess(context, namespaceId) {
   // this mirrors the operator-owned RoleBinding handoff required by the real driver.
   const { platformNamespace, account, tenantRole } =
     await createKubernetesStartupEnvironment(context);
-  for (const name of [
-    kubernetesNamespaceName(namespaceId),
-    kubernetesGatewayNamespaceName(namespaceId),
-  ]) {
+  for (const name of [kubernetesNamespaceName(namespaceId)]) {
     await waitForKubernetesNamespace(context, namespaceId, name);
     try {
       await kubectl(
@@ -296,10 +290,7 @@ function cleanupKubernetesNamespaces(context, namespaceIds) {
   context.after(async () => {
     const cleanup = await Promise.allSettled(
       namespaceIds
-        .flatMap((namespaceId) => [
-          kubernetesNamespaceName(namespaceId),
-          kubernetesGatewayNamespaceName(namespaceId),
-        ])
+        .map(kubernetesNamespaceName)
         .map((name) =>
           kubectl("delete", "namespace", name, "--ignore-not-found=true", "--wait=true"),
         ),
@@ -381,32 +372,6 @@ function admitted(values) {
   return admitLoggingConfiguration(values, "info");
 }
 
-async function availablePort() {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address();
-  await new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  return port;
-}
-
-async function stopController(child) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return;
-  }
-  const exited = once(child, "exit");
-  child.kill("SIGTERM");
-  const force = setTimeout(() => child.kill("SIGKILL"), 2_000);
-  force.unref();
-  try {
-    await exited;
-  } finally {
-    clearTimeout(force);
-  }
-}
-
 async function startController(context, { kubernetesDrivers = false } = {}) {
   const port = await availablePort();
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
@@ -438,7 +403,7 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  context.after(() => stopController(child));
+  context.after(() => stopProcess(child));
 
   let output = "";
   child.stdout.setEncoding("utf8");
@@ -457,7 +422,7 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
         email: adminEmail,
         password: adminPassword,
       });
-      return { child, origin, session };
+      return { child, origin, session, output: () => output };
     } catch {
       await delay(40);
     }
@@ -483,7 +448,7 @@ async function spawnWorker(context, { kubernetesDrivers = false } = {}) {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  context.after(() => stopController(child));
+  context.after(() => stopProcess(child));
 
   let output = "";
   child.stdout.setEncoding("utf8");
@@ -603,6 +568,7 @@ async function createDurableController(pool) {
 
 export {
   adminEmail,
+  adminPassword,
   admitted,
   cleanupKubernetesNamespaces,
   createConfiguration,
@@ -622,7 +588,6 @@ export {
   startController,
   startKubernetesController,
   startKubernetesWorker,
-  stopController,
   updateConfiguration,
   verifyPlatformStateStoreContract,
   waitForNamespaceReady,

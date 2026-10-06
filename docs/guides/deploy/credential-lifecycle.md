@@ -23,7 +23,7 @@ and who can stop affected workloads if access must be revoked immediately.
 
 | Credential                           | Owner and consumer                                                                                                             | Supported change and effect                                                                                                                                                                                                                                                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Human password and session           | The administrator owns the account; Better Auth verifies sessions for OCC API clients.                                         | Sign-out revokes the current session. General account management and password-reset endpoints are not exposed. See [authentication](../../reference/authentication.md#session-lifecycle).                                                                                                                                                |
+| Human password and session           | The administrator owns the account; Better Auth verifies sessions for OCC API clients.                                         | Sign-out revokes the current session. Admins create accounts; no endpoint resets passwords. External sign-in adds online disable and revocation; password-only ends others' sessions only by [stopped maintenance](auth-maintenance.md#choose-the-operation). See [authentication](../../reference/authentication.md#session-lifecycle). |
 | OCC service API key                  | An Installation administrator issues keys for a non-Agent IAM service principal; automation clients consume them.              | Multiple keys may overlap. Revocation rejects subsequent requests; an already-authorized request may finish. See [service keys](../../reference/authentication/service-api-keys.md).                                                                                                                                                     |
 | Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
@@ -37,11 +37,12 @@ and who can stop affected workloads if access must be revoked immediately.
 
 For routine renewal, follow [issue a service key](../../reference/authentication/service-api-keys.md#issue-a-service-key)
 using an authorized administrator. Store the one-time value privately and retain
-its non-secret ID and expiry. Switch the client to the replacement, then exercise
-an operation the client normally performs. Verify that its permissions allow
-that operation and reject one outside its grants.
+its non-secret ID and expiry. Switch the client to the replacement, then confirm
+that an operation the client normally performs succeeds. For a principal with
+narrower grants than the Installation service administrator, also check that an
+operation outside them returns `403`.
 
-Only after that check, [revoke the old key](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key)
+Only after these checks, [revoke the old key](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key)
 and verify that it returns `401`. Issuing or revoking a key does not change IAM
 grants, revoke other keys for the principal, or cancel running Agent work. To end
 a human operator session, use [sign-out](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
@@ -100,6 +101,15 @@ and access to the selected model. Readiness requires a successful native model p
 Choose **ChatGPT OAuth (Experimental)** with dedicated Codex when creating an Agent. Open the
 provided verification link, enter the displayed code, and complete sign-in.
 Device authorization must be enabled for the upstream account or workspace.
+The API Pods start and complete the login at `auth.openai.com`, and the chart's
+default network policy grants them no such egress: add its IPv4 `/32` addresses to
+Helm `api.modelDiscoveryCidrs` (see
+[model discovery](../../reference/console/create-and-deploy.md#create-an-agent)) or
+allow it in your cluster's egress controls. Without it, **Sign in with OAuth**
+fails with `503 DEPENDENCY_UNAVAILABLE` ("OCC could not reach the sign-in
+service…"), at once when the connection is refused or after about 10 seconds when
+the network drops it, and the API logs a `device_authorization.start_failed`
+warning with the error code (for example `ECONNREFUSED` or `TimeoutError`).
 OCE stores the resulting native bundle in its Secret backend; the browser receives
 only a source reference. Use that login to search and select plugins, then create
 and deploy the Agent. Starting login requires Agent-create and Secret-create

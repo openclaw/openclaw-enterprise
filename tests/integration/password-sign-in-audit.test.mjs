@@ -80,6 +80,29 @@ test("a password-only sign-in reports its outcome to the audit seam", async () =
   assert.equal(memoryDatabase.session.length, 1);
 });
 
+test("a sign-in that fails on its dependency is 503, not an audited or counted refusal", async () => {
+  const outcomes = [];
+  const { auth, memoryDatabase } = controller({
+    accepted: async (userId) => outcomes.push(["accepted", userId]),
+    refused: async () => outcomes.push(["refused"]),
+  });
+  await auth.createAccount({ email, password });
+  // Every account read now fails, as it would with the database down.
+  Object.defineProperty(memoryDatabase, "user", {
+    get() {
+      throw new Error("database unavailable");
+    },
+  });
+  const statuses = [];
+  for (let attempt = 0; attempt < 11; attempt += 1) {
+    statuses.push((await signIn(auth, { email, password: "wrong-password-guess" })).status);
+  }
+  // Nothing was refused, so nothing is audited as a refusal and no budget is spent: the
+  // email lane admits ten failures, so the eleventh attempt would be 429 if these counted.
+  assert.deepEqual(new Set(statuses), new Set([503]));
+  assert.deepEqual(outcomes, []);
+});
+
 test("a sign-in whose audit cannot be written is refused and its session revoked", async () => {
   const { auth, memoryDatabase } = controller({
     accepted: async () => {

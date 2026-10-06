@@ -11,12 +11,14 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
+import { bindRole } from "../helpers/iam-grants.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -192,6 +194,36 @@ function createOpenClawConfiguration() {
   };
 }
 
+async function configureAgentHarnessSecret(context, namespace, agent, configurationId, secretName) {
+  const harnessSecret = await context.controller.createSecret(context.principal.id, {
+    namespaceId: namespace.id,
+    name: secretName,
+    value: "synthetic-configuration-key",
+  });
+  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
+    namespaceId: namespace.id,
+    agentId: agent.body.data.id,
+    configurationId,
+    harnessAuth: { method: "api_key", source: harnessSecret.ref },
+  });
+  context.identities.push({
+    kind: "service_principal",
+    id: admittedAgent.servicePrincipalId,
+    namespaceId: namespace.id,
+    agentId: admittedAgent.id,
+  });
+  context.roles.push({
+    id: "model-consumer",
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  bindRole(context, admittedAgent.servicePrincipalId, {
+    id: "model-consumer",
+    roleId: "model-consumer",
+    namespaceId: namespace.id,
+    resource: { kind: "secret", id: harnessSecret.id },
+  });
+}
+
 test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, exact scope, and audit", async () => {
   const configurationDriver = createConfigurationBackend();
   const context = await fixture({ configurationDriver });
@@ -317,16 +349,135 @@ test("Configuration HTTP requires native supported requests and rejects immutabl
     );
     assert.deepEqual(rejected.body.error.details, [{ path: `/${field}`, code: "UNKNOWN_FIELD" }]);
   }
-  // A long unknown field name still fits the 256-character error message contract.
+  // A long unknown field name still fits the 256-character error message contract; the
+  // name is cut, not the problem wording.
   const longField = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
     body: { values: {}, ["x".repeat(400)]: true },
   });
   assert.equal(longField.status, 400, JSON.stringify(longField.body));
-  assert.ok(longField.body.error.message.length <= 256, longField.body.error.message);
-  assert.match(longField.body.error.message, /: body \/x+…$/);
+  assert.equal(longField.body.error.message.length, 256, longField.body.error.message);
+  assert.match(longField.body.error.message, /: body \/x+… is not an accepted field\.$/);
 
   const unchanged = await request(context.app, "GET", `${collection}/${created.body.data.id}`);
   assert.deepEqual(unchanged.body.data, created.body.data);
+});
+
+test("Configuration HTTP names a model provider baseUrl or api the runtime cannot use", async () => {
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const provider = (settings) => ({ models: { providers: { openai: settings } } });
+  const baseUrlMessage = (field) =>
+    `Configuration field ${field} must be an absolute http or https URL.`;
+  const apiMessage = (field) =>
+    `Configuration field ${field} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`;
+  // These values used to save and then fail deployment as an unexplained model probe
+  // failure; the save now answers a 400 naming the field and stores nothing.
+  for (const [values, message] of [
+    [
+      provider({ baseUrl: "not a url", api: "openai-responses" }),
+      baseUrlMessage("/models/providers/openai/baseUrl"),
+    ],
+    [
+      provider({ baseUrl: "ftp://models.example/v1" }),
+      baseUrlMessage("/models/providers/openai/baseUrl"),
+    ],
+    [
+      provider({ baseUrl: "https://api.openai.com/v1", api: "openai-bogus" }),
+      apiMessage("/models/providers/openai/api"),
+    ],
+    [
+      provider({
+        models: [
+          { id: "a", name: "a" },
+          { id: "b", name: "b", baseUrl: "/v1" },
+        ],
+      }),
+      baseUrlMessage("/models/providers/openai/models/1/baseUrl"),
+    ],
+    // Only a provider's blank baseUrl means "use the built-in default"; a model's must be set.
+    [
+      provider({ models: [{ id: "a", name: "a", baseUrl: "" }] }),
+      baseUrlMessage("/models/providers/openai/models/0/baseUrl"),
+    ],
+  ]) {
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assert.equal(rejected.body.error.message, message);
+  }
+  assert.deepEqual(configurationDriver.storedConfigurations(), []);
+
+  const values = createOpenClawConfiguration();
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  const failedUpdate = await request(context.app, "PATCH", item, {
+    body: { values: provider({ models: [{ id: "a", name: "a", api: 7 }] }) },
+  });
+  assert.equal(failedUpdate.status, 400);
+  assert.equal(
+    failedUpdate.body.error.message,
+    apiMessage("/models/providers/openai/models/0/api"),
+  );
+  const unchanged = await request(context.app, "GET", item);
+  assert.deepEqual(unchanged.body.data, created.body.data);
+  // Any API id the pinned runtime accepts, on a provider or a model, still saves, as do a
+  // blank provider baseUrl (the runtime's built-in default) and `${VAR}` references the
+  // runtime resolves before it validates.
+  const local = {
+    models: {
+      providers: {
+        local: {
+          baseUrl: "http://127.0.0.1:11434",
+          api: "ollama",
+          models: [{ id: "m", name: "m", api: "openai-completions", baseUrl: "http://[::1]:9/v1" }],
+        },
+        openai: { baseUrl: "" },
+        gateway: { baseUrl: "${PRIVATE_GATEWAY_URL}", api: "${GATEWAY_MODEL_API}" },
+        fallback: { baseUrl: "${FALLBACK_URL:-https://models.example/v1}", api: "${API:-ollama}" },
+      },
+    },
+  };
+  const updated = await request(context.app, "PATCH", item, { body: { values: local } });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(updated.body.data.values, local);
+});
+
+test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
+  const context = await fixture();
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const ids = [];
+  for (let index = 0; index < 3; index += 1) {
+    const created = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values: createOpenClawConfiguration() },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    ids.push(created.body.data.id);
+  }
+  // Configurations have no list route, so the 409 is where an operator learns which IDs
+  // to delete. Configurations created in the same millisecond may be named in any order.
+  const named = async () => {
+    const blocked = await request(context.app, "DELETE", `/namespaces/${namespace.id}`);
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.error.code, "NAMESPACE_NOT_EMPTY");
+    const listed =
+      /^The requested Namespace is not empty\. It still contains: Configurations \((.+)\)\.$/.exec(
+        blocked.body.error.message,
+      );
+    assert.ok(listed, blocked.body.error.message);
+    return listed[1].split(", ").sort();
+  };
+  assert.deepEqual(await named(), [...ids].sort());
+  const removed = await request(context.app, "DELETE", `${collection}/${ids[0]}`);
+  assert.equal(removed.status, 204);
+  assert.deepEqual(await named(), ids.slice(1).sort());
 });
 
 test("Configuration HTTP routes reject foreign Namespace ownership and missing admission", async () => {
@@ -384,28 +535,11 @@ test("Configuration authorization failures target the exact Configuration resour
 
 for (const runtimeLogging of [undefined, "driver"]) {
   test(`Configuration references and immutable revisions with ${runtimeLogging ?? "platform"} logging`, async () => {
-    const computeDriver = {
-      id: "compute-configuration-integration",
-      capability: "compute",
+    const computeDriver = createReadyComputeDriver("compute-configuration-integration", {
       implementation: "integration-compute-substrate",
       validateHarnessAuth() {},
       ...(runtimeLogging === undefined ? {} : { runtimeLogging }),
-      async ensureNamespace(namespace) {
-        return { namespaceId: namespace.id, namespaceReady: true };
-      },
-      async deleteNamespace(namespace) {
-        return { namespaceId: namespace.id, namespaceDeleted: true };
-      },
-      async prepareRevision(revision) {
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-        };
-      },
-      async retireRevision() {},
-    };
+    });
     const context = await fixture({ computeDriver });
     const namespace = await bootstrapAndCreateNamespace(context);
     const collection = `/namespaces/${namespace.id}/configurations`;
@@ -436,36 +570,13 @@ for (const runtimeLogging of [undefined, "driver"]) {
     await context.controller.transact((state) =>
       state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
     );
-    const harnessSecret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name: "configuration-model-key",
-      value: "synthetic-configuration-key",
-    });
-    const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-      namespaceId: namespace.id,
-      agentId: agent.body.data.id,
+    await configureAgentHarnessSecret(
+      context,
+      namespace,
+      agent,
       configurationId,
-      harnessAuth: { method: "api_key", source: harnessSecret.ref },
-    });
-    context.identities.push({
-      kind: "service_principal",
-      id: admittedAgent.servicePrincipalId,
-      namespaceId: namespace.id,
-      agentId: admittedAgent.id,
-    });
-    context.roles.push({
-      id: "model-consumer",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    context.bindings.push({
-      id: "model-consumer",
-      subjectKind: "identity",
-      subjectId: admittedAgent.servicePrincipalId,
-      roleId: "model-consumer",
-      namespaceId: namespace.id,
-      resourceKind: "secret",
-      resourceId: harnessSecret.id,
-    });
+      "configuration-model-key",
+    );
     const deployed = await request(
       context.app,
       "POST",
@@ -512,27 +623,10 @@ for (const runtimeLogging of [undefined, "driver"]) {
 }
 
 test("Deploy rejects Configuration content that selects no supported Harness runtime with a 400", async () => {
-  const computeDriver = {
-    id: "compute-configuration-integration",
-    capability: "compute",
+  const computeDriver = createReadyComputeDriver("compute-configuration-integration", {
     implementation: "integration-compute-substrate",
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
+  });
   const context = await fixture({ computeDriver });
   const namespace = await bootstrapAndCreateNamespace(context);
   const collection = `/namespaces/${namespace.id}/configurations`;
@@ -552,36 +646,13 @@ test("Deploy rejects Configuration content that selects no supported Harness run
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
-  const harnessSecret = await context.controller.createSecret(context.principal.id, {
-    namespaceId: namespace.id,
-    name: "runtime-less-model-key",
-    value: "synthetic-configuration-key",
-  });
-  const admittedAgent = await context.controller.updateAgent(context.principal.id, {
-    namespaceId: namespace.id,
-    agentId: agent.body.data.id,
+  await configureAgentHarnessSecret(
+    context,
+    namespace,
+    agent,
     configurationId,
-    harnessAuth: { method: "api_key", source: harnessSecret.ref },
-  });
-  context.identities.push({
-    kind: "service_principal",
-    id: admittedAgent.servicePrincipalId,
-    namespaceId: namespace.id,
-    agentId: admittedAgent.id,
-  });
-  context.roles.push({
-    id: "model-consumer",
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  context.bindings.push({
-    id: "model-consumer",
-    subjectKind: "identity",
-    subjectId: admittedAgent.servicePrincipalId,
-    roleId: "model-consumer",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: harnessSecret.id,
-  });
+    "runtime-less-model-key",
+  );
 
   const deployed = await request(
     context.app,
@@ -716,6 +787,11 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
     body: { kind: "agent", values: unsafe },
   });
   assert.equal(rejected.status, 400);
+  // The caller learns which field must become a reference, never the submitted value.
+  assert.equal(
+    rejected.body.error.message,
+    "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
+  );
   assert.equal(JSON.stringify(rejected.body).includes(sentinel), false);
   assert.deepEqual(await readdir(root), []);
 
@@ -732,6 +808,44 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   });
   assert.equal(failedUpdate.status, 400);
   assert.equal(JSON.stringify(failedUpdate.body).includes(sentinel), false);
+  // Credential environment values and headers name their own field the same way.
+  for (const [unsafeValues, field] of [
+    [{ env: { vars: { OPENAI_API_KEY: sentinel } } }, "/env/vars/OPENAI_API_KEY"],
+    [
+      { models: { providers: { "a/b~c": { headers: { Authorization: `Bearer ${sentinel}` } } } } },
+      "/models/providers/a~1b~0c/headers/Authorization",
+    ],
+    // A long provider name shortens the path so the message stays within the 256-character contract.
+    [
+      { models: { providers: { ["p".repeat(300)]: { apiKey: sentinel } } } },
+      `/models/providers/p+…`,
+    ],
+  ]) {
+    const named = await request(context.app, "PATCH", `${collection}/${id}`, {
+      body: { values: unsafeValues },
+    });
+    assert.equal(named.status, 400);
+    assert.match(named.body.error.message, new RegExp(`^Configuration field ${field} holds`));
+    assert.ok(named.body.error.message.length <= 256);
+    assert.equal(JSON.stringify(named.body).includes(sentinel), false);
+  }
+  // A provider name is a submitted object key: control and format characters in it are
+  // replaced, and a shortened path never ends in half of a surrogate pair, as for other
+  // contract messages that name submitted keys.
+  for (const [providerName, field] of [
+    ["evil\u001b[2J\u202Ename", "/models/providers/evil?[2J?name/apiKey"],
+    ["\u{1F600}".repeat(150), `/models/providers/${"\u{1F600}".repeat(72)}…`],
+  ]) {
+    const named = await request(context.app, "PATCH", `${collection}/${id}`, {
+      body: { values: { models: { providers: { [providerName]: { apiKey: sentinel } } } } },
+    });
+    assert.equal(named.status, 400);
+    const { message } = named.body.error;
+    assert.equal(message.startsWith(`Configuration field ${field} holds`), true, message);
+    assert.equal(/[\p{Cc}\p{Cf}]/u.test(message), false);
+    assert.equal(message.isWellFormed(), true);
+    assert.ok(Array.from(message).length <= 256);
+  }
   assert.equal(await readFile(path, "utf8"), original);
   const unchanged = await request(context.app, "GET", `${collection}/${id}`);
   assert.equal(unchanged.status, 200);
@@ -741,7 +855,7 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   const persisted = JSON.parse(original);
   await assert.rejects(
     configurationDriver.create({ ...persisted, values: unsafe }),
-    /Model credentials must use unresolved references/,
+    /holds a credential value inline, where a reference is required/,
   );
   assert.equal(await readFile(path, "utf8"), original);
   await writeFile(path, JSON.stringify({ ...persisted, values: unsafe }));

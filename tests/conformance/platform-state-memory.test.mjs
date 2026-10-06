@@ -6,8 +6,14 @@ import { verifyPlatformStateStoreContract } from "./platform-state-store.contrac
 import { seedSessionRevision } from "./repository-sessions.contract.mjs";
 
 test("memory policy refuses new grants to an Agent after deletion admission", async () => {
-  const store = new InMemoryPlatformState();
-  const { namespace, agent } = await seedSessionRevision(store);
+  const human = {
+    id: `prn_${randomUUID()}`,
+    kind: "principal",
+    issuer: "https://identity.example.com",
+    subject: randomUUID(),
+  };
+  const store = new InMemoryPlatformState({ iamIdentities: [human] });
+  const { namespace, agent, revision } = await seedSessionRevision(store);
   const role = {
     id: `role_${randomUUID()}`,
     namespaceId: namespace.id,
@@ -39,6 +45,24 @@ test("memory policy refuses new grants to an Agent after deletion admission", as
       "deleting",
     );
   });
+  // Deletion removes bindings on the Agent and its revisions, and bindings for its
+  // ServicePrincipal, so none of them admits a new binding.
+  for (const target of [
+    { resourceKind: "agent", resourceId: agent.id },
+    { resourceKind: "agent_revision", resourceId: revision.id },
+  ]) {
+    await assert.rejects(
+      store.transact((unit) =>
+        unit.iamPolicy.createAccessBinding({
+          ...binding,
+          ...target,
+          id: `binding_${randomUUID()}`,
+          subjectId: human.id,
+        }),
+      ),
+      /target does not exist in this Namespace or is being deleted/,
+    );
+  }
   await assert.rejects(
     store.transact((unit) =>
       unit.iamPolicy.createAccessBinding({
@@ -46,7 +70,7 @@ test("memory policy refuses new grants to an Agent after deletion admission", as
         id: `binding_${randomUUID()}`,
       }),
     ),
-    /target does not exist in this Namespace or is being deleted/,
+    /the ServicePrincipal of a live Agent here/,
   );
 });
 

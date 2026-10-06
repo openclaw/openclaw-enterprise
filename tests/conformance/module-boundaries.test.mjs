@@ -36,6 +36,9 @@ async function workspace(t, overrides = {}) {
 
 const rules = (report) => report.violations.map((item) => item.rule).sort();
 const from = (report, path) => report.edges.filter((edge) => edge.from === path);
+// Whether the report has a violation of `rule` from `path`.
+const violates = (report, path, rule) =>
+  report.violations.some((item) => item.from === path && item.rule === rule);
 
 test("keeps native package error diagnostics independent of the workspace path", async (t) => {
   const { root, write, args } = await workspace(t);
@@ -145,13 +148,7 @@ test("uses Node ESM lookup without CommonJS global search paths", async (t) => {
       report.violations.some((item) => item.from === "apps/app/src/global-esm.mjs"),
       false,
     );
-    assert.ok(
-      report.violations.some(
-        (item) =>
-          item.from === "apps/app/src/global-require.cjs" &&
-          item.rule === "workspace-package-mismatch",
-      ),
-    );
+    assert.ok(violates(report, "apps/app/src/global-require.cjs", "workspace-package-mismatch"));
     return true;
   });
 });
@@ -192,11 +189,7 @@ test("fails closed when the selected declaration is outside the source graph", a
   assert.equal(relative(root, native), "packages/library/types/hidden.d.ts");
   const excluded = await check();
   assert.equal(excluded.ok, false);
-  assert.ok(
-    excluded.violations.some(
-      (item) => item.from === source && item.rule === "unresolved-local-import",
-    ),
-  );
+  assert.ok(violates(excluded, source, "unresolved-local-import"));
   assert.equal(
     excluded.resolutions.find((item) => item.reference.from === source).to,
     "packages/library/types/hidden.d.ts",
@@ -409,12 +402,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
     );
     assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      setup,
-    );
+    assert.ok(violates(report, source, "unresolved-dynamic-import"), setup);
     assert.equal(
       from(report, source).some((item) => item.to.endsWith("/public/chosen.cjs")),
       false,
@@ -429,12 +417,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
     await write(source, `${assignment} console.log(require(require.resolve("./chosen.cjs")));`);
     assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      assignment,
-    );
+    assert.ok(violates(report, source, "unresolved-dynamic-import"), assignment);
   }
   await write(
     source,
@@ -445,11 +428,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
      console.log(load("./chosen.cjs"));`,
   );
   assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
-  assert.ok(
-    (await check()).violations.some(
-      (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(await check(), source, "unresolved-dynamic-import"));
   await write(
     source,
     `const mod = require("node:module");
@@ -459,11 +438,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
      console.log(load("./chosen.cjs"));`,
   );
   assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
-  assert.ok(
-    (await check()).violations.some(
-      (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(await check(), source, "unresolved-dynamic-import"));
   await rm(join(root, source));
   for (const assignment of [
     'URL = class { constructor(x, y) { return {href: new NativeURL("../private/chosen.mjs", y).href}; } };',
@@ -479,12 +454,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
     );
     assert.equal((await run(process.execPath, [join(root, esm)])).stdout.trim(), "PRIVATE");
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === esm && item.rule === "unresolved-dynamic-import",
-      ),
-      assignment,
-    );
+    assert.ok(violates(report, esm, "unresolved-dynamic-import"), assignment);
   }
   for (const declaration of [
     'import url from "node:url"; const U = url["URL"];',
@@ -499,12 +469,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
        console.log((await import(new URL("./chosen.mjs", import.meta.url).href)).default);`,
     );
     assert.equal((await run(process.execPath, [join(root, esm)])).stdout.trim(), "PRIVATE");
-    assert.ok(
-      (await check()).violations.some(
-        (item) => item.from === esm && item.rule === "unresolved-dynamic-import",
-      ),
-      declaration,
-    );
+    assert.ok(violates(await check(), esm, "unresolved-dynamic-import"), declaration);
   }
   await write(
     esm,
@@ -549,11 +514,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
      console.log((await import(new (U)("./chosen.mjs", import.meta.url).href)).default);`,
   );
   assert.equal((await run(process.execPath, [join(root, esm)])).stdout.trim(), "PRIVATE");
-  assert.ok(
-    (await check()).violations.some(
-      (item) => item.from === esm && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(await check(), esm, "unresolved-dynamic-import"));
   await write(
     esm,
     'const global = {}; global.URL = class {}; console.log((await import(new URL("./chosen.mjs", import.meta.url).href)).default);',
@@ -602,11 +563,7 @@ test("fails closed when modeled Node helpers are changed or exposed", async (t) 
      console.log(require((path.join)(__dirname, "chosen.cjs")));`,
   );
   assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
-  assert.ok(
-    (await check()).violations.some(
-      (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(await check(), source, "unresolved-dynamic-import"));
 });
 
 test("fails closed for a non-native Node path flavor", async (t) => {
@@ -644,12 +601,7 @@ test("fails closed for a non-native Node path flavor", async (t) => {
       process.platform === "win32" ? "PUBLIC" : "PRIVATE",
     );
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      setup,
-    );
+    assert.ok(violates(report, source, "unresolved-dynamic-import"), setup);
     assert.equal(
       from(report, source).some((item) => item.to.endsWith("/public/chosen.cjs")),
       false,
@@ -703,12 +655,7 @@ test("fails closed when CommonJS wrapper paths are reassigned", async (t) => {
     await write(source, `${setup} ${assignment} console.log(require(${target}));`);
     assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      assignment,
-    );
+    assert.ok(violates(report, source, "unresolved-dynamic-import"), assignment);
     assert.equal(
       from(report, source).some((item) => item.to === "apps/app/src/public/chosen.cjs"),
       false,
@@ -724,11 +671,7 @@ test("fails closed when CommonJS wrapper paths are reassigned", async (t) => {
   );
   assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
   const redirected = await check();
-  assert.ok(
-    redirected.violations.some(
-      (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(redirected, source, "unresolved-dynamic-import"));
   assert.equal(
     from(redirected, source).some((item) => item.to === "apps/app/src/public/chosen.cjs"),
     false,
@@ -741,12 +684,7 @@ test("fails closed when CommonJS wrapper paths are reassigned", async (t) => {
   ]) {
     await write(source, `${setup} ${assignment} require(__dirname + __filename);`);
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      assignment,
-    );
+    assert.ok(violates(report, source, "unresolved-dynamic-import"), assignment);
   }
   for (const target of [
     'path.join(path.dirname(__filename), "chosen.cjs")',
@@ -798,9 +736,7 @@ test("fails closed when implicit CommonJS require is reassigned", async (t) => {
     );
     const report = await check();
     assert.ok(
-      report.violations.some(
-        (item) => item.from === publicSource && item.rule === "unresolved-dynamic-import",
-      ),
+      violates(report, publicSource, "unresolved-dynamic-import"),
       assignment +
         " " +
         JSON.stringify(report.resolutions.filter((item) => item.reference.from === publicSource)),
@@ -813,12 +749,7 @@ test("fails closed when implicit CommonJS require is reassigned", async (t) => {
   for (const assignment of ["require++;", "++require;", "for (require in {}) {}"]) {
     await write(publicSource, `${assignment} require("./secret.cjs");`);
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === publicSource && item.rule === "unresolved-dynamic-import",
-      ),
-      assignment,
-    );
+    assert.ok(violates(report, publicSource, "unresolved-dynamic-import"), assignment);
   }
   await write(
     publicSource,
@@ -865,12 +796,7 @@ test("fails closed when the implicit CommonJS module loader is reassigned", asyn
     await write(source, `${setup} ${assignment} console.log(module.require("./secret.cjs"));`);
     assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
     const report = await check();
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      assignment,
-    );
+    assert.ok(violates(report, source, "unresolved-dynamic-import"), assignment);
     assert.equal(
       from(report, source).some((item) => item.to === "apps/app/src/public/secret.cjs"),
       false,
@@ -922,11 +848,7 @@ test("hides unknown expression contents while keeping exception identities disti
   await write(esm, 'export const load = (name) => import("PRIVATE_CHANGED" + name);');
   const changed = await check({ exceptions });
   assert.ok(changed.violations.some((item) => item.rule === "stale-exception"));
-  assert.ok(
-    changed.violations.some(
-      (item) => item.from === esm && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(changed, esm, "unresolved-dynamic-import"));
 });
 
 test("rejects symbolic links in configured source roots and their ancestors", async (t) => {
@@ -1503,11 +1425,7 @@ test("rejects an unknown require anchor for a bare package while allowing builti
     "unresolved",
   );
   assert.equal(items.find((item) => item.reference.specifier === "node:fs").status, "external");
-  assert.ok(
-    report.violations.some(
-      (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(report, source, "unresolved-dynamic-import"));
 });
 
 test("rejects a registered package shadowed at the actual import and require anchors", async (t) => {
@@ -1554,11 +1472,7 @@ test("rejects a registered package shadowed at the actual import and require anc
   }
   const report = await check();
   for (const source of sources) {
-    assert.ok(
-      report.violations.some(
-        (item) => item.from === source && item.rule === "workspace-package-mismatch",
-      ),
-    );
+    assert.ok(violates(report, source, "workspace-package-mismatch"));
   }
   await assert.rejects(run(process.execPath, [cli, ...args, "--json"]), (error) => {
     assert.equal(error.code, 1);
@@ -1754,12 +1668,15 @@ test("does not preserve falsely known targets through reassigned paths or loader
     "apps/app/src/reassigned.mjs",
     `
     import { createRequire } from "node:module";
+    import { dirname } from "node:path";
     let target = "./index.ts";
     target = process.env.TARGET;
     await import(target);
     let load = createRequire(import.meta.url);
     load = (name) => name;
     load("./index.ts");
+    await import(load.resolve("./index.ts"));
+    await import(dirname(createRequire(import.meta.url).resolve("./index.ts")));
   `,
   );
   const report = await check();
@@ -1771,6 +1688,18 @@ test("does not preserve falsely known targets through reassigned paths or loader
     report.violations.some(
       (edge) => edge.rule === "unresolved-dynamic-import" && edge.from.endsWith("reassigned.mjs"),
     ),
+  );
+  // Each dynamic import reports why its target stays unknown.
+  assert.deepEqual(
+    report.violations
+      .filter((edge) => edge.from.endsWith("reassigned.mjs") && edge.kind === "dynamic-import")
+      .map((edge) => edge.message)
+      .sort(),
+    [
+      "A recognized loader binding is assigned elsewhere in this source.",
+      "Module paths require a local const initializer with no assignment.",
+      "Path manipulation around require.resolve is outside bounded analysis.",
+    ],
   );
 });
 
@@ -1786,15 +1715,17 @@ test("bounds cyclic loader provenance and reports an unresolved dependency witho
     load("./x.mjs");
   `,
   );
+  // A self-referencing path constant must stay unknown as well.
+  await write(
+    "apps/app/src/cyclic-path.mjs",
+    'const target = target + ".mjs"; await import(target);',
+  );
   const report = await check();
   assert.equal(report.ok, false);
-  assert.ok(
-    report.violations.some(
-      (item) =>
-        item.rule === "unresolved-dynamic-import" && item.from === "apps/app/src/cyclic-loader.mjs",
-    ),
-  );
+  assert.ok(violates(report, "apps/app/src/cyclic-loader.mjs", "unresolved-dynamic-import"));
   assert.equal(from(report, "apps/app/src/cyclic-loader.mjs").length, 0);
+  assert.ok(violates(report, "apps/app/src/cyclic-path.mjs", "unresolved-dynamic-import"));
+  assert.equal(from(report, "apps/app/src/cyclic-path.mjs").length, 0);
 });
 
 test("bounds cyclic computed factory provenance inside dynamic imports", async (t) => {
@@ -1811,13 +1742,7 @@ test("bounds cyclic computed factory provenance inside dynamic imports", async (
   );
   const report = await check();
   assert.equal(report.ok, false);
-  assert.ok(
-    report.violations.some(
-      (item) =>
-        item.rule === "unresolved-dynamic-import" &&
-        item.from === "apps/app/src/cyclic-factory.mjs",
-    ),
-  );
+  assert.ok(violates(report, "apps/app/src/cyclic-factory.mjs", "unresolved-dynamic-import"));
   assert.equal(from(report, "apps/app/src/cyclic-factory.mjs").length, 0);
 });
 
@@ -1944,11 +1869,7 @@ test("checks registered workspace namespaces and reports source syntax failures"
   );
   await write("apps/app/src/broken.ts", "export const broken = ;");
   const report = await check();
-  assert.ok(
-    report.violations.some(
-      (item) => item.rule === "source-syntax" && item.from === "apps/app/src/broken.ts",
-    ),
-  );
+  assert.ok(violates(report, "apps/app/src/broken.ts", "source-syntax"));
 });
 
 test("classifies runtime, erased type-only and mixed cycles using Node type-stripping semantics", async (t) => {
@@ -2022,10 +1943,17 @@ test("matches exact reviewed exceptions and reports binding changes and stale en
   assert.deepEqual(rules(await check({ exceptions })), ["internal-root-barrel", "stale-exception"]);
   await write(path, 'import type { Value } from "./leaf.ts";');
   assert.deepEqual(rules(await check({ exceptions })), ["stale-exception"]);
-  await assert.rejects(check({ exceptions: { version: 1, exceptions: [exception, exception] } }));
-  await assert.rejects(
-    check({ exceptions: { version: 1, exceptions: [{ ...exception, owner: "" }] } }),
-  );
+  for (const [invalid, message] of [
+    [{ version: 2, exceptions: [] }, "Unsupported module-boundary exceptions version."],
+    [{ version: 1, exceptions: {} }, "Invalid module-boundary exceptions."],
+    [
+      { version: 1, exceptions: [{ ...exception, owner: "" }] },
+      "Exceptions require an exact edge, reason, removal condition and capability owner.",
+    ],
+    [{ version: 1, exceptions: [exception, exception] }, "Duplicate module-boundary exception."],
+  ]) {
+    await assert.rejects(check({ exceptions: invalid }), { message });
+  }
 });
 
 test("binds cycle exceptions to the complete cycle edge set", async (t) => {
@@ -2143,13 +2071,32 @@ test("requires explicit valid policy and reports CLI success, violations and con
       return true;
     });
   }
-  await assert.rejects(verifyModuleBoundaries({ root }));
-  for (const invalid of [
-    { ...policy, version: 2 },
-    { ...policy, sourceRoots: ["../outside"] },
-    { ...policy, boundaries: [{ rule: "invalid", from: ["apps/**"] }] },
+  await assert.rejects(verifyModuleBoundaries({ root }), {
+    message: "An explicit module-boundary policy is required.",
+  });
+  // Each policy has one mistake, refused by its own validation check.
+  const boundary = { rule: "invalid", message: "bad", from: ["apps/**"], to: ["packages/**"] };
+  for (const [change, message] of [
+    [{ version: 2 }, "Unsupported module-boundary policy version."],
+    [{ sourceRoots: ["../outside"] }, "Invalid policy field: sourceRoots"],
+    [{ rootBarrels: ["packages/library/src/*.ts"] }, "Invalid policy field: rootBarrels"],
+    [{ workspaceNamespaces: ["@fixture"] }, "Invalid policy field: workspaceNamespaces"],
+    [{ boundaries: {} }, "Invalid policy field: boundaries"],
+    [{ boundaries: [{ ...boundary, message: " " }] }, "Boundaries require a rule and message."],
+    [{ boundaries: [{ ...boundary, from: ["../apps/**"] }] }, "Invalid boundary field: from"],
+    [
+      { boundaries: [{ ...boundary, specifiers: ["@fixture/*-internal"] }] },
+      "Invalid boundary field: specifiers",
+    ],
+    [
+      { boundaries: [{ rule: "invalid", message: "bad", from: ["apps/**"] }] },
+      "Boundaries require source patterns and target paths or specifiers.",
+    ],
+    [{ boundaries: [{ ...boundary, kinds: ["eval"] }] }, "Invalid boundary field: kinds"],
+    [{ packageImports: [] }, "Invalid policy field: packageImports"],
+    [{ cycles: { runtime: "allow" } }, "Invalid policy field: cycles.runtime"],
   ]) {
-    await assert.rejects(check({ policy: invalid }));
+    await assert.rejects(check({ policy: { ...policy, ...change } }), { message });
   }
 });
 
@@ -2180,7 +2127,7 @@ test("keeps known specifier policy when the loader has been reassigned", async (
     (item) => item.from === source && item.rule === "unresolved-dynamic-import",
   );
   assert.equal(unresolved.specifier, "fs");
-  assert.ok(report.violations.some((item) => item.from === source && item.rule === "no-fs"));
+  assert.ok(violates(report, source, "no-fs"));
   const exceptions = {
     version: 1,
     exceptions: [{ ...unresolved, owner: "fixture", reason: "reviewed", removeWhen: "fixed" }],
@@ -2342,11 +2289,7 @@ console.log(b("./secret.cjs"));
   );
   const anchors = await check({ exceptions: first });
   assert.equal(anchors.baseline.length, 1);
-  assert.ok(
-    anchors.violations.some(
-      (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(anchors, source, "unresolved-dynamic-import"));
 });
 
 test("does not reuse an unknown-path exception for a different lexical binding", async (t) => {
@@ -2398,11 +2341,7 @@ await privateLoad();
   );
   const changed = await check({ exceptions });
   assert.equal(changed.baseline.length, 1);
-  assert.ok(
-    changed.violations.some(
-      (value) => value.from === source && value.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(changed, source, "unresolved-dynamic-import"));
 });
 
 test("invalidates an unknown-path exception when its imported provider changes", async (t) => {
@@ -2658,11 +2597,7 @@ test("fails closed when import.meta.url can be changed", async (t) => {
     assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
     const result = await check();
     assert.equal(result.ok, false);
-    assert.ok(
-      result.violations.some(
-        (value) => value.from === source && value.rule === "unresolved-dynamic-import",
-      ),
-    );
+    assert.ok(violates(result, source, "unresolved-dynamic-import"));
   }
 });
 
@@ -2694,12 +2629,7 @@ test("tracks the shared Node module loader and ignores binding property names", 
       );
       assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PRIVATE");
       const report = await check();
-      assert.ok(
-        report.violations.some(
-          (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-        ),
-        `${call}: ${assignment}`,
-      );
+      assert.ok(violates(report, source, "unresolved-dynamic-import"), `${call}: ${assignment}`);
       assert.equal(
         from(report, source).some((item) => item.to === "apps/app/src/public/secret.cjs"),
         false,
@@ -2734,21 +2664,13 @@ test("tracks the shared Node module loader and ignores binding property names", 
     `const box = {URL}; Object.defineProperty(box.URL.prototype, "href", {get() { return import.meta.url.replace("property.mjs", "../private/secret.mjs"); }}); console.log((await import(new URL("./secret.mjs", import.meta.url).href)).default);`,
   );
   assert.equal((await run(process.execPath, [join(root, esm)])).stdout.trim(), "PRIVATE");
-  assert.ok(
-    (await check()).violations.some(
-      (item) => item.from === esm && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(await check(), esm, "unresolved-dynamic-import"));
   await write(
     esm,
     'const object = {[URL]: true}; void object; console.log((await import(new URL("./secret.mjs", import.meta.url).href)).default);',
   );
   const computed = await check();
-  assert.ok(
-    computed.violations.some(
-      (item) => item.from === esm && item.rule === "unresolved-dynamic-import",
-    ),
-  );
+  assert.ok(violates(computed, esm, "unresolved-dynamic-import"));
 });
 
 test("observes the CommonJS module type without exposing its loader", async (t) => {
@@ -2788,11 +2710,6 @@ test("observes the CommonJS module type without exposing its loader", async (t) 
   ]) {
     await write(source, `${exposure} console.log(require("./secret.cjs"));`);
     assert.equal((await run(process.execPath, [join(root, source)])).stdout.trim(), "PUBLIC");
-    assert.ok(
-      (await check()).violations.some(
-        (item) => item.from === source && item.rule === "unresolved-dynamic-import",
-      ),
-      exposure,
-    );
+    assert.ok(violates(await check(), source, "unresolved-dynamic-import"), exposure);
   }
 });

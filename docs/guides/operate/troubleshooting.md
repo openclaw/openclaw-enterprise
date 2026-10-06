@@ -9,7 +9,9 @@ or several Agents are affected. For a problem with one Agent, start with
 If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
 `/sys/fs/cgroup/cgroup.controllers` inside that server. Docker running inside a
 containerized development host needs the outer host to delegate `cpuset`;
-a running Docker daemon does not prove delegation. For Podman, check the
+a running Docker daemon does not prove delegation. On native rootless Podman,
+delegating `cpuset` is not enough: k3d still fails with
+`mkdir /var/run/docker.sock: permission denied`. Use the
 [rootful setup requirements](../deploy/local-kubernetes-development.md#start-the-profile).
 
 Use the host management service's documented delegation procedure. If delegation
@@ -59,6 +61,62 @@ A registry DNS failure shows up as a lookup error in the Pod events. Follow
 and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
+
+## Local Codex sandbox check fails
+
+Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
+dedicated Codex sandbox during startup. On Ubuntu 24.04,
+`kernel.apparmor_restrict_unprivileged_userns=1` denies the user namespace
+Codex bubblewrap needs. Startup reports `kubectl failed` while verifying that
+sandbox and rolls the owned cluster back. The preparation step does not print
+the bubblewrap error.
+
+Set that host sysctl to `0`, wait until the failed startup exits, and start
+again. The setting applies to the whole host. The launcher does not change it,
+and the sandbox check still runs. Do not skip the check.
+
+A production node uses the separate
+[Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
+sysctl change onto a shared cluster.
+
+## Open the console from another machine
+
+Kubernetes-only startup without OpenShell prints an HTTPS console URL such as
+`https://console.<cluster>.oce.localhost:8443/console/`. `<cluster>` is the k3d
+cluster name from startup. `8443` is the default `OCC_DEVELOPMENT_BROWSER_PORT`;
+use the printed port when it differs. Kubernetes-only startup with OpenShell
+prints `Console: <apiURL>/console/` and does not print this browser URL or CA.
+
+Open that URL on the machine that ran `occ dev up`. The hostname ends in
+`.localhost`, so the computer that looks it up resolves it to its own loopback
+address. The launcher publishes the console port on `127.0.0.1` of the startup
+machine only. A browser on another computer reports a connection error, such as
+`ERR_CONNECTION_REFUSED`, because nothing is listening there.
+
+From the computer that will run the browser, forward the printed port to the
+startup machine's loopback and bind the local listener to loopback. Leave this
+session open:
+
+```bash
+ssh -N -L localhost:8443:127.0.0.1:8443 <user>@<startup-host>
+```
+
+Replace `8443` in both places when startup printed a different port. The
+`localhost` bind keeps the forwarded port on the browser machine's loopback
+even when that machine's SSH configuration sets `GatewayPorts yes`.
+
+Copy only the printed public CA to that same computer, then import the local
+copy if the browser does not already trust it:
+
+```bash
+scp <user>@<startup-host>:<printed-ca-path> ./browser-ca.crt
+```
+
+`<printed-ca-path>` is the `browser-ca.crt` path from startup. Leave the CA
+private key and the state directory on the startup machine. Open the printed
+URL. The console sign-in page loads. Stop the forward when you are done. Do
+not publish the console port on an address other than loopback. This name and
+certificate are for the private development installation.
 
 ## The Helm installation did not complete
 

@@ -26,8 +26,12 @@ only to keep a reviewed custom configuration.
 EOF
 }
 
-die() {
+warn() {
   printf 'upgrade-production-images: %s\n' "$1" >&2
+}
+
+die() {
+  warn "$1"
   exit "${2:-1}"
 }
 
@@ -59,7 +63,7 @@ require_private_file() {
 }
 
 immutable_image() {
-  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[A-Fa-f0-9]{64}$ ]]
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
 }
 
 json_file_name() {
@@ -201,7 +205,7 @@ require_private_file "$OCC_SERVICE_KEY_FILE"
 if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
   require_regular_file "$OCC_CA_BUNDLE"
 fi
-for command in cmp helm jq kubectl mktemp python3 yq; do
+for command in cmp helm jq kubectl mktemp node python3 yq; do
   require_command "$command"
 done
 [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
@@ -227,7 +231,7 @@ for root, dirs, files in os.walk(chart):
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
-print(json.dumps({"arguments": sys.argv[1:], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": h.hexdigest(), "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+print(json.dumps({"arguments": sys.argv[1:], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": h.hexdigest(), "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -250,6 +254,130 @@ fi
 kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
 helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
+
+# The startup preflight's temporary Secret and Pods; removed on every exit.
+preflight_resources=()
+cleanup_preflight() {
+  local resource
+  for resource in ${preflight_resources[@]+"${preflight_resources[@]}"}; do
+    "${kube[@]}" --request-timeout=15s --namespace "$namespace" delete "$resource" \
+      --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  done
+  preflight_resources=()
+}
+trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true' EXIT
+
+# Before any writer stops, start the selected controller image on the candidate
+# Installation the way the API and worker start: the rendered chart's env, mounts
+# and service account, with the candidate Installation in a temporary Secret.
+# Configuration the image rejects, such as a presets.files entry naming a file
+# the image no longer ships, or Kubernetes state its Compute preflight refuses,
+# such as split-layout Gateway storage, would otherwise crash-loop both after the
+# migration.
+preflight_startup() {
+  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal
+  suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+  secret="$release-upgrade-preflight-$suffix"
+  yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
+    die "cannot read the rendered chart for the startup preflight; no OCC writer was stopped."
+  node scripts/upgrade-startup-preflight.mjs networkpolicy "$evidence_dir/preflight-rendered.jsonl" \
+    "$secret" "$namespace" "$release" >"$evidence_dir/preflight-networkpolicy.json" ||
+    die "cannot build the startup preflight NetworkPolicy from the rendered chart; no OCC writer was stopped."
+  if [[ "$(cat "$evidence_dir/preflight-networkpolicy.json")" != null ]]; then
+    preflight_resources+=("networkpolicy.networking.k8s.io/$secret")
+    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
+      --filename "$evidence_dir/preflight-networkpolicy.json" >/dev/null ||
+      die "cannot create the startup preflight NetworkPolicy $secret; no OCC writer was stopped."
+  fi
+  preflight_resources+=("secret/$secret")
+  node scripts/upgrade-startup-preflight.mjs secret "$candidate_installation" \
+    "$installation_key" "$secret" "$namespace" "$release" |
+    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create --filename - >/dev/null ||
+    die "cannot create the startup preflight Secret $secret; no OCC writer was stopped."
+  for component in api worker; do
+    pod="$release-upgrade-preflight-$component-$suffix"
+    node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
+      "$component" "$pod" "$namespace" "$release" "$installation_secret" "$secret" \
+      "$selected_controller" "$timeout_seconds" >"$evidence_dir/preflight-$component-pod.json" ||
+      die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
+    preflight_resources+=("pod/$pod")
+    "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
+      --filename "$evidence_dir/preflight-$component-pod.json" >/dev/null ||
+      die "cannot create the $component startup preflight Pod; no OCC writer was stopped."
+  done
+  # Wait for every Pod and save each one's status and log before reporting, so a
+  # refusal shows every component that failed, not only the first.
+  deadline=$((SECONDS + timeout_seconds))
+  failures=()
+  for component in api worker; do
+    pod="$release-upgrade-preflight-$component-$suffix"
+    phase=
+    waiting=
+    message=
+    while true; do
+      # Read each Pod at least once, even after an earlier one used up the deadline.
+      remaining_seconds=$((deadline - SECONDS))
+      ((remaining_seconds >= 15)) || remaining_seconds=15
+      if ! "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "pod/$pod" \
+        --output json >"$evidence_dir/preflight-$component-status.json"; then
+        message="cannot read the $component startup preflight Pod; no OCC writer was stopped."
+        break
+      fi
+      phase=$(node scripts/upgrade-startup-preflight.mjs phase "$evidence_dir/preflight-$component-status.json")
+      case "$phase" in
+        Running | Pending:*)
+          [[ "$phase" != Pending:* ]] || waiting=${phase#Pending:}
+          if ((SECONDS >= deadline)); then
+            message="the $component startup preflight did not finish before the timeout${waiting:+ ($waiting)}; see preflight-$component-status.json. No OCC writer was stopped."
+            break
+          fi
+          ;;
+        *) break ;;
+      esac
+      sleep 2
+    done
+    if ! "${kube[@]}" --request-timeout=30s --namespace "$namespace" logs "pod/$pod" --container "$component" \
+      >"$evidence_dir/preflight-$component.log" 2>&1 && [[ -z "$message" && "$phase" == Succeeded ]]; then
+      message="cannot read the $component startup preflight logs; no OCC writer was stopped."
+    fi
+    if [[ -z "$message" ]]; then
+      case "$phase" in
+        Succeeded)
+          grep -qx installation-startup-ready "$evidence_dir/preflight-$component.log" ||
+            message="the $component startup preflight succeeded without its result line; no OCC writer was stopped."
+          ;;
+        Stuck:*)
+          message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no OCC writer was stopped."
+          ;;
+        *)
+          refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
+            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
+          if [[ -n "$refusal" ]]; then
+            message="the $component startup preflight stopped: $refusal No OCC writer was stopped; the old release keeps serving."
+            if [[ "$refusal" == *split-layout* ]]; then
+              message+=" See docs/reference/drivers/kubernetes-compute.md#existing-split-layout-installations."
+            else
+              message+=" The Pod uses the installed release's service account and RBAC and only the chart's dependency egress (preflight-networkpolicy.json); fix its Kubernetes API access and start again with a new evidence directory."
+            fi
+          else
+            message=$(tail -n 3 "$evidence_dir/preflight-$component.log" | tr '\n' ' ' | cut -c 1-600)
+            [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
+            message="the selected controller image cannot start the $component with the candidate Installation: ${message}No OCC writer was stopped; correct the Installation and start again with a new evidence directory."
+          fi
+          ;;
+      esac
+    fi
+    [[ -z "$message" ]] || failures+=("$message")
+  done
+  if [[ -n "${failures[*]+set}" ]]; then
+    for message in "${failures[@]:0:${#failures[@]}-1}"; do
+      warn "$message"
+    done
+    die "${failures[${#failures[@]}-1]}"
+  fi
+  cleanup_preflight
+  touch "$evidence_dir/startup-preflight-passed"
+}
 
 prepare_upgrade() {
 if [[ -n "$runtime_image" ]]; then
@@ -523,6 +651,7 @@ helm template "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
 helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
   --values "$candidate_values" --dry-run=server --hide-secret \
   >"$evidence_dir/server-dry-run.txt"
+preflight_startup
 printf '%s\n' "$installation_id" >"$evidence_dir/installation-id"
 printf '%s\n' "$installation_secret" >"$evidence_dir/installation-secret-name"
 printf '%s\n' "$installation_key" >"$evidence_dir/installation-secret-key"

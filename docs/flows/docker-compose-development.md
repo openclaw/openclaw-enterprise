@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-09-28
-last_updated_session: 01a0e441-02f9-70b2-ad45-0a1a5049954a
+updated: 2026-10-01
+last_updated_session: authoring-run/53c6746c-9551-4f70-9d1f-e0540ce29868
 ---
 
 # Compose development flow
@@ -61,7 +61,9 @@ graph TD
   KReady --> KSandbox{"Sandbox profile"}
   KSandbox -->|none| KProof
   KSandbox -->|OpenShell| KOpenShell["Install pinned Agent Sandbox, RuntimeClass,<br/>Gateway, and render workspace resources"]
-  KOpenShell --> KWorkspace["Driver applies workspace resources and creates<br/>the default Namespace's owned Workspace"]
+  KOpenShell -->|Compose| KRouting["Install private Envoy route and project<br/>its service key and public CA"]
+  KRouting --> KWorkspace["Driver applies workspace resources and creates<br/>the default Namespace's owned Workspace"]
+  KOpenShell -->|Kubernetes| KWorkspace
   KWorkspace --> KFailClosed["Default Namespace ready;<br/>Agent projection remains fail closed"]
   KFailClosed --> KProof
   KProof["Prove authenticated<br/>Installation access"]
@@ -144,7 +146,13 @@ publishes only an admitted API proxy on host loopback.
 By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
 `openshell-system` and exposes its fixed NodePort only to the owned container
-network. In both modes, the worker
+network. Before starting the API and worker, the launcher installs pinned
+cert-manager and Envoy Gateway controllers, renders only the Helm-owned private
+routing resources, and copies the generated public CA and a dedicated service
+key into the private state directory. The Installation uses the k3d node name
+and Envoy HTTPS NodePort. After Compose starts, the launcher reapplies Envoy
+ingress with the controller, Kubernetes worker, and k3d node `/32` addresses.
+In both modes, the worker
 creates the bootstrap Namespace through the regular Compute workflow. The
 Sandbox Driver applies rendered workspace resources and the operator label
 before creating the corresponding Gateway Workspace. Startup waits until the
@@ -171,8 +179,11 @@ OCC Namespace becomes ready. See the
   unsupported `secretKeyRef` projection failure with no Sandbox or Agent Pod.
 - With the default Compose control plane, OpenShell startup should report
   `Control plane: Compose`, retain a private Compose snapshot, install the
-  Gateway in `openshell-system`, and still create the bootstrap Namespace's
-  operator-mode Workspace.
+  Gateway in `openshell-system`, program
+  `oce-system/openclaw-enterprise-agent-gateways`, and create the bootstrap
+  Namespace's operator-mode Workspace. `installation.yaml` must contain the
+  Envoy NodePort endpoint, while only the controller and `worker-kubernetes`
+  receive `gateway-api-key` and `gateway-ca.crt` mounts.
 - Docker Compute on Podman startup verification should show Podman as the
   selected engine, mount only its reported API socket into the worker, and
   complete the same authenticated Installation proof without a `docker` alias.
@@ -204,6 +215,8 @@ OCC Namespace becomes ready. See the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-01 16:58: Added automatic private Envoy routing for the Compose-backed OpenShell profile. (authoring-run/53c6746c-9551-4f70-9d1f-e0540ce29868 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
 - 2026-09-28 00:34: Restored Compose as the default control plane and made Kubernetes-only startup explicit. (01a0e441-02f9-70b2-ad45-0a1a5049954a - 201f31d511464133f06e0526bb5545ed1cb27e25)
 

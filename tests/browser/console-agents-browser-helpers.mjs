@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:net";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,7 +73,7 @@ export async function newPage(t, fixture, options = {}) {
       throw cleanupError;
     }
   });
-  context = await browser.newContext();
+  context = await browser.newContext(options.context);
   diagnostics = await watchBrowserContext(t, context);
   await keepRequestInterceptionEnabled(context);
   const page = await context.newPage();
@@ -88,24 +87,11 @@ export async function login(
   path = "/console/agents",
   credentials = fixture.credentials,
 ) {
-  await page.goto(`${fixture.origin}${path}`);
+  await page.goto(new URL(path, fixture.origin).href);
   await page.getByLabel("Username").fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
   await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
-}
-
-export async function routeRuntimeCredentials(page, fixture, namespaceId, agentId, data) {
-  await page.route(
-    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/runtime-credentials`,
-    async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data, meta: { requestId: "req_test_runtime_credentials" } }),
-      });
-    },
-  );
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer
@@ -164,6 +150,112 @@ export function secretPostRequests(requests, namespaceId) {
 
 export function accessBindingPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/iam/access-bindings`);
+}
+
+// A bound Secret picker reads "Bound Secret" until its Namespace Secret list loads, and every
+// render (page load, save, reload) starts that load again. Read such a picker only through this.
+export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  let value = await locator.inputValue();
+  while (value !== expected && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    value = await locator.inputValue();
+  }
+  assert.equal(
+    value,
+    expected,
+    `input value was ${JSON.stringify(value)}, not ${JSON.stringify(expected)}, after ${timeoutMs} ms`,
+  );
+}
+
+// Ordering sentinel for "this action sends no request" checks. After one macrotask turn, the
+// page fetches a static asset and this waits for the response. Chromium reports requests in
+// the order the page starts them, so any request started before the sentinel (synchronously,
+// from a microtask or from a zero-delay timer) is already in the apiRequests() log.
+export async function settlePageRequests(page) {
+  await page.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const response = await fetch(`/console/favicon-16.png?request-sentinel=${Date.now()}`, {
+      cache: "no-store",
+    });
+    await response.arrayBuffer();
+  });
+}
+
+// Test-only page hook: counts, per URL path, the page's fetches that have settled, meaning the
+// fetch rejected or the page finished reading the response body. It also counts fetches still
+// in flight; for that count a response without a body ends its fetch at once. Install it before
+// the page loads. A count observed by waitForSettledFetches() or waitForIdleFetches() is read in
+// a later task, so the page's own continuation of that fetch (for example dropping a stale
+// response, or finishing the view's read bookkeeping) has already run.
+export async function trackSettledFetches(page) {
+  await page.addInitScript(() => {
+    const settled = new Map();
+    let inFlight = 0;
+    const record = (input) => {
+      const path = new URL(
+        input instanceof Request ? input.url : String(input),
+        globalThis.location.href,
+      ).pathname;
+      settled.set(path, (settled.get(path) ?? 0) + 1);
+    };
+    const pageFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      inFlight += 1;
+      let open = true;
+      const finish = () => {
+        if (open) {
+          open = false;
+          inFlight -= 1;
+        }
+      };
+      let response;
+      try {
+        response = await pageFetch(input, init);
+      } catch (error) {
+        record(input);
+        finish();
+        throw error;
+      }
+      if (response.body === null) {
+        finish();
+      }
+      for (const method of ["arrayBuffer", "blob", "json", "text"]) {
+        const read = response[method].bind(response);
+        response[method] = async () => {
+          try {
+            return await read();
+          } finally {
+            record(input);
+            finish();
+          }
+        };
+      }
+      return response;
+    };
+    globalThis.settledFetchCount = (path) => settled.get(path) ?? 0;
+    globalThis.inFlightFetchCount = () => inFlight;
+  });
+}
+
+export async function settledFetches(page, path) {
+  return page.evaluate((target) => globalThis.settledFetchCount(target), path);
+}
+
+export async function waitForSettledFetches(page, path, count) {
+  await page.waitForFunction(
+    ([target, expected]) => globalThis.settledFetchCount(target) >= expected,
+    [path, count],
+  );
+}
+
+// Waits until no fetch the page has started is still in flight (see trackSettledFetches). The
+// console retains a view, or an Agent tab, for a later return only if none of its reads were
+// still pending when the reader left it; otherwise the return rebuilds it. Call this before
+// leaving a view whose DOM a test later expects to be reused. It checks one moment: a read the
+// page starts later (after a timer) is not covered, so wait for the view's content first.
+export async function waitForIdleFetches(page) {
+  await page.waitForFunction(() => globalThis.inFlightFetchCount() === 0);
 }
 
 export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
@@ -228,15 +320,4 @@ export function repositoryCheckbox(page, name) {
     .locator("#repository-results .repository-result-row")
     .filter({ has: page.getByText(name, { exact: true }) })
     .getByRole("checkbox");
-}
-
-export async function unusedPort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
 }

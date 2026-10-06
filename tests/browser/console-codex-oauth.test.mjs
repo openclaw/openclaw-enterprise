@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { apiRequests, login, newPage } from "./console-agents-browser-helpers.mjs";
+import {
+  apiRequests,
+  expectNoText,
+  login,
+  nativeValues,
+  newPage,
+} from "./console-agents-browser-helpers.mjs";
 
 test("Codex OAuth console creates an Agent and keeps plugin editing separate from credential replacement", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -222,25 +228,39 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
     .getByText("ChatGPT login ready. Credentials are stored on the server.", { exact: true })
     .waitFor();
   const releaseDiscard = Promise.withResolvers();
+  const slowDiscard = Promise.withResolvers();
   await page.route("**/device-authorizations/*", async (route) => {
-    if (route.request().method() === "DELETE") {
-      await releaseDiscard.promise;
+    if (route.request().method() !== "DELETE") {
+      await route.fallback();
+      return;
     }
-    await route.fallback();
+    await releaseDiscard.promise;
+    // The test sends the held request itself. The save reloads the view, which aborts the
+    // Console's fetch of it: a response arriving after that abort is never reported to the page,
+    // and a request still held at the abort never reaches the server, though a browser that
+    // sent it at the click would have delivered it.
+    let response;
+    try {
+      response = await route.fetch();
+    } catch (error) {
+      slowDiscard.reject(error);
+      return;
+    }
+    slowDiscard.resolve(response.status());
+    await route.fulfill({ response });
   });
-  const slowDiscard = page.waitForResponse(
-    (response) =>
-      response.request().method() === "DELETE" &&
-      response.url().includes("/device-authorizations/"),
+  const discardSent = page.waitForRequest(
+    (request) => request.method() === "DELETE" && request.url().includes("/device-authorizations/"),
   );
   await page.getByRole("button", { name: "Discard staged login", exact: true }).click();
+  await discardSent;
   const racedSave = page.waitForResponse(
     (response) => response.url().endsWith(agentPath) && response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
-  assert.equal((await slowDiscard).status(), 204);
+  assert.equal(await slowDiscard.promise, 204);
   assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, replaced);
   assert.doesNotMatch(
     JSON.stringify(requests),
@@ -253,5 +273,69 @@ test("Codex OAuth console creates an Agent and keeps plugin editing separate fro
   assert.equal(
     providerRequests.some((url) => url.includes("revoke") || url.includes("whoami")),
     false,
+  );
+});
+
+test("saving ChatGPT OAuth before sign-in names the missing step and sends nothing", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth save guard", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "OAuth save guard",
+    nativeValues("oauth-save-guard", { harnessId: "codex" }),
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  const save = page.getByRole("button", { name: "Save authentication source", exact: true });
+  await save.waitFor();
+  await page.getByLabel("Authentication source").selectOption("oauth");
+  await save.click();
+  await page.getByText("Complete ChatGPT sign-in before saving.", { exact: true }).waitFor();
+  await expectNoText(page, /Service unavailable/);
+  assert.equal(await save.isEnabled(), true);
+  assert.equal(
+    requests.some((request) => request.method === "PATCH" && request.path === agentPath),
+    false,
+  );
+  assert.equal((await fixture.request("GET", agentPath)).data.harnessAuth.method, "api_key");
+});
+
+test("sign-in that cannot reach the sign-in service shows the API's cause once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("OAuth egress", { ready: true });
+  const originalFetch = globalThis.fetch;
+  // The chart's default network policy: the API Pod cannot connect to auth.openai.com.
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (!url.startsWith("https://auth.openai.com/")) {
+      return originalFetch(input, init);
+    }
+    throw new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method").selectOption("oauth");
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  await page
+    .getByText(
+      "Codex sign-in failed. OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again.",
+      { exact: true },
+    )
+    .waitFor();
+  await expectNoText(page, /Service unavailable|The read could not be completed/);
+  assert.equal(
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isEnabled(),
+    true,
   );
 });

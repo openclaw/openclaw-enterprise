@@ -17,6 +17,26 @@ if (
   );
 }
 
+const stderrLimit = 400;
+
+function failureReason(error) {
+  if (typeof error.code === "string") {
+    return error.code;
+  }
+  if (error.killed) {
+    return "timed out";
+  }
+  return error.signal ? `signal ${error.signal}` : `exit ${error.code}`;
+}
+
+// Name why a command failed and keep the end of its stderr. Never include
+// stdout: CRI inspection output can contain mount details.
+function failureMessage(command, error, stderr) {
+  const detail = stderr.trim().replace(/\s+/g, " ");
+  const tail = detail.length > stderrLimit ? `...${detail.slice(-stderrLimit)}` : detail;
+  return `${command} failed (${failureReason(error)})${tail ? `: ${tail}` : "."}`;
+}
+
 function execFile(command, args, { timeoutMs: commandTimeoutMs }) {
   return new Promise((resolve, reject) => {
     execFileCallback(
@@ -25,9 +45,12 @@ function execFile(command, args, { timeoutMs: commandTimeoutMs }) {
       { timeout: commandTimeoutMs, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error) {
-          const failure = new Error(`${command} failed${error.killed ? " or timed out" : ""}.`);
+          const failure = new Error(failureMessage(command, error, stderr));
           failure.stdout = stdout;
           failure.stderr = stderr;
+          failure.exitCode = error.code;
+          failure.signal = error.signal;
+          failure.killed = error.killed;
           failure.timedOut = error.killed === true;
           reject(failure);
         } else {

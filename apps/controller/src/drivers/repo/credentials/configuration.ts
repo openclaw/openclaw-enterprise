@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import type { ServiceConfig, ServiceLimits } from "./service-contracts.ts";
+import { hasControlCharacter } from "./client-contracts.ts";
 
 const defaults: ServiceLimits = Object.freeze({
   sessions: 16,
@@ -42,10 +43,7 @@ export function string(value: unknown, maximum = 4096): string {
     typeof value !== "string" ||
     value.length < 1 ||
     value.length > maximum ||
-    [...value].some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 0x1f || code === 0x7f;
-    })
+    hasControlCharacter(value)
   ) {
     throw new Error("invalid-configuration");
   }

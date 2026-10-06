@@ -20,6 +20,17 @@ it does not add token permissions or change GraphQL access.
 
 - Entries are case-sensitive full branch refs: an exact `refs/heads/release`,
   or a prefix ending in `/*`, such as `refs/heads/agent/*`.
+- Branch names may use any UTF-8 text Git's refname rules accept, such as
+  `agent/café`. Matching compares bytes exactly, with no Unicode normalization
+  or case folding: an entry spelled with a composed `é` (U+00E9) does not match
+  a push to the decomposed `e` + U+0301, though both render alike. Write entries
+  in the spelling your clients push. A ref that is not valid UTF-8 or contains
+  a control character (C0, DEL or C1) is refused.
+- Invisible and direction-changing characters are refused in refs and entries,
+  even under an allowed prefix: bidi controls (U+061C, U+200E-U+200F,
+  U+202A-U+202E, U+2066-U+2069), zero-width characters (U+200B-U+200D, U+2060,
+  U+FEFF, so also emoji joined with U+200D), and U+2028 and U+2029. The hook
+  names the refused character.
 - Omission preserves existing push behavior. An empty array denies all ref
   updates through the managed hook.
 - Creation, deletion and force updates use the same destination-ref check.
@@ -27,7 +38,9 @@ it does not add token permissions or change GraphQL access.
   entire push before ref updates; discovery and authentication may already occur.
 - Native HTTPS destinations retain the check with or without `.git`, trailing
   slashes, or the configured Git username. Host and repository matching remains
-  exact; a username cannot select among duplicate repository bindings.
+  exact; a username cannot select among duplicate repository bindings. A
+  gateway destination with an encoded username, embedded password, query or
+  fragment fails the guard when a repository it may name has a policy.
 - Entries are sorted and deduplicated into the admitted grant fingerprint.
   There is no separate entry-count or per-entry byte cap; the complete serialized
   client metadata must fit its existing 16 KiB limit.
@@ -38,9 +51,24 @@ Repository initialization works before the initial `HEAD` exists.
 Standalone sessions with this policy require the emitted client from
 `pnpm credentials:build`.
 
+## Gateway enforcement for the development token authority
+
+With the [development token authority](development-token.md), the same allowlist
+is also enforced by the gateway. It reads the receive-pack commands before any
+byte goes upstream and refuses the whole push with HTTP 400 when one ref fails,
+so `--no-verify` or a replaced `core.hooksPath` changes nothing. The client hook
+still gives the first, friendlier refusal. No admitted REST route writes refs,
+and GraphQL mutations are refused for this authority, so the allowlist bounds
+every ref write. GitHub App grants keep the hook-only behavior described below.
+
+The gateway also limits one push to 256 refs and refuses a larger push with
+HTTP 413 `push-ref-limit-exceeded`, even when every ref is allowed. The client
+hook does not count refs, so this refusal comes from the gateway. Push the refs
+in batches of 256 or fewer.
+
 ## Limits
 
-This is a convenience guardrail, **not a security boundary**. Native hook/config
+For GitHub App grants, this is a convenience guardrail, **not a security boundary**. Native hook/config
 overrides, bypassing hooks, alternate clients, direct REST/GraphQL writes and
 merges are outside it. A custom `core.hooksPath` replaces the managed directory;
 custom hooks must explicitly chain the image dispatcher to retain the check.

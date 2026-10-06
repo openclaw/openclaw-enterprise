@@ -22,8 +22,11 @@ environment variable. Use the path that matches the consumer:
    and Agent must belong to the same Namespace. Never put credential values in
    Configuration `values` or a ConfigMap.
 3. Confirm permissions before deployment. Assigning a Secret requires the caller
-   to have `operate` on that exact Secret. Deploying also requires the Agent's
-   service principal to have `operate`. The
+   to have `operate` on that exact Secret. Once an Agent's draft is bound to a
+   Secret for model authentication, every later edit of that draft, including a
+   switch to another Secret, also requires `operate` on the Secret bound now.
+   Deploying also
+   requires the Agent's service principal to have `operate`. The
    [driver guide](../../reference/drivers/kubernetes-secret.md#bind-a-secret-to-gateway-environment)
    explains who can grant it. Namespace access or possession of the Secret ID
    does not grant permission to consume the value.
@@ -35,9 +38,10 @@ require an administrator with access to the configured IAM authority.
 ## Rotate or remove a Secret
 
 Updating a Secret changes the stored value. It does not restart a workload or
-change a running process's environment. Redeploy or restart each consumer and
-verify the new process. There is no value history or automatic rotation. If a
+change a running process's environment. Redeploy each consumer through OCE and
+verify the new revision. There is no value history or automatic rotation. If a
 credential is exposed, stop the affected workloads, revoke it at the upstream
 provider, store a replacement, and redeploy. OCC rejects deletion while a
-current Configuration, Agent draft, active revision, or pending deployment
-still references the Secret. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+current Configuration, credential source, Agent draft, active revision,
+pending deployment, or pending Agent provisioning request still references the
+Secret. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).

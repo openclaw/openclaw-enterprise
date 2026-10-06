@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { setTimeout } from "node:timers/promises";
-import { promisify } from "node:util";
+import { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
 
 // Runs inside a runtime image Gateway container started by the Kubernetes
 // Gateway wrapper with an absent workspace node binding. It pairs a real node
 // host, writes the binding the way the kubelet refreshes a ConfigMap volume,
 // and checks that the running OpenClaw loads file-transfer and serves the
 // Agent workspace from the node without a Gateway process restart.
-const execute = promisify(execFile);
 const cli = "/app/openclaw.mjs";
 const displayName = "runtime-workspace-node-proof";
 const bindingPath = process.env.OPENCLAW_WORKSPACE_NODE_PATH;
@@ -20,24 +19,21 @@ const nodeRoot = "/home/node/workspace";
 const localRoot = process.env.OCC_TEST_GATEWAY_WORKSPACE;
 
 async function call(method, params = {}) {
-  const { stdout } = await execute(
-    process.execPath,
-    [
-      cli,
-      "gateway",
-      "call",
+  try {
+    return await callGatewayFromCli(
       method,
-      "--url",
-      "ws://127.0.0.1:8080",
-      "--password",
-      process.env.OPENCLAW_GATEWAY_PASSWORD,
-      "--params",
-      JSON.stringify(params),
-      "--json",
-    ],
-    { timeout: 30_000, maxBuffer: 16_000_000 },
-  );
-  return JSON.parse(stdout);
+      {
+        url: "ws://127.0.0.1:8080",
+        password: process.env.OPENCLAW_GATEWAY_PASSWORD,
+        json: true,
+        timeout: "30000",
+      },
+      params,
+      { progress: false },
+    );
+  } catch (error) {
+    throw new Error(method + ": " + error.message, { cause: error });
+  }
 }
 
 // The OpenClaw Gateway process the wrapper spawned, with its kernel start time.

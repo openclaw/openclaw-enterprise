@@ -20,6 +20,12 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
 
 type SlackRecord = Record<string, unknown>;
 
+function configuredValue(value: unknown): boolean {
+  return typeof value === "string"
+    ? value.trim().length > 0
+    : value !== undefined && value !== null;
+}
+
 function boundedString(value: unknown, maxLength = 200): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength
     ? value
@@ -109,13 +115,21 @@ export class SlackChannelDriver implements ChannelDriver {
     }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const accounts = asRecord(slack.accounts);
-    const targets =
-      accounts === undefined || Object.keys(accounts).length === 0
-        ? [{ config: slack, path: "/channels/slack" }]
-        : Object.entries(accounts).map(([id, value]) => ({
-            config: { ...slack, ...asRecord(value) },
-            path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-          }));
+    const named = accounts === undefined ? [] : Object.entries(accounts);
+    // OpenClaw still starts an implicit "default" account from the top-level bot and app
+    // tokens when named accounts exist, unless one of them is named "default".
+    const implicitDefault =
+      named.length === 0 ||
+      (!Object.hasOwn(accounts ?? {}, "default") &&
+        configuredValue(slack.botToken) &&
+        (slack.mode === "http" || configuredValue(slack.appToken)));
+    const targets = [
+      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
+      ...named.map(([id, value]) => ({
+        config: { ...slack, ...asRecord(value) },
+        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+      })),
+    ];
     for (const { config, path } of targets) {
       if (config.enabled === false) {
         continue;

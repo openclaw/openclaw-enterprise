@@ -18,6 +18,7 @@ import {
   setSlackSelection,
   selectSecret,
   waitForCondition,
+  waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -135,7 +136,7 @@ test("Agent deployment reports preflight errors and requires reload for changed 
   );
   await deploy.click();
   await page
-    .getByText("Service unavailable. The read could not be completed. Please retry.")
+    .getByText("Service unavailable. The read could not be completed. Try again.")
     .waitFor();
   assert.equal(await deploy.isEnabled(), true);
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
@@ -631,10 +632,8 @@ for (const changed of ["generation", "identity"]) {
         .first()
         .waitFor();
       assert.equal(pathRequests(requests, "PATCH", secretPath).length, 0);
-      assert.equal(
-        await page.getByLabel("Slack app token").inputValue(),
-        secretOptionLabel(appSecret),
-      );
+      // The failed save re-renders the panel; its pickers reload the Secret list before naming.
+      await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
       assert.equal(await deploy.isEnabled(), true);
       await page.unroute(`${fixture.origin}${configurationPath}`);
       await selectSecret(page, "Slack app token", replacementSecret);
@@ -669,10 +668,7 @@ for (const changed of ["generation", "identity"]) {
       (await fixture.request("GET", configurationPath)).data.values,
       changed === "generation" ? newerValues : values,
     );
-    assert.equal(
-      await page.getByLabel("Slack app token").inputValue(),
-      secretOptionLabel(appSecret),
-    );
+    await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
     assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
     assert.equal(await deploy.isDisabled(), true);
     assert.equal(
@@ -718,7 +714,7 @@ for (const action of ["disable", "drawer"]) {
       await route.continue();
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-    await login(page, fixture, url.pathname + url.search);
+    await login(page, fixture, url);
     await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     assert.equal(
       await page
@@ -800,7 +796,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
     await route.abort("failed");
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
   await page.getByRole("button", { name: "Disable Slack" }).click();
@@ -873,7 +869,7 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
   );
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
 
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
   await page.getByRole("heading", { name: "Runtime Slack Navigation Agent" }).waitFor();
   requests.length = 0;
   await selectSecret(page, "Slack app token", slackAppSecret);
@@ -956,7 +952,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     });
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
-  await login(page, fixture, url.pathname + url.search);
+  await login(page, fixture, url);
 
   const activity = page.locator(".deployment-status");
   await activity
@@ -1006,7 +1002,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   const saved = page.waitForResponse(
     (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
   );
-  await page.getByRole("button", { name: "Save authentication source" }).click({ timeout: 2000 });
+  await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await saved).status(), 200);
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();

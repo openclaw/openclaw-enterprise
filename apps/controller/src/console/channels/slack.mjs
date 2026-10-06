@@ -54,7 +54,8 @@ function supportSlack(values) {
   if (config.account !== undefined || config.accounts !== undefined) {
     return {
       supported: false,
-      reason: "Only the default Slack account is supported by this editor.",
+      reason:
+        "Only the default Slack account is supported by this editor. Edit named accounts in the native JSON, and give each its own token environment names, not SLACK_APP_TOKEN or SLACK_BOT_TOKEN.",
       config,
     };
   }
@@ -267,6 +268,9 @@ function credentialReferenceField(binding, context = {}, onSelected) {
       hint: "This environment key is fixed for Slack Socket Mode.",
     },
     metadataLabel: `View ${binding.label.replace("Slack ", "")} Secret metadata`,
+    ...(context.creating
+      ? { stagedHint: "Secret selected. Apply channel settings, then Create Agent binds it." }
+      : {}),
     fieldClassName: "channel-field channel-reference",
     selectClassName: "channel-select",
   });

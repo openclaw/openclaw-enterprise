@@ -7,9 +7,8 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
-const kubeconfigPath = "/tmp/openclaw-enterprise-conformance/kubeconfig";
-const contextName = "openclaw-enterprise-local";
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000014",
   name: "Secret gateway delivery tenant",
@@ -18,39 +17,11 @@ const tenant = {
 };
 
 function options(overrides = {}) {
-  const resources = {
-    requests: { cpu: "100m", memory: "64Mi" },
-    limits: { cpu: "250m", memory: "128Mi" },
-  };
-
   return {
-    authentication: { mode: "kubeconfig", kubeconfigPath, context: contextName },
-    images: {
-      gateway: "openclaw-enterprise/gateway-fixture:local",
-      agent: "openclaw-enterprise/agent-fixture:local",
-      requireImmutableDigest: false,
-    },
-    resources: {
-      gateway: resources,
-      agent: resources,
-      namespace: {
-        quota: { pods: "10", "requests.cpu": "2", "requests.memory": "1Gi" },
-        containerDefaults: resources,
-      },
-    },
-    network: {
-      dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
-      gatewayPort: 8080,
+    ...conformanceKubernetesOptions({
       gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-      gatewayClients: [
-        { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
-      ],
-    },
-    servicePrincipalCredentials: { mode: "disabled" },
-    runtime: {
-      transportSecretPrefix: "transport",
-      gatewayStorageClassName: "local-path",
-    },
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
     ...overrides,
   };
 }

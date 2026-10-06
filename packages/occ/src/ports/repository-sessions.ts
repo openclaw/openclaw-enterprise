@@ -71,6 +71,11 @@ export interface RepositorySessionRepository extends RepositorySessionReadReposi
     readonly revoked?: number;
     readonly expired?: number;
   }): Promise<Readonly<RepositoryBrokerReceipt> | undefined>;
+  /** A broker abandons its own reservation; no session was handed out for it. */
+  fenceBrokerReceipt(input: {
+    readonly admissionId: string;
+    readonly generation: string;
+  }): Promise<Readonly<RepositoryBrokerReceipt> | undefined>;
   /** Persists the immutable request identity in the opening phase before external admission. */
   createAttempt(
     input: RepositoryRevisionOwner & {

@@ -31,6 +31,8 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_BASE_URL` — Authentication and cookie origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_GITHUB_CLIENT_ID` — Optional GitHub App client ID, not App ID; selects the provider instance. Requires PostgreSQL, native IAM, and both GitHub settings below; see [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
 - `OCC_AUTH_GITHUB_CLIENT_SECRET` — Protected server-side client secret for the configured GitHub App; its private key stays with the repository credential consumer.
+- `OCC_AUTH_GITHUB_ALLOWED_ORGS` — Optional comma-separated GitHub organization logins; when set (or with the teams), GitHub sign-in requires active membership. See the [allowlist](../authentication/external-sign-in.md#organization-and-team-allowlist).
+- `OCC_AUTH_GITHUB_ALLOWED_TEAMS` — Optional comma-separated `org/team-slug` entries whose active members may use GitHub sign-in; at most 10 entries with the organizations.
 - `OCC_AUTH_GITHUB_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when GitHub, Google or OIDC sign-in is enabled.
 - `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires GitHub, Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
@@ -90,7 +92,9 @@ the API. It does not use API listener or session-authentication settings. See
 - `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms.
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
 - `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Namespace convergence timeout; default: `900000` ms.
+- `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms.
 - `OCC_WORKER_READINESS_PATH` — Optional absolute path for the readiness marker; packaged probes require it.
+- `OCC_WORKER_LIVENESS_PATH` — Optional absolute path for the run-loop progress marker; the packaged liveness probe checks its age.
 
 ## Local development and Compute
 
@@ -118,11 +122,11 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_NODE_BASE_IMAGE` — Immutable Node 24 base used when building the Kubernetes-only OCE controller image.
 - `OCC_DEVELOPMENT_STATE_DIRECTORY` — Private Kubernetes profile state. When unset, the launching process's temporary directory plus `openclaw-development` (`TMPDIR` if that process set it, otherwise `/tmp` on Linux). Use the same value for cleanup.
 - `OCC_DEVELOPMENT_COMPOSE_PROJECT` — Compose control-plane project's name; default: `openclaw-enterprise-development-kubernetes`. Kubernetes-only mode does not use Compose.
-- `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes-only profile's platform Namespace; default: `oce-system`.
+- `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes namespace that runs the control plane in the Kubernetes-only profile; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile cluster and service readiness timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
-- `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile.
+- `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile, or `k3d` for k3d's default; Linux Docker defaults to the host's upstream resolver.
 - `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.
 - `OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT` — Disposable cluster disk-pressure threshold; default: `5`.
 - `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART` — Optional absolute OpenShell Gateway chart directory or archive; set it together with the workspace chart override.

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -8,11 +7,14 @@ import {
   consoleOrigin as origin,
   currentSession,
   defaultInstallSettings,
+  installationRoles,
   passwordSignIn,
+  postgresSignInState,
+  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "password-default-admin@example.test";
 const memberEmail = "password-default-member@example.test";
 const memberPassword = "password-default-member-password";
@@ -23,14 +25,10 @@ const authSecret = "password-default-auth-test-secret-at-least-32-bytes";
 // settings, with no OCC_AUTH_GITHUB_* or trusted-proxy names. No provider is reachable.
 test(
   "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool } = postgresSignInState(t, () => [app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,
@@ -56,6 +54,8 @@ test(
     const signIn = (email, password, remoteAddress) =>
       passwordSignIn(app, origin, { email, password }, remoteAddress);
     const sessionOf = (cookie) => currentSession(app, cookie);
+    const adminHeaders = () =>
+      signedInHeaders(app, origin, { email: adminEmail, password: adminPassword });
 
     await t.test("the bootstrap administrator signs in with the generated password", async () => {
       const response = await signIn(adminEmail, adminPassword);
@@ -67,17 +67,8 @@ test(
 
     let member;
     await t.test("the administrator creates a password account with the exact Origin", async () => {
-      const admin = await signIn(adminEmail, adminPassword);
-      const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
-      const installation = await new PostgresPlatformState(pool).loadInstallation();
-      const policy = await new PostgresPlatformState(pool).loadNativeIAMState(installation.id);
-      const role = policy.roles.find((candidate) =>
-        candidate.permissions.some(
-          (permission) =>
-            permission.action === "read" && permission.resourceKind === "installation",
-        ),
-      );
-      assert.ok(role);
+      const headers = await adminHeaders();
+      const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
       const payload = { email: memberEmail, password: memberPassword, roleId: role.id };
       for (const refused of [
         { cookie: headers.cookie },
@@ -195,8 +186,7 @@ test(
     await t.test(
       "account controls refuse with a specific conflict, not a dependency failure",
       async () => {
-        const admin = await signIn(adminEmail, adminPassword);
-        const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
+        const headers = await adminHeaders();
         const memberSession = cookieHeaderFromSetCookie(
           (await signIn(memberEmail, memberPassword)).headers["set-cookie"],
         );
@@ -234,8 +224,7 @@ test(
         providerCalls += 1;
         return originalFetch(input, init);
       });
-      const admin = await signIn(adminEmail, adminPassword);
-      const cookie = cookieHeaderFromSetCookie(admin.headers["set-cookie"]);
+      const { cookie } = await adminHeaders();
       for (const provider of ["github", "google"]) {
         const start = await app.inject({
           method: "POST",

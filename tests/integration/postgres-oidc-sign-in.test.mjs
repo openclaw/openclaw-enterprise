@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
+  assertConsoleSignIn,
+  assertExternalSignInRefused,
+  attachProvider,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
@@ -17,18 +16,20 @@ import {
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
-  installationRoles,
+  loginDenialCount,
   memoryLogger,
   oidcSignIn,
   oidcUpgradeSettings,
+  onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "oidc-recovery@example.test";
 const password = "oidc-member-password";
 const authSecret = "oidc-sign-in-auth-test-secret-at-least-32-bytes";
@@ -58,7 +59,6 @@ const disabledSubject = "auth0|6500000000000000000000a3";
 const bothSubject = "auth0|6500000000000000000000a4";
 const bothGoogleSubject = "110000000000000000044";
 const bothGithubSubject = "9600004";
-const sessionCookieName = "__Host-openclaw_occ.session_token";
 
 const recoveryOnly = (settings) =>
   Object.freeze({ ...settings, OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only" });
@@ -69,94 +69,49 @@ const coverageWarnings = (log) =>
 // Auth, the guarded human-login profile and Fastify are production code.
 test(
   "PostgreSQL OIDC sign-in admits only attached (issuer, subject) pairs",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.20");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Password onboarding on the default install, before OIDC is configured.
+    const { admin, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    // Password onboarding on the default install, before OIDC is configured.
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: Object.fromEntries(
+        ["member", "disabled", "both", "stranded"].map((name) => [
+          name,
+          { email: `oidc-${name}@example.test` },
+        ]),
+      ),
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const accounts = {};
-    for (const name of ["member", "disabled", "both", "stranded"]) {
-      const email = `oidc-${name}@example.test`;
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: roles.reader.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      accounts[name] = { id: created.json().data.id, email, password };
-    }
     const { member, disabled, both, stranded } = accounts;
-    await app.close();
-    app = undefined;
+    let adminHeaders;
 
-    const counts = async () =>
-      (
-        await pool.query(
-          `SELECT (SELECT count(*)::int FROM occ."user") AS users,
-                  (SELECT count(*)::int FROM occ.account) AS methods,
-                  (SELECT count(*)::int FROM occ.session) AS sessions`,
-        )
-      ).rows[0];
-    const denials = async (reason) =>
-      (await state.transact((unit) => unit.audit.list())).filter(
-        ({ action, outcome, reasonCode, details }) =>
-          action === "authentication.login" &&
-          outcome === "denied" &&
-          reasonCode === reason &&
-          details?.provider === "oidc",
-      ).length;
-    const attach = async (userId, subject, provider = "oidc") =>
-      app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/providers/${provider}`,
-        headers: adminHeaders,
-        payload: {
-          subject,
-          expectedVersion: (await readAccount(app, adminHeaders, userId)).version,
+    const denials = (reason) => loginDenialCount(state, reason, "oidc");
+    const attach = (userId, subject, provider = "oidc") =>
+      attachProvider(app, adminHeaders, userId, provider, subject);
+    const assertRefused = (authorization, message, reason) =>
+      assertExternalSignInRefused(
+        {
+          pool,
+          provider: "oidc",
+          denials,
+          signIn: () => oidcSignIn(app, origin, idp, authorization, address()),
         },
-      });
-    async function assertRefused(authorization, message, reason = "EXTERNAL_IDENTITY_REJECTED") {
-      const before = await counts();
-      const deniedBefore = await denials(reason);
-      const { callback } = await oidcSignIn(app, origin, idp, authorization, address());
-      assert.equal(callback.statusCode, 302, message);
-      assert.equal(callback.headers.location, "/console/?authError=oidc", message);
-      assert.equal(
-        String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName),
-        false,
-        `${message}: no session cookie`,
+        message,
+        reason,
       );
-      assert.deepEqual(await counts(), before, `${message}: no user, method or session`);
-      assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
-    }
     async function assertSignIn(subject, userId, extra = {}) {
       const signIn = await oidcSignIn(app, origin, idp, { subject, ...extra }, address());
-      assert.equal(signIn.callback.headers.location, "/console/", signIn.callback.body);
-      const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, userId);
+      const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
 
@@ -236,8 +191,13 @@ test(
           .map(({ providerId, subject }) => [providerId, subject]),
         [[oidcProviderId, memberSubject]],
       );
-      // A subject attached elsewhere is refused for another account.
-      assert.equal((await attach(both.id, memberSubject)).statusCode, 404);
+      // A subject attached elsewhere is refused for another account, as a named conflict.
+      const taken = await attach(both.id, memberSubject);
+      assert.equal(taken.statusCode, 409, taken.body);
+      assert.deepEqual(taken.json().error, {
+        code: "RESOURCE_CONFLICT",
+        message: "The external identity is already assigned.",
+      });
 
       const signIn = await assertSignIn(memberSubject, member.id);
       const setCookies = [signIn.callback.headers["set-cookie"]].flat();

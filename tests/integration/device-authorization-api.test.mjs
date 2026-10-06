@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const accessToken = "oauth-access-private-fixture";
@@ -288,17 +290,11 @@ test("device login configures plugins and admits its opaque Secret reference in 
 test("device login is bound to its initiating actor, Namespace, and exact Agent scope", async (t) => {
   const fixture = await createFixture(t);
   const account = await fixture.createAccountWithPolicy("other-actor", (principal) => {
-    fixture.policy.roles.push({
+    grantRole(fixture.policy, principal.id, {
       id: "reader-role",
+      bindingId: "reader-binding",
       namespaceId: fixture.namespace.id,
-      permissions: [{ action: "read", resourceKind: "namespace" }],
-    });
-    fixture.policy.bindings.push({
-      id: "reader-binding",
-      namespaceId: fixture.namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "reader-role",
+      permissions: { namespace: ["read"] },
     });
   });
   const otherSession = await fixture.signIn(account.credentials);
@@ -309,10 +305,8 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
   assert.equal(deniedStart.status, 403);
   assert.deepEqual(fixture.requests, []);
   // Even another authorized administrator cannot operate the initiating actor's login.
-  fixture.policy.bindings.push({
+  bindRole(fixture.policy, account.principal.id, {
     id: "other-admin-binding",
-    subjectKind: "identity",
-    subjectId: account.principal.id,
     roleId: fixture.policy.roles[0].id,
   });
   const login = await fixture.start();
@@ -359,6 +353,7 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     body: { harnessId: "codex" },
   });
   assert.equal(unsupportedLogin.status, 501);
+  assert.equal(unsupportedLogin.body.error.message, "Device login requires a dedicated Agent.");
   const unsupportedDiscovery = await fixture.request("POST", `${embeddedPath}/plugins`, {
     body: { oauthLogin: login.source, q: "knowledge" },
   });
@@ -368,6 +363,10 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     body: { harnessId: "openclaw" },
   });
   assert.equal(otherHarness.status, 501);
+  assert.equal(
+    otherHarness.body.error.message,
+    "Device login is available only for the Codex Harness.",
+  );
   assert.equal(fixture.requests.length, before);
 
   const savedLogin = await fixture.start(agentPath);
@@ -384,6 +383,28 @@ test("device login is bound to its initiating actor, Namespace, and exact Agent 
     { body: { oauthLogin: savedLogin.source, q: "knowledge" } },
   );
   assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
+  // A login reference in another Namespace is an invalid request; a missing one stays not-found.
+  for (const [oauthLogin, status, code, message] of [
+    [
+      { ...savedLogin.source, namespaceId: `ns_${crypto.randomUUID()}` },
+      400,
+      "INVALID_REQUEST",
+      "Secret references cannot cross Namespaces.",
+    ],
+    [{ ...savedLogin.source, id: `sec_${crypto.randomUUID()}` }, 404, "NOT_FOUND", undefined],
+  ]) {
+    const refused = await fixture.request(
+      "POST",
+      `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`,
+      { body: { oauthLogin, q: "knowledge" } },
+    );
+    const label = JSON.stringify(refused.body);
+    assert.equal(refused.status, status, label);
+    assert.equal(refused.body.error.code, code, label);
+    if (message !== undefined) {
+      assert.equal(refused.body.error.message, message, label);
+    }
+  }
   const discarded = await fixture.rawRequest("DELETE", `${agentPath}/${savedLogin.source.id}`, {
     headers: authenticatedHeaders(await fixture.signIn(), { origin: fixture.origin }),
   });
@@ -470,4 +491,84 @@ test("an expired device login erases its provider material when next touched", a
   assert.equal((await fixture.poll(sealed)).status, 409);
   assert.equal(fixture.secretDriver.valueFor(await fixture.stored(sealed)), before);
   assertNoCredentials(fixture);
+});
+
+test("device login names the Driver that cannot hold a login session", async (t) => {
+  const fixture = await createFixture(t);
+  const login = await fixture.start();
+  const before = fixture.requests.length;
+  // compareAndSwap is optional in the Secret Driver contract (the bundled Kubernetes
+  // Driver implements it; another Driver may not). Without it OCC cannot
+  // fence a login session, so both start and poll refuse permanently and name which
+  // Driver is missing the capability.
+  delete fixture.secretDriver.compareAndSwap;
+  const start = await fixture.request("POST", fixture.path, { body: { harnessId: "codex" } });
+  assert.equal(start.status, 501, JSON.stringify(start.body));
+  assert.equal(
+    start.body.error.message,
+    "Device authorization is unavailable for the selected Drivers.",
+  );
+  // Past the provider interval, a poll would otherwise call upstream.
+  await fixture.clock.advance(5000);
+  const poll = await fixture.poll(login);
+  assert.equal(poll.status, 501, JSON.stringify(poll.body));
+  assert.equal(
+    poll.body.error.message,
+    "Device authorization is unavailable for the Secret Driver.",
+  );
+  assert.equal(fixture.requests.length, before, "a refused login must not contact the provider");
+});
+
+test("a device login start that cannot reach the sign-in service says so and logs the cause", async (t) => {
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "info",
+    destination: {
+      write(chunk) {
+        lines.push(
+          ...String(chunk)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        );
+        return true;
+      },
+    },
+  });
+  const fixture = await createConsoleAppFixture(t, { logger });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Device login egress", { ready: true });
+  const originalFetch = globalThis.fetch;
+  const refused = Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:443"), {
+    code: "ECONNREFUSED",
+  });
+  // The chart's default network policy: the API Pod cannot connect to the sign-in service.
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (new URL(url).hostname === "127.0.0.1") {
+      return originalFetch(url, options);
+    }
+    throw new TypeError("fetch failed", { cause: refused });
+  });
+  const response = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/device-authorizations`,
+    { body: { harnessId: "codex" } },
+  );
+  assert.equal(response.status, 503, JSON.stringify(response.body));
+  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(
+    response.body.error.message,
+    "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again.",
+  );
+  const warning = lines.find((line) => line.event === "device_authorization.start_failed");
+  assert.ok(warning, "the API logs why device login could not start");
+  assert.equal(warning.severity, "WARN");
+  assert.equal(warning.reason, "unreachable");
+  assert.equal(warning.failure, "ECONNREFUSED");
+  assert.equal(warning.host, "auth.openai.com");
+  assert.equal(JSON.stringify(lines).includes("10.0.0.1"), false);
+  // Nothing was stored for a login that never started.
+  const secrets = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(secrets.data, []);
 });

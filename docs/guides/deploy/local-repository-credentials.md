@@ -6,7 +6,9 @@ The launcher creates the initial OpenClaw Namespace first, substitutes its actua
 ID into the registry, and enables the repository credential service through the
 existing Helm release. Repository access is supported without an OpenShell
 Sandbox Driver; follow the [broker installation guide](../repository-credentials/installation.md)
-for production or an already running Installation.
+for production or an already running Installation. This launcher always uses a
+GitHub App. To test clone, push and `gh` with a token your host already holds,
+use the standalone [host token procedure](../repository-credentials/development-token.md).
 
 ## Prepare the approved inputs
 

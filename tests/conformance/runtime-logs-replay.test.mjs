@@ -220,6 +220,84 @@ test("real Gateway, wrapper and Codex output is classified, not withheld", async
   );
 });
 
+test("Codex model connection and network proxy diagnostics keep their text; payload formats stay withheld", async () => {
+  const { fixtures } = await manifest();
+  const byFile = Object.fromEntries(
+    await Promise.all(fixtures.map(async (entry) => [entry.file, await replay(entry)])),
+  );
+  const summary = ({ records }) =>
+    records.map(({ level, subsystem, message }) => [level, subsystem, message]);
+
+  // Captured: a turn's first model connection on a dedicated Codex Agent.
+  assert.deepEqual(summary(byFile["codex-model-connection.kubelet.txt"]), [
+    ["info", "codex_network_proxy::certs", "generated process-local MITM CA"],
+    [
+      "warn",
+      "codex_network_proxy::proxy",
+      "allowUnixSockets and dangerouslyAllowAllUnixSockets are macOS-only; requests will be rejected on this platform",
+    ],
+    ["info", "codex_network_proxy::http_proxy", "HTTP proxy listening on 127.0.0.1:35963"],
+    [
+      "info",
+      "codex_api::endpoint::responses_websocket",
+      "connecting to websocket: ws://model-proxy.model-proxy.svc.cluster.local:8080/v1/responses",
+    ],
+    [
+      "info",
+      "codex_api::endpoint::responses_websocket",
+      "successfully connected to websocket: ws://model-proxy.model-proxy.svc.cluster.local:8080/v1/responses",
+    ],
+  ]);
+
+  // Upstream formats for a turn that cannot reach the model, then payload-carrying
+  // formats from the same targets.
+  const failures = byFile["codex-model-connection-failures.kubelet.txt"];
+  const url = "wss://api.openai.com/v1/responses";
+  const withheld = "Codex message withheld";
+  assert.deepEqual(summary(failures), [
+    ["info", "codex_network_proxy::socks5", "SOCKS5 proxy listening on 127.0.0.1:41871"],
+    [
+      "info",
+      "codex_network_proxy::socks5",
+      "SOCKS5 UDP and non-HTTPS SOCKS5 TCP are blocked in limited mode; HTTPS SOCKS5 TCP requires MITM inspection",
+    ],
+    ["warn", "codex_network_proxy::proxy", "network.enabled is false; skipping proxy listeners"],
+    ["info", "codex_api::endpoint::responses_websocket", `connecting to websocket: ${url}`],
+    [
+      "error",
+      "codex_api::endpoint::responses_websocket",
+      `failed to connect to websocket: IO error: Connection refused (os error 111), url: ${url}`,
+    ],
+    [
+      "error",
+      "codex_api::endpoint::responses_websocket",
+      `failed to connect to websocket: IO error: failed to lookup address information: Name or service not known, url: ${url}`,
+    ],
+    [
+      "error",
+      "codex_api::endpoint::responses_websocket",
+      `failed to connect to websocket: HTTP error: 401 Unauthorized, url: ${url}`,
+    ],
+    ["warn", "codex_core::client", "falling back to HTTP"],
+    [
+      "warn",
+      "codex_core::responses_retry",
+      "stream disconnected - retrying sampling request (1/5 in 212ms)...",
+    ],
+    ["warn", "codex_core::responses_retry", "stream connection failed; waiting to retry"],
+    ["debug", "codex_api::endpoint::responses_websocket", withheld],
+    ["warn", "codex_network_proxy::http_proxy", withheld],
+    ["warn", "codex_network_proxy::mitm", withheld],
+    ["info", "codex_network_proxy::http_proxy", withheld],
+    ["info", "codex_api::endpoint::responses_websocket", withheld],
+    ["error", "codex_api::endpoint::responses_websocket", withheld],
+  ]);
+  const body = JSON.stringify(failures.records);
+  for (const leaked of ["replay chat sentence", "replay-chat-sentence", "output_text"]) {
+    assert.equal(body.includes(leaked), false, `${leaked} reached a record`);
+  }
+});
+
 test("OpenShell decisions keep rule and engine; the pinned source never sends a policy generation", async () => {
   const { fixtures } = await manifest();
   const sandbox = await replay(fixtures.find(({ source }) => source === "sandbox"));

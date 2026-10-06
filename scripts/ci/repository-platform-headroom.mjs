@@ -168,6 +168,18 @@ async function main() {
   const expectedVersion = process.env.ImageOS === "ubuntu22" ? "22.04" : "24.04";
   assert(/^ID=ubuntu$/m.test(os) && os.split("\n").includes(`VERSION_ID="${expectedVersion}"`));
   receipt.before = await capacity();
+  if (largeImageLane) {
+    receipt.minimumAvailableBytes = minimumRuntimeAvailableBytes;
+    // Current hosted images already leave far more than the minimum free (about
+    // 84 GiB on ubuntu-22.04), and deleting the SDK trees costs 60-160 s. Keep
+    // them when the disk already passes the same guard checked after removal.
+    if (receipt.before.availableBytes >= minimumRuntimeAvailableBytes) {
+      receipt.stage = "complete";
+      receipt.status = "passed";
+      receipt.removalSkipped = "capacity-sufficient";
+      return;
+    }
+  }
   receipt.stage = "sdk-guard";
   assert(
     process.env.ANDROID_HOME === `${androidRoot}/sdk` &&
@@ -238,7 +250,6 @@ async function main() {
   assert(removals.every(({ status }) => status === "fulfilled"));
   receipt.sdkRemoved = true;
   if (largeImageLane) {
-    receipt.minimumAvailableBytes = minimumRuntimeAvailableBytes;
     receipt.stage = "capacity-guard";
     assert((await capacity()).availableBytes >= minimumRuntimeAvailableBytes);
   }

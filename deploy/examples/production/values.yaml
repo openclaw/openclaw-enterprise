@@ -13,7 +13,7 @@ auth:
   # github:
   #   enabled: true
   #   secretName: occ-github-login
-  #   egressCidrs: []  # empty allows HTTPS to 0.0.0.0/0; or api.github.com/meta ranges
+  #   egressCidrs: []  # empty allows HTTPS to any non-link-local address; or api.github.com/meta ranges
 
 # Route wildcard DNS/TLS to OCC; the shared parent must contain only trusted OCE ingress hosts.
 # See docs/guides/deploy/native-admin.md before installing.

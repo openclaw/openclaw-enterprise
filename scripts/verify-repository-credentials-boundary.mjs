@@ -483,10 +483,11 @@ function inspectSource(path, root, sources, ast) {
         }
       }
     }
-    for (const [childKey, child] of Object.entries(node)) {
+    for (const childKey of Object.keys(node)) {
       if (["comments", "tokens", "loc", "range"].includes(childKey)) {
         continue;
       }
+      const child = node[childKey];
       if (Array.isArray(child)) {
         for (const item of child) {
           visit(item, node, childKey);

@@ -1,6 +1,6 @@
 ---
 created: "2026-09-17"
-updated: "2026-09-28"
+updated: "2026-10-03"
 last_updated_session: authoring-run/41ba3c72-c44a-4a26-8285-7d4724f24352
 ---
 
@@ -104,8 +104,11 @@ Admission IDs bind the complete request: platform Namespace, repository referenc
 normalized profile, expected grant and absolute deadline. Registry mode requires
 this binding and independently resolves its fingerprint. A worker-owned private
 journal reserves the exact attempt before bearer delivery; recovery durably fences
-a missing admission. Known nondelivery closes the session. Reconciliation cannot
-recover a bearer, change its binding or replay provider work.
+a missing admission. The broker opens the session before reserving, so a capacity
+or shutdown refusal leaves no receipt and the same admission can retry or be
+fenced. When the broker refuses a reserved admission as invalid, or cannot record
+its session, it fences its own reservation. Known nondelivery closes the session.
+Reconciliation cannot recover a bearer, change its binding or replay provider work.
 
 Factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/credentials/custody.ts:disposeAllRenewal`.
@@ -182,7 +185,11 @@ rejects them before dispatch. The shared PR/issue comment routes also rely on
 GitHub's resource authorization. Raw README and diff/patch replies remain bounded
 and bypass JSON rewriting. GraphQL uses the exact installation-token grant without
 field-level or branch-only authorization. GitHub may return permitted public
-information; every GraphQL POST is a possible write.
+information; every GraphQL POST is a possible write. The GraphQL plan carries
+`apps/controller/src/drivers/repo/github/credentials/graphql-input.ts:allowsGraphqlInput`:
+`apps/controller/src/drivers/repo/credentials/transport/agent.ts:createAgentHandler`
+buffers the body within the input bounds before credential use and refuses
+invalid JSON or any decoded string naming `tempCloneToken` with 400.
 
 `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
 reserves the exchange. Its
@@ -216,7 +223,9 @@ credential. Rejected material retains its cleanup owner.
 Its bounded credential transport,
 `apps/controller/src/drivers/repo/github/credentials/provider-transport.ts:createProviderTransport`,
 uses `apps/controller/src/drivers/repo/github/credentials/provider-transport/request.ts:sendProviderRequest`
-to dispatch and join the actual request close event. Opaque scope freezes
+to dispatch and join the actual request close event. It latches dispatch, after
+rechecking admission, only when TCP connects, so DNS and connection-refused
+failures are definite and only later failures are uncertain. Opaque scope freezes
 installation, repository and profile. The adapter can issue that scope or revoke
 a token, never supply arbitrary targets, bodies or headers. After authentication
 preparation, a synchronous gate rechecks admission, registers cancellation and
@@ -241,7 +250,8 @@ and `rewritePaginationLinks` with
 `apps/controller/src/drivers/repo/github/credentials/response-resources.ts:createResourceRewriter`.
 Before releasing bounded JSON, it removes `temp_clone_token` from repository
 objects, their `parent`/`source` relationships and PR `head.repo`/`base.repo`
-objects. This is not a generic credential-string scanner.
+objects. GraphQL cannot select the equivalent `tempCloneToken` (see above).
+This is not a generic credential-string scanner.
 The URL owner maps the configured repository ID to admitted
 `/repos/owner/repository` before checking route and resource purpose; other IDs
 are refused. Issue pagination accepts bounded `after`/`before` cursors. Rewritten
@@ -336,6 +346,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03: Refuse GraphQL bodies that select the provider clone credential before dispatch.
 
 - 2026-09-28 08:12: Trace durable admission fencing and original-broker disposal acknowledgments. (authoring-run/41ba3c72-c44a-4a26-8285-7d4724f24352 - e06ff9625e72ff5ab3483a504a2f02a69a370cbb)
 

@@ -19,10 +19,7 @@ import { basename, dirname, join } from "node:path";
 import test, { before } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
-import {
-  repositoryMaterialDeployment,
-  repositoryMaterialSpec,
-} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
+import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = {
@@ -99,62 +96,13 @@ async function projectionFixture(t, { count = 1, publicCa } = {}) {
   // Kubernetes fsGroup makes the emptyDir root group-writable and setgid.
   await mkdir(dirname(targetRoot));
   await chmod(dirname(targetRoot), 0o2775);
-  const bindings = Array.from({ length: count }, (_, index) => {
-    const sessionId = `session_material_${index}`;
-    return {
-      kind: "new",
-      repositoryRef: `repository-${index}`,
-      sessionId,
-      deadlineWallMs,
-      files: encodeRepositoryCredentialSessionFiles(
-        {
-          session: { sessionId, deadlineWallMs },
-          bearer: `controlled_gateway_bearer_${index}_0000000000000000000000`,
-          client,
-        },
-        publicCa,
-      ),
-    };
-  });
-  const revision = {
-    id: "revision-material",
-    namespaceId: "namespace-material",
-    agentId: "agent-material",
-    repositoryCredentials: {
-      driver: { id: "repository-credentials", implementation: "repository-credentials" },
-      deadlineWallMs,
-      bindings: bindings.map(({ repositoryRef }) => ({
-        repositoryRef,
-        profile: "read",
-        backendId: "github",
-        grant: { providerInstanceId: "github-main", repositoryId: "project", grantId: "read" },
-      })),
-    },
-  };
-  const deployment = repositoryMaterialDeployment(
-    repositoryMaterialSpec(revision, bindings),
-    "runtime-fixture:local",
-  );
-  const argument = [
-    ...(deployment.initContainers[0].command ?? []),
-    ...(deployment.initContainers[0].args ?? []),
-  ].find((value) => value.startsWith('{"sourceRoot"'));
-  assert.ok(argument, "the production init container must carry its material descriptor");
-  const descriptor = { ...JSON.parse(argument), sourceRoot, targetRoot };
-
-  // Kubernetes publishes a generation directory through ..data and symlinks each
-  // top-level projected directory. Exercise those real symlinks, not flat files.
-  const generation = join(sourceRoot, "..2026_projection");
-  await mkdir(generation);
-  await symlink(basename(generation), join(sourceRoot, "..data"));
-  for (const [index, binding] of descriptor.manifest.bindings.entries()) {
-    const directory = basename(binding.directory);
-    await mkdir(join(generation, directory, "gh"), { recursive: true });
-    for (const [name, content] of Object.entries(bindings[index].files)) {
-      await writeFile(join(generation, directory, name), content, { mode: 0o444 });
-    }
-    await symlink(`..data/${directory}`, join(sourceRoot, directory));
-  }
+  const {
+    bindings,
+    deployment,
+    descriptor: projected,
+    generation,
+  } = await projectRepositorySessions(sourceRoot, { client, deadlineWallMs, count, publicCa });
+  const descriptor = { ...projected, sourceRoot, targetRoot };
   const run = () =>
     spawnSync(
       process.execPath,
@@ -364,18 +312,27 @@ test("repository init refuses drift in the selected push-ref policy", async (t) 
   await assert.rejects(lstat(fixture.targetRoot), { code: "ENOENT" });
 });
 
-for (const [name, corrupt] of [
+const brokerCa = "-----BEGIN CERTIFICATE-----\nfixture-broker-ca\n-----END CERTIFICATE-----\n";
+
+for (const [name, options, corrupt] of [
   [
     "malformed UTF-8",
+    { publicCa: Buffer.from(brokerCa) },
+    // ca.pem is the one projected file whose content no pattern or exact comparison pins,
+    // so only the strict UTF-8 decoder stands between these bytes and the Agent's CA bundle.
     async (directory) => {
-      await rm(join(directory, "bearer"));
-      await writeFile(join(directory, "bearer"), Buffer.from([0xc3, 0x28]));
+      await rm(join(directory, "ca.pem"));
+      const [head, tail] = brokerCa.split("fixture-broker-ca");
+      await writeFile(
+        join(directory, "ca.pem"),
+        Buffer.concat([Buffer.from(head), Buffer.from([0xc3, 0x28]), Buffer.from(tail)]),
+      );
     },
   ],
-  ["an undeclared file", (directory) => writeFile(join(directory, "extra.json"), "{}")],
+  ["an undeclared file", {}, (directory) => writeFile(join(directory, "extra.json"), "{}")],
 ]) {
   test(`repository init refuses ${name} in the projected session`, async (t) => {
-    const fixture = await projectionFixture(t);
+    const fixture = await projectionFixture(t, options);
     const directory = basename(fixture.descriptor.manifest.bindings[0].directory);
     await corrupt(join(fixture.generation, directory));
     const result = fixture.run();

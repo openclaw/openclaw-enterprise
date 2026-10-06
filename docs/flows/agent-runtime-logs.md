@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-09-30
-last_updated_session: authoring-run/2c8a089c-ec67-402d-8cfd-ec8b29c5e3fe
+updated: 2026-10-05
+last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
 # Agent runtime logs flow
@@ -38,14 +38,15 @@ download is a local file on the reader's device.
 
 ```mermaid
 graph TD
-  A["GET runtime or runtime/logs"] --> B["Feature switch and rate limit"]
+  A["GET runtime or runtime/logs"] --> B["Feature switch"]
   B -->|off| C["Return 501"]
-  B -->|limited| D["Return 429 with Retry-After"]
-  B -->|admitted| E["OCC authorizes revision and Agent tier"]
+  B -->|on| E["OCC authorizes revision and Agent tier"]
   E -->|denied| F["Audit denial, return 403"]
   E -->|authorized| G["Select recorded Compute Driver"]
   G -->|no method or driver-owned logging| C
-  G -->|supported| H["Driver lists revision Pods and Pod Events per plane"]
+  G -->|supported| S["Rate and concurrency limits"]
+  S -->|limited| D["Return 429 with Retry-After, or 503"]
+  S -->|admitted| H["Driver lists revision Pods and Pod Events per plane"]
   H --> I["OCC validates and redacts the description"]
   I -->|status route| J["Return runtime description"]
   I -->|logs route| K["Validate cursor and listed Pod"]
@@ -65,20 +66,24 @@ graph TD
 
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares both GET routes with
 a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
-`agentRuntimeLogs` is disabled and applies the replica-local
-`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter`.
-`OpenClawController.runtimeLogTarget` authorizes the tier action and Agent `read`
-(plus revision `read` for status only), resolves the revision within the exact
-Agent, then rejects a Driver without `describeAgentRuntime` or with
-`runtimeLogging: "driver"`.
+`agentRuntimeLogs` is disabled. `OpenClawController.runtimeLogTarget` authorizes
+the tier action and Agent `read` (plus revision `read` for status only), resolves
+the revision within the exact Agent, then rejects a Driver without
+`describeAgentRuntime` or with `runtimeLogging: "driver"`. Only then does the
+route's `admitRead` callback apply the replica-local
+`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` around the Driver
+reads, so a denial is always audited and never spends a token.
 
 ### 2. Describe the runtime
 
 `KubernetesComputeDriver.describeAgentRuntime` resolves the owned Namespace, then
 lists Pods by the exact Agent, revision and workload-role labels: dedicated
-Gateways in the control-plane Gateway namespace, Harnesses and embedded Gateways
-in the tenant namespace on the execution plane. It lists Events by
-`involvedObject.uid`, keeps only that Pod's Events, caps them at 100 and takes each
+Gateways and Harnesses in the shared tenant namespace in a single cluster. The
+two-cluster profile reads dedicated Gateways in its control target and Harnesses
+in its execution target. It lists Events by
+`involvedObject.uid`, keeps only that Pod's Events, drops the scheduler's
+`FailedScheduling` retry after a lost PVC update race once the Pod has a node,
+caps them at 100 and takes each
 Event's `container` from `involvedObject.fieldPath` (`spec.containers{name}` or
 the init or ephemeral form; `null` for Pod-level Events such as `Scheduled`). A log
 read passes `{ source, events: false }`, so it lists only that source's Pods and
@@ -98,7 +103,17 @@ with one older than an hour, or a cursor whose Pod is gone, starts a view: the c
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
-`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. OCC
+`previous`, a 1 MiB `limitBytes` and timestamps, and re-reads the Pod. A cursor
+poll derives `sinceSeconds` from the cursor: from its newest delivered line, or,
+when the view has delivered nothing yet, from the previous read (a full or
+byte-cut tail then emits `window_exceeded`). When a resumed read delivers nothing
+new on every poll because the next line does not fit in the 1 MiB limit (typically
+one oversized line), and that line is more than about 3 seconds older than the read,
+the cursor drops its delivered time and
+continues from this read, as a view that has delivered nothing yet does. The page
+emits `window_exceeded` dated at that line: it and the lines logged after
+it until this read are lost. A carried PEM block then keeps no delivered frontier,
+so it stays masked for the rest of the view. OCC
 drops lines already delivered at the cursor time, emits `stream_replaced`,
 `window_exceeded`, `cursor_expired` or `truncated` gaps, and passes the rest to
 `runtime-logs/sanitize.ts:sanitizeRuntimeLogChunk`, the only producer of
@@ -138,7 +153,8 @@ exposes nothing else. OpenShell stamps supervisor lines when recorded but
 batches them, and filters `since_time` by that stamp, so a resume sends a time
 `SANDBOX_LOG_OVERLAP_MS` (5 s) behind the newest delivered line; the cursor
 keeps one hash per line delivered since then (up to 48), and each re-read line
-consumes one. If no remembered line came back and nothing older did, OCC emits
+consumes one. A view's first page floors its resume time at the requested window
+start. If no remembered line came back and nothing older did, OCC emits
 `buffer_lost` or, when the window was full, `window_exceeded`; more than 48
 lines in one millisecond also emit `window_exceeded`. gRPC `NOT_FOUND` (absent
 Sandbox, or concealed from a non-member) maps to
@@ -200,6 +216,16 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
+
+- 2026-10-04 07:00: Authorize before the rate and concurrency limits so every denial is audited. (bh11-runtime-log-authz)
+
+- 2026-10-03 22:00: A resumed view moves past a line longer than the 1 MiB read limit instead of re-reading it on every poll. (f349-log-resume)
+
+- 2026-10-03 03:00: A cursor from a page that delivered no line resumes from that page, not the whole tail. (bughunt-1/fix-runtime-logs-quiet-follow)
+
+- 2026-10-02: Describe shared single-cluster runtime placement. (01a0fe72-58b2-7cc3-b770-7310f5401deb)
 
 - 2026-10-01 14:00: Add the server-side `minLevel` floor and the console's **Include debug** control. (fix-d79 - 3d6ce1fdb)
 

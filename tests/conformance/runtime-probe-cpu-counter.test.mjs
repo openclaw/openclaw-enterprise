@@ -6,7 +6,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/co
 // Exercise the helper embedded in the actual generated Gateway program. Fake
 // cgroup reads make the two independently cumulative counters deterministic.
 const helperStart = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
-  "function probeOpenClawAuthenticationFailureCode() {",
+  "function probeOpenClawAuthenticationFailure() {",
 );
 const helperEnd = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
   "\nfunction runOpenClawAuthenticationProbe(fs, capMs) {",
@@ -57,7 +57,8 @@ function probe(pressure, throttling, options = {}) {
       return Object.hasOwn(options, "code") ? options.code : "CAP";
     },
   };
-  const code = vm.runInNewContext(`${helper}\nprobeOpenClawAuthenticationFailureCode();`, context);
+  const failure = vm.runInNewContext(`${helper}\nprobeOpenClawAuthenticationFailure();`, context);
+  const code = failure?.code;
   assert.equal(events.length, 1);
   assert.equal(events[0].event, "openclaw.model_probe");
   assert.equal(events[0].elapsedMs, 65_000);

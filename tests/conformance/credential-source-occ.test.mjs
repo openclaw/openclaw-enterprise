@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
@@ -14,6 +15,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const administrator = "principal-source-administrator";
@@ -309,6 +311,7 @@ async function fixture(options = {}) {
     dedicatedAgent,
     gateway,
     grantAgentSourceOperate,
+    iamState,
     makeReady,
     modelSecret,
     namespace,
@@ -393,6 +396,109 @@ test("registration requires operate on every referenced Secret before reading it
   );
   assert.equal(secretDriver.calls.filter(({ operation }) => operation === "withValue").length, 0);
   assert.equal(gateway.calls.length, 0);
+});
+
+test("a cross-Namespace Secret is an invalid request; a Secret the Namespace lacks stays not-found", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace, secretDriver } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  gateway.calls.length = 0;
+  secretDriver.calls.length = 0;
+  const foreign = { ...secret.ref, namespaceId: `ns_${crypto.randomUUID()}` };
+  const missing = { ...secret.ref, id: `sec_${crypto.randomUUID()}` };
+  const writes = [
+    [
+      "create",
+      (ref) =>
+        controller.createCredentialSource(administrator, {
+          namespaceId: namespace.id,
+          name: `openai-${crypto.randomUUID().slice(0, 8)}`,
+          type: "openai",
+          secrets: { api_key: ref },
+        }),
+    ],
+    [
+      "update",
+      (ref) =>
+        controller.updateCredentialSource(administrator, {
+          namespaceId: namespace.id,
+          credentialSourceId: source.id,
+          secrets: { api_key: ref },
+        }),
+    ],
+  ];
+  for (const [write, call] of writes) {
+    for (const [description, ref, expected] of [
+      [
+        "cross-Namespace Secret",
+        foreign,
+        {
+          status: 400,
+          code: "INVALID_REQUEST",
+          message: "Credential source Secrets cannot cross Namespaces.",
+        },
+      ],
+      [
+        "missing Secret",
+        missing,
+        {
+          status: 404,
+          code: "NOT_FOUND",
+          message: "The requested platform resource was not found.",
+        },
+      ],
+    ]) {
+      const rejection = await call(ref).then(
+        () => assert.fail(`${write}, ${description}: expected a rejection`),
+        (error) => error,
+      );
+      const { status, code, message } = requestFailure(rejection);
+      assert.deepEqual({ status, code, message }, expected, `${write}, ${description}`);
+    }
+  }
+  // Every reference is checked before any of them is authorized: a foreign second field wins
+  // over a first field the deployer may not operate.
+  const listSourceTypes = gateway.listSourceTypes.bind(gateway);
+  gateway.listSourceTypes = async (...args) => [
+    ...(await listSourceTypes(...args)),
+    {
+      type: "pair",
+      config: [],
+      secrets: [
+        { name: "first", required: true },
+        { name: "second", required: true },
+      ],
+      rotation: "none",
+    },
+  ];
+  const mixed = await controller
+    .createCredentialSource(deployer, {
+      namespaceId: namespace.id,
+      name: "pair",
+      type: "pair",
+      secrets: { first: secret.ref, second: foreign },
+    })
+    .then(
+      () => assert.fail("a foreign second field must be rejected"),
+      (error) => error,
+    );
+  const { status, code, message } = requestFailure(mixed);
+  assert.deepEqual(
+    { status, code, message },
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "Credential source Secrets cannot cross Namespaces.",
+    },
+  );
+  assert.deepEqual(gateway.calls, []);
+  assert.equal(secretDriver.calls.filter(({ operation }) => operation === "withValue").length, 0);
 });
 
 function auditEvent(namespaceId, id, action) {
@@ -681,7 +787,11 @@ test("deletion is refused while referenced, retried while the gateway fails, and
     controller.deleteCredentialSource(administrator, namespace.id, source.id),
     ResourceConflictError,
   );
-  await assert.rejects(controller.deleteSecret(administrator, namespace.id, secret.id));
+  await assert.rejects(
+    controller.deleteSecret(administrator, namespace.id, secret.id),
+    (error) =>
+      error instanceof ResourceConflictError && /still references the Secret/.test(error.message),
+  );
   await controller.updateAgent(administrator, {
     namespaceId: namespace.id,
     agentId: agent.id,
@@ -1133,4 +1243,198 @@ test("a selected Credential Gateway rejects Secret-backed Harness authentication
     ),
     /requires credential-source Harness authentication/,
   );
+});
+
+test("binding a credential source as Harness authentication requires operate on it", async () => {
+  const { controller, dedicatedAgent, iamState, makeReady, modelSecret, namespace } =
+    await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  const agent = await dedicatedAgent();
+  const bindSource = () =>
+    controller.updateAgent(administrator, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: agent.configurationId,
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+    });
+  // The administrator may update the Agent but is denied operate on this one source.
+  iamState.restrictions.push({
+    id: "deny-source-operate",
+    namespaceId: namespace.id,
+    action: "operate",
+    resourceKind: "credential_source",
+    resourceId: source.id,
+    effect: "deny",
+  });
+  await assert.rejects(bindSource(), (error) => {
+    assert.ok(error instanceof AuthorizationDeniedError);
+    assert.deepEqual(error.authorization, {
+      action: "operate",
+      resource: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
+    });
+    return true;
+  });
+  assert.equal(
+    (await controller.getAgent(administrator, namespace.id, agent.id)).harnessAuth ?? null,
+    agent.harnessAuth ?? null,
+  );
+  iamState.restrictions.pop();
+  assert.deepEqual((await bindSource()).harnessAuth, {
+    method: "credential_source",
+    sourceId: source.id,
+  });
+});
+
+test("a deletion that wins against a registration removes the late gateway copy and the record", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const register = gateway.registerSource.bind(gateway);
+  let deletion;
+  gateway.registerSource = async (context, input) => {
+    // DELETE marks the `registering` record `deleting` while the gateway call is in flight.
+    deletion = await controller
+      .deleteCredentialSource(administrator, namespace.id, context.source.id)
+      .then(
+        () => "deleted",
+        (error) => error,
+      );
+    return register(context, input);
+  };
+  await assert.rejects(
+    controller.createCredentialSource(
+      administrator,
+      {
+        namespaceId: namespace.id,
+        name: "openai",
+        type: "openai",
+        secrets: { api_key: secret.ref },
+      },
+      (created) => auditEvent(namespace.id, created.id, "openclaw.credential_sources.create"),
+    ),
+    (error) =>
+      error instanceof ResourceConflictError &&
+      error.message === "The credential source changed during registration.",
+  );
+  // The deletion found no copy yet and stays retryable inside the registration fence.
+  assert.ok(deletion instanceof DependencyUnavailableError, String(deletion));
+  // The copy stored after the deletion is removed, and no success event is committed.
+  assert.equal(gateway.stored.size, 0);
+  assert.deepEqual(await auditActions(controller), []);
+  assert.deepEqual(await controller.listCredentialSources(administrator, namespace.id), []);
+});
+
+test("only a ready credential source can be updated", async () => {
+  let failRemove = false;
+  const { controller, gateway, makeReady, modelSecret, namespace } = await fixture({
+    gateway: { removeError: () => (failRemove ? new Error("gateway unavailable") : undefined) },
+  });
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  failRemove = true;
+  await assert.rejects(
+    controller.deleteCredentialSource(administrator, namespace.id, source.id),
+    DependencyUnavailableError,
+  );
+  // Precondition: a `deleting` source keeps its gateway copy until DELETE completes.
+  assert.equal(gateway.stored.has(source.id), true);
+  // An update must not refresh that copy.
+  await assert.rejects(
+    controller.updateCredentialSource(administrator, {
+      namespaceId: namespace.id,
+      credentialSourceId: source.id,
+    }),
+    (error) =>
+      error instanceof ResourceConflictError &&
+      error.message === "Only a ready credential source can be updated.",
+  );
+  assert.equal(gateway.calls.filter(({ operation }) => operation === "updateSource").length, 0);
+});
+
+test("reading a credential source requires read on it, and listing filters per source", async () => {
+  const { controller, iamState, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const sources = [];
+  for (const name of ["visible", "hidden"]) {
+    sources.push(
+      await controller.createCredentialSource(administrator, {
+        namespaceId: namespace.id,
+        name,
+        type: "openai",
+        secrets: { api_key: secret.ref },
+      }),
+    );
+  }
+  await assert.rejects(
+    controller.readCredentialSource(zeroGrant, namespace.id, sources[0].id),
+    AuthorizationDeniedError,
+  );
+  // Namespace read lists only the sources this principal may read.
+  const reader = "principal-source-namespace-reader";
+  iamState.identities.push({
+    kind: "principal",
+    id: reader,
+    issuer: "credential-source-occ",
+    subject: reader,
+  });
+  grantRole(iamState, reader, {
+    id: "source-namespace-reader-role",
+    namespaceId: namespace.id,
+    permissions: { namespace: ["read"] },
+  });
+  assert.deepEqual(await controller.listCredentialSources(reader, namespace.id), []);
+  grantRole(iamState, reader, {
+    id: "source-one-reader-role",
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["read"] },
+    resource: { kind: "credential_source", id: sources[0].id },
+  });
+  assert.deepEqual(
+    (await controller.listCredentialSources(reader, namespace.id)).map(({ id }) => id),
+    [sources[0].id],
+  );
+  assert.equal(
+    (await controller.readCredentialSource(reader, namespace.id, sources[0].id)).id,
+    sources[0].id,
+  );
+  await assert.rejects(
+    controller.readCredentialSource(reader, namespace.id, sources[1].id),
+    AuthorizationDeniedError,
+  );
+});
+
+test("a failing gateway status read reports a fixed reason, not the gateway's error", async () => {
+  const { controller, gateway, makeReady, modelSecret, namespace } = await fixture();
+  await makeReady();
+  const secret = await modelSecret();
+  const source = await controller.createCredentialSource(administrator, {
+    namespaceId: namespace.id,
+    name: "openai",
+    type: "openai",
+    secrets: { api_key: secret.ref },
+  });
+  gateway.sourceStatus = async () => {
+    throw new Error("gateway echoed synthetic-model-key and internal address 10.0.0.7");
+  };
+  const read = await controller.readCredentialSource(administrator, namespace.id, source.id);
+  assert.deepEqual(read.status, {
+    state: "failed",
+    reason: "The Credential Gateway status is unavailable.",
+  });
+  assert.equal(JSON.stringify(read).includes("synthetic-model-key"), false);
+  assert.equal(JSON.stringify(read).includes("10.0.0.7"), false);
 });

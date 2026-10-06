@@ -82,5 +82,7 @@ test("rejects a malformed PR number before invoking gh", (t) => {
     encoding: "utf8",
   });
   assert.equal(result.status, 2);
-  assert.throws(() => readFileSync(log));
+  assert.equal(result.stderr, "Usage: node scripts/pr-status.mjs PR_NUMBER [OWNER/REPOSITORY]\n");
+  // gh was never invoked, so its call log was never created.
+  assert.throws(() => readFileSync(log), { code: "ENOENT" });
 });

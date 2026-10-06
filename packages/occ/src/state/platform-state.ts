@@ -56,13 +56,22 @@ import {
   normalizeSecretBindings,
   validPluginRevisionState,
   validPluginApprovers,
+  isBackendId,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
+  AGENT_NAME_CONFLICT,
+  CREDENTIAL_SOURCE_NAME_CONFLICT,
+  DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
+  NAMESPACE_NAME_CONFLICT,
+  PRESET_NAME_CONFLICT,
   ResourceConflictError,
+  ResourceStateConflictError,
+  SECRET_NAME_CONFLICT,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
   ScopeViolationError,
 } from "../errors.ts";
 import {
@@ -108,6 +117,8 @@ export interface NamespaceRepository extends NamespaceReadRepository {
   ): Promise<Readonly<PersistedNamespace> | undefined>;
   hasAgents(namespaceId: string): Promise<boolean>;
   hasConfigurations(namespaceId: string): Promise<boolean>;
+  /** IDs of the Namespace's Configurations, oldest first; nothing else lists them. */
+  listConfigurationIds(namespaceId: string): Promise<readonly string[]>;
   hasPresets(namespaceId: string): Promise<boolean>;
   hasServiceAccounts(namespaceId: string): Promise<boolean>;
   hasSecrets(namespaceId: string): Promise<boolean>;
@@ -382,7 +393,6 @@ const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
-const backendIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
@@ -592,8 +602,7 @@ export async function assertHarnessAuthAvailable(
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   if (
-    (revision.backendId !== null &&
-      (typeof revision.backendId !== "string" || !backendIdentifier.test(revision.backendId))) ||
+    (revision.backendId !== null && !isBackendId(revision.backendId)) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       revision.configurationId,
     ) ||
@@ -997,7 +1006,7 @@ function assertSecret(secret: Secret): void {
     !namespaceIdentifier.test(secret.namespaceId) ||
     typeof secret.name !== "string" ||
     secret.name.length < 1 ||
-    secret.name.length > 200 ||
+    Array.from(secret.name).length > 200 ||
     secret.name !== secret.name.trim() ||
     /[\x00-\x1f\x7f]/.test(secret.name) ||
     typeof secret.driverId !== "string" ||
@@ -1048,7 +1057,7 @@ function assertCredentialSource(source: CredentialSource): void {
     !namespaceIdentifier.test(source.namespaceId) ||
     typeof source.name !== "string" ||
     source.name.length < 1 ||
-    source.name.length > 200 ||
+    Array.from(source.name).length > 200 ||
     source.name !== source.name.trim() ||
     Array.from(source.name).some((character) => {
       const code = character.charCodeAt(0);
@@ -1141,13 +1150,12 @@ function repositories(
       if (snapshot.namespaces.has(key)) {
         throw new ResourceConflictError("The server generated an existing Namespace identity.");
       }
-      if (
-        Array.from(snapshot.namespaces.values()).some(
-          (existing) => existing.name === namespace.name,
-        )
-      ) {
-        throw new ResourceConflictError(
-          "A Namespace with this name already exists in the Installation.",
+      const named = Array.from(snapshot.namespaces.values()).find(
+        (existing) => existing.name === namespace.name,
+      );
+      if (named !== undefined) {
+        throw new ResourceStateConflictError(
+          named.deletedAt === undefined ? NAMESPACE_NAME_CONFLICT : DELETED_NAMESPACE_NAME_CONFLICT,
         );
       }
       if (
@@ -1181,6 +1189,16 @@ function repositories(
     hasConfigurations: async (namespaceId) =>
       Array.from(snapshot.configurations.values()).some(
         (configuration) => configuration.namespaceId === namespaceId,
+      ),
+    listConfigurationIds: async (namespaceId) =>
+      Object.freeze(
+        Array.from(snapshot.configurations.values())
+          .filter((configuration) => configuration.namespaceId === namespaceId)
+          .sort(
+            (left, right) =>
+              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+          )
+          .map((configuration) => configuration.id),
       ),
     hasPresets: async (namespaceId) =>
       Array.from(snapshot.presets.values()).some((preset) => preset.namespaceId === namespaceId),
@@ -1295,14 +1313,16 @@ function repositories(
       if (namespace === undefined || !["provisioning", "ready"].includes(namespace.status)) {
         throw new ScopeViolationError("The Preset belongs to an unavailable Namespace.");
       }
+      if (Array.from(snapshot.presets.values()).some((existing) => existing.id === preset.id)) {
+        throw new ResourceConflictError("The server generated an existing Preset identity.");
+      }
       if (
         Array.from(snapshot.presets.values()).some(
           (existing) =>
-            existing.id === preset.id ||
-            (existing.namespaceId === preset.namespaceId && existing.name === preset.name),
+            existing.namespaceId === preset.namespaceId && existing.name === preset.name,
         )
       ) {
-        throw new ResourceConflictError("The Preset identity or Namespace name already exists.");
+        throw new ResourceStateConflictError(PRESET_NAME_CONFLICT);
       }
       const saved = immutableCopy(preset);
       snapshot.presets.set(agentKey(preset.namespaceId, preset.id), saved);
@@ -1323,7 +1343,7 @@ function repositories(
             existing.name === saved.name,
         )
       ) {
-        throw new ResourceConflictError("The Preset name already exists in this Namespace.");
+        throw new ResourceStateConflictError(PRESET_NAME_CONFLICT);
       }
       snapshot.presets.set(agentKey(namespaceId, presetId), saved);
       return immutableCopy(saved);
@@ -1490,7 +1510,7 @@ function repositories(
             existing.namespaceId === secret.namespaceId && existing.name === secret.name,
         )
       ) {
-        throw new ResourceConflictError("A Secret with this name already exists in the Namespace.");
+        throw new ResourceStateConflictError(SECRET_NAME_CONFLICT);
       }
       const saved = immutableCopy(secret);
       snapshot.secrets.set(key, saved);
@@ -1717,9 +1737,7 @@ function repositories(
             existing.namespaceId === source.namespaceId && existing.name === source.name,
         )
       ) {
-        throw new ResourceConflictError(
-          "A credential source with this name already exists in the Namespace.",
-        );
+        throw new ResourceStateConflictError(CREDENTIAL_SOURCE_NAME_CONFLICT);
       }
       const saved = immutableCopy(source);
       snapshot.credentialSources.set(key, saved);
@@ -1834,7 +1852,7 @@ function repositories(
         !serviceAccountIdentifier.test(account.id) ||
         typeof account.name !== "string" ||
         account.name.length < 1 ||
-        account.name.length > 200 ||
+        Array.from(account.name).length > 200 ||
         account.name !== account.name.trim() ||
         /[\x00-\x1f\x7f]/.test(account.name) ||
         (account.credential !== undefined && !validCredential(account.credential))
@@ -1851,15 +1869,19 @@ function repositories(
       const key = agentKey(account.namespaceId, account.id);
       if (
         snapshot.serviceAccounts.has(key) ||
-        Array.from(snapshot.serviceAccounts.values()).some(
-          (existing) =>
-            existing.id === account.id ||
-            (existing.namespaceId === account.namespaceId && existing.name === account.name),
-        )
+        Array.from(snapshot.serviceAccounts.values()).some((existing) => existing.id === account.id)
       ) {
         throw new ResourceConflictError(
-          "A ServiceAccount with this identity or name already exists.",
+          "The server generated an existing ServiceAccount identity.",
         );
+      }
+      if (
+        Array.from(snapshot.serviceAccounts.values()).some(
+          (existing) =>
+            existing.namespaceId === account.namespaceId && existing.name === account.name,
+        )
+      ) {
+        throw new ResourceStateConflictError(SERVICE_ACCOUNT_NAME_CONFLICT);
       }
       const saved = immutableCopy(account);
       snapshot.serviceAccounts.set(key, saved);
@@ -2004,10 +2026,7 @@ function repositories(
       if (agent.executionMode !== "embedded" && agent.executionMode !== "dedicated") {
         throw new ScopeViolationError("The Agent execution mode is invalid.");
       }
-      if (
-        agent.backendId !== null &&
-        (typeof agent.backendId !== "string" || !backendIdentifier.test(agent.backendId))
-      ) {
+      if (agent.backendId !== null && !isBackendId(agent.backendId)) {
         throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       const plugins = normalizedPlugins(agent.plugins);
@@ -2044,7 +2063,7 @@ function repositories(
           (existing) => existing.namespaceId === agent.namespaceId && existing.name === agent.name,
         )
       ) {
-        throw new ResourceConflictError("An Agent with this name already exists in the Namespace.");
+        throw new ResourceStateConflictError(AGENT_NAME_CONFLICT);
       }
       if (
         Array.from(snapshot.agents.values()).some(
@@ -2129,7 +2148,7 @@ function repositories(
       if (!current) {
         return undefined;
       }
-      if (backendId !== undefined && backendId !== null && !backendIdentifier.test(backendId)) {
+      if (backendId !== undefined && backendId !== null && !isBackendId(backendId)) {
         throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       if (
@@ -2286,10 +2305,16 @@ function repositories(
     },
   };
 
-  const agentRevisionExists = (namespaceId: string, revisionId: string): boolean =>
+  // A revision of a deleting Agent is removed with it, so it admits no new binding.
+  const liveAgentRevisionExists = (namespaceId: string, revisionId: string): boolean =>
     Array.from(snapshot.revisions.values())
       .flat()
-      .some((revision) => revision.namespaceId === namespaceId && revision.id === revisionId);
+      .some(
+        (revision) =>
+          revision.namespaceId === namespaceId &&
+          revision.id === revisionId &&
+          snapshot.agents.get(agentKey(namespaceId, revision.agentId))?.status === "active",
+      );
 
   const managedPolicyResourceExists = async (
     namespaceId: string,
@@ -2305,7 +2330,7 @@ function repositories(
       return (await agents.findAgent(namespaceId, resourceId))?.status === "active";
     }
     if (resourceKind === "agent_revision") {
-      return agentRevisionExists(namespaceId, resourceId);
+      return liveAgentRevisionExists(namespaceId, resourceId);
     }
     if (resourceKind === "configuration") {
       return (await configurations.findConfiguration(namespaceId, resourceId)) !== undefined;
@@ -2330,6 +2355,7 @@ function repositories(
       (agent) =>
         agent.namespaceId === namespaceId &&
         agent.servicePrincipalId === identityId &&
+        agent.status === "active" &&
         snapshot.namespaces.get(namespaceId)?.deletedAt === undefined,
     );
 
@@ -2417,6 +2443,9 @@ function repositories(
       const binding = snapshot.bindings.get(iamPolicyKey(namespaceId, bindingId));
       return binding === undefined ? undefined : immutableCopy(binding);
     },
+    // In memory, Restrictions live in the IAM driver's seed, not in platform state, and
+    // no deletion removes them.
+    listRestrictionsTargeting: async () => Object.freeze([]),
     createAccessBinding: async (binding) => {
       assertInitialized(snapshot);
       const namespaceId = binding.namespaceId ?? "";
@@ -2517,6 +2546,7 @@ function repositories(
     repositorySessions,
     provisioning: {
       findByWorkId: provisioningAbsent,
+      findWithWork: provisioningAbsent,
       hasPendingNamespaceProvisioning: provisioningPendingAbsent,
       findByAgent: provisioningAbsent,
       findByConfiguration: provisioningAbsent,
@@ -2529,6 +2559,7 @@ function repositories(
       cancel: provisioningUnavailable,
       cancelByAgent: async () => undefined,
       retryByWorkId: provisioningUnavailable,
+      releaseConfiguration: async () => false,
     },
     audit: {
       async append(event) {

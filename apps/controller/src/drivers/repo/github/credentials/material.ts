@@ -15,7 +15,8 @@ export function createGitHubKeyOwner(options: GitHubKeyOptions): GitHubKeyOwner 
   ) {
     throw new Error("invalid-signing-key");
   }
-  return Object.freeze({
+  return Object.freeze<GitHubKeyOwner>({
+    kind: "github-app",
     async withJwt<T>(consume: (jwt: string, assertCurrent: () => void) => Promise<T>): Promise<T> {
       const assertCurrent = () => {
         if (!key) {

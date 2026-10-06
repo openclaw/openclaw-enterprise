@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { createServer } from "node:net";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { ResourceConflictError, ScopeViolationError } from "../../packages/occ/src/index.ts";
+import {
+  ResourceConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
+  ScopeViolationError,
+} from "../../packages/occ/src/index.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -16,22 +19,11 @@ import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-s
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
-
-async function availableLoopbackPort() {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  assert.notEqual(address, null);
-  await new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  return address.port;
-}
 
 function createRuntimeCredentialComputeDriver(options = {}) {
   const statusByAgent = new Map();
@@ -123,7 +115,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
 
 async function createFixture(t, options = {}) {
   const installationId = `ins_${randomUUID()}`;
-  const port = await availableLoopbackPort();
+  const port = await availablePort();
   const origin = `http://127.0.0.1:${port}`;
   const auth = createControllerAuth({
     installationId,
@@ -168,6 +160,7 @@ async function createFixture(t, options = {}) {
     configurationDriver: createTestConfigurationDriver({ id: "runtime-credential-configuration" }),
     secretDriver: createTestSecretDriver({ id: "runtime-credential-secret" }),
     resolveHarness: resolveApprovedHarness,
+    ...(options.logger === undefined ? {} : { logger: options.logger }),
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
@@ -261,19 +254,11 @@ async function createFixture(t, options = {}) {
       namespaceId: namespace.data.id,
       agentId: agent.data.id,
     });
-    policy.roles.push({
+    grantRole(policy, servicePrincipalId, {
       id: roleId,
       namespaceId: namespace.data.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    policy.bindings.push({
-      id: roleId,
-      namespaceId: namespace.data.id,
-      subjectKind: "identity",
-      subjectId: servicePrincipalId,
-      roleId,
-      resourceKind: "secret",
-      resourceId: secret.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: secret.data.id },
     });
     return {
       namespace: namespace.data,
@@ -415,22 +400,15 @@ test("first deployment requires Agent read and operate only when generating cred
   ]) {
     const { principal, session } = await fixture.createPrincipal(label, (identity) => {
       const roleId = `deploy-${randomUUID()}`;
-      fixture.policy.roles.push({
+      grantRole(fixture.policy, identity.id, {
         id: roleId,
+        bindingId: `${roleId}-binding`,
         namespaceId: namespace.id,
-        permissions: [
-          { action: "deploy", resourceKind: "agent" },
-          ...agentActions.map((action) => ({ action, resourceKind: "agent" })),
-          { action: "read", resourceKind: "configuration" },
-          { action: "operate", resourceKind: "secret" },
-        ],
-      });
-      fixture.policy.bindings.push({
-        id: `${roleId}-binding`,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: identity.id,
-        roleId,
+        permissions: {
+          agent: ["deploy", ...agentActions],
+          configuration: ["read"],
+          secret: ["operate"],
+        },
       });
     });
     const denied = await fixture.request("POST", `${agentPath}/deploy`, { session });
@@ -526,37 +504,35 @@ test("runtime credential POST keeps session CSRF and exact Agent read plus opera
   assert.equal(csrfRejected.body.error.code, "FORBIDDEN");
   assert.equal(fixture.computeDriver.calls.length, 0);
 
-  const { principal, session } = await fixture.createPrincipal(
-    "runtime-operator-without-read",
-    (limited) => {
-      fixture.policy.roles.push({
-        id: "runtime-operate-without-read",
+  // Each grant is required on its own: operate without read, then read without operate.
+  for (const [held, missing] of [
+    ["operate", "read"],
+    ["read", "operate"],
+  ]) {
+    const roleId = `runtime-${held}-without-${missing}`;
+    const { principal, session } = await fixture.createPrincipal(roleId, (limited) => {
+      grantRole(fixture.policy, limited.id, {
+        id: roleId,
+        bindingId: `${roleId}-binding`,
         namespaceId: namespace.id,
-        permissions: [{ action: "operate", resourceKind: "agent" }],
+        permissions: { agent: [held] },
       });
-      fixture.policy.bindings.push({
-        id: "runtime-operate-without-read-binding",
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: limited.id,
-        roleId: "runtime-operate-without-read",
-      });
-    },
-  );
-  const denied = await fixture.request("POST", path, {
-    session,
-    body: {},
-  });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
-  assert.equal(fixture.computeDriver.calls.length, 0);
-  const denial = fixture.auditSink.events.at(-1);
-  assert.equal(denial.kind, "authorization_denial");
-  assert.deepEqual(denial.authorization, {
-    principalId: principal.id,
-    action: "read",
-    resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
-  });
+    });
+    const denied = await fixture.request("POST", path, {
+      session,
+      body: {},
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assert.equal(fixture.computeDriver.calls.length, 0);
+    const denial = fixture.auditSink.events.at(-1);
+    assert.equal(denial.kind, "authorization_denial");
+    assert.deepEqual(denial.authorization, {
+      principalId: principal.id,
+      action: missing,
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+    });
+  }
 });
 
 test("runtime credential API rejects unsupported initial provisioning states and request shapes", async (t) => {
@@ -607,19 +583,12 @@ test("deployment diagnostics require exact revision read and Agent operate autho
   const { principal, session } = await fixture.createPrincipal(
     "deployment-diagnostics-reader",
     (limited) => {
-      fixture.policy.roles.push({
+      grantRole(fixture.policy, limited.id, {
         id: "diagnostics-revision-reader",
+        bindingId: "diagnostics-revision-reader-binding",
         namespaceId: namespace.id,
-        permissions: [{ action: "read", resourceKind: "agent_revision" }],
-      });
-      fixture.policy.bindings.push({
-        id: "diagnostics-revision-reader-binding",
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: limited.id,
-        roleId: "diagnostics-revision-reader",
-        resourceKind: "agent_revision",
-        resourceId: revision.data.id,
+        permissions: { agent_revision: ["read"] },
+        resource: { kind: "agent_revision", id: revision.data.id },
       });
     },
   );
@@ -635,19 +604,12 @@ test("deployment diagnostics require exact revision read and Agent operate autho
     resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
   });
 
-  fixture.policy.roles.push({
+  grantRole(fixture.policy, principal.id, {
     id: "diagnostics-agent-operator",
+    bindingId: "diagnostics-agent-operator-binding",
     namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "agent" }],
-  });
-  fixture.policy.bindings.push({
-    id: "diagnostics-agent-operator-binding",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "diagnostics-agent-operator",
-    resourceKind: "agent",
-    resourceId: agent.id,
+    permissions: { agent: ["operate"] },
+    resource: { kind: "agent", id: agent.id },
   });
   const missingAgentRead = await fixture.request("POST", path, { session });
   assert.equal(missingAgentRead.status, 403);
@@ -661,19 +623,12 @@ test("deployment diagnostics require exact revision read and Agent operate autho
     resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
   });
 
-  fixture.policy.roles.push({
+  grantRole(fixture.policy, principal.id, {
     id: "diagnostics-agent-reader",
+    bindingId: "diagnostics-agent-reader-binding",
     namespaceId: namespace.id,
-    permissions: [{ action: "read", resourceKind: "agent" }],
-  });
-  fixture.policy.bindings.push({
-    id: "diagnostics-agent-reader-binding",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: principal.id,
-    roleId: "diagnostics-agent-reader",
-    resourceKind: "agent",
-    resourceId: agent.id,
+    permissions: { agent: ["read"] },
+    resource: { kind: "agent", id: agent.id },
   });
   const scopedDiagnostics = await fixture.request("POST", path, { session });
   assert.equal(scopedDiagnostics.status, 200);
@@ -774,6 +729,84 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   assert.deepEqual(auditRecovered.data, {
     transportConfigured: true,
   });
+});
+
+test("a cluster denial of runtime credentials names the missing RoleBinding and logs the cause", async (t) => {
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "info",
+    destination: {
+      write(chunk) {
+        lines.push(
+          ...String(chunk)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        );
+        return true;
+      },
+    },
+  });
+  // The data-plane tenant-api RoleBinding is missing (D396).
+  const fixture = await createFixture(t, {
+    logger,
+    computeDriver: createRuntimeCredentialComputeDriver({
+      statusError: new RuntimeCredentialsForbiddenByClusterError({
+        verb: "get",
+        resource: "secrets",
+        kubernetesNamespace: "oce-90018df17b2b259",
+        plane: "execution",
+        status: 403,
+      }),
+    }),
+  });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const expected = {
+    code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+    message:
+      "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+  };
+
+  const status = await fixture.request("GET", `${agentPath}/runtime-credentials`);
+  assert.equal(status.status, 503, JSON.stringify(status.body));
+  assert.deepEqual({ code: status.body.error.code, message: status.body.error.message }, expected);
+  // The first deployment checks runtime credentials before admitting a revision.
+  const deployed = await fixture.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 503, JSON.stringify(deployed.body));
+  assert.deepEqual(
+    { code: deployed.body.error.code, message: deployed.body.error.message },
+    expected,
+  );
+
+  const warnings = lines.filter(
+    (line) => line.event === "agent_runtime_credentials.cluster_denied",
+  );
+  assert.equal(warnings.length, 2, JSON.stringify(lines));
+  for (const [warning, response] of [
+    [warnings[0], status],
+    [warnings[1], deployed],
+  ]) {
+    assert.equal(warning.severity, "WARN");
+    assert.equal(warning.requestId, response.body.meta.requestId);
+    assert.deepEqual(
+      {
+        verb: warning.verb,
+        resource: warning.resource,
+        kubernetesNamespace: warning.kubernetesNamespace,
+        plane: warning.plane,
+        kubernetesStatus: warning.kubernetesStatus,
+      },
+      {
+        verb: "get",
+        resource: "secrets",
+        kubernetesNamespace: "oce-90018df17b2b259",
+        plane: "execution",
+        kubernetesStatus: 403,
+      },
+    );
+  }
 });
 
 for (const DriverError of [ResourceConflictError, ScopeViolationError]) {

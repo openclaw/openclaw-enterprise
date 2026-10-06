@@ -17,26 +17,32 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
     deleting: agent.status === "deleting",
     pending: false,
     needsRefresh: false,
+    // Finishing the deletion removes the bindings that target this Agent, so a deleter whose
+    // only grants came from them can no longer read it.
+    accessEnded: false,
     notice: "",
     error: null,
   };
   let pollTimer;
+  const heading = element("h2", { id: "agent-deletion-title", tabindex: "-1" }, "Delete Agent");
 
   section.append(
-    element("h2", { id: "agent-deletion-title" }, "Delete Agent"),
+    heading,
     element(
       "p",
       { className: "muted" },
-      "Permanently delete this Agent, its revision history, and its workspace data. Namespace-owned Configurations and Secrets are kept. This cannot be undone.",
+      "Permanently delete this Agent, its version history, and its workspace data. Namespace-owned Configurations and Secrets are kept. This cannot be undone.",
     ),
     feedback,
     actions,
   );
 
   function render() {
-    const status = state.deleting
-      ? "Deletion in progress. Cleanup runs in the background; this Agent cannot be edited or deployed."
-      : state.notice;
+    const status = state.accessEnded
+      ? "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup."
+      : state.deleting
+        ? "Deletion in progress. Cleanup runs in the background; this Agent cannot be edited or deployed."
+        : state.notice;
     feedback.replaceChildren(
       ...(status ? [element("p", { className: "notice", role: "status" }, status)] : []),
       ...(state.error
@@ -55,7 +61,9 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
     remove.disabled = state.pending || state.needsRefresh;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh deletion status";
-    if (state.deleting) {
+    if (state.accessEnded) {
+      actions.replaceChildren();
+    } else if (state.deleting) {
       actions.replaceChildren(refresh);
     } else if (state.needsRefresh) {
       actions.replaceChildren(remove, refresh);
@@ -75,7 +83,7 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
   function schedulePoll() {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(() => {
-      if (context.isCurrent() && state.deleting) {
+      if (context.isCurrent() && state.deleting && !state.accessEnded) {
         void refreshStatus({ poll: true });
       }
     }, DELETION_POLL_MS);
@@ -88,6 +96,9 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
       }
       return;
     }
+    // Disabling Refresh while it checks drops its focus, so remember where focus was first.
+    const focusedHere =
+      section.contains(document.activeElement) || document.activeElement === document.body;
     state.pending = true;
     state.error = null;
     render();
@@ -116,6 +127,12 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
         context.onExpired();
       } else if (error.status === 404) {
         context.navigate("agents");
+      } else if (error.status === 403 && state.deleting) {
+        // Most likely the finished deletion removed the bindings that target this Agent, so a
+        // reader with only those grants can no longer follow it. Stop polling instead of
+        // showing a denial.
+        state.accessEnded = true;
+        clearTimeout(pollTimer);
       } else {
         state.error = {
           text: `Could not refresh deletion status. ${message(error)}`,
@@ -127,7 +144,12 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
       if (context.isCurrent()) {
         state.pending = false;
         render();
-        if (!poll) {
+        if (state.accessEnded) {
+          // Refresh is gone, so keep focus in this section on its heading.
+          if (focusedHere) {
+            heading.focus({ preventScroll: true });
+          }
+        } else if (!poll) {
           (state.deleting || state.needsRefresh ? refresh : remove).focus();
         }
       }
@@ -193,6 +215,16 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
     }
   }
 
+  // Agent deletion keeps the Configuration and model credential Secret, even ones Create Agent made
+  // for this Agent, and the console cannot list or delete them, so name them and the commands.
+  function keptResourcesText() {
+    const source = agent.harnessAuth?.source;
+    if (source?.kind !== "secret") {
+      return `Its Configuration is kept, even if it was created with this Agent. Once nothing else uses it, delete it with occ configuration delete ${agent.configurationId}.`;
+    }
+    return `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${source.id}.`;
+  }
+
   function openConfirmation() {
     if (state.pending || state.deleting || state.needsRefresh) {
       return;
@@ -200,7 +232,7 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
     const dialog = element("dialog", {
       className: "agent-delete-dialog",
       "aria-labelledby": "agent-delete-confirm-title",
-      "aria-describedby": "agent-delete-confirm-description",
+      "aria-describedby": "agent-delete-confirm-description agent-delete-confirm-kept",
     });
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
@@ -215,8 +247,9 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
       element(
         "p",
         { id: "agent-delete-confirm-description" },
-        "This permanently deletes the Agent, its revision history, and its workspace data. This cannot be undone.",
+        "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.",
       ),
+      element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText()),
       element("div", { className: "form-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {

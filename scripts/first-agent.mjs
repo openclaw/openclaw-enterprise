@@ -15,13 +15,14 @@ import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-mode
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage() {
-  return `Usage: node scripts/first-agent.mjs <name> [--prompt <text>] [--replace-key]
+  return `Usage: node scripts/first-agent.mjs <name> [--harness openclaw|codex] [--prompt <text>] [--replace-key]
 
-Create and deploy an embedded OpenClaw Agent in the local Kubernetes installation
-started by ./bin/occ dev up, then ask the actual model to return a random value.
+Create and deploy an Agent in the local Kubernetes installation started by
+./bin/occ dev up, then ask the actual model to return a random value.
 The Agent stays running after this command exits. Reuse the same name to send
 another prompt or verify it again.
 
+  --harness <id>  Use embedded OpenClaw (default) or dedicated Codex.
   --prompt <text>  Ask the Agent an additional question and print its response.
   --replace-key    Replace this Agent's saved model key and deploy a new revision.
 
@@ -36,11 +37,13 @@ function parseArguments(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     return undefined;
   }
-  const result = { name: undefined, prompt: undefined, replaceKey: false };
+  const result = { name: undefined, harness: "openclaw", prompt: undefined, replaceKey: false };
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
     if (value === "--replace-key" && !result.replaceKey) {
       result.replaceKey = true;
+    } else if (value === "--harness" && argv[index + 1]) {
+      result.harness = argv[++index];
     } else if (value === "--prompt" && result.prompt === undefined && argv[index + 1]) {
       result.prompt = argv[++index];
     } else if (!value.startsWith("-") && result.name === undefined) {
@@ -61,6 +64,9 @@ function parseArguments(argv) {
   }
   if (result.prompt !== undefined && (!result.prompt.trim() || result.prompt.length > 4_000)) {
     throw new Error("The prompt must contain 1–4,000 characters.");
+  }
+  if (!["openclaw", "codex"].includes(result.harness)) {
+    throw new Error("--harness must be openclaw or codex.");
   }
   return result;
 }
@@ -96,7 +102,7 @@ function parseJson(value, description) {
   }
 }
 
-async function loadLocalInstallation() {
+async function loadLocalInstallation(harness) {
   const selected = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const directory = selected
     ? isAbsolute(selected)
@@ -146,9 +152,9 @@ async function loadLocalInstallation() {
   ) {
     throw new Error("The recorded Kubernetes Local Setup state does not belong to this checkout.");
   }
-  if (state.sandboxDriver === "openshell") {
+  if (state.sandboxDriver === "openshell" && harness !== "codex") {
     throw new Error(
-      "The local first-Agent workflow does not support the OpenShell Sandbox Driver. Start Local Setup with OCC_DEVELOPMENT_SANDBOX_DRIVER=none.",
+      "The OpenShell first-Agent workflow requires --harness codex so its authenticated app server runs in dedicated mode.",
     );
   }
   if (state.deploymentMode !== "k3d") {
@@ -270,7 +276,7 @@ async function loadLocalInstallation() {
       input: sql,
     });
   };
-  return { directory, key, origin, kubectl, database };
+  return { directory, key, origin, kubectl, database, sandboxDriver: state.sandboxDriver };
 }
 
 function loopbackOrigin(raw, protocol = "http:") {
@@ -435,8 +441,25 @@ async function modelKey() {
   return value;
 }
 
-function nativeConfiguration(model) {
-  const selected = `openai/${model}`;
+function nativeConfiguration(model, harness) {
+  const selected = `${harness === "codex" ? "codex" : "openai"}/${model}`;
+  const provider =
+    harness === "codex"
+      ? {
+          codex: {
+            baseUrl: "http://127.0.0.1:9",
+            api: "openai-responses",
+            models: [{ id: model, name: model }],
+          },
+        }
+      : {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            api: "openai-responses",
+            apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+            models: [{ id: model, name: model }],
+          },
+        };
   return {
     kind: "agent",
     values: {
@@ -453,33 +476,54 @@ function nativeConfiguration(model) {
         defaults: {
           model: selected,
           skipBootstrap: true,
-          models: { [selected]: { agentRuntime: { id: "openclaw" } } },
+          models: { [selected]: { agentRuntime: { id: harness } } },
         },
       },
       tools: { deny: ["*"] },
-      secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            api: "openai-responses",
-            apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
-            models: [{ id: model, name: model }],
-          },
-        },
-      },
+      ...(harness === "openclaw"
+        ? { secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } } }
+        : {}),
+      models: { providers: provider },
+      ...(harness === "codex"
+        ? {
+            plugins: {
+              allow: ["codex"],
+              entries: {
+                codex: {
+                  enabled: true,
+                  config: {
+                    appServer: {
+                      mode: "guardian",
+                      approvalPolicy: "on-request",
+                      sandbox: "read-only",
+                      transport: "websocket",
+                      url: "${APP_SERVER_URL}",
+                      authToken: "${APP_SERVER_TOKEN}",
+                    },
+                  },
+                },
+              },
+            },
+          }
+        : {}),
     },
   };
+}
+
+function expectedHarnessAuth(record) {
+  return record.sandboxDriver === "openshell"
+    ? { method: "credential_source", sourceId: record.credentialSourceId }
+    : {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: record.namespaceId, id: record.secretId },
+      };
 }
 
 function assertManagedAgent(agent, record) {
   if (
     agent.configurationId !== record.configurationId ||
-    agent.harnessAuth?.method !== "api_key" ||
-    agent.harnessAuth.source?.kind !== "secret" ||
-    agent.harnessAuth.source?.namespaceId !== record.namespaceId ||
-    agent.harnessAuth.source?.id !== record.secretId ||
-    agent.executionMode !== "embedded" ||
+    !isDeepStrictEqual(agent.harnessAuth, expectedHarnessAuth(record)) ||
+    agent.executionMode !== (record.harness === "codex" ? "dedicated" : "embedded") ||
     agent.backendId !== null ||
     Object.keys(agent.plugins ?? {}).length
   ) {
@@ -506,24 +550,25 @@ function assertManagedConfiguration(configuration, record, expected) {
 }
 
 function assertManagedRevision(revision, record, expected) {
+  const frozen = structuredClone(expected);
+  if (record.sandboxDriver === "openshell" && record.harness === "codex") {
+    frozen.values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+  }
   const { logging, diagnostics, ...values } = revision.configuration ?? {};
   const level = logging?.level;
   if (
     revision.agentId !== record.agentId ||
     revision.namespaceId !== record.namespaceId ||
     revision.configurationId !== record.configurationId ||
-    revision.configurationKind !== expected.kind ||
+    revision.configurationKind !== frozen.kind ||
     revision.configurationGeneration !== record.configurationGeneration ||
-    !isDeepStrictEqual(values, expected.values) ||
+    !isDeepStrictEqual(values, frozen.values) ||
     !["debug", "info", "warn", "error"].includes(level) ||
     !isDeepStrictEqual(logging, { level, consoleLevel: level, consoleStyle: "json" }) ||
     !isDeepStrictEqual(diagnostics, { otel: { logs: false } }) ||
-    revision.harness?.id !== "openclaw" ||
-    revision.harness.mode !== "embedded" ||
-    revision.harnessAuth?.method !== "api_key" ||
-    revision.harnessAuth.source?.kind !== "secret" ||
-    revision.harnessAuth.source?.namespaceId !== record.namespaceId ||
-    revision.harnessAuth.source?.id !== record.secretId ||
+    revision.harness?.id !== record.harness ||
+    revision.harness.mode !== (record.harness === "codex" ? "dedicated" : "embedded") ||
+    !isDeepStrictEqual(revision.harnessAuth, expectedHarnessAuth(record)) ||
     revision.backendId !== null ||
     Object.keys(revision.secretBindings ?? {}).length ||
     revision.plugins !== undefined
@@ -531,6 +576,50 @@ function assertManagedRevision(revision, record, expected) {
     throw new Error(
       "This Agent revision was changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
     );
+  }
+}
+
+function assertManagedCredentialSource(source, record, secret) {
+  if (
+    source.name !== record.credentialSourceName ||
+    source.type !== "openai" ||
+    !isDeepStrictEqual(source.secrets, { api_key: secret.ref }) ||
+    source.state !== "ready"
+  ) {
+    throw new Error("The recorded CredentialSource does not belong to this local first-agent run.");
+  }
+}
+
+async function ensureCredentialSourceGrant(api, base, agent, source) {
+  const permissions = [{ action: "operate", resourceKind: "credential_source" }];
+  const suffix = createHash("sha256")
+    .update(agent.id)
+    .update("\0")
+    .update(source.id)
+    .digest("hex")
+    .slice(0, 16);
+  const roleName = `Local first Agent source ${suffix}`;
+  const roles = await api("GET", `${base}/iam/roles`);
+  let role = roles.find((candidate) => candidate.name === roleName);
+  if (role === undefined) {
+    role = await api("POST", `${base}/iam/roles`, { name: roleName, permissions });
+  }
+  if (!isDeepStrictEqual(role.permissions, permissions)) {
+    throw new Error("The first-Agent CredentialSource IAM Role changed outside this helper.");
+  }
+  const expected = {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: role.id,
+    resourceKind: "credential_source",
+    resourceId: source.id,
+  };
+  const bindings = await api("GET", `${base}/iam/access-bindings`);
+  const exact = bindings.find((binding) =>
+    Object.entries(expected).every(([key, value]) => binding[key] === value),
+  );
+  if (exact === undefined) {
+    await api("POST", `${base}/iam/access-bindings`, expected);
   }
 }
 
@@ -622,7 +711,7 @@ function progress(message) {
 async function main(options) {
   let local;
   try {
-    local = await loadLocalInstallation();
+    local = await loadLocalInstallation(options.harness);
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
@@ -640,7 +729,9 @@ async function main(options) {
   const namespaces = await api("GET", "/namespaces");
   const namespace = namespaces.find(({ name }) => name === "default");
   if (!namespace) {
-    throw new Error("Local Setup did not create its default Namespace.");
+    throw new Error(
+      "No Namespace named default exists. Local Setup creates it, and a deleted Namespace name cannot be reused; start a new Local Setup to use this command.",
+    );
   }
   const base = `/namespaces/${namespace.id}`;
   await waitFor("the default Namespace to be ready", async () => {
@@ -658,20 +749,27 @@ async function main(options) {
     const model = selectFirstAgentModel(configuredModel, existing);
     if (
       existing &&
-      (existing.version !== 1 ||
+      (existing.version !== 2 ||
         existing.name !== options.name ||
-        existing.namespaceId !== namespace.id)
+        existing.namespaceId !== namespace.id ||
+        existing.harness !== options.harness ||
+        existing.sandboxDriver !== local.sandboxDriver)
     ) {
       throw new Error(
-        "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",
+        "This Agent's recorded Namespace, model, Harness, or Sandbox Driver differs. Reuse its recorded selection or choose a new Agent name.",
       );
     }
     const record = existing ?? {
-      version: 1,
+      version: 2,
       name: options.name,
       namespaceId: namespace.id,
       model,
+      harness: options.harness,
+      sandboxDriver: local.sandboxDriver,
       secretName: `first-agent-${randomUUID()}`,
+      ...(local.sandboxDriver === "openshell"
+        ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
+        : {}),
     };
     if (!existing) {
       await save(record);
@@ -693,7 +791,7 @@ async function main(options) {
       );
     }
 
-    const expectedConfiguration = nativeConfiguration(model);
+    const expectedConfiguration = nativeConfiguration(model, record.harness);
     if (record.configurationId) {
       const storedConfiguration = await api(
         "GET",
@@ -735,10 +833,46 @@ async function main(options) {
     if (secret.name !== record.secretName) {
       throw new Error("The recorded Secret does not belong to this local first-agent run.");
     }
+
+    let credentialSource;
+    if (record.sandboxDriver === "openshell") {
+      const sources = await api("GET", `${base}/credential-sources`);
+      credentialSource = record.credentialSourceId
+        ? sources.find(({ id }) => id === record.credentialSourceId)
+        : sources.find(({ name }) => name === record.credentialSourceName);
+      if (record.credentialSourceId && credentialSource === undefined) {
+        throw new Error(
+          "This Agent's CredentialSource was removed after the helper created it. Choose a new name.",
+        );
+      }
+      if (credentialSource === undefined) {
+        progress("Registering the model credential with the OpenShell gateway...");
+        credentialSource = await api("POST", `${base}/credential-sources`, {
+          name: record.credentialSourceName,
+          type: "openai",
+          secrets: { api_key: secret.ref },
+        });
+      }
+      assertManagedCredentialSource(credentialSource, record, secret);
+      if (!record.credentialSourceId) {
+        record.credentialSourceId = credentialSource.id;
+        await save(record);
+      }
+    }
+
     if (options.replaceKey && suppliedKey === undefined) {
       suppliedKey = await modelKey();
       progress("Replacing the saved model credential...");
       await api("PATCH", `${base}/secrets/${record.secretId}`, { value: suppliedKey });
+      if (credentialSource !== undefined) {
+        progress("Updating the OpenShell gateway's model credential...");
+        credentialSource = await api(
+          "PATCH",
+          `${base}/credential-sources/${credentialSource.id}`,
+          {},
+        );
+        assertManagedCredentialSource(credentialSource, record, secret);
+      }
       record.previousRevisionId = record.revisionId ?? agent?.activeRevisionId;
       delete record.revisionId;
       await save(record);
@@ -756,22 +890,27 @@ async function main(options) {
       agent = await api("POST", `${base}/agents`, {
         name: options.name,
         configurationId: record.configurationId,
-        executionMode: "embedded",
-        harnessAuth: { method: "api_key", source: secret.ref },
+        executionMode: record.harness === "codex" ? "dedicated" : "embedded",
+        harnessAuth: expectedHarnessAuth(record),
       });
     }
     assertManagedAgent(agent, record);
     record.agentId = agent.id;
     await save(record);
     const agentPath = `${base}/agents/${agent.id}`;
-    progress("Authorizing the Agent to use its exact model Secret...");
-    await grantFirstAgentSecret(local.database, {
-      installationId: installation.id,
-      namespaceId: namespace.id,
-      agentId: agent.id,
-      secretId: secret.id,
-      actorId: local.key.data.servicePrincipalId,
-    });
+    if (credentialSource === undefined) {
+      progress("Authorizing the Agent to use its exact model Secret...");
+      await grantFirstAgentSecret(local.database, {
+        installationId: installation.id,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        secretId: secret.id,
+        actorId: local.key.data.servicePrincipalId,
+      });
+    } else {
+      progress("Authorizing the Agent to use its exact model CredentialSource...");
+      await ensureCredentialSourceGrant(api, base, agent, credentialSource);
+    }
     const credentials = await api("GET", `${agentPath}/runtime-credentials`);
     if (!credentials.transportConfigured) {
       await api("POST", `${agentPath}/runtime-credentials`, {});
@@ -813,18 +952,21 @@ async function main(options) {
       }
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });
-    progress(`Waiting for a real response from openai/${model}...`);
+    progress(
+      `Locating the Kubernetes gateway and waiting for a real response from openai/${model}...`,
+    );
     const proof = await verifyFirstAgentModel(local.kubectl, {
       namespaceId: namespace.id,
       agentId: agent.id,
       revisionId: record.revisionId,
       prompt: options.prompt,
       apiKey: suppliedKey,
+      expectProviderKey: record.sandboxDriver !== "openshell",
     });
     const consoleUrl = new URL(`/console/agents/${agent.id}`, local.origin);
     consoleUrl.searchParams.set("namespace", namespace.id);
     process.stdout.write(
-      `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nModel: openai/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
+      `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nHarness: ${record.harness}\nModel: ${record.harness === "codex" ? "codex" : "openai"}/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
     );
     if (proof.response !== undefined) {
       process.stdout.write(`\nAgent response:\n${proof.response}\n`);

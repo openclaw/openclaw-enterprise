@@ -15,7 +15,9 @@
       "expectedTests": [
         "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage",
         "native Collector preserves Kubernetes identity after a dropped record sharing Pod metadata",
-        "native Collector keeps bounded runtime wrapper diagnostics from Gateway and Codex Pods"
+        "native Collector keeps bounded runtime wrapper diagnostics from Gateway and Codex Pods",
+        "the Collector exports every OCC API and worker event the docs name",
+        "native Collector exports OCC lifecycle, dependency and authentication warnings with bounded fields"
       ]
     },
     {

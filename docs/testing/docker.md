@@ -90,7 +90,7 @@ The image selector also accepts a repository digest. The test never pulls an
 image. It runs the generated dedicated Codex launcher in disposable containers
 with networking disabled, a read-only root, and temporary writable state. A
 fixture CLI supplies failures and success; no provider credentials are needed.
-The `images-model-probes` CI lane uses its selected Node base image for this test.
+The `images-packaging` CI lane uses its selected Node base image for this test.
 
 Expect timeout recovery, two-attempt exhaustion, nonretryable rejection, malformed
 output, tool events, external `SIGKILL`, and termination during backoff to pass.

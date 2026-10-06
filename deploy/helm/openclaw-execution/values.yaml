@@ -15,7 +15,7 @@ dns:
   namespace: kube-system
   podLabels:
     k8s-app: kube-dns
-# Runtime status and container log reads from Harness Pods by the control-plane API.
+# Container log and Event reads from Harness Pods by the control-plane API.
 # Keep equal to the openclaw-enterprise chart's agentRuntimeLogs.enabled.
 agentRuntimeLogs:
   enabled: true

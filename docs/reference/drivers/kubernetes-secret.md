@@ -1,7 +1,7 @@
 # Kubernetes Secret Driver
 
 The Kubernetes Secret Driver stores OCC Secret values in the Kubernetes
-managed control-plane namespace for the owning OpenClaw Namespace. Each Secret belongs to one
+verified tenant storage namespace for the owning OpenClaw Namespace. Each Secret belongs to one
 Namespace, returns metadata only through OCC, and can be delivered as an
 environment variable through an Agent `harnessAuth` API-key binding or a
 Configuration `secretBindings` entry for gateway-only credentials.
@@ -26,14 +26,18 @@ Native OpenClaw
 `SecretRef` handling for `env`, `file`, and `exec` configuration remains the
 gateway's responsibility.
 
+Single-cluster Compute uses the tenant workload namespace, including adopted
+namespaces. The two-cluster profile retains separate control-cluster storage.
+Namespace workload managers are trusted with both Gateway and Harness roles.
+
 ## Requirements
 
 - The bundled Kubernetes Compute Driver must select or create the backing
-  control-plane Kubernetes namespace for the OpenClaw Namespace.
+  tenant storage namespace for the OpenClaw Namespace.
 - The OpenClaw Namespace must be `ready` before Secret create, update, or
   projection validation or server-side credential use can succeed.
 - The controller API needs tenant-local Kubernetes Secret `get`, `create`,
-  `update`, `patch`, and `delete` permission in each tenant control-plane namespace.
+  `update`, `patch`, and `delete` permission in each tenant storage namespace.
   The trusted worker reads admitted sources and manages selected runtime projections
   in the data plane. Workload ServiceAccounts receive no Secret API permissions.
 - The caller must be authenticated through OCC and authorized to create or
@@ -111,7 +115,10 @@ const response = await fetch(url, {
   headers: { "x-api-key": key, "content-type": "application/json" },
   body: JSON.stringify({ name: "model-api-key", value }),
 });
-if (response.status !== 201) throw new Error(`Secret creation failed: HTTP ${response.status}`);
+if (response.status !== 201) {
+  const error = (await response.json().catch(() => null))?.error;
+  throw new Error(`Secret creation failed: HTTP ${response.status} ${error?.code ?? ""}: ${error?.message ?? ""}`);
+}
 console.log(JSON.stringify(await response.json()));
 JS
 ```
@@ -219,15 +226,17 @@ does not remove the need to deploy again.
 
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.
-Dedicated Gateway restarts read current canonical channel values directly.
+Embedded Gateway bindings also use revision projections and require explicit
+OCE deployment to refresh. Dedicated Gateway restarts read current canonical
+channel values directly.
 See the [replacement procedure](../../guides/deploy/credential-lifecycle.md#replace-runtime-values-and-verify-consumption)
 for verification and safe upstream revocation.
 
 There is no value history, automatic rotation, automatic workload restart, or
 value rollback. Updating or deleting an OCC Secret does not remove credentials
 already delivered to a running process environment, and deletion is blocked while
-current Configurations, Agent drafts, active revisions, or pending deployments still depend on
-the Secret. For a compromised credential, stop the affected workloads and revoke
+current Configurations, credential sources, Agent drafts, active revisions, or pending
+deployments still depend on the Secret. For a compromised credential, stop the affected workloads and revoke
 the credential at the upstream provider; then update the OCC Secret with a
 replacement value and redeploy the intended consumers. Delete the Secret only
 after its reference dependencies are cleared; see [Delete](#delete).
@@ -240,7 +249,7 @@ at the configured `OCC_URL`. Set `OCC_ORIGIN` to the configured Console origin
 from `OCC_AUTH_BASE_URL` (scheme, host, and optional port only):
 
 ```bash
-curl -fsS \
+curl --fail-with-body -sS \
   "$OCC_URL/namespaces/$NAMESPACE_ID/secrets/$SECRET_ID" \
   -X DELETE \
   -H "Origin: $OCC_ORIGIN" \
@@ -248,7 +257,7 @@ curl -fsS \
 ```
 
 Successful deletion returns HTTP `204`. OCC denies deletion while the Secret is
-referenced by any current Configuration, credential source, Agent draft, active revision, or pending deployment.
+referenced by any current Configuration, credential source, Agent draft, active revision, pending deployment, or queued or running Agent provisioning request.
 Inactive historical revisions alone do not prevent deletion.
 Namespace removal is also blocked while owned Secrets remain. Agent removal does
 not own or garbage-collect Namespace Secret storage.
@@ -260,8 +269,10 @@ metadata cleanup after OCC verifies the stored backend identity.
 
 ## Troubleshooting
 
-- **Secret create returns `409`:** Wait until the platform Namespace is `ready`
-  and its backing Kubernetes namespace is bound to the exact Namespace ID.
+- **Secret create returns `409`:** For `RESOURCE_CONFLICT` with "A Secret with
+  this name already exists in this Namespace", choose another name or update the
+  existing Secret. For `NAMESPACE_NOT_READY`, wait until the platform Namespace is
+  `ready` and its backing Kubernetes namespace is bound to the exact Namespace ID.
 - **Secret operation returns `403`:** Verify OCC permission for the exact Secret
   or parent Namespace. For binding or Agent assignment, also verify caller
   `operate` on each exact Secret. For deployment, verify both the deploying actor
@@ -277,8 +288,8 @@ metadata cleanup after OCC verifies the stored backend identity.
   Omit `secretBindings` on PATCH to preserve existing bindings, or send an empty
   map to clear them.
 - **A rotated value is not visible:** Secret update does not restart workloads.
-  Deploy or restart each consuming Agent and verify the new process or revision
-  became active.
+  Deploy each consuming Agent through OCE and verify the new revision became
+  active; restarting a Pod does not refresh revision projections.
 
 ## Related
 

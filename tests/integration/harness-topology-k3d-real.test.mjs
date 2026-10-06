@@ -6,8 +6,10 @@ import {
   assertInvalidHarnessAuthStaysUnready,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertLegacyModelSecretBindingDenied,
+  assertDedicatedToEmbeddedCutover,
   assertDedicatedWorkspaceResources,
   assertDedicatedWorkspaceRuntime,
+  assertDedicatedSkillSources,
   assertDeniedConnection,
   assertEmbeddedCreatesNoHarnessWorkspaceClaim,
   assertGatewayPodContinuity,
@@ -30,6 +32,18 @@ import {
   resources,
   secretRotationProbe,
 } from "../helpers/harness-topology-k3d-real.mjs";
+
+test(
+  "candidate dedicated Skill source uploads honor default and denied node-write policy",
+  {
+    skip: process.env.OCC_TEST_SKILL_SOURCE_LIFECYCLE !== "1",
+    timeout: 1_200_000,
+  },
+  async (context) => {
+    const topology = await arrangeProductionTopology(context, "dedicated");
+    await assertDedicatedSkillSources(topology);
+  },
+);
 
 test(
   "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",
@@ -92,6 +106,7 @@ test(
       "openclaw.dev/agent": topology.agent.id,
       "openclaw.dev/revision": topology.revision.id,
       "openclaw.dev/workload-role": "agent",
+      "openclaw.dev/network-profile": "broad-egress-v1",
     });
     const codexVersion = (
       await kubectl(
@@ -104,7 +119,7 @@ test(
         "--version",
       )
     ).trim();
-    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.158.0";
+    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.160.0";
     assert.ok(codexVersion.includes(expectedCodexVersion));
     context.diagnostic(`dedicated: ${codexVersion}`);
     await assertUnauthorizedCodexSocket(topology);
@@ -133,6 +148,7 @@ test(
     );
     await assertLegacyModelSecretBindingDenied(topology);
     process.stderr.write("k3d dedicated: retained state and Pod replacement passed.\n");
+    await assertDedicatedToEmbeddedCutover(context, topology);
   },
 );
 
@@ -140,7 +156,9 @@ test(
   "production Secret binding powers embedded OpenClaw and preserves conversations across Pod replacement",
   { ...requiresProductionCluster, timeout: 900_000 },
   async (context) => {
-    const topology = await arrangeProductionTopology(context, "embedded");
+    const topology = await arrangeProductionTopology(context, "embedded", undefined, {
+      legacyRuntimeCredentials: true,
+    });
     assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);

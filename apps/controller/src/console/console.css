@@ -1709,6 +1709,11 @@ summary:focus-visible {
   font-size: 24px;
   margin-bottom: 10px;
 }
+.launch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .launch-preset {
   margin-top: 20px;
 }
@@ -2164,6 +2169,16 @@ summary:focus-visible {
   padding-left: 18px;
   color: var(--warning);
   font-size: 13px;
+}
+.runtime-events-note {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.runtime-events-note + .runtime-events {
+  margin-top: 4px;
+}
+.runtime-events-settled {
+  color: var(--muted);
 }
 .log-toolbar {
   display: flex;

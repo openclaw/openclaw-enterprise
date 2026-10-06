@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-24
-last_updated_session: authoring-run/e027d71c-4d0b-4289-bf0d-f590c14c92cb
+updated: 2026-10-03
+last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
 # Platform Startup Flow
@@ -146,7 +146,11 @@ exact bundled or installed IAM Driver with platform state, and structurally
 verifies the selected Compute and Configuration Drivers. It runs a selected
 Compute preflight when present; bundled Kubernetes Compute must provide one.
 Preflight warnings are emitted through the API logger and do not block
-composition. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
+composition. Configured
+[development API composition](../../apps/controller/src/composition/development-postgres.ts)
+also runs optional Compute preflight before initializing authentication or
+registering routes. The default unconfigured development API retains its existing
+startup path. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
 owns the Kubernetes version decision and warning details.
 It registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
@@ -184,7 +188,7 @@ dedicated Codex AgentRevision work using the exact selected Compute Driver.
 `start()` loads the existing singleton Installation, validates current native
 IAM policy from PostgreSQL, and uses its stable selected bundled or installed
 IAM Driver. That Driver loads current policy for every identity lookup and
-authorization decision. Production runs available Compute preflight and
+authorization decision. Every worker runs available Compute preflight; production
 requires it for bundled Kubernetes. The worker emits any preflight warnings
 before `worker.started`; a warning does not block startup. Successful startup
 emits `worker.started` with the selected `computeDriverId`; no AgentRevision
@@ -251,6 +255,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
 
 - 2026-09-24 22:50: Document exact Provider and Backend migration lineage handling accompanying the compatibility migration. (authoring-run/e027d71c-4d0b-4289-bf0d-f590c14c92cb - 1985586676c42cd359b9ecc22e22ce8f0e30034d)
 

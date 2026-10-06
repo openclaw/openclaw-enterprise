@@ -31,8 +31,11 @@ without rerunning Helm. Otherwise, wait
 until the initialization Job and its Pods are terminal, then run the **candidate controller
 image** with `node scripts/migrate-production.mjs --check` against the same
 retained database, using its dedicated migrator credential and required database
-CA in an authorized environment. Keep its exit-zero `migration.checked` output in
-private evidence. Follow [migration history](../../reference/settings/operations.md#migration-history)
+CA in an authorized environment. On Kubernetes, the
+[maintenance Pod](auth-maintenance.md#run-the-command) provides all three: set
+`CONTROLLER_IMAGE` to the candidate image and replace its `args` with
+`["scripts/migrate-production.mjs","--check"]`. Keep its exit-zero
+`migration.checked` output in private evidence. Follow [migration history](../../reference/settings/operations.md#migration-history)
 to interpret unsupported or uncertain state. Only after this check and review of
 the Job outcome, repeat the command with `--resume --migration-history-checked`.
 That flag records your attestation; it does not run the database check. The
@@ -60,10 +63,17 @@ Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
 `.json`, and `REVISION_ID` to the independently confirmed revision. Verify the exact Agent and deployment before recording it:
 
 ```bash
-if occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
+if test -z "$REVISION_ID"; then
+  printf '%s\n' 'Set REVISION_ID to the confirmed revision; do not resume.' >&2
+elif test -e "$DISPATCH_PREFIX.json"; then
+  if jq -e --arg id "$REVISION_ID" '.id == $id' "$DISPATCH_PREFIX.json" > /dev/null; then
+    printf '%s\n' "Deployment $REVISION_ID is already recorded in $DISPATCH_PREFIX.json."
+  else
+    printf '%s\n' "$DISPATCH_PREFIX.json does not record $REVISION_ID; inspect it and do not resume." >&2
+  fi
+elif occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
   jq -e --arg namespace "$OCC_NAMESPACE" --arg agent "$OCC_AGENT" --arg revision "$REVISION_ID" \
     '.namespaceId == $namespace and .agentId == $agent and .deploymentId == $revision' "$DISPATCH_PREFIX.confirmed-status.json" &&
-  test ! -e "$DISPATCH_PREFIX.json" &&
   jq -n --arg id "$REVISION_ID" '{id: $id}' > "$DISPATCH_PREFIX.json.tmp"; then
   mv "$DISPATCH_PREFIX.json.tmp" "$DISPATCH_PREFIX.json"
 else
@@ -72,8 +82,22 @@ fi
 ```
 
 Keep the shell's `umask 077`. If the status read is denied or does not identify
-the confirmed deployment, do not create the response file. The helper rechecks
-its status on resume; it does not verify how you identified an accepted request.
+the confirmed deployment, do not create the response file. The block never
+overwrites an existing response file: a rerun reports it when it records the
+same ID, and otherwise says to inspect it. The helper
+rechecks its status on resume; it does not verify how you identified an
+accepted request.
+
+If the candidate API and worker refuse to start because of
+[split-layout Gateway storage](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),
+`--resume` cannot succeed. Keep both namespaces and their storage, and return to
+the previous controller image after the check below.
+
+If they log `INSTALLATION_NAME_INVALID`, the stored Installation name breaks the
+API Name rule: 1 to 200 characters, with no leading or trailing whitespace,
+control characters, or line or paragraph separators. No API renames an
+Installation, so correct `occ.installation.name` with the dedicated migrator
+credential, then resume.
 
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never

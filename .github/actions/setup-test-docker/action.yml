@@ -22,5 +22,9 @@ runs:
         # Production Compose mounts this socket; CLI and controller must use one daemon.
         sudo ln -sfn "$docker_socket_path" /var/run/docker.sock
         test "$(docker version --format '{{.Server.Version}}')" = "29.4.0"
-    # Keep both post actions in this composite so Buildx is removed before Docker stops.
+    # GitHub-hosted and Blacksmith runners are per-job VMs, so skip the builder
+    # removal (it ran before Docker stopped, 8-33 s); a persistent runner would
+    # accumulate buildx_buildkit_* containers.
     - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        cleanup: false

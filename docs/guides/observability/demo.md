@@ -165,6 +165,11 @@ unchanged: Helm upgrades the failed release in place. Any other error, or an
 interrupted run (Helm reports `another operation ... is in progress`), can
 leave resources without a marker; follow [recovery](demo-cleanup.md#recover-an-incomplete-setup).
 
+After you update the checkout for an OCC upgrade, rerun this block to pick up
+dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus,
+Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
+Grafana stops working until you start it again.
+
 Services use `ClusterIP`. Prometheus reads Pod metadata, not Secrets. Grafana
 bundles plugins; startup downloads are disabled. Its disposable database is
 memory-backed so first-start migrations finish in seconds.

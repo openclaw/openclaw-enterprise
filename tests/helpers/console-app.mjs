@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createServer } from "node:net";
 import { randomUUID, createHash, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
@@ -10,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 
+import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -21,6 +21,7 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { reservePort } from "./available-port.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -67,24 +68,19 @@ function computeDriver({
   });
 }
 
-async function availableLoopbackPort() {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  assert.notEqual(address, null);
-  await new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  return address.port;
-}
-
 export async function createConsoleAppFixture(t, options = {}) {
   const installationId = `ins_${randomUUID()}`;
-  const port = await availableLoopbackPort();
+  // The ports are part of the origins the app is configured with, so hold them until the
+  // listeners bind them; a released probe port can be taken by another listener meanwhile.
+  const appPort = await reservePort();
+  t.after(appPort.release);
+  const port = appPort.port;
   const originHost = options.originHost ?? "127.0.0.1";
-  const browserPort = options.https === true ? await availableLoopbackPort() : port;
+  const browserReservation = options.https === true ? await reservePort() : null;
+  if (browserReservation !== null) {
+    t.after(browserReservation.release);
+  }
+  const browserPort = browserReservation?.port ?? port;
   const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
@@ -189,6 +185,17 @@ export async function createConsoleAppFixture(t, options = {}) {
   const secretDriver = Object.hasOwn(options, "secretDriver")
     ? options.secretDriver
     : createTestSecretDriver({ id: "console-secret" });
+  let configurationDriver = options.configurationDriver;
+  if (
+    configurationDriver === undefined &&
+    (options.filesystemConfiguration === true || options.defaultPresets?.length)
+  ) {
+    // Native value validation (Preset seeding, inline credential checks) needs the
+    // real storage Driver; the in-memory test Driver accepts any values.
+    const root = await mkdtemp(join(tmpdir(), "occ-console-configuration-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    configurationDriver = new FilesystemConfigurationDriver(root);
+  }
   let controller;
   const appOptions = {
     metrics: options.metrics,
@@ -205,7 +212,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         discoverHarnessModels: options.discoverHarnessModels,
       }),
     configurationDriver:
-      options.configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
+      configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
     ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
     ...(secretDriver === undefined || secretDriver === null ? {} : { secretDriver }),
     ...(publicOrigin === undefined ? {} : { publicOrigin }),
@@ -227,6 +234,8 @@ export async function createConsoleAppFixture(t, options = {}) {
         recordOperations: options.recordOperations ?? false,
         backends,
         defaultPresets: options.defaultPresets ?? [],
+        bundledPresetVersions: options.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: options.refreshBundledDefaultPresets === true,
         ...(options.nativeWorkerSupport === undefined
           ? {}
           : { nativeWorkerSupport: options.nativeWorkerSupport }),
@@ -258,7 +267,8 @@ export async function createConsoleAppFixture(t, options = {}) {
   if (options.onSend) {
     app.addHook("onSend", options.onSend);
   }
-  await app.listen({ host: "127.0.0.1", port });
+  await app.listen({ host: "127.0.0.1", port, reusePort: appPort.reusePort });
+  await appPort.release();
   const cleanupBeforeAppClose = [];
   let appClosed = false;
 
@@ -349,8 +359,13 @@ export async function createConsoleAppFixture(t, options = {}) {
         ingress.close((error) => (error ? reject(error) : resolve())),
       );
     });
-    ingress.listen(browserPort, "127.0.0.1");
+    ingress.listen({
+      port: browserPort,
+      host: "127.0.0.1",
+      reusePort: browserReservation.reusePort,
+    });
     await once(ingress, "listening");
+    await browserReservation.release();
     const spki = createHash("sha256")
       .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
       .digest("base64");
@@ -591,6 +606,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
+    iamDriver,
     rawRequest,
     request,
     signIn,

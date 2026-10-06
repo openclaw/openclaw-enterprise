@@ -2,14 +2,13 @@ import { isAbsolute } from "node:path";
 import type {
   Driver,
   BackendDefinition,
-  BackendRef,
   DriverCapability,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";
+import { BACKEND_ID_MAX_CHARACTERS, isBackendId } from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DriverSelectionError, ResourceConflictError, ScopeViolationError } from "./errors.ts";
 
-const BACKEND_ID = /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).{1,200}$/;
 const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_CHATGPT_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -20,8 +19,12 @@ function path(value: string, key: string): string {
 }
 
 function backendId(value: unknown, label = "Backend ID"): string {
-  if (typeof value !== "string" || !BACKEND_ID.test(value)) {
-    throw new ScopeViolationError(`${label} must be a nonempty string.`);
+  // The API schema's rule (contracts BackendId), so a configured Backend ID and an Agent's
+  // backendId accept exactly the same strings.
+  if (!isBackendId(value)) {
+    throw new ScopeViolationError(
+      `${label} must be a string of 1 to ${BACKEND_ID_MAX_CHARACTERS} characters with no leading or trailing whitespace and no control characters or line or paragraph separators.`,
+    );
   }
   return value;
 }
@@ -43,6 +46,14 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     candidate.type !== "openshell"
   ) {
     throw new ScopeViolationError(path(id, "type") + " must be chatgpt, github, or openshell.");
+  }
+  // Repository bindings still store a GitHub Backend ID under a 200 UTF-16 code unit bound
+  // (occ.repository_bindings_are_valid, the repository registry and the binding state), so a
+  // GitHub Backend ID must fit that too until those count code points.
+  if (candidate.type === "github" && id.length > BACKEND_ID_MAX_CHARACTERS) {
+    throw new ScopeViolationError(
+      `backend[${index}].id must fit in ${BACKEND_ID_MAX_CHARACTERS} UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound.`,
+    );
   }
 
   const configuration = asRecord(candidate.configuration);

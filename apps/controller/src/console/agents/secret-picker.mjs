@@ -140,6 +140,8 @@ export function createSecretReferenceField({
   createFixedKey,
   metadataLabel = `View ${label} Secret metadata`,
   noSecretLabel = "No Secret bound",
+  // Callers whose form applies the binding with another control name it here.
+  stagedHint = "Secret binding staged. Save changes to apply it.",
   fieldClassName = "form-field",
   selectClassName,
   disabled = false,
@@ -173,6 +175,8 @@ export function createSecretReferenceField({
   let loaded = false;
   let loading = false;
   let selectedSecret = null;
+  // Set once a binding is staged, so a Secret list that arrives later keeps its hint.
+  let staged = false;
   let manuallyDisabled = disabled;
   let requiredWhenEnabled = required;
   let listboxOpen = false;
@@ -375,10 +379,18 @@ export function createSecretReferenceField({
         secrets.push(secret);
       }
       setSecretOptions();
-      status.textContent = "Secret binding staged. Save changes to apply it.";
+      staged = true;
+      status.textContent = stagedHint;
     } finally {
       updateValidity();
     }
+  }
+
+  // Typing a Secret's exact name selects it, as clicking its suggestion would; names are
+  // unique in a Namespace. Anything else still restores the current binding.
+  function typedSecret() {
+    const query = searchQuery.trim();
+    return query === "" ? undefined : secrets.find((secret) => secret.name === query);
   }
 
   function selectOption(option) {
@@ -526,7 +538,7 @@ export function createSecretReferenceField({
             "Secret creation outcome could not be confirmed. Refresh before trying again.";
         } else if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
           feedback.textContent =
-            "This Namespace is not ready for Secret creation. Refresh the Namespace status before trying again.";
+            "This Namespace is not ready, so it cannot store Secrets yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
         } else if (error.status === 409) {
           feedback.textContent =
             "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
@@ -579,20 +591,21 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        secrets.splice(
-          0,
-          secrets.length,
-          ...(Array.isArray(items)
-            ? items.filter((item) => isSecretMetadata(item, context.namespaceId))
-            : []),
-        );
+        const listed = Array.isArray(items)
+          ? items.filter((item) => isSecretMetadata(item, context.namespaceId))
+          : [];
+        // A Secret created or chosen while this read was pending is newer than the list.
+        const added = secrets.filter((secret) => !listed.some((item) => item.id === secret.id));
+        secrets.splice(0, secrets.length, ...listed, ...added);
         loaded = true;
         loading = false;
         setSecretOptions({ preserveSearch: true });
-        status.className = "hint";
-        status.textContent = secrets.length
-          ? "Choose an existing Secret or create a new one."
-          : "No readable Secrets yet. Create a new Secret to bind this field.";
+        if (!staged) {
+          status.className = "hint";
+          status.textContent = secrets.length
+            ? "Choose an existing Secret or create a new one."
+            : "No readable Secrets yet. Create a new Secret to bind this field.";
+        }
         updateValidity();
       })
       .catch((error) => {
@@ -648,6 +661,8 @@ export function createSecretReferenceField({
       event.preventDefault();
       if (activeOptionIndex >= 0) {
         selectOption(options[activeOptionIndex]);
+      } else if (typedSecret() !== undefined) {
+        selectOption({ kind: "secret", secret: typedSecret() });
       }
       return;
     }
@@ -658,6 +673,11 @@ export function createSecretReferenceField({
     }
   });
   input.addEventListener("blur", () => {
+    const typed = listboxOpen && !manuallyDisabled ? typedSecret() : undefined;
+    if (typed !== undefined) {
+      selectOption({ kind: "secret", secret: typed });
+      return;
+    }
     closeListbox({ restoreSelection: true });
   });
 

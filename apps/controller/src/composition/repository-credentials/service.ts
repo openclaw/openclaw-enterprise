@@ -8,14 +8,24 @@ export interface RunningService {
   readonly listeners: BoundListeners;
 }
 
+export interface StartOptions {
+  /** Process-level opt-in for the development-only GitHub token authority. */
+  readonly developmentAuthority?: boolean;
+}
+
 /** Start the service using its protected, operator-owned configuration. */
-export async function startCredentialService(configurationPath: string): Promise<RunningService> {
+export async function startCredentialService(
+  configurationPath: string,
+  options: StartOptions = {},
+): Promise<RunningService> {
   const [{ createSystemClock }, { loadConfiguration }] = await Promise.all([
     import("../../drivers/repo/credentials/clock.ts"),
     import("./config.ts"),
   ]);
   const clock = createSystemClock();
-  const loaded = await loadConfiguration(configurationPath, clock);
+  const loaded = await loadConfiguration(configurationPath, clock, {
+    developmentAuthority: options.developmentAuthority === true,
+  });
   return runService(loaded, clock);
 }
 
@@ -98,6 +108,12 @@ export async function runService(
   };
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
+  if (loaded.authority === "github-token-development") {
+    // Name the development authority and token class (never the token) at startup.
+    process.stderr.write(
+      `${JSON.stringify({ event: "started", authority: loaded.authority, tokenClass: loaded.tokenClass })}\n`,
+    );
+  }
   const controls = Object.freeze<CredentialService>({
     open: (input) => service.open(input),
     status: (sessionId) => service.status(sessionId),

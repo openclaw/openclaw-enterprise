@@ -23,6 +23,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -254,19 +255,11 @@ async function fixture(
       id: internal.servicePrincipalId,
       namespaceId: namespace.id,
     });
-    iamState.roles.push({
+    grantRole(iamState, internal.servicePrincipalId, {
       id: roleId,
       namespaceId: namespace.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    iamState.bindings.push({
-      id: roleId,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: internal.servicePrincipalId,
-      roleId,
-      resourceKind: "secret",
-      resourceId: secret.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: secret.data.id },
     });
     const updated = await composed.request("PATCH", `${collection}/${agent.id}`, {
       configurationId: configuration.id,
@@ -862,12 +855,19 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
 });
 
 test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code } of [
+  for (const { harness, executionMode, status, code, message } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
     { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
     // The pinned runtime lacks native worker support, so admission refuses first.
     { harness: "openclaw", executionMode: "dedicated", status: 400, code: "INVALID_REQUEST" },
-    { harness: "codex", executionMode: "embedded", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
+    // A Harness/mode mismatch names the execution mode the Configuration needs.
+    {
+      harness: "codex",
+      executionMode: "embedded",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: /selects the Codex Harness, which needs dedicated execution/,
+    },
   ]) {
     await t.test(`${harness}/${executionMode}`, async (t) => {
       const f = await fixture(t, { harness });
@@ -877,6 +877,9 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       const denied = await f.request("POST", `${path}/deploy`);
       assert.equal(denied.status, status, JSON.stringify(denied));
       assert.equal(denied.error.code, code);
+      if (message) {
+        assert.match(denied.error.message, message);
+      }
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
     });
   }

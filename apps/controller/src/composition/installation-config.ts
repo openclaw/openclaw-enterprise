@@ -1,10 +1,7 @@
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { readFile, realpath } from "node:fs/promises";
-import { createRequire, findPackageJSON } from "node:module";
+import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
-import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadYaml } from "@kubernetes/client-node";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   Backend,
   ComputeDriver,
@@ -24,18 +21,22 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import {
+  AuthorizationDeniedError,
+  DependencyUnavailableError,
   validateBackendDefinitions,
+  type BundledPresetVersion,
   type NativeWorkerSupport,
   type OpenClawController,
   type PostgresPlatformState,
+  type SkippedDefaultPreset,
 } from "@openclaw-enterprise/occ";
 import { Check, Errors } from "typebox/value";
-import { validatePresetTemplate } from "@openclaw-enterprise/contracts";
+import { isName, NAME_RULE, validatePresetTemplate } from "@openclaw-enterprise/contracts";
 import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
-import { currentComputeAbortSignal } from "../drivers/compute/operation-context.ts";
+import { createExternalDriver, loadDriverPackage } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
   KubernetesConfigurationDriver,
@@ -46,6 +47,13 @@ import {
   type KubernetesSecretDriverOptions,
 } from "../drivers/secret/kubernetes/index.ts";
 import { type LoggingConfiguration, operationalLoggingConfiguration } from "../logging.ts";
+import {
+  closed,
+  type ConfigurationRecord,
+  nonempty,
+  object,
+  startupConfiguration,
+} from "./startup-file.ts";
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
@@ -57,7 +65,7 @@ import {
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
 
-type ConfigurationRecord = Readonly<Record<string, unknown>>;
+export { loadOperationalLoggingConfiguration } from "./startup-file.ts";
 
 export interface StartupConfigurationSnapshot {
   readonly configuration?: ConfigurationRecord;
@@ -99,8 +107,19 @@ export type ServiceAccountDriverFactory = (
   state: PostgresPlatformState,
 ) => void;
 
+/** A bundled default skipped because a `presets.files` entry uses its name. */
+export interface ShadowedDefaultPreset {
+  readonly presetName: string;
+  /** Resolved path of the operator's file. */
+  readonly presetFile: string;
+}
+
 export interface InstallationRuntimeDrivers {
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
+  readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
+  /** Shipped versions of the bundled defaults, loaded even when they are not seeded. */
+  readonly bundledPresetVersions?: readonly BundledPresetVersion[];
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
   readonly configurationDriver: ConfigurationDriver;
@@ -118,16 +137,28 @@ export interface InstallationRuntimeDrivers {
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
 }
 
-/** Resolve an authorized startup actor without depending on persisted identity order. */
+/**
+ * Resolve an authorized startup actor without depending on persisted identity order.
+ *
+ * A refresh the policy refuses never stops startup: the copy stays and `onWarning` receives
+ * one `presets.default-refresh-skipped` event naming it. The first pass skips only refusals
+ * from a deny Restriction, which binds every administrator alike, so an administrator without
+ * a Namespace grant never stands in for one who could refresh. If none can, the second pass
+ * skips every refusal. Missing defaults still need an administrator who can create them,
+ * unless a deny Restriction refuses the creation: then the default stays missing and
+ * `onWarning` receives one `presets.default-create-skipped` event naming it.
+ */
 export async function initializeInstallationPresets(
   controller: OpenClawController,
   iam: IAMDriver,
   identities: readonly Identity[],
   defaults: readonly Pick<Preset, "name" | "template">[],
+  onWarning?: (event: Readonly<Record<string, unknown>>) => void,
 ): Promise<void> {
   if (defaults.length === 0) {
     return;
   }
+  const administrators: string[] = [];
   for (const identity of identities) {
     if (identity.kind !== "principal") {
       continue;
@@ -138,68 +169,49 @@ export async function initializeInstallationPresets(
       resource: { kind: "installation", id: controller.installation.id },
     });
     if (decision.allowed) {
-      await controller.initializeDefaultPresets(identity.id);
+      administrators.push(identity.id);
+    }
+  }
+  let denied: AuthorizationDeniedError | undefined;
+  for (const skipRefusedRefresh of ["restricted", "denied"] as const) {
+    for (const principalId of administrators) {
+      let skipped: readonly SkippedDefaultPreset[];
+      try {
+        skipped = await controller.initializeDefaultPresets(principalId, { skipRefusedRefresh });
+      } catch (error) {
+        // An administrator whose grant stops at the Installation (for example the admin Role
+        // bound to the installation resource only) cannot create Presets in a Namespace. Each
+        // attempt is one rolled-back transaction, so the next administrator starts clean.
+        // Outages are not denials: they stop startup with their own error.
+        if (
+          !(error instanceof AuthorizationDeniedError) ||
+          error instanceof DependencyUnavailableError
+        ) {
+          throw error;
+        }
+        denied = error;
+        continue;
+      }
+      for (const preset of skipped) {
+        onWarning?.({
+          event:
+            preset.operation === "create"
+              ? "presets.default-create-skipped"
+              : "presets.default-refresh-skipped",
+          namespaceId: preset.namespaceId,
+          ...(preset.operation === "update" ? { presetId: preset.presetId } : {}),
+          presetName: preset.presetName,
+          reason: preset.reason,
+          restrictionIds: preset.restrictionIds,
+        });
+      }
       return;
     }
   }
   throw new Error(
-    "Default Preset initialization requires an authorized Installation administrator.",
+    "Default Preset initialization requires an Installation administrator who can create Presets in every Namespace.",
+    denied === undefined ? undefined : { cause: denied },
   );
-}
-
-interface LoadedStartupConfiguration {
-  readonly configuration?: ConfigurationRecord;
-  readonly path?: string;
-}
-
-async function startupConfiguration(
-  options: {
-    readonly mode: "development" | "production";
-    readonly environment?: Readonly<Record<string, string | undefined>>;
-  },
-  required: boolean,
-): Promise<LoadedStartupConfiguration> {
-  const environment = options.environment ?? process.env;
-  const path = environment.OCC_CONFIG_PATH;
-  if (path === undefined) {
-    if (!required) {
-      return {};
-    }
-    throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
-  }
-  if (typeof path !== "string" || path.trim().length === 0) {
-    throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
-  }
-  if (!isAbsolute(path)) {
-    throw new Error("OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.");
-  }
-
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch {
-    throw new Error("The configured Installation startup YAML is unavailable.");
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = loadYaml(contents);
-  } catch {
-    throw new Error("The configured Installation startup file must contain valid YAML.");
-  }
-  const configuration = object(parsed, "Installation startup configuration");
-  safe(configuration, "Installation startup configuration");
-  if (Object.hasOwn(configuration, "integrations")) {
-    throw new Error(
-      "integrations is retired; configure ChatGPT with backend[].configuration.apiKeyPath.",
-    );
-  }
-  closed(
-    configuration,
-    ["occ", "drivers", "backend", "logging", "presets", "observability", "runtime"],
-    "Installation startup configuration",
-  );
-  return { configuration, path };
 }
 
 export async function loadStartupConfigurationSnapshot(options: {
@@ -218,21 +230,6 @@ export async function loadStartupConfigurationSnapshot(options: {
   });
 }
 
-interface ExternalDriverModule extends DriverImplementation {
-  createDriver(options: {
-    readonly id: string;
-    readonly implementation: string;
-    readonly configuration: ConfigurationRecord;
-    readonly platformState?: NativeIAMStateStore;
-    readonly getOperationAbortSignal?: () => AbortSignal | undefined;
-  }): unknown;
-}
-
-interface LoadedDriverPackage {
-  readonly module: ExternalDriverModule;
-  readonly implementation: string;
-}
-
 interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
   readonly OpenShellSandboxDriver: new (
     configuration: ConfigurationRecord,
@@ -242,35 +239,6 @@ interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
       readonly backend: Backend<OpenShellGateway>;
     },
   ) => SandboxDriver;
-}
-
-const PACKAGE_NAME = /^(?:@[a-zA-Z0-9][a-zA-Z0-9._~-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._~-]*$/;
-const FORBIDDEN_SECRET_KEY =
-  /(?:password|passwd|api[_-]?key|(?:access[_-]?)?token|private[_-]?key|(?:client[_-]?)?secret|credentials?)$/i;
-const FORBIDDEN_SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ghp|gho|github_pat)_[A-Za-z0-9_]{12,}|\bAKIA[0-9A-Z]{16}\b/i;
-
-function object(value: unknown, path: string): ConfigurationRecord {
-  const result = asRecord(value);
-  if (result === undefined) {
-    throw new Error(`${path} must be one object.`);
-  }
-  return result;
-}
-
-function closed(value: ConfigurationRecord, keys: readonly string[], path: string): void {
-  for (const key of Object.keys(value)) {
-    if (!keys.includes(key)) {
-      throw new Error(`${path} contains unsupported option ${key}.`);
-    }
-  }
-}
-
-function nonempty(value: unknown, path: string): string {
-  if (!isNonEmptyString(value)) {
-    throw new Error(`${path} must be a nonempty string.`);
-  }
-  return value;
 }
 
 function runtimeConfiguration(
@@ -312,38 +280,6 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
     );
   }
   return Object.freeze({ url: url.href });
-}
-
-function safe(value: unknown, path: string): void {
-  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
-    throw new Error(`${path} must be a safe integer.`);
-  }
-  if (typeof value === "string" && FORBIDDEN_SECRET_VALUE.test(value)) {
-    throw new Error(`${path} must not contain a plaintext credential.`);
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) => safe(entry, `${path}[${index}]`));
-    return;
-  }
-  if (typeof value !== "object" || value === null) {
-    return;
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === "installationId" || key === "installation_id") {
-      throw new Error("Installation startup configuration must not contain an Installation ID.");
-    }
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      throw new Error(`${path} contains an unsafe configuration key.`);
-    }
-    if (FORBIDDEN_SECRET_KEY.test(key) && typeof entry === "string") {
-      throw new Error(`${path}.${key} must not contain a plaintext credential.`);
-    }
-    if (key === "secretRef") {
-      nonempty(entry, `${path}.${key}`);
-      throw new Error("Installation-scoped secret references cannot be resolved safely.");
-    }
-    safe(entry, `${path}.${key}`);
-  }
 }
 
 function backendConfiguration(
@@ -405,10 +341,23 @@ function backendConfiguration(
 function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
   const preset = object(value, path);
   closed(preset, ["name", "template"], path);
+  const name = nonempty(preset.name, `${path}.name`);
+  if (!isName(name)) {
+    throw new Error(`${path}.name must follow the Name rule: ${NAME_RULE}.`);
+  }
   return Object.freeze({
-    name: nonempty(preset.name, `${path}.name`),
+    name,
     template: validatePresetTemplate(preset.template),
   });
+}
+
+/**
+ * A `presets.files` list or entry that cannot become a default Preset: not a list of
+ * paths, or a file that is missing, unreadable, malformed, invalid, or a duplicate name. API and worker startup report it as
+ * `PRESET_FILE_INVALID` without the path or message, which stay in the thrown error.
+ */
+export class PresetFileError extends Error {
+  override readonly name = "PresetFileError";
 }
 
 async function loadPresetDefinition(
@@ -429,16 +378,44 @@ async function loadPresetDefinition(
   return presetDefinition(parsed, `Preset file ${path}`);
 }
 
-function appendDefaultPreset(
-  presets: Pick<Preset, "name" | "template">[],
-  names: Set<string>,
-  preset: Pick<Preset, "name" | "template">,
-): void {
-  if (names.has(preset.name)) {
-    throw new Error(`Default Preset ${preset.name} is configured more than once.`);
+const bundledPresetDirectory = new URL("../../../../deploy/presets/", import.meta.url);
+
+/**
+ * Load every shipped version of the bundled defaults. `archive/versions.json` lists each
+ * bundled file's versions oldest first; the last is the file itself and the others are
+ * archived as `archive/<file stem>/<version>.json`. A conformance test keeps it complete.
+ */
+async function loadBundledPresetVersions(): Promise<readonly BundledPresetVersion[]> {
+  const indexPath = new URL("archive/versions.json", bundledPresetDirectory);
+  let index: unknown;
+  try {
+    index = JSON.parse(await readFile(indexPath, "utf8"));
+  } catch (cause) {
+    throw new Error(
+      `Bundled Preset version index ${fileURLToPath(indexPath)} is unavailable or invalid.`,
+      { cause },
+    );
   }
-  names.add(preset.name);
-  presets.push(preset);
+  const versions: BundledPresetVersion[] = [];
+  for (const [file, history] of Object.entries(object(index, "Bundled Preset versions"))) {
+    if (
+      !/^[a-z0-9-]+\.json$/.test(file) ||
+      !Array.isArray(history) ||
+      history.length === 0 ||
+      history.some((version) => typeof version !== "string" || !/^[0-9a-f]{16}$/.test(version))
+    ) {
+      throw new Error(`Bundled Preset versions for ${file} are invalid.`);
+    }
+    const stem = file.slice(0, -".json".length);
+    for (const [position, version] of (history as string[]).entries()) {
+      const current = position === history.length - 1;
+      const preset = await loadPresetDefinition(
+        new URL(current ? file : `archive/${stem}/${version}.json`, bundledPresetDirectory),
+      );
+      versions.push(Object.freeze({ ...preset, file, version, current }));
+    }
+  }
+  return Object.freeze(versions);
 }
 
 export function backendSummariesFromDefinitions(
@@ -452,139 +429,6 @@ export function backendSummariesFromDefinitions(
       }),
     ),
   );
-}
-
-function importEntrypoint(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
-
-  const conditions = value as Record<string, unknown>;
-  if (Object.hasOwn(conditions, ".")) {
-    return importEntrypoint(conditions["."]);
-  }
-  for (const [condition, target] of Object.entries(conditions)) {
-    if (condition !== "import" && condition !== "node" && condition !== "default") {
-      continue;
-    }
-    const selected = importEntrypoint(target);
-    if (selected !== undefined) {
-      return selected;
-    }
-  }
-  return undefined;
-}
-
-async function loadDriverPackage(
-  selection: ConfigurationRecord,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
-  packageRoot: string,
-  allowFixtureTarball: boolean,
-): Promise<LoadedDriverPackage | undefined> {
-  if (!Object.hasOwn(selection, "package")) {
-    return undefined;
-  }
-
-  const path = `drivers.${capability}`;
-  const packageName = nonempty(selection.package, `${path}.package`);
-  if (!PACKAGE_NAME.test(packageName)) {
-    throw new Error(`${path}.package must be one exact npm package name.`);
-  }
-  const ownerPath = resolve(packageRoot, "package.json");
-  let owner: ConfigurationRecord;
-  try {
-    owner = object(JSON.parse(await readFile(ownerPath, "utf8")), "controller package.json");
-  } catch {
-    throw new Error(`${path}.package cannot read the controller package manifest.`);
-  }
-  const dependencies =
-    owner.dependencies === undefined
-      ? {}
-      : object(owner.dependencies, "controller package.json dependencies");
-  if (
-    !Object.hasOwn(dependencies, packageName) ||
-    typeof dependencies[packageName] !== "string" ||
-    dependencies[packageName].trim().length === 0
-  ) {
-    throw new Error(`${path}.package must be a direct controller production dependency.`);
-  }
-  const dependencyVersion = dependencies[packageName];
-
-  let installedManifestPath: string;
-  try {
-    const ownerUrl = pathToFileURL(ownerPath);
-    const installed = findPackageJSON(packageName, ownerUrl);
-    if (installed === undefined) {
-      throw new Error("package metadata unavailable");
-    }
-    installedManifestPath = await realpath(installed);
-  } catch {
-    throw new Error(`${path}.package selects an unavailable installed Driver package.`);
-  }
-
-  let installedManifest: ConfigurationRecord;
-  try {
-    installedManifest = object(
-      JSON.parse(await readFile(installedManifestPath, "utf8")),
-      `${path}.package manifest`,
-    );
-  } catch {
-    throw new Error(`${path}.package has invalid installed package metadata.`);
-  }
-  if (installedManifest.name !== packageName) {
-    throw new Error(`${path}.package does not match the installed npm package name.`);
-  }
-  const installedVersion = nonempty(installedManifest.version, `${path}.package installed version`);
-  if (
-    dependencyVersion !== installedVersion &&
-    !(allowFixtureTarball && /^file:.+\.tgz$/.test(dependencyVersion))
-  ) {
-    throw new Error(`${path}.package must be pinned to its exact installed production version.`);
-  }
-  const exportedEntrypoint = importEntrypoint(installedManifest.exports);
-  if (exportedEntrypoint === undefined || !exportedEntrypoint.startsWith("./")) {
-    throw new Error(`${path}.package must declare an exported compiled ESM entry.`);
-  }
-  let entryPath: string;
-  try {
-    entryPath = await realpath(
-      createRequire(pathToFileURL(ownerPath)).resolve(
-        resolve(dirname(installedManifestPath), exportedEntrypoint),
-      ),
-    );
-  } catch {
-    throw new Error(`${path}.package selects an unavailable compiled ESM entry.`);
-  }
-  const extension = extname(entryPath);
-  if (extension !== ".mjs" && !(extension === ".js" && installedManifest.type === "module")) {
-    throw new Error(`${path}.package must export precompiled JavaScript ESM.`);
-  }
-  const contained = relative(dirname(installedManifestPath), entryPath);
-  if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
-    throw new Error(`${path}.package entry escapes its installed package root.`);
-  }
-
-  let imported: unknown;
-  try {
-    imported = await import(pathToFileURL(entryPath).href);
-  } catch {
-    throw new Error(`${path}.package failed to load its compiled Driver module.`);
-  }
-  const module = object(imported, `${path}.package exports`);
-  if (
-    typeof module.validateConfiguration !== "function" ||
-    typeof module.createDriver !== "function"
-  ) {
-    throw new Error(`${path}.package must export Driver validation and a factory.`);
-  }
-  object(module.configurationSchema, `${path}.configurationSchema`);
-  return Object.freeze({
-    module: module as unknown as ExternalDriverModule,
-    implementation: `${packageName}@${installedVersion}`,
-  });
 }
 
 function selected(
@@ -700,40 +544,63 @@ export async function loadInstallationConfiguration(options: {
     presets.files !== undefined &&
     (!Array.isArray(presets.files) || presets.files.some((entry) => typeof entry !== "string"))
   ) {
-    throw new Error("presets.files must be an array of Preset JSON file paths.");
+    throw new PresetFileError("presets.files must be an array of Preset JSON file paths.");
   }
   const includeDefaults = presets.includeDefaults === true;
-  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
-  const defaultPresetNames = new Set<string>();
-  if (includeDefaults) {
-    for (const preset of [
-      "../../../../deploy/presets/standard-codex.json",
-      "../../../../deploy/presets/standard-openclaw.json",
-    ]) {
-      appendDefaultPreset(
-        defaultPresets,
-        defaultPresetNames,
-        await loadPresetDefinition(new URL(preset, import.meta.url)),
-      );
-    }
-  }
-  const presetFiles = (presets.files ?? []) as readonly string[];
-  for (const entry of presetFiles) {
+  const bundledPresetVersions = await loadBundledPresetVersions();
+  const filePresets: {
+    readonly path: string;
+    readonly preset: Pick<Preset, "name" | "template">;
+  }[] = [];
+  const filePresetPaths = new Map<string, string>();
+  for (const entry of (presets.files ?? []) as readonly string[]) {
     const trimmed = entry.trim();
     if (trimmed.length === 0) {
-      throw new Error("presets.files entries must be nonempty file paths.");
+      throw new PresetFileError("presets.files entries must be nonempty file paths.");
     }
     if (!isAbsolute(trimmed) && configurationPath === undefined) {
-      throw new Error("Relative presets.files entries require an Installation startup YAML path.");
+      throw new PresetFileError(
+        "Relative presets.files entries require an Installation startup YAML path.",
+      );
     }
-    appendDefaultPreset(
-      defaultPresets,
-      defaultPresetNames,
-      await loadPresetDefinition(
-        isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed),
-      ),
-    );
+    const path = isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed);
+    let preset: Pick<Preset, "name" | "template">;
+    try {
+      preset = await loadPresetDefinition(path);
+    } catch (error) {
+      throw new PresetFileError(error instanceof Error ? error.message : String(error), {
+        cause: error,
+      });
+    }
+    const earlier = filePresetPaths.get(preset.name);
+    if (earlier !== undefined) {
+      throw new PresetFileError(
+        `Default Preset ${preset.name} is configured more than once: ${earlier} and ${path}.`,
+      );
+    }
+    filePresetPaths.set(preset.name, path);
+    filePresets.push({ path, preset });
   }
+  // An operator file named like a bundled default replaces that default: a later release can
+  // bundle a name an operator already uses (default-codex), and startup must not stop for it.
+  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
+  const shadowedDefaultPresets: ShadowedDefaultPreset[] = [];
+  if (includeDefaults) {
+    for (const version of bundledPresetVersions) {
+      if (!version.current) {
+        continue;
+      }
+      const shadow = filePresets.find(({ preset }) => preset.name === version.name);
+      if (shadow !== undefined) {
+        shadowedDefaultPresets.push(
+          Object.freeze({ presetName: version.name, presetFile: shadow.path }),
+        );
+        continue;
+      }
+      defaultPresets.push(Object.freeze({ name: version.name, template: version.template }));
+    }
+  }
+  defaultPresets.push(...filePresets.map(({ preset }) => preset));
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
   const cluster = nonempty(occ.cluster, "occ.cluster");
@@ -959,9 +826,6 @@ export async function loadInstallationConfiguration(options: {
         "Production Kubernetes workloads require the explicitly configured Codex runtime.",
       );
     }
-    if (kubernetes.servicePrincipalCredentials.mode !== "projectedServiceAccountToken") {
-      throw new Error("Production Codex Agents require projected ServicePrincipal credentials.");
-    }
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
@@ -1103,6 +967,8 @@ export async function loadInstallationConfiguration(options: {
   }
   return Object.freeze({
     defaultPresets: Object.freeze(defaultPresets),
+    shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
+    bundledPresetVersions,
     installation,
     computeDriver,
     configurationDriver,
@@ -1113,14 +979,6 @@ export async function loadInstallationConfiguration(options: {
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),
   });
-}
-
-export async function loadOperationalLoggingConfiguration(options: {
-  readonly mode: "development" | "production";
-  readonly environment?: Readonly<Record<string, string | undefined>>;
-}): Promise<LoggingConfiguration> {
-  const { configuration } = await startupConfiguration(options, false);
-  return operationalLoggingConfiguration(configuration?.logging);
 }
 
 async function loadBundledOpenShellSandboxDriver(): Promise<BundledOpenShellSandboxDriverModule> {
@@ -1161,64 +1019,4 @@ function validateCreatedSandboxDriver(
     throw new Error("drivers.sandbox factory returned an invalid Driver contract.");
   }
   return driver;
-}
-
-function createExternalDriver(
-  implementation: ExternalDriverModule,
-  selection: SelectedDriverConfiguration,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
-  platformState?: NativeIAMStateStore,
-): ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver {
-  if (capability === "iam" && typeof platformState?.loadNativeIAMState !== "function") {
-    throw new Error("drivers.iam factory requires platform state.");
-  }
-  const created = object(
-    implementation.createDriver({
-      id: selection.id,
-      implementation: selection.implementation,
-      configuration: selection.configuration,
-      ...(platformState === undefined ? {} : { platformState }),
-      ...(capability === "compute" ? { getOperationAbortSignal: currentComputeAbortSignal } : {}),
-    }),
-    `drivers.${capability} factory result`,
-  );
-  if (
-    created.capability !== capability ||
-    created.id !== selection.id ||
-    created.implementation !== selection.implementation
-  ) {
-    throw new Error(`drivers.${capability} factory returned an unselected Driver identity.`);
-  }
-  const methods =
-    capability === "configuration"
-      ? ["create", "read", "update", "delete", "validate"]
-      : capability === "iam"
-        ? ["lookupIdentity", "authorize"]
-        : capability === "compute"
-          ? [
-              "ensureNamespace",
-              "deleteNamespace",
-              "prepareRevision",
-              "stopRevision",
-              "retireRevision",
-            ]
-          : ["cleanup"];
-  if (methods.some((method) => typeof created[method] !== "function")) {
-    throw new Error(`drivers.${capability} factory returned an invalid Driver contract.`);
-  }
-  if (
-    capability === "sandbox" &&
-    ((created.ensureNamespace !== undefined && typeof created.ensureNamespace !== "function") ||
-      (created.provisionHarness !== undefined && typeof created.provisionHarness !== "function"))
-  ) {
-    throw new Error("drivers.sandbox factory returned invalid optional lifecycle hooks.");
-  }
-  if (
-    capability === "compute" &&
-    created.setLifecycleDrivers !== undefined &&
-    typeof created.setLifecycleDrivers !== "function"
-  ) {
-    throw new Error("drivers.compute factory returned invalid lifecycle Driver wiring.");
-  }
-  return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
 }

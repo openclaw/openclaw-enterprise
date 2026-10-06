@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import net from "node:net";
 import { createRequire } from "node:module";
 import https from "node:https";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { availablePort } from "../helpers/available-port.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -18,32 +19,6 @@ const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
 const occ = join(repository, "bin", "occ");
 const selected = process.env.OCC_TEST_DEV_UP_K3D_REAL === "1";
-
-async function unusedPort() {
-  const server = net.createServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  await new Promise((resolveClose, reject) =>
-    server.close((error) => (error ? reject(error) : resolveClose())),
-  );
-  return address.port;
-}
-
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
 
 test(
   "dev-up refuses mismatched image selections before creating a cluster",
@@ -80,7 +55,7 @@ test(
           return true;
         },
       );
-      assert.equal(await exists(stateDirectory), false);
+      assert.equal(existsSync(stateDirectory), false);
     };
     await reject(
       { OCC_KUBERNETES_RUNTIME_IMAGE: "example/runtime:latest" },
@@ -117,7 +92,7 @@ test(
     const cluster = `occ-dev-policy-${randomUUID().slice(0, 8)}`;
     const ports = new Set();
     while (ports.size < 3) {
-      ports.add(await unusedPort());
+      ports.add(await availablePort());
     }
     const [apiPort, kubernetesPort, browserPort] = ports;
     const realK3d = (await execute("which", ["k3d"])).stdout.trim();
@@ -165,7 +140,7 @@ process.exit(result.status ?? 1);
       delete environment[key];
     }
     t.after(async () => {
-      if (await exists(stateDirectory)) {
+      if (existsSync(stateDirectory)) {
         await execute(join(repository, "scripts", "dev-down"), [], {
           cwd: repository,
           env: environment,
@@ -194,7 +169,7 @@ process.exit(result.status ?? 1);
         return true;
       },
     );
-    assert.equal(await exists(stateDirectory), false, "failed startup must remove owned state");
+    assert.equal(existsSync(stateDirectory), false, "failed startup must remove owned state");
     const clusters = JSON.parse(
       (
         await execute(realK3d, ["cluster", "list", "-o", "json"], {
@@ -220,14 +195,14 @@ test(
     const root = await mkdtemp(join(tmpdir(), "oce-dev-up-k3d-real-"));
     const stateDirectory = join(root, "state");
     const cluster = `occ-dev-k3d-${randomUUID().slice(0, 8)}`;
-    const apiPort = await unusedPort();
-    let kubernetesPort = await unusedPort();
+    const apiPort = await availablePort();
+    let kubernetesPort = await availablePort();
     while (kubernetesPort === apiPort) {
-      kubernetesPort = await unusedPort();
+      kubernetesPort = await availablePort();
     }
-    let browserPort = await unusedPort();
+    let browserPort = await availablePort();
     while (browserPort === apiPort || browserPort === kubernetesPort) {
-      browserPort = await unusedPort();
+      browserPort = await availablePort();
     }
     const environment = {
       ...process.env,
@@ -246,7 +221,7 @@ test(
     delete environment.OCC_DEVELOPMENT_SANDBOX_DRIVER;
     // Cleanup uses the recorded engine and cluster; failed cleanup preserves recovery state.
     t.after(async () => {
-      if (await exists(stateDirectory)) {
+      if (existsSync(stateDirectory)) {
         try {
           await execute(join(repository, "scripts", "dev-down"), [], {
             cwd: repository,
@@ -278,7 +253,7 @@ test(
     assert.equal(state.cluster, cluster);
     assert.equal(state.deploymentMode, "k3d");
     assert.equal(state.sandboxDriver, "none");
-    assert.equal(await exists(join(stateDirectory, "compose.yaml")), false);
+    assert.equal(existsSync(join(stateDirectory, "compose.yaml")), false);
     for (const file of ["initial-admin-password", "initial-admin-service-key.json"]) {
       assert.equal((await stat(join(stateDirectory, file))).mode & 0o077, 0);
     }
@@ -372,6 +347,7 @@ test(
     assert.deepEqual(presets.data.map(({ name }) => name).sort(), [
       "Standard Codex",
       "Standard OpenClaw",
+      "default-codex",
     ]);
     const catalog = await request(`/namespaces/${namespace.id}/agents/plugins`, {
       method: "POST",
@@ -475,7 +451,7 @@ test(
     const container = agentPod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container);
     const provenancePath = join(stateDirectory, "codex-seccomp-provenance.json");
-    if (await exists(provenancePath)) {
+    if (existsSync(provenancePath)) {
       const provenance = JSON.parse(await readFile(provenancePath, "utf8"));
       assert.deepEqual(container.securityContext.seccompProfile, {
         type: "Localhost",
@@ -583,14 +559,14 @@ test(
     const root = await mkdtemp(join(tmpdir(), "oce-dev-compose-sandbox-"));
     const stateDirectory = join(root, "state");
     const cluster = `occ-dev-compose-${randomUUID().slice(0, 8)}`;
-    const apiPort = await unusedPort();
-    let kubernetesPort = await unusedPort();
+    const apiPort = await availablePort();
+    let kubernetesPort = await availablePort();
     while (kubernetesPort === apiPort) {
-      kubernetesPort = await unusedPort();
+      kubernetesPort = await availablePort();
     }
-    let postgresPort = await unusedPort();
+    let postgresPort = await availablePort();
     while (postgresPort === apiPort || postgresPort === kubernetesPort) {
-      postgresPort = await unusedPort();
+      postgresPort = await availablePort();
     }
     const environment = {
       ...process.env,
@@ -620,7 +596,7 @@ test(
       delete environment[key];
     }
     t.after(async () => {
-      if (await exists(stateDirectory)) {
+      if (existsSync(stateDirectory)) {
         await execute(join(repository, "scripts", "dev-down"), [], {
           cwd: repository,
           env: environment,

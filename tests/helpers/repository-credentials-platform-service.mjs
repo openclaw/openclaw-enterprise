@@ -9,6 +9,17 @@ import { defaultRegistryRepositories } from "../fixtures/repository-credentials/
 import { createRegistryMaterial } from "../fixtures/repository-credentials/registry/material.mjs";
 import { startRegistryProviderFixtures } from "../fixtures/repository-credentials/registry/provider.mjs";
 import { appModule, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
+import { availablePort } from "./available-port.mjs";
+
+// The gateway port is probed, released, then bound by the child, so another listener can
+// take it first. The child names that failure and the first start retries on a new port.
+const gatewayPortAttempts = 3;
+
+class CredentialGatewayListenerError extends Error {
+  constructor() {
+    super("credential gateway listener unavailable");
+  }
+}
 
 async function within(promise, timeoutMs = 10_000) {
   let timer;
@@ -59,6 +70,8 @@ function ownChild(resources, signal) {
   child.on("message", (message) => {
     if (pending && message?.type === pending.type && message.offset === pending.offset) {
       pending.resolve(message);
+    } else if (pending?.type === "ready" && message?.type === "listener-unavailable") {
+      pending.reject(new CredentialGatewayListenerError());
     } else {
       fail();
     }
@@ -145,7 +158,7 @@ function ownChild(resources, signal) {
 export async function startRepositoryPlatformService(context, options = {}) {
   const resources = createResourceScope({ cleanupTimeoutMs: 30_000 });
   try {
-    assert.ok(options.gateway?.listen, "select a fixed credential gateway listener");
+    assert.ok(options.gateway?.host, "select the credential gateway listener host");
     const clock = createPlatformClock();
     const tls = options.tls ?? (await createTlsMaterial(resources));
     const namespaceId = options.namespaceId ?? "namespace-fixture";
@@ -167,22 +180,29 @@ export async function startRepositoryPlatformService(context, options = {}) {
         credentialDriverModule("configuration"),
         appModule("backends/repository-credentials/control-client"),
       ]);
-    const config = validateServiceConfig(
-      serviceConfigurationData({
-        gateway: {
-          publicOrigin: "https://credentials.example.test",
-          controlSocket: join(material.directory, "control.sock"),
-          ...options.gateway,
-        },
-        sessionPolicy: { maximumDurationSeconds },
-      }),
-    );
+    const { host, ...gateway } = options.gateway;
+    const configure = (port) =>
+      validateServiceConfig(
+        serviceConfigurationData({
+          gateway: {
+            publicOrigin: "https://credentials.example.test",
+            controlSocket: join(material.directory, "control.sock"),
+            ...gateway,
+            listen: `${host}:${port}`,
+          },
+          sessionPolicy: { maximumDurationSeconds },
+        }),
+      );
+    // Start every in-process listener before probing the gateway port, so none of them
+    // can be handed the port between the probe and the child's bind.
     const providers = await startRegistryProviderFixtures(resources, {
       definitions,
       clock,
       tls,
       keyPair: material.keyPair,
     });
+    let gatewayPort = await availablePort({ host });
+    let config = configure(gatewayPort);
     const control = new UnixRepositoryCredentialControlClient({
       controlSocket: config.gateway.controlSocket,
     });
@@ -237,12 +257,33 @@ export async function startRepositoryPlatformService(context, options = {}) {
       }
       generation += 1;
     }
-    await exclusive(start);
+    await exclusive(async () => {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await start();
+        } catch (error) {
+          if (
+            !(error instanceof CredentialGatewayListenerError) ||
+            attempt >= gatewayPortAttempts
+          ) {
+            throw error;
+          }
+        }
+        // Restarts keep this port: the cluster relay is created with it.
+        gatewayPort = await availablePort({ host });
+        config = configure(gatewayPort);
+      }
+    });
     context.after(() => resources.close());
     return {
       namespaceId,
       backendId,
-      config,
+      get config() {
+        return config;
+      },
+      get gatewayPort() {
+        return gatewayPort;
+      },
       tls,
       registryFile: material.registryFile,
       repositories: providers.repositories,

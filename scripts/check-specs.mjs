@@ -4,12 +4,15 @@ import {
   createDocsMarkdown,
   parseDocsDocument,
   parseFrontmatter,
+  resolveDocsFragment,
 } from "./docs-site/vendor/docs-markdown.mjs";
+import { createGithubAnchorReader } from "./docs-site/github-anchors.mjs";
 
 const root = process.cwd();
 const specs = path.join(root, "specs");
 const rfcs = path.join(specs, "rfcs");
 const md = createDocsMarkdown();
+const githubAnchors = createGithubAnchorReader(md);
 const statuses = new Set(["Proposed", "Accepted", "Rejected", "Superseded", "Unspecified"]);
 const errors = [];
 let links = 0;
@@ -114,7 +117,11 @@ for (const file of files) {
         historicalLinks++;
         continue;
       }
-      localTarget(file, href);
+      const target = localTarget(file, href);
+      const hash = href.match(/#.*/)?.[0];
+      if (hash && target.endsWith(".md") && !resolveDocsFragment(hash, githubAnchors(target))) {
+        throw new Error(`missing heading in ${href}`);
+      }
       links++;
     }
   } catch (error) {

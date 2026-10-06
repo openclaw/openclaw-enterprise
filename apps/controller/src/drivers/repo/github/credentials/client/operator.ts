@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryCredentialBoundSessionInput } from "../../../credentials/service-contracts.ts";
 import { readPrivateFile } from "./private-files.ts";
+import { hasControlCharacter } from "../../../credentials/client-contracts.ts";
 import type { ControlRequest, ControlResponse } from "../../../credentials/control-contracts.ts";
 import { writeClientConfiguration } from "./config.ts";
 
@@ -107,10 +108,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     typeof input === "string" &&
     input.length > 0 &&
     input.length <= 512 &&
-    ![...input].some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 0x1f || code === 0x7f;
-    });
+    !hasControlCharacter(input);
   if (!isRecord(value) || !isRecord(value.expectedBinding)) {
     throw new Error("invalid-arguments");
   }

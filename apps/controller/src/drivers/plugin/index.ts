@@ -18,6 +18,7 @@ import {
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
+  hasAliasedSelections,
   openClawCatalogEntries,
   validatePolicies,
   type CodexPluginCatalogReader,
@@ -317,9 +318,22 @@ class BundledPluginDriverBase {
     } catch (error) {
       const field =
         error instanceof Error && "policyField" in error ? error.policyField : undefined;
+      if (field === "pluginId") {
+        const pluginId =
+          error instanceof Error && "pluginId" in error && typeof error.pluginId === "string"
+            ? error.pluginId
+            : undefined;
+        throw new PluginPolicyValidationError("unknownPlugin", this.id, pluginId);
+      }
       throw new PluginPolicyValidationError(
         field === "toolDefaults.reviewer" || field === "tools[id].reviewer" ? field : undefined,
       );
+    }
+    // Admission-only, like the Codex approvers check: revisions admitted before this
+    // check keep rendering unchanged. An Agent or in-flight provisioning record that
+    // holds both keys is refused at its next create replay, update, deploy, or resume.
+    if (hasAliasedSelections(kind, selections)) {
+      throw new PluginPolicyValidationError("aliasedPlugin");
     }
   }
 

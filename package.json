@@ -16,6 +16,7 @@
     "cli:test": "go test ./...",
     "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "contributors:update": "node scripts/update-contributors.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "prepare": "node scripts/install-git-hooks.mjs --if-git-present",
     "check:workspace": "node scripts/verify-workspace-boundary.mjs",

@@ -79,16 +79,33 @@ test("broker capability qualification requires the supported successful response
     server.listen(socket, resolve);
   });
   await checkBrokerCapability(socket);
-  // A broker that cannot advertise the required protocol must stop preflight.
-  for (const reply of [
-    [404, '{ "error": "not-found" }'],
-    [401, "{}"],
-    [500, "{}"],
-    [200, "not-json"],
-    [200, '{"durableAdmissionVersion":2}'],
+  // A broker that cannot advertise the required protocol must stop preflight. Each
+  // reply names the check that refuses it; only the exact not-found body is the
+  // "capability missing" incompatibility.
+  const failed = (actual) => ({
+    message: /^broker capability request failed/,
+    actual,
+    expected: 200,
+  });
+  for (const [reply, guard] of [
+    [[404, '{"error":"not-found"}'], { message: "broker durable admission capability is missing" }],
+    [[404, '{ "error": "not-found" }'], failed(404)],
+    [[401, "{}"], failed(401)],
+    [[500, "{}"], failed(500)],
+    [[200, "not-json"], { name: "SyntaxError" }],
+    [[200, "[]"], { operator: "==", actual: false }],
+    [
+      [200, '{"durableAdmissionVersion":2}'],
+      { message: /^unsupported broker admission capability/, actual: 2 },
+    ],
+    // Valid JSON after the size limit: only the size guard refuses it.
+    [
+      [200, `${" ".repeat(16384)}{"durableAdmissionVersion":1}`],
+      { message: "capability response too large" },
+    ],
   ]) {
     [status, body] = reply;
-    await assert.rejects(checkBrokerCapability(socket));
+    await assert.rejects(checkBrokerCapability(socket), guard);
   }
 });
 
@@ -106,11 +123,40 @@ test("node qualification includes all selector-matching nodes", async (t) => {
 });
 
 test("node qualification rejects mixed and unverified architectures", async (t) => {
-  await assert.rejects(qualify(t, [node("a", "amd64"), node("b", "arm64")]));
-  const mismatch = node("c", "amd64");
-  mismatch.status.nodeInfo.architecture = "arm64";
-  await assert.rejects(qualify(t, [mismatch]));
-  await assert.rejects(qualify(t, [node("d", "amd64", { pool: "other" })], { pool: "control" }));
+  // The script reports every refusal the same way; each input is refused by one check only.
+  const refused = { code: 1, stderr: "eligible control-plane node verification failed\n" };
+  const changed = (name, change) => {
+    const value = node(name, "amd64");
+    change(value);
+    return value;
+  };
+  for (const [nodes, selector] of [
+    [[node("a", "amd64"), node("b", "arm64")]],
+    [[changed("c", (value) => (value.status.nodeInfo.architecture = "arm64"))]],
+    [[node("d", "amd64", { pool: "other" })], { pool: "control" }],
+    [[node("e", "amd64")], ["pool"]],
+    [[node("f", "amd64")], { pool: null }],
+    [[changed("g", (value) => (value.metadata.labels = ["linux"]))]],
+    [
+      [
+        changed("h", (value) => {
+          value.metadata.labels["kubernetes.io/os"] = "windows";
+          value.status.nodeInfo.operatingSystem = "windows";
+        }),
+      ],
+    ],
+    [[changed("i", (value) => (value.status.nodeInfo.operatingSystem = "windows"))]],
+    [[node("j", "s390x")]],
+    [[changed("k", (value) => (value.metadata.name = 5))]],
+    [[changed("l", (value) => (value.metadata.name = ""))]],
+    [[changed("m", (value) => (value.metadata.uid = 5))]],
+    [[changed("n", (value) => (value.metadata.uid = ""))]],
+    [[node("o", "amd64"), changed("p", (value) => (value.metadata.uid = "uid-o"))]],
+    [[node("q", "amd64"), changed("q", (value) => (value.metadata.uid = "uid-q2"))]],
+  ]) {
+    await assert.rejects(qualify(t, nodes, selector), refused);
+  }
+  await assert.rejects(execute("python3", [script]), refused);
 });
 
 test("deployed identity requires the qualified images on a ready, owned worker Pod", async (t) => {
@@ -206,12 +252,97 @@ test("deployed identity requires the qualified images on a ready, owned worker P
   assert.equal(success.podUid, "pod-uid");
   assert.equal(success.controller.imageId, `containerd://image@${controller.manifestDigest}`);
 
-  // A ready Pod with a different broker image must not qualify the rollout.
-  pod.status.containerStatuses[0].imageID = `containerd://image@${digest("0")}`;
-  await writeFile(paths.pods, JSON.stringify(files.pods));
-  await assert.rejects(execute("python3", args));
-  pod.status.containerStatuses[0].imageID = `containerd://image@${broker.manifestDigest}`;
-  pod.metadata.ownerReferences[0].uid = "unrelated-rs";
-  await writeFile(paths.pods, JSON.stringify(files.pods));
-  await assert.rejects(execute("python3", args));
+  // The script reports every refusal the same way, so each case changes one field
+  // that only one check refuses (a removed check would let it qualify).
+  const refused = {
+    code: 1,
+    stderr: "deployed controller or broker identity verification failed\n",
+  };
+  const pods = (f) => f.pods.items;
+  const worker = (f) => pods(f)[0].status.initContainerStatuses[0];
+  const brokerStatus = (f) => pods(f)[0].status.containerStatuses[0];
+  const unknownComponent = (f) => {
+    f.deployment.metadata.labels["app.kubernetes.io/component"] = "other";
+    pods(f)[0].spec.initContainers = [];
+    pods(f)[0].spec.containers.push({ name: "other", image: controller.image });
+    pods(f)[0].status.initContainerStatuses = [];
+    pods(f)[0].status.containerStatuses.push(status("other", controller.manifestDigest));
+  };
+  const refuses = async (change, { component = "worker", release = "oce" } = {}) => {
+    const f = structuredClone(files);
+    change(f);
+    for (const [name, value] of Object.entries(f)) {
+      await writeFile(paths[name], JSON.stringify(value));
+    }
+    const changed = [deployedScript, component, ...args.slice(2, 7), release];
+    await assert.rejects(execute("python3", changed), refused);
+  };
+  for (const change of [
+    // A ready Pod with a different broker image must not qualify the rollout.
+    (f) => (brokerStatus(f).imageID = `containerd://image@${digest("0")}`),
+    (f) => (brokerStatus(f).imageID = "containerd://image"),
+    (f) => (pods(f)[0].spec.containers[0].image = `broker@${digest("0")}`),
+    (f) => pods(f)[0].spec.containers.push({ ...pods(f)[0].spec.containers[0] }),
+    (f) => pods(f)[0].status.containerStatuses.push({ ...brokerStatus(f) }),
+    (f) => (brokerStatus(f).ready = false),
+    (f) => (brokerStatus(f).state = { waiting: {} }),
+    (f) => (brokerStatus(f).restartCount = 1.5),
+    (f) => (brokerStatus(f).restartCount = -1),
+    (f) => (brokerStatus(f).containerID = 5),
+    (f) => (brokerStatus(f).containerID = ""),
+    (f) => delete pods(f)[0].spec.initContainers[0].restartPolicy,
+    (f) => {
+      pods(f)[0].spec.initContainers.push({
+        ...pods(f)[0].spec.containers[0],
+        restartPolicy: "Always",
+      });
+      pods(f)[0].spec.containers = [];
+      pods(f)[0].status.initContainerStatuses.push(brokerStatus(f));
+      pods(f)[0].status.containerStatuses = [];
+    },
+    (f) => (worker(f).imageID = `containerd://image@${digest("0")}`),
+    (f) => (f.deployment.metadata.labels["app.kubernetes.io/instance"] = "other"),
+    (f) => (f.deployment.metadata.labels["app.kubernetes.io/component"] = "api"),
+    (f) => {
+      f.deployment.metadata.uid = 5;
+      f.replicasets.items[0].metadata.ownerReferences[0].uid = 5;
+    },
+    (f) => {
+      f.deployment.metadata.uid = "";
+      f.replicasets.items[0].metadata.ownerReferences[0].uid = "";
+    },
+    (f) => {
+      f.deployment.metadata.generation = 3.5;
+      f.deployment.status.observedGeneration = 4;
+    },
+    (f) => {
+      f.deployment.metadata.generation = 0;
+      f.deployment.status.observedGeneration = 0;
+    },
+    (f) => (f.deployment.status.observedGeneration = 2),
+    (f) => (f.deployment.spec.replicas = 2),
+    (f) => (f.deployment.status.replicas = 2),
+    (f) => (f.deployment.status.updatedReplicas = 0),
+    (f) => (f.deployment.status.availableReplicas = 0),
+    (f) => pods(f).push(structuredClone(pods(f)[0])),
+    (f) => (pods(f)[0].metadata.deletionTimestamp = "2026-01-01T00:00:00Z"),
+    (f) => (pods(f)[0].metadata.uid = 5),
+    (f) => (pods(f)[0].metadata.uid = ""),
+    (f) => (pods(f)[0].metadata.name = 5),
+    (f) => (pods(f)[0].metadata.name = ""),
+    (f) => (pods(f)[0].status.phase = "Pending"),
+    (f) => (pods(f)[0].status.conditions[0].status = "False"),
+    (f) => pods(f)[0].metadata.ownerReferences.push(pods(f)[0].metadata.ownerReferences[0]),
+    (f) => (pods(f)[0].metadata.ownerReferences[0].kind = "StatefulSet"),
+    (f) => (pods(f)[0].metadata.ownerReferences[0].uid = "unrelated-rs"),
+    (f) => f.replicasets.items.push(f.replicasets.items[0]),
+    (f) => (f.replicasets.items[0].metadata.ownerReferences[0].uid = "other-uid"),
+    (f) => (f.replicasets.items[0].metadata.ownerReferences[0].name = "other"),
+    (f) => (pods(f)[0].spec.nodeName = "node-b"),
+    (f) => (f.nodes.nodes[0].platform = "linux/arm64"),
+  ]) {
+    await refuses(change);
+  }
+  await refuses(unknownComponent, { component: "other" });
+  await refuses(() => {}, { release: "other" });
 });

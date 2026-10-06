@@ -16,10 +16,11 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 ## Deployment is blocked or has no selected revision
 
 On Kubernetes, open the Agent's **Create new version** draft, then
-**Credentials**. Confirm that **Transport** shows **Stored**. Check that the
-saved model authentication matches the execution mode. For an OpenAI API key,
-the person selecting it and the
-Agent's own identity both need `operate` on the exact platform Secret. See
+**Credentials**. Select **Reload authentication source**, then confirm under
+**Harness authentication** that **Authentication source** is the source you
+expect, not **None**. Check that the saved model authentication matches the
+execution mode. For an OpenAI API key, the person selecting it and the Agent's
+own identity both need `operate` on the exact platform Secret. See
 [Harness authentication](../../reference/agents.md#harness-authentication).
 
 If the deployment was accepted, use the returned revision ID to check its
@@ -38,6 +39,13 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:revisionId
 
 For Kubernetes workload problems, operators can use the
 [Compute failure checks](../../reference/drivers/kubernetes-compute.md#failure-conditions).
+When a Kubernetes deployment fails with `DEPENDENCY_UNAVAILABLE` after its
+retries, the worker log's `worker.compute-prepare-failed` events for that
+revision name the code, preparation step and reason. The log Collector exports
+the code but not the step or reason. `KUBERNETES_OWNERSHIP_CONFLICT` means the
+driver refused an object it does not own, such as a Deployment with the Agent's
+workload name but no OCE ownership labels. The driver never adopts such an
+object. Delete it, then deploy again.
 
 <span id="the-console-says-serving-status-unavailable"></span>
 

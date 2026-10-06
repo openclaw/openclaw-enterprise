@@ -1,5 +1,5 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { ResourceConflictError } from "./errors.ts";
+import { ResourceStateConflictError } from "./errors.ts";
 
 /** Private Secret-backed state; provider payloads never enter platform rows or API responses. */
 export interface DeviceAuthorizationSession {
@@ -51,7 +51,9 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
       ? !isNonEmptyString(record.credential)
       : record.phase !== "cancelled" && !isNonEmptyString(record.privateState))
   ) {
-    throw new ResourceConflictError("This login is no longer available in OCE. Connect again.");
+    throw new ResourceStateConflictError(
+      "This login is no longer available in OCE. Connect again.",
+    );
   }
   return record as unknown as DeviceAuthorizationSession;
 }

@@ -184,7 +184,7 @@ export async function startRepositoryReceiptServer(options: {
             : ["kind", "admissionId", "generation", "input"];
         const command = object(parsed, fields);
         if (
-          !["reserve", "recover", "bind", "dispose"].includes(String(command.kind)) ||
+          !["reserve", "recover", "bind", "dispose", "fence"].includes(String(command.kind)) ||
           typeof command.admissionId !== "string" ||
           !admissionPattern.test(command.admissionId) ||
           typeof command.generation !== "string" ||
@@ -203,6 +203,10 @@ export async function startRepositoryReceiptServer(options: {
             command.generation,
             command.kind === "recover",
           );
+        }
+        if (command.kind === "fence") {
+          await store.fence(command.admissionId, input, command.generation);
+          return { kind: "acknowledged" };
         }
         const observed = status(command.status);
         if (command.kind === "bind") {

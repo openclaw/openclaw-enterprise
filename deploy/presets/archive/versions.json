@@ -1,0 +1,10 @@
+{
+  "default-codex.json": ["32576b8f13976778", "c16de263b57815a5"],
+  "standard-codex.json": [
+    "624ebf881e5bf4fc",
+    "a07d1e2070d95c99",
+    "e0e77652015e991b",
+    "434f1a4764266f51"
+  ],
+  "standard-openclaw.json": ["0bb417027f4180af", "ed4bae5153f86b94", "87cba3dd4f1bc473"]
+}

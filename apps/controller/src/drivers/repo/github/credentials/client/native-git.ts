@@ -9,6 +9,7 @@ import {
   type RuntimeRepositoryManifest,
 } from "./manifest.ts";
 import { readPrivateFile } from "./private-files.ts";
+import { hasControlCharacter } from "../../../credentials/client-contracts.ts";
 
 export { normalizePushRefAllowlist } from "../../../credentials/client-contracts.ts";
 
@@ -34,13 +35,7 @@ function validatePaths(paths: NativeGitPaths): void {
     paths.helper,
     ...(paths.hooks === undefined ? [] : [paths.hooks]),
   ]) {
-    if (
-      !isAbsolute(path) ||
-      path.length > 4096 ||
-      [...path].some(
-        (character) => character.charCodeAt(0) <= 0x1f || character.charCodeAt(0) === 0x7f,
-      )
-    ) {
+    if (!isAbsolute(path) || path.length > 4096 || hasControlCharacter(path)) {
       throw new Error("invalid-native-git-path");
     }
   }

@@ -106,6 +106,8 @@ async function startLauncher(t, scenario, stopAfterTimeout = false) {
       "-e",
       "CODEX_HOME=/home/node/codex",
       "-e",
+      "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
+      "-e",
       "CODEX_LOGIN_MODE=api_key",
       "-e",
       "OPENAI_API_KEY=credential-canary",
@@ -209,8 +211,10 @@ test(
       { name: "malformed output", input: "malformed", attempts: 1, code: "MODEL_PROBE_FAILED" },
       { name: "tool event", input: "tool", attempts: 1, code: "MODEL_PROBE_FAILED" },
     ];
-    await Promise.all(
-      scenarios.map((scenario) =>
+    // Every scenario has its own container, so the backoff termination case
+    // runs beside them: its first 30 s probe timeout overlaps theirs.
+    await Promise.all([
+      ...scenarios.map((scenario) =>
         t.test(scenario.name, { concurrency: true }, async (t) => {
           const launcher = await startLauncher(t, scenario.input);
           await waitFor(
@@ -258,27 +262,30 @@ test(
           assert.deepEqual(again.calls, snapshot.calls);
         }),
       ),
-    );
-    await t.test("termination during backoff exits without another probe", async (t) => {
-      const launcher = await startLauncher(t, "timeout", true);
-      await waitFor(() => launcher.stop() !== undefined, launcher.errors);
-      await launcher.stop();
-      const result = await Promise.race([launcher.exited, delay(3000).then(() => "still running")]);
-      assert.notEqual(result, "still running");
-      assert.equal(launcher.output(), "");
-      const calls = await launcher.calls();
-      assert.equal(calls.filter((args) => args.includes("exec")).length, 1);
-      assert.equal(calls.filter((args) => args.includes("app-server")).length, 0);
-      assert.equal(
-        launcher
-          .errors()
-          .split("\n")
-          .filter((line) => line.startsWith("{"))
-          .map(JSON.parse)
-          .filter(({ event }) => event === "codex.model_probe").length,
-        1,
-      );
-      assert.doesNotMatch(launcher.errors(), /Harness model authentication probe failed/);
-    });
+      t.test("termination during backoff exits without another probe", async (t) => {
+        const launcher = await startLauncher(t, "timeout", true);
+        await waitFor(() => launcher.stop() !== undefined, launcher.errors);
+        await launcher.stop();
+        const result = await Promise.race([
+          launcher.exited,
+          delay(3000).then(() => "still running"),
+        ]);
+        assert.notEqual(result, "still running");
+        assert.equal(launcher.output(), "");
+        const calls = await launcher.calls();
+        assert.equal(calls.filter((args) => args.includes("exec")).length, 1);
+        assert.equal(calls.filter((args) => args.includes("app-server")).length, 0);
+        assert.equal(
+          launcher
+            .errors()
+            .split("\n")
+            .filter((line) => line.startsWith("{"))
+            .map(JSON.parse)
+            .filter(({ event }) => event === "codex.model_probe").length,
+          1,
+        );
+        assert.doesNotMatch(launcher.errors(), /Harness model authentication probe failed/);
+      }),
+    ]);
   },
 );

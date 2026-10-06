@@ -102,7 +102,7 @@ function pluginFreeRuntimeForRevision(
   if (
     revision.pluginApprovers !== undefined &&
     revision.harness.id === "openclaw" &&
-    revision.harness.mode === "embedded"
+    (revision.harness.mode === "embedded" || revision.harness.mode === "dedicated")
   ) {
     return { kind: "openclaw", selections: {}, pluginApprovers: revision.pluginApprovers };
   }

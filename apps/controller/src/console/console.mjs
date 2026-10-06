@@ -15,6 +15,8 @@ let namespaceId = null;
 let observabilityUrl = null;
 // Session owner whose Installation-admin observability read has settled.
 let observabilityOwner = null;
+// The Installation-access probe still being answered, for the session owner that sent it.
+let installationAccessProbe = null;
 // Whether that owner administers the Installation: true, false, or null when unknown.
 let installationAdmin = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
@@ -148,6 +150,17 @@ function providerFailure(label) {
       : `Could not sign in with ${label}. Try again, or ask an administrator to attach your ${label} identity to your account.`;
 }
 
+// GitHub sign-in refused by the organization and team allowlist (RFC-0061). The controller
+// sends only these reasons; anything else keeps the generic provider message.
+const githubMembershipFailures = {
+  membership: (password) =>
+    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access${password ? " or use your password" : ""}.`,
+  "membership-unavailable": (password) =>
+    password
+      ? "Could not check your GitHub organization membership. Try again later or use your password."
+      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+};
+
 function pinSessionKey(value) {
   pinnedSessionKey = typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -190,6 +203,48 @@ function recalledInstallationAccess(owner) {
     // Unreadable tab storage falls back to a fresh probe.
   }
   return null;
+}
+
+// One probe per session owner, shared by every page load until it settles. A navigation
+// joins the probe in flight instead of aborting it and asking again: the API has usually
+// already answered, and audited a denial, by then. A settled answer is kept even when the
+// view that asked is gone, as long as the same session owner is signed in.
+function probeInstallationAccess(owner) {
+  if (owner && installationAccessProbe?.owner === owner) {
+    return installationAccessProbe.answer;
+  }
+  const probe = { owner };
+  probe.answer = request("/observability", { outlivesView: true })
+    .then(
+      (data) => ({
+        url: typeof data?.url === "string" ? data.url : null,
+        admin: true,
+        settled: true,
+      }),
+      (error) => {
+        if (error.status === 401) {
+          throw error;
+        }
+        const denied = error.status === 403;
+        return { url: null, admin: denied ? false : null, settled: denied };
+      },
+    )
+    .then((answer) => {
+      if (owner && answer.settled && sessionOwnerKey(session) === owner) {
+        observabilityUrl = answer.url;
+        installationAdmin = answer.admin;
+        observabilityOwner = owner;
+        rememberInstallationAccess(owner, answer.admin, answer.url);
+      }
+      return answer;
+    })
+    .finally(() => {
+      if (installationAccessProbe === probe) {
+        installationAccessProbe = null;
+      }
+    });
+  installationAccessProbe = owner ? probe : null;
+  return probe.answer;
 }
 
 function forgetInstallationAccess() {
@@ -478,6 +533,7 @@ function clearPrivate() {
   namespaceId = null;
   observabilityUrl = null;
   observabilityOwner = null;
+  installationAccessProbe = null;
   installationAdmin = null;
   clearRetainedViews();
 }
@@ -572,9 +628,9 @@ function showLogin(message = "", returnPath = null) {
         }
         feedback.textContent =
           error.status === 429
-            ? "Too many attempts. Please try again later."
+            ? "Too many attempts. Try again later."
             : recoveryOnly
-              ? `${label} sign-in is unavailable. Please try again later.`
+              ? `${label} sign-in is unavailable. Try again later.`
               : `${label} sign-in is unavailable. Try again or use your password.`;
         pending = false;
         setDisabled(false);
@@ -639,12 +695,12 @@ function showLogin(message = "", returnPath = null) {
       }
       feedback.textContent =
         error.status === 429
-          ? "Too many attempts. Please try again later."
+          ? "Too many attempts. Try again later."
           : error.status === 400 || error.status === 401 || error.status === 403
             ? recoveryOnly
               ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
               : "Could not sign in. Check your username and password."
-            : "Sign-in is unavailable. Please retry.";
+            : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
@@ -758,6 +814,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   const providerError = Object.hasOwn(externalProviders, authError ?? "")
     ? externalProviders[authError]
     : null;
+  const authReason = current.url.searchParams.get("authReason");
+  const membershipFailure =
+    authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
+      ? githubMembershipFailures[authReason]
+      : null;
   const externalAttempt = takeExternalAttempt();
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
@@ -803,7 +864,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             : pageUrl(current.target, current.namespace);
       showLogin(
         providerError !== null
-          ? providerFailure(providerError.label)
+          ? (membershipFailure ?? providerFailure(providerError.label))
           : current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
@@ -848,20 +909,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         ? null
         : recalled
           ? { ...recalled, settled: true }
-          : request("/observability").then(
-              (data) => ({
-                url: typeof data?.url === "string" ? data.url : null,
-                admin: true,
-                settled: true,
-              }),
-              (error) => {
-                if (error.status === 401) {
-                  throw error;
-                }
-                const denied = error.status === 403;
-                return { url: null, admin: denied ? false : null, settled: denied };
-              },
-            ),
+          : probeInstallationAccess(owner),
     ]);
     if (!lifetime.isCurrent(active)) {
       return;
@@ -876,9 +924,6 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityUrl = observability.url;
       installationAdmin = observability.admin;
       observabilityOwner = observability.settled ? owner : null;
-      if (owner && observability.settled && !recalled) {
-        rememberInstallationAccess(owner, observability.admin, observability.url);
-      }
     }
     namespaceId =
       current.namespace ??
@@ -892,6 +937,12 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    if (retained && current.namespace !== null) {
+      // Namespace admission is done, so the header selector is usable while the retained
+      // view revalidates, as on first loads. A switch resets the lifetime, discarding these reads.
+      // Without a URL selection the shell has none; the full render below picks the default.
+      shellUI.updateNamespaces(namespaces);
+    }
     let retainedItems = null;
     let retainedAgent = null;
     if (
@@ -944,7 +995,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       if (!lifetime.isCurrent(active)) {
         return;
       }
+      // A shell restored without a URL selection has none; once a Namespace is readable,
+      // the full render below picks the default instead.
       const unchanged =
+        namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
@@ -954,6 +1008,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         mountedViewState = retainedState;
         retainedState.active = active;
         retainedState.resumeDrafts?.();
+        // Timers that fired while the view was detached stopped; let them re-arm.
+        for (const resume of retainedState.resumeHandlers) {
+          resume();
+        }
         navigateAgentTab = retainedState.tabNavigation;
         mountedAgent = retainedState.agent;
         for (const control of shell.blockedControls) {
@@ -975,6 +1033,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       reusable: true,
       mutations: 0,
       reads: new Map(),
+      resumeHandlers: new Set(),
       user: session.user,
     };
     mountedViewState = viewState;
@@ -987,7 +1046,9 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
       try {
         const result = await request(path, options);
-        if ((options.method ?? "GET") === "GET") {
+        // Live reads (runtime status, log pages) differ on every call; replaying them to
+        // revalidate a cached view would only spend the reader's rate limit.
+        if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
           viewState.reads.set(path, JSON.stringify(result));
         }
         return result;
@@ -1053,6 +1114,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       navigate,
       pageUrl,
       isCurrent: () => lifetime.isCurrent(viewState.active),
+      onResume: (handler) => viewState.resumeHandlers.add(handler),
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
@@ -1103,7 +1165,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         mountedAgent = agent;
         viewState.agent = agent;
         viewState.reusable &&= agent?.status !== "deleting";
-        markMountedRoute(current);
+        // A tab switch while the detail was loading already moved the URL (and the mounted
+        // route) in place; keying the view by the URL it was opened with would retain it
+        // under the wrong tab.
+        markMountedRoute(route());
       }
       return;
     }
@@ -1153,8 +1218,8 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       publicPanel(
         sessionResolved ? "Namespace access unavailable" : "Session unavailable",
         sessionResolved
-          ? "Could not check Namespace access. Please retry."
-          : "Could not check your session. Please retry.",
+          ? "Could not check Namespace access. Try again."
+          : "Could not check your session. Try again.",
         "Retry",
         () => void loadPage(),
       );
@@ -1367,8 +1432,8 @@ async function revalidateMountedAgent(current) {
       publicPanel(
         checking === "session" ? "Session unavailable" : "Namespace access unavailable",
         checking === "session"
-          ? "Could not check your session. Please retry."
-          : "Could not check Namespace access. Please retry.",
+          ? "Could not check your session. Try again."
+          : "Could not check Namespace access. Try again.",
         "Retry",
         () => void loadPage(),
       );
@@ -1386,7 +1451,7 @@ async function revalidateMountedAgent(current) {
           ? "Resource unavailable"
           : "Request unavailable",
       error.status === 403
-        ? "You do not have permission to read this Agent or its revision."
+        ? "You do not have permission to read this Agent, its versions, or its Configuration."
         : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),

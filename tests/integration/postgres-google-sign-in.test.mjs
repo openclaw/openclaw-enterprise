@@ -1,30 +1,33 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
+  assertConsoleSignIn,
+  assertExternalSignInRefused,
+  assertProviderAttached,
   assertReservedLane,
-  bootstrapProductionInstallation,
+  authRowCounts,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   fakeGoogle,
   githubSignIn,
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
-  installationRoles,
+  loginDenialCount,
+  onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
+  sessionCookieName,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "google-recovery@example.test";
 const password = "google-member-password";
 const authSecret = "google-sign-in-auth-test-secret-at-least-32-bytes";
@@ -38,6 +41,13 @@ const secrets = {
   "occ-github-login/client-id": "google-suite-github-client-id",
   "occ-github-login/client-secret": "google-suite-github-client-secret",
 };
+// The production slow lane with shorter floors (250 ms doubling to a 500 ms cap instead of
+// 1 s doubling to 8 s), as in postgres-password-sign-in-limit. This suite spends password
+// budgets but does not measure pacing, and each paced attempt waits its floor in real time:
+// the reserved-lane check and the admin sign-ins after it reach the 4 s and 8 s floors
+// otherwise.
+const slowLane = { floorMs: 250, maxFloorMs: 500 };
+
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const googleProviderId = `google:${digest(googleClientId)}`;
 const githubProviderId = `github:${digest("google-suite-github-client-id")}`;
@@ -46,114 +56,64 @@ const strangerSubject = "110000000000000000002";
 const disabledSubject = "110000000000000000003";
 const bothSubject = "110000000000000000004";
 const bothGithubSubject = "9500004";
-const sessionCookieName = "__Host-openclaw_occ.session_token";
 
 // The Google provider fixture replaces only Google's token and key endpoints. State,
 // audit, IAM, Better Auth, the guarded human-login profile and Fastify are production code.
 test(
   "PostgreSQL Google sign-in admits only attached identities through the guarded profile",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const google = fakeGoogle(t, {
       clientId: googleClientId,
       clientSecret: googleClientSecret,
       hd: hostedDomain,
     });
     const address = clientAddresses("198.19");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    // Password onboarding on the default install, before Google is configured.
+    const { admin, accounts } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    // Password onboarding on the default install, before Google is configured.
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      passwordSlowLaneFloors: slowLane,
+      remoteAddress: address(),
+      accounts: {
+        member: { email: `google-member@${hostedDomain}` },
+        disabled: { email: `google-disabled@${hostedDomain}` },
+        both: { email: `google-both@${hostedDomain}` },
+      },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const accounts = {};
-    for (const [name, role] of [
-      ["member", roles.reader],
-      ["disabled", roles.reader],
-      ["both", roles.reader],
-    ]) {
-      const email = `google-${name}@${hostedDomain}`;
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers: adminHeaders,
-        payload: { email, password, roleId: role.id },
-      });
-      assert.equal(created.statusCode, 201, created.body);
-      accounts[name] = { id: created.json().data.id, email, password };
-    }
     const { member, disabled, both } = accounts;
-    await app.close();
 
     // A Google-only upgrade: no OCC_AUTH_GITHUB_CLIENT_*, hosted domain restricted.
     app = await composeProductionSignIn(t, {
       databaseUrl,
+      passwordSlowLaneFloors: slowLane,
       settings: googleUpgradeSettings(admin.id, [hostedDomain]),
       secrets,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
+    let adminHeaders = await signedInHeaders(app, origin, admin, address());
 
-    const counts = async () =>
-      (
-        await pool.query(
-          `SELECT (SELECT count(*)::int FROM occ."user") AS users,
-                  (SELECT count(*)::int FROM occ.account) AS methods,
-                  (SELECT count(*)::int FROM occ.session) AS sessions`,
-        )
-      ).rows[0];
-    const denials = async (reason) =>
-      (await state.transact((unit) => unit.audit.list())).filter(
-        ({ action, outcome, reasonCode }) =>
-          action === "authentication.login" && outcome === "denied" && reasonCode === reason,
-      ).length;
-    const attach = async (userId, provider, subject) => {
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${userId}/providers/${provider}`,
-        headers: adminHeaders,
-        payload: {
-          subject,
-          expectedVersion: (await readAccount(app, adminHeaders, userId)).version,
+    const counts = () => authRowCounts(pool);
+    const denials = (reason) => loginDenialCount(state, reason);
+    const attach = (userId, provider, subject) =>
+      assertProviderAttached(app, adminHeaders, userId, provider, subject);
+    const assertGoogleRefused = (authorization, message, reason) =>
+      assertExternalSignInRefused(
+        {
+          pool,
+          provider: "google",
+          denials,
+          signIn: () => googleSignIn(app, origin, google, authorization, address()),
         },
-      });
-      assert.equal(response.statusCode, 200, response.body);
-      return response;
-    };
-    async function assertGoogleRefused(
-      authorization,
-      message,
-      reason = "EXTERNAL_IDENTITY_REJECTED",
-    ) {
-      const before = await counts();
-      const deniedBefore = await denials(reason);
-      const { callback } = await googleSignIn(app, origin, google, authorization, address());
-      assert.equal(callback.statusCode, 302, message);
-      assert.equal(callback.headers.location, "/console/?authError=google", message);
-      assert.equal(
-        String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName),
-        false,
-        `${message}: no session cookie`,
+        message,
+        reason,
       );
-      assert.deepEqual(await counts(), before, `${message}: no user, method or session`);
-      assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
-    }
     async function assertGoogleSignIn(subject, userId, claims) {
       const signIn = await googleSignIn(
         app,
@@ -162,9 +122,7 @@ test(
         { subject, ...(claims ? { claims } : {}) },
         address(),
       );
-      assert.equal(signIn.callback.headers.location, "/console/", signIn.callback.body);
-      const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, userId);
+      const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
 
@@ -499,6 +457,7 @@ test(
       await startFakeGitHub(t);
       app = await composeProductionSignIn(t, {
         databaseUrl,
+        passwordSlowLaneFloors: slowLane,
         settings: {
           ...githubUpgradeSettings(admin.id),
           ...googleUpgradeSettings(admin.id, [hostedDomain]),
@@ -518,9 +477,7 @@ test(
       await attach(both.id, "github", bothGithubSubject);
       await assertGoogleSignIn(bothSubject, both.id);
       const { callback } = await githubSignIn(app, origin, bothGithubSubject, address());
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const githubCookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, githubCookie)).user.id, both.id);
+      await assertConsoleSignIn(app, callback, both.id);
       const methods = (
         await pool.query(
           `SELECT provider_id, account_id FROM occ.account

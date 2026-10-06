@@ -104,6 +104,46 @@ defect, not merely restate mocks.
 Use the [developer skills](docs/testing/developer-skills.md) for test quality,
 proof selection, diff cleanup, and requested independent review.
 
+By default, open new PRs from a topic branch in your own fork against
+`openclaw/openclaw-enterprise`. This is the default for core team members too,
+even with upstream write access. Maintainers may continue using upstream topic
+branches in authorized workflows, and agents follow existing user instructions
+that select that path. Maintainers retain their review, merge, and approved
+bypass permissions. When updating an assigned existing PR, keep its head
+repository and branch.
+
+Before publishing, verify the authenticated GitHub account with
+`gh api user --jq .login` and confirm it matches the requesting contributor.
+For the default workflow, create or reuse that contributor's fork. Inspect the
+actual fetch and push URLs with `git remote -v`; preserve existing remotes.
+In a new fork checkout, `origin` usually points to the fork and `upstream` to
+`openclaw/openclaw-enterprise`, but remote names do not establish ownership.
+Fetch the intended upstream base before comparing or refreshing a branch.
+
+Before each push, verify the destination repository's push URL, destination ref,
+remote head, and author of any existing PR. Stop on unexpected changes. After replacing
+`FORK_REMOTE`, `CONTRIBUTOR_LOGIN`, and `BRANCH` with the verified values and
+writing the PR description to `/tmp/enterprise-pr.md`, publish with explicit
+head and base repositories:
+
+```sh
+git push FORK_REMOTE HEAD:refs/heads/BRANCH
+gh pr create --repo openclaw/openclaw-enterprise --base main \
+  --head CONTRIBUTOR_LOGIN:BRANCH --title "Describe the change" \
+  --body-file /tmp/enterprise-pr.md
+```
+
+Use the intended target branch in `--base` when it differs from `main`.
+An explicit `--head` keeps `gh pr create` from choosing where to push the branch.
+
+Leave **Allow edits from maintainers** enabled for fork PRs. The GitHub CLI
+enables it by default; omit `--no-maintainer-edit` and verify
+`maintainer_can_modify` is `true` on the created PR. This lets maintainers commit
+fixes and prepare the branch for merging. If the fork contains Actions
+workflows, GitHub also grants workflow-edit access that can expose fork secrets;
+enable that broader access only when acceptable and record it in the PR. See
+[GitHub's maintainer-edit permissions](https://docs.github.com/en/pull-requests/how-tos/work-with-forks/allowing-changes-to-a-pull-request-branch-created-from-a-fork).
+
 - Keep one coherent change per PR. Stack only when a dependency is real, and
   link the prerequisite PR and intended base.
 - Explain the problem, behavior change, evidence, and remaining risks. Link
@@ -120,7 +160,7 @@ proof selection, diff cleanup, and requested independent review.
 - Inspect the entire diff and attachments for credentials, tenant data, private
   hostnames, and personal paths. Use synthetic fixtures and redacted evidence.
 
-Open a draft while implementation or proof is incomplete, then mark it ready for
+Open a draft with `--draft` while implementation or proof is incomplete, then mark it ready for
 review. New contributors wait for maintainer feedback before merging. Core team
 members are expected to carry their own changes through merge. When the PR author
 and authenticated account match, an authorized maintainer may use their merge
@@ -153,3 +193,55 @@ repeat an uncertain merge. Verify the merged commit and `main` after success.
 Repository access and a green check do not authorize a release, deployment, or
 settings change. Keep the existing [MIT license](LICENSE) and third-party
 attribution intact.
+
+## Recognize contributors
+
+Preserve original commit authors when preparing someone else's change. When
+transplanting or jointly authoring work, add a verified human `Co-authored-by`
+trailer where needed. Credit material review, documentation, and other non-code
+help in the PR description. Credit follows the work; running the merge does not
+make someone its author. Recognition does not grant repository permissions.
+
+Before a release, or when correcting an omission, refresh the README wall from
+the repository root with Node.js 24 or newer and an authenticated GitHub CLI:
+
+```sh
+pnpm contributors:update
+```
+
+You can also run `node scripts/update-contributors.mjs` directly; the generator
+uses only Node built-ins and does not require installing npm packages.
+
+The command needs only read access to repository metadata, contributors, pull
+requests, and public user profiles. Existing `gh` authentication is sufficient;
+no administrator access or GitHub App is needed. It prints the observed default
+branch SHA and writes only the README contributor block. Review the diff and
+submit it through the normal PR process. Refreshes are manual.
+
+The wall combines GitHub contributors and authors of PRs merged into the default
+branch, deduplicates by account ID, and sorts by current login. Documentation
+contributors and default avatars are included. GitHub bot accounts are omitted.
+The contributor API can lag, and co-authors or people helping outside merged PRs
+may need explicit inclusion. Merged PRs whose author is unavailable are skipped;
+previously published credit still requires an explicit correction before removal.
+
+Use [scripts/contributors.json](scripts/contributors.json) for corrections. Keys
+are numeric GitHub account IDs, which survive login changes. Each entry requires
+an HTTPS `url` pointing to public evidence and a nonempty `reason`, plus one of:
+
+- `include: true` to credit a missing contributor.
+- `displayName` to change an included person's avatar alt text. Combine it with
+  `include: true` when that person is absent from automatic discovery.
+- `exclude: true` for a service account or requested opt-out.
+
+Find the ID with `gh api users/LOGIN --jq .id`. Do not copy upstream's contributor
+list or store private email addresses. Never set both `include` and `exclude`.
+For an opt-out without a public request, link the correction PR and keep private
+correspondence out of the repository.
+
+Collection and validation finish before the README is written. If authentication,
+rate limits, or connectivity fail, fix access or wait and rerun. If an account is
+missing or deleted, inspect its previous credit and add an evidence-backed
+inclusion or exclusion; the generator refuses to silently remove it. Correct
+malformed JSON and duplicate or missing README markers before retrying. If the
+default branch or README changes during collection, rerun against the new state.

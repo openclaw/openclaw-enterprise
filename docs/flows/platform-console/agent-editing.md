@@ -93,7 +93,7 @@ object to the exact Namespace Configuration, preserving `secretBindings`.
 It rereads Agent and Configuration, rejecting changed ID or generation.
 Writes can race after these reads; the API owns authorization and generation.
 
-**Enable Gateway password access** stages `gateway.auth.password` referencing
+**Enable gateway password access** stages `gateway.auth.password` referencing
 `OPENCLAW_GATEWAY_PASSWORD` through this editor. Other settings, Secret bindings, and
 admitted versions remain unchanged; Cancel discards the edit. On deployment, Kubernetes `gatewayConfiguration` detects the reference;
 `deployment` delivers the generated password environment variable.

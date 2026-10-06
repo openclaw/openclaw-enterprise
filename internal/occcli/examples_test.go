@@ -17,9 +17,11 @@ var inlineJSONObject = regexp.MustCompile(`\{".*\}`)
 func exampleBody(example string) string {
 	if start := strings.Index(example, "<<'JSON'\n"); start >= 0 {
 		rest := example[start+len("<<'JSON'\n"):]
-		if end := strings.Index(rest, "\n  JSON"); end >= 0 {
+		if end := strings.Index(rest, "\nJSON\n"); end >= 0 {
 			return rest[:end]
 		}
+		// A heredoc without its own closing line must not pass as an inline object.
+		return ""
 	}
 	return inlineJSONObject.FindString(example)
 }

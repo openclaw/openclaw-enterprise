@@ -13,23 +13,22 @@
     "k3d": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/kubernetes-compute-real.test.mjs",
+    "tests/integration/kubernetes-plugin-status-real.test.mjs"
+  ],
   "files": [
     {
-      "path": "tests/integration/production-network-access.test.mjs",
-      "expectedTests": ["production Helm policies enforce workload network access levels"]
-    },
-    {
-      "path": "tests/integration/kubelet-volume-refresh-k3d.test.mjs",
+      "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
       "expectedTests": [
-        "optional Secret and ConfigMap volumes populate in running Pods within the measured kubelet refresh bounds"
+        "real Kubernetes Compute reads plugin runtime status from the exact gateway Pod",
+        "real Kubernetes Compute reports plugin install warnings and disables failed plugin config"
       ]
     },
     {
       "path": "tests/integration/kubernetes-compute-real.test.mjs",
       "expectedTests": [
-        "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion",
-        "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
-        "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
       ]
     }

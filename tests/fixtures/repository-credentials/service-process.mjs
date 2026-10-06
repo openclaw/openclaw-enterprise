@@ -129,6 +129,7 @@ export async function startServiceProcessFixture(
     bound = false,
     shutdownGraceMs,
     namespaceId = "namespace-fixture",
+    sessions = 1,
   } = {},
 ) {
   const resources = createResourceScope();
@@ -143,7 +144,7 @@ export async function startServiceProcessFixture(
   const tls = await createTlsMaterial(resources);
   ownedDirectories.push(dirname(tls.keyFile));
   const base = await createServiceConfiguration(resources, {
-    sessions: 1,
+    sessions,
     ...(shutdownGraceMs === undefined ? {} : { shutdownGraceMs }),
   });
   ownedDirectories.push(dirname(base.gateway.controlSocket));

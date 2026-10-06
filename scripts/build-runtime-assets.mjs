@@ -28,6 +28,7 @@ const runtimePaths = [
   "node-sqlite.mjs",
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
+  "node-runtime-env.mjs",
   "cli-root-options.mjs",
   "gateway-run-argv.mjs",
   "gateway-shutdown-budget.mjs",
@@ -213,7 +214,7 @@ if (command === "inputs") {
   const store = join(root, "node_modules/.pnpm");
   const retained = new Set();
   const visited = new Set();
-  async function visit(importer) {
+  async function visit(importer, manifestBytes) {
     const canonical = await realpath(importer);
     if (visited.has(canonical)) {
       return;
@@ -223,21 +224,20 @@ if (command === "inputs") {
     if (!packagePath.startsWith("..")) {
       retained.add(packagePath.split("/")[0]);
     }
-    const manifest = JSON.parse(await readFile(join(canonical, "package.json"), "utf8"));
-    const names = new Set(
-      Object.keys({
-        ...manifest.dependencies,
-        ...manifest.optionalDependencies,
-        ...manifest.peerDependencies,
-      }),
+    const manifest = JSON.parse(
+      manifestBytes ?? (await readFile(join(canonical, "package.json"), "utf8")),
     );
-    for (const name of names) {
+    for (const name of Object.keys({
+      ...manifest.dependencies,
+      ...manifest.optionalDependencies,
+      ...manifest.peerDependencies,
+    })) {
       let directory = canonical;
       while (true) {
         const candidate = join(directory, "node_modules", name);
         try {
-          await readFile(join(candidate, "package.json"));
-          await visit(candidate);
+          const manifestBytes = await readFile(join(candidate, "package.json"));
+          await visit(candidate, manifestBytes);
           break;
         } catch (error) {
           if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
@@ -262,8 +262,8 @@ if (command === "inputs") {
     })) {
       const candidate = join(root, directory, name);
       try {
-        await readFile(join(candidate, "package.json"));
-        await visit(candidate);
+        const manifestBytes = await readFile(join(candidate, "package.json"));
+        await visit(candidate, manifestBytes);
       } catch (error) {
         if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
           throw error;
@@ -291,9 +291,9 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "175260a3e26e6de4c1225ff27d8c2b17b01b700640db915a8bac9ee3d4cf903f",
+        sourceArchiveSha256: "b48a59055b2eeb39db06a7b900ade5208fa8f23c3f4f481fd5b5c455ea9436ab",
         openclawBridgePatchSha256:
-          "705b21a67f344de66a5468a07b35f6fec01635331d99cb85d9254c56bccc0c7d",
+          "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
         openclawConnectPatchSha256:
           "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f",
         artifactKind: "assembled-runtime-root",

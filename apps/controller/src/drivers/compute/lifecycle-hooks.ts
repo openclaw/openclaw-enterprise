@@ -152,7 +152,8 @@ export class ComputeLifecycleDispatcher {
   ): Promise<void> {
     const cleanupSignal = recoverCancelled && signal.aborted ? AbortSignal.timeout(5_000) : signal;
 
-    for (const owner of [...drivers].reverse()) {
+    for (let index = drivers.length - 1; index >= 0; index -= 1) {
+      const owner = drivers[index]!;
       const hook = owner.callbacks[phase] as
         | ((
             resource: Readonly<AgentRevision> | Readonly<Namespace>,

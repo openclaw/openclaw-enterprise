@@ -12,7 +12,7 @@ app.kubernetes.io/component: {{ .component }}
 {{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" .) }}{{ fail "cluster.cidrs requires exact IPv4 /32 endpoints" }}{{ end -}}
 {{- end -}}
 {{- range $name, $image := .Values.images }}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$" $image) }}{{ fail (printf "images.%s must use an immutable SHA-256 reference" $name) }}{{ end -}}
+{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail (printf "images.%s must use an immutable SHA-256 reference" $name) }}{{ end -}}
 {{- end -}}
 {{- range .Values.grafana.clients }}
 {{- if or (empty .namespace) (empty .podLabels) }}{{ fail "grafana.clients requires namespace and nonempty podLabels" }}{{ end -}}

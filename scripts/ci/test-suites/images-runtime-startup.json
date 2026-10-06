@@ -1,0 +1,36 @@
+{
+  "requiredEnv": ["OCC_TEST_RUNTIME_IMAGE", "OCC_TEST_CODEX_SECCOMP_PROFILE"],
+  "prepare": {
+    "requiresPreparedStateForFile": true,
+    "codexSeccomp": true
+  },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/runtime-image-startup.test.mjs",
+    "tests/integration/runtime-image-native-worker.test.mjs"
+  ],
+  "files": [
+    {
+      "path": "tests/integration/runtime-image-startup.test.mjs",
+      "expectedTests": [
+        "runtime image shares Codex 0.160.0 between the plugin and Dedicated command",
+        "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
+        "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
+        "runtime image discovers the bundled Codex plugin from a fresh gateway home",
+        "runtime image keeps Codex auth writable with a nested generated images mount",
+        "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
+        "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed",
+        "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
+        "runtime image validates the configuration dedicated native OpenClaw renders"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-native-worker.test.mjs",
+      "expectedTests": [
+        "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+        "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
+        "runtime image reaps descendants during workspace node and Codex restarts"
+      ]
+    }
+  ]
+}

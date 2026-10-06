@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { createRequire } from "node:module";
 import {
   ConfigurationConflictError,
+  ConfigurationValidationError,
   KubernetesConfigurationDriver,
   kubernetesConfigurationName,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const configuration = {
@@ -41,7 +45,7 @@ function createDriver(authentication = { mode: "inCluster" }) {
 }
 
 function physicalNamespaceName(id) {
-  return `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+  return `oce-${createHash("sha256").update(id).digest("hex").slice(0, 15)}`;
 }
 
 class FakeConfigurationCoreV1Api {
@@ -49,20 +53,46 @@ class FakeConfigurationCoreV1Api {
   configMaps = new Map();
   creates = 0;
 
-  addNamespace(id) {
-    const name = physicalNamespaceName(id);
+  addNamespace(id, layout = "shared") {
+    const name =
+      layout === "split"
+        ? `oce-gateways-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`
+        : layout === "adopted"
+          ? "customer-support"
+          : physicalNamespaceName(id);
     this.namespaces.set(name, {
       metadata: {
         name,
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
           "openclaw.dev/gateway-namespace": id,
+          ...(layout === "split" ? {} : { "openclaw.dev/namespace": id }),
+          ...(layout === "adopted"
+            ? Object.fromEntries(
+                ["enforce", "audit", "warn"].map((mode) => [
+                  `pod-security.kubernetes.io/${mode}`,
+                  "restricted",
+                ]),
+              )
+            : {}),
         },
-        annotations: { "openclaw.dev/namespace-id": id },
+        annotations: {
+          "openclaw.dev/namespace-id": id,
+          ...(layout === "adopted" ? { "openclaw.dev/namespace-lifecycle": "external" } : {}),
+        },
       },
       status: { phase: "Active" },
     });
     return name;
+  }
+
+  async listNamespace({ labelSelector }) {
+    const [label, id] = labelSelector.split("=");
+    return {
+      items: [...this.namespaces.values()].filter(
+        ({ metadata }) => metadata.labels?.[label] === id,
+      ),
+    };
   }
 
   async readNamespace({ name }) {
@@ -109,18 +139,43 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
     KubernetesConfigurationDriver.validateConfiguration({ authentication: { mode: "inCluster" } }),
   );
 
-  for (const invalid of [
-    undefined,
-    {},
-    { authentication: { mode: "ambient" } },
-    { authentication: { mode: "inCluster", context: "unexpected" } },
-    { authentication: { mode: "kubeconfig", kubeconfigPath: "relative", context: "tenant" } },
-    { authentication: { mode: "kubeconfig", kubeconfigPath: "/tmp/config", context: "" } },
-    { authentication: { mode: "inCluster" }, token: "not-allowed" },
-    { authentication: { mode: "inCluster" }, clients: {} },
+  const injected = /Injected clients and unknown Kubernetes configuration options/;
+  for (const [invalid, refusal] of [
+    [undefined, /Kubernetes configuration options are required/],
+    [{}, /Explicit Kubernetes authentication is required/],
+    [{ authentication: { mode: "ambient" } }, /explicit Kubernetes authentication mode/],
+    [
+      { authentication: { mode: "inCluster", context: "unexpected" } },
+      /In-cluster authentication does not accept additional options/,
+    ],
+    [
+      {
+        authentication: {
+          mode: "kubeconfig",
+          kubeconfigPath: "/tmp/config",
+          context: "tenant",
+          token: "x",
+        },
+      },
+      /Unknown kubeconfig authentication options are forbidden/,
+    ],
+    [
+      { authentication: { mode: "kubeconfig", kubeconfigPath: "", context: "tenant" } },
+      /Dedicated kubeconfig path must be a nonempty string/,
+    ],
+    [
+      { authentication: { mode: "kubeconfig", kubeconfigPath: "relative", context: "tenant" } },
+      /Dedicated kubeconfig path must be absolute/,
+    ],
+    [
+      { authentication: { mode: "kubeconfig", kubeconfigPath: "/tmp/config", context: "" } },
+      /Explicit Kubernetes context must be a nonempty string/,
+    ],
+    [{ authentication: { mode: "inCluster" }, token: "not-allowed" }, injected],
+    [{ authentication: { mode: "inCluster" }, clients: {} }, injected],
   ]) {
-    assert.throws(() => KubernetesConfigurationDriver.validateConfiguration(invalid));
-    assert.throws(() => new KubernetesConfigurationDriver(invalid));
+    assert.throws(() => KubernetesConfigurationDriver.validateConfiguration(invalid), refusal);
+    assert.throws(() => new KubernetesConfigurationDriver(invalid), refusal);
   }
 
   // Inherited client injection must not evade the closed own-property schema.
@@ -274,42 +329,44 @@ test("ConfigMaps contain exactly one native document and preserve real ownership
   }
 });
 
-test("Kubernetes Configuration inspectExact recovers only the exact Configuration", async () => {
-  const client = new FakeConfigurationCoreV1Api();
-  const namespace = client.addNamespace(namespaceId);
-  const driver = createDriver();
-  driver.client = Promise.resolve(client);
+for (const layout of ["shared", "adopted", "split"]) {
+  test(`Kubernetes Configuration inspectExact recovers only the exact Configuration (${layout})`, async () => {
+    const client = new FakeConfigurationCoreV1Api();
+    const namespace = client.addNamespace(namespaceId, layout);
+    const driver = createDriver();
+    driver.client = Promise.resolve(client);
 
-  const created = await driver.createExact(configuration);
-  assert.deepEqual(await driver.inspectExact(configuration), created);
-  assert.equal(client.creates, 1);
-  assert.equal(client.configMaps.size, 1);
-  await assert.rejects(() => driver.createExact(configuration), ConfigurationConflictError);
-  assert.equal(
-    await driver.inspectExact({
-      ...configuration,
-      id: "cfg_00000000-0000-4000-8000-000000000099",
-    }),
-    undefined,
-  );
+    const created = await driver.createExact(configuration);
+    assert.deepEqual(await driver.inspectExact(configuration), created);
+    assert.equal(client.creates, 1);
+    assert.equal(client.configMaps.size, 1);
+    await assert.rejects(() => driver.createExact(configuration), ConfigurationConflictError);
+    assert.equal(
+      await driver.inspectExact({
+        ...configuration,
+        id: "cfg_00000000-0000-4000-8000-000000000099",
+      }),
+      undefined,
+    );
 
-  const stored = client.configMaps.get(
-    `${namespace}/${kubernetesConfigurationName(configuration.id)}`,
-  );
-  stored.data["openclaw.json"] = JSON.stringify({
-    plugins: configuration.values.plugins,
-    agents: configuration.values.agents,
-    secrets: configuration.values.secrets,
-    models: configuration.values.models,
+    const stored = client.configMaps.get(
+      `${namespace}/${kubernetesConfigurationName(configuration.id)}`,
+    );
+    stored.data["openclaw.json"] = JSON.stringify({
+      plugins: configuration.values.plugins,
+      agents: configuration.values.agents,
+      secrets: configuration.values.secrets,
+      models: configuration.values.models,
+    });
+    assert.deepEqual(await driver.inspectExact(configuration), created);
+
+    stored.data["openclaw.json"] = JSON.stringify({
+      ...configuration.values,
+      agents: { defaults: { sandbox: { mode: "networking" } } },
+    });
+    await assert.rejects(() => driver.inspectExact(configuration), ConfigurationConflictError);
   });
-  assert.deepEqual(await driver.inspectExact(configuration), created);
-
-  stored.data["openclaw.json"] = JSON.stringify({
-    ...configuration.values,
-    agents: { defaults: { sandbox: { mode: "networking" } } },
-  });
-  await assert.rejects(() => driver.inspectExact(configuration), ConfigurationConflictError);
-});
+}
 
 test("configuration operations reject invalid references before reading Kubernetes credentials", async () => {
   const driver = createDriver();
@@ -331,55 +388,20 @@ test("configuration CRUD fails closed when its explicitly selected kubeconfig is
 });
 
 test("the official Kubernetes client rejects ambiguous identities and insecure API servers", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-configuration-auth-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  for (const scenario of [
-    { name: "missing-context", requestedContext: "unselected" },
-    { name: "missing-user", users: [] },
-    { name: "plaintext-api", server: "http://127.0.0.1:1" },
-    { name: "unverified-tls", skipTLSVerify: true },
-    { name: "embedded-credentials", server: "https://user:password@127.0.0.1:1" },
-    { name: "unexpected-api-path", server: "https://127.0.0.1:1/untrusted" },
-  ]) {
-    const path = join(directory, `${scenario.name}.json`);
-    await writeFile(
-      path,
-      JSON.stringify({
-        apiVersion: "v1",
-        kind: "Config",
-        clusters: [
-          {
-            name: "configuration-cluster",
-            cluster: {
-              server: scenario.server ?? "https://127.0.0.1:1",
-              ...(scenario.skipTLSVerify ? { "insecure-skip-tls-verify": true } : {}),
-            },
-          },
-        ],
-        users: scenario.users ?? [
-          { name: "configuration-user", user: { token: "test-only-fixture-token" } },
-        ],
-        contexts: [
-          {
-            name: "configuration-context",
-            context: { cluster: "configuration-cluster", user: "configuration-user" },
-          },
-        ],
-        "current-context": "configuration-context",
-      }),
-    );
-
+  for (const scenario of await writeUnsafeKubeconfigs(t)) {
     const driver = createDriver({
       mode: "kubeconfig",
-      kubeconfigPath: path,
-      context: scenario.requestedContext ?? "configuration-context",
+      kubeconfigPath: scenario.kubeconfigPath,
+      context: scenario.context,
     });
 
-    // The real Kubernetes SDK parses each fixture; unsafe identity or transport must fail before I/O.
+    // The real Kubernetes SDK parses each fixture; unsafe identity or transport must fail
+    // validation before I/O (fetch's own refusal of a credentialed URL does not count).
     await assert.rejects(
       driver.read(configuration),
-      /context|credential|identity|verified HTTPS/i,
+      (error) =>
+        error instanceof ConfigurationValidationError &&
+        /context|cluster|credential|identity|verified HTTPS|URL/i.test(error.message),
       scenario.name,
     );
   }
@@ -401,7 +423,10 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     const unsafe = { ...configuration, values };
     for (const operation of ["create", "update"]) {
       await assert.rejects(driver[operation](unsafe), (error) => {
-        assert.match(error.message, /Model credentials must use unresolved references/);
+        assert.match(
+          error.message,
+          /holds a credential value inline, where a reference is required/,
+        );
         assert.equal(error.message.includes(sentinel), false);
         return true;
       });
@@ -438,4 +463,76 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     await driver.checkedConfiguration(stored, referenceOnly, "existing-tenant"),
     referenceOnly,
   );
+});
+
+test("Kubernetes Configuration cancels an in-flight request when its provisioning claim is lost", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-configuration-cancellation-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "kubeconfig.json");
+  await writeFile(
+    path,
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "Config",
+      clusters: [{ name: "configuration", cluster: { server: "https://127.0.0.1:1" } }],
+      users: [{ name: "configuration", user: { token: "test-only-fixture-token" } }],
+      contexts: [
+        { name: "configuration", context: { cluster: "configuration", user: "configuration" } },
+      ],
+      "current-context": "configuration",
+    }),
+  );
+  const driver = createDriver({
+    mode: "kubeconfig",
+    kubeconfigPath: path,
+    context: "configuration",
+  });
+  const sdk = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
+    "@kubernetes/client-node",
+  );
+  const client = await driver.core();
+  let dispatched;
+  const started = new Promise((resolve) => {
+    dispatched = resolve;
+  });
+  let finishTransport;
+  // Retain the real SDK request construction, authentication and middleware.
+  // Only transport is stalled, like an API that accepts a request but never responds.
+  t.mock.method(
+    client.api.configuration.httpApi,
+    "send",
+    (request) =>
+      new sdk.Observable(
+        new Promise((resolve, reject) => {
+          finishTransport = reject;
+          const signal = request.getSignal();
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          dispatched();
+        }),
+      ),
+  );
+  const owner = new AbortController();
+  const lost = new Error("Configuration provisioning claim lost");
+  const pending = withComputeAbortSignal(owner.signal, () => driver.read(configuration));
+  await started;
+  owner.abort(lost);
+  let timer;
+  try {
+    await assert.rejects(
+      Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Configuration request ignored claim loss")),
+            1000,
+          );
+        }),
+      ]),
+      (error) => error === lost,
+    );
+  } finally {
+    clearTimeout(timer);
+    finishTransport(lost);
+    await pending.catch(() => {});
+  }
 });

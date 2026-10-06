@@ -17,10 +17,16 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { assertReservedLane } from "../helpers/production-sign-in.mjs";
+import {
+  assertProviderAttached,
+  assertReservedLane,
+  attachProvider,
+  serveAsGitHub,
+} from "../helpers/production-sign-in.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { availablePort } from "../helpers/available-port.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const email = "github-recovery@example.test";
 const password = "github-local-recovery-password";
 const authSecret = "github-composed-auth-test-secret-at-least-32-bytes";
@@ -31,9 +37,7 @@ const providerRefreshToken = "ghr_fixture_provider_refresh_token";
 // Fastify and the browser Console remain their ordinary implementations.
 test(
   "PostgreSQL GitHub sign-in preserves an existing account through the ordinary Console",
-  {
-    skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof.",
-  },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
@@ -71,10 +75,7 @@ test(
       computeDriver: createDevelopmentComputeDriver(),
       configurationDriver,
     });
-    const reservation = createServer();
-    await new Promise((resolve) => reservation.listen(0, "127.0.0.1", resolve));
-    const port = reservation.address().port;
-    await new Promise((resolve) => reservation.close(resolve));
+    const port = await availablePort();
     const origin = `http://127.0.0.1:${port}`;
     const base = {
       mode: "development",
@@ -162,7 +163,9 @@ test(
     const before = await state.loadNativeIAMState(installation.id);
 
     // Exercise the real listener shutdown with a request already admitted by
-    // Fastify. The hook controls timing only; app.close owns stop and drain.
+    // Fastify. The hook controls timing only; app.close owns stop and drain. The
+    // drained response closes its keep-alive socket, so close() does not then wait
+    // for the client's idle timeout (about 70 s against Fastify's 72 s keep-alive).
     const drainingRequest = fetch(`${origin}/api/auth/session?maintenance-drain`, {
       headers: { cookie: legacyCookie },
     });
@@ -356,15 +359,13 @@ test(
       password: true,
       sessionBinding: true,
     });
-    const googleAttach = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${recovery}/providers/google`,
+    const googleAttach = await attachProvider(
+      app,
       headers,
-      payload: {
-        subject: "108765432109876543210",
-        expectedVersion: (await readAccount(recovery, headers)).version,
-      },
-    });
+      recovery,
+      "google",
+      "108765432109876543210",
+    );
     assert.equal(googleAttach.statusCode, 409, googleAttach.body);
     assert.match(googleAttach.json().error.message, /Google sign-in is not configured/);
     assert.equal(
@@ -377,16 +378,7 @@ test(
       ).statusCode,
       403,
     );
-    const attach = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${recovery}/providers/github`,
-      headers,
-      payload: {
-        subject: "12345678",
-        expectedVersion: (await readAccount(recovery, headers)).version,
-      },
-    });
-    assert.equal(attach.statusCode, 200, attach.body);
+    await assertProviderAttached(app, headers, recovery, "github", "12345678");
     assert.equal(
       (await app.inject({ url: "/api/auth/session", headers })).json().data,
       null,
@@ -437,16 +429,7 @@ test(
         response.end();
       }
     });
-    await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-    const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
-    const originalFetch = globalThis.fetch;
-    t.mock.method(globalThis, "fetch", (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input);
-      if (url.origin === "https://github.com" || url.origin === "https://api.github.com") {
-        return originalFetch(new URL(url.pathname + url.search, providerOrigin), init);
-      }
-      return originalFetch(input, init);
-    });
+    await serveAsGitHub(t, provider);
 
     async function start(target = app) {
       const response = await target.inject({
@@ -926,17 +909,7 @@ test(
     });
     assert.equal(createdSession.json().data.user.id, createdId);
     assert.equal(
-      (
-        await app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${createdId}/providers/github`,
-          headers: adminHeaders,
-          payload: {
-            subject: "33333333",
-            expectedVersion: (await readAccount(createdId, adminHeaders)).version,
-          },
-        })
-      ).statusCode,
+      (await attachProvider(app, adminHeaders, createdId, "github", "33333333")).statusCode,
       200,
     );
     assert.ok(
@@ -1002,28 +975,10 @@ test(
     );
     assert.equal(attachAudits.length, 1);
     assert.equal(
-      (
-        await app.inject({
-          method: "POST",
-          url: `/api/auth/accounts/${limited.id}/providers/github`,
-          headers: adminHeaders,
-          payload: {
-            subject: "22222222",
-            expectedVersion: (await readAccount(limited.id, adminHeaders)).version,
-          },
-        })
-      ).statusCode,
+      (await attachProvider(app, adminHeaders, limited.id, "github", "22222222")).statusCode,
       200,
     );
-    const retarget = await app.inject({
-      method: "POST",
-      url: `/api/auth/accounts/${limited.id}/providers/github`,
-      headers: adminHeaders,
-      payload: {
-        subject: "12345678",
-        expectedVersion: (await readAccount(limited.id, adminHeaders)).version,
-      },
-    });
+    const retarget = await attachProvider(app, adminHeaders, limited.id, "github", "12345678");
     assert.ok([404, 409].includes(retarget.statusCode));
     const limitedBefore = await state.loadNativeIAMState(installation.id);
     providerSubject = 22222222;

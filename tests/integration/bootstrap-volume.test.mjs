@@ -108,6 +108,49 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
     ),
     /approved immutable SHA-256 image reference/,
   );
+  // Kubernetes rejects uppercase digest hex as InvalidImageName, so the helper
+  // refuses it before creating a preparation Pod that could never start.
+  await assert.rejects(
+    execute(
+      helper,
+      [
+        "--kubeconfig",
+        kubeconfig,
+        "--context",
+        "ctx",
+        "--namespace",
+        "openclaw-system",
+        "--claim",
+        "claim",
+        "--image",
+        `registry.example.invalid/openclaw/controller@sha256:${"A".repeat(64)}`,
+      ],
+      base,
+    ),
+    /--image must be an approved immutable SHA-256 image reference/,
+  );
+  // A digest is exactly 64 hex characters.
+  for (const digest of ["a".repeat(63), "a".repeat(65)]) {
+    await assert.rejects(
+      execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "ctx",
+          "--namespace",
+          "openclaw-system",
+          "--claim",
+          "claim",
+          "--image",
+          `registry.example.invalid/openclaw/controller@sha256:${digest}`,
+        ],
+        base,
+      ),
+      /--image must be an approved immutable SHA-256 image reference/,
+    );
+  }
   await assert.rejects(
     execute(
       helper,

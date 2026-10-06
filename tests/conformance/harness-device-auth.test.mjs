@@ -156,3 +156,50 @@ test("failed one-time exchanges are not retried and never expose provider bodies
     });
   }
 });
+
+test("a failed device login start names whether the sign-in service was reachable, never its reply", async (t) => {
+  const sensitive = "private-provider-response-fixture";
+  const refused = Object.assign(new Error(`connect ECONNREFUSED 10.0.0.1:443 ${sensitive}`), {
+    code: "ECONNREFUSED",
+  });
+  const cases = {
+    refused: [
+      () => Promise.reject(new TypeError("fetch failed", { cause: refused })),
+      "unreachable",
+      "ECONNREFUSED",
+    ],
+    timeout: [
+      () => Promise.reject(new DOMException(sensitive, "TimeoutError")),
+      "unreachable",
+      "TimeoutError",
+    ],
+    // A refused redirect rejects without a connection code: the service answered.
+    redirected: [
+      () => Promise.reject(new TypeError("fetch failed", { cause: new Error(sensitive) })),
+      "unavailable",
+      "fetch_failed",
+    ],
+    rejected: [
+      async () => Response.json({ error: sensitive }, { status: 503 }),
+      "unavailable",
+      "HTTP_503",
+    ],
+    malformed: [async () => new Response(sensitive), "unavailable", "invalid_response"],
+  };
+  for (const [name, [transport, reason, failure]] of Object.entries(cases)) {
+    await t.test(name, async (t) => {
+      t.mock.method(globalThis, "fetch", transport);
+      await assert.rejects(startHarnessDeviceAuthorization("codex"), (error) => {
+        assert.equal(error.name, "DeviceAuthorizationStartError");
+        assert.equal(error.reason, reason);
+        assert.equal(error.failure, failure);
+        assert.equal(error.cause, undefined);
+        assert.equal(
+          JSON.stringify({ ...error, message: error.message }).includes(sensitive),
+          false,
+        );
+        return true;
+      });
+    });
+  }
+});

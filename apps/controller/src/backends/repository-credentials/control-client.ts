@@ -2,7 +2,10 @@ import { request } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
-import { normalizePushRefAllowlist } from "../../drivers/repo/credentials/client-contracts.ts";
+import {
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+} from "../../drivers/repo/credentials/client-contracts.ts";
 import type {
   RepositoryCredentialBoundSessionInput,
   RepositoryCredentialSessionResult,
@@ -74,13 +77,6 @@ function object(value: unknown, fields: readonly string[]): Record<string, unkno
   return value as Record<string, unknown>;
 }
 
-function hasControlCharacters(value: string): boolean {
-  return [...value].some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
-  });
-}
-
 function githubId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -94,7 +90,7 @@ function identity(value: unknown): string {
     typeof value !== "string" ||
     value.length === 0 ||
     Buffer.byteLength(value) > 512 ||
-    hasControlCharacters(value)
+    hasControlCharacter(value)
   ) {
     return unavailable();
   }
@@ -246,7 +242,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
       !isAbsolute(options.controlSocket) ||
       resolve(options.controlSocket) !== options.controlSocket ||
       Buffer.byteLength(options.controlSocket) > 103 ||
-      hasControlCharacters(options.controlSocket)
+      hasControlCharacter(options.controlSocket)
     ) {
       throw new Error("The repository credential control socket must be an absolute Unix path.");
     }
@@ -315,7 +311,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
         typeof entry.description !== "string" ||
         entry.description.trim().length === 0 ||
         entry.description.length > 512 ||
-        hasControlCharacters(entry.description)
+        hasControlCharacter(entry.description)
       ) {
         continue;
       }

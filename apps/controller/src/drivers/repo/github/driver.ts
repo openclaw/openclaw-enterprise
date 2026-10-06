@@ -24,6 +24,7 @@ import {
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
 import type { SessionStatus } from "../credentials/service-contracts.ts";
 import { sameBinding } from "../credentials/sessions.ts";
+import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
   return Object.freeze({
@@ -35,13 +36,6 @@ function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus 
       repositoryId: status.binding.repositoryId,
       grantId: status.binding.grantId,
     }),
-  });
-}
-
-function hasControlCharacters(value: string): boolean {
-  return [...value].some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
   });
 }
 
@@ -87,7 +81,7 @@ export class GitHubRepoDriver implements RepoDriver {
         typeof path !== "string" ||
         !isAbsolute(path) ||
         resolve(path) !== path ||
-        hasControlCharacters(path) ||
+        hasControlCharacter(path) ||
         (field === "controlSocket" && Buffer.byteLength(path) > 103)
       ) {
         throw new Error("Repository credential Driver paths must be absolute.");
@@ -116,7 +110,7 @@ export class GitHubRepoDriver implements RepoDriver {
       typeof id !== "string" ||
       Buffer.byteLength(id) < 1 ||
       Buffer.byteLength(id) > 512 ||
-      hasControlCharacters(id)
+      hasControlCharacter(id)
     ) {
       throw new Error("The GitHub Backend must declare its repository credential Driver.");
     }

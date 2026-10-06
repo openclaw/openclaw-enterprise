@@ -287,6 +287,13 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       slackApprovers(defaultApprovers);
     }
     for (const [pluginId, selection] of selectionEntries(selections)) {
+      // Resolve the plugin ID first, so a selection saved under another Driver reports
+      // the ID mismatch rather than a policy field that Driver does not support.
+      if (kind === "codex") {
+        codexNativeIdFromPluginId(pluginId);
+      } else {
+        openClawCatalogDescriptor(pluginId);
+      }
       policyRecord(selection, "Plugin selection", [
         "enabled",
         "approvers",
@@ -332,13 +339,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           parseCodexToolId(id);
         }
       } else {
-        const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
-          ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-          : pluginId;
-        const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
-        if (descriptor === undefined) {
-          throw new Error("Unknown OpenClaw plugin selection.");
-        }
+        const descriptor = openClawCatalogDescriptor(pluginId);
         policyRecord(
           selection.driverPolicy === undefined ? {} : selection.driverPolicy,
           "OpenClaw driver policy",
@@ -368,6 +369,21 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         none: "approve",
       } satisfies Record<PluginApprovalMode, string>
     )[approval as PluginApprovalMode];
+  }
+
+  // Selection keys accept both the native ID and the driver-prefixed catalog ID
+  // ("diffs" and "occ-plugin:diffs"). Two keys for one native plugin would
+  // install it twice with conflicting policy, so admission refuses them.
+  function hasAliasedSelections(kind: "codex" | "openclaw", selections: unknown): boolean {
+    const nativeIds = selectionEntries(selections).map(([pluginId]) => {
+      if (kind === "codex") {
+        return codexNativeIdFromPluginId(pluginId);
+      }
+      return pluginId.startsWith(OCC_DRIVER_ID + ":")
+        ? pluginId.slice((OCC_DRIVER_ID + ":").length)
+        : pluginId;
+    });
+    return new Set(nativeIds).size !== nativeIds.length;
   }
 
   function pluginApprovalOverlay(
@@ -428,13 +444,30 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     return CODEX_DRIVER_ID + ":" + nativeId;
   }
 
+  function openClawCatalogDescriptor(pluginId: string): OpenClawPluginDescriptor {
+    const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
+      ? pluginId.slice((OCC_DRIVER_ID + ":").length)
+      : pluginId;
+    const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
+    if (descriptor === undefined) {
+      throw Object.assign(new Error("Unknown OpenClaw plugin selection."), {
+        policyField: "pluginId",
+        pluginId,
+      });
+    }
+    return descriptor;
+  }
+
   function codexNativeIdFromPluginId(pluginId: string): string {
     const prefixed = pluginId.startsWith(CODEX_DRIVER_ID + ":")
       ? pluginId.slice((CODEX_DRIVER_ID + ":").length)
       : pluginId;
     const suffix = "@" + CODEX_MARKETPLACE;
     if (!prefixed.endsWith(suffix)) {
-      throw new Error("Codex plugin ID must identify the curated remote marketplace.");
+      throw Object.assign(
+        new Error("Codex plugin ID must identify the curated remote marketplace."),
+        { policyField: "pluginId", pluginId },
+      );
     }
     return prefixed;
   }
@@ -1003,6 +1036,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     codexOpenClawConfiguration,
     codexInstallPlan,
     codexNeedsToolInventory,
+    hasAliasedSelections,
     validatePolicies,
     codexReadParamsForSelections,
     codexRuntimeArtifact,
@@ -1084,4 +1118,11 @@ export function validatePolicies(
   defaultApprovers?: PluginApprovers,
 ): void {
   pluginRuntimeTranslator.validatePolicies(kind, selections, defaultApprovers);
+}
+
+export function hasAliasedSelections(
+  kind: "codex" | "openclaw",
+  selections: PluginDesiredState,
+): boolean {
+  return pluginRuntimeTranslator.hasAliasedSelections(kind, selections);
 }

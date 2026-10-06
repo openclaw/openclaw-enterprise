@@ -1,24 +1,25 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { constants } from "node:fs";
-import { constants as osConstants } from "node:os";
+import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
+import { failureSecrets, redactFailure } from "./failure-redaction.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const reporterPath = fileURLToPath(new URL("./reporter.mjs", import.meta.url));
 const defaultManifestPath = "scripts/ci/test-suites.json";
-const testRoots = ["tests/conformance", "tests/integration", "tests/browser"];
+const testRoots = ["tests/conformance", "tests/integration", "tests/browser", "tests/docs"];
 
 function usage() {
   return [
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
     "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -110,6 +111,56 @@ function normalizeFile(file, laneName, index, issues) {
   };
 }
 
+// Files run one at a time unless the lane sets fileConcurrency and lists the file in
+// parallelFiles, the files audited to share the runner, in the order they start.
+// serialFiles names why a file must run alone. Any other file also runs alone, so a
+// new or unaudited file fails closed.
+function fileModes(lane, laneName, files, issues) {
+  const path = `lanes.${laneName}`;
+  const paths = new Set(files.map((file) => file.path));
+  const parallel = stringArray(lane.parallelFiles, `${path}.parallelFiles`, issues);
+  const serial = lane.serialFiles ?? {};
+  if (!isObject(serial)) {
+    issues.push(issue("invalid-manifest", `${path}.serialFiles must be an object`));
+  }
+  for (const [file, reason] of isObject(serial) ? Object.entries(serial) : []) {
+    if (typeof reason !== "string" || reason.trim() === "") {
+      issues.push(issue("invalid-manifest", `${path}.serialFiles.${file} must name a reason`));
+    }
+    if (!paths.has(file)) {
+      issues.push(issue("invalid-manifest", `${path}.serialFiles.${file} is not a lane file`));
+    }
+  }
+  const seen = new Set();
+  for (const file of parallel) {
+    if (!paths.has(file)) {
+      issues.push(issue("invalid-manifest", `${path}.parallelFiles ${file} is not a lane file`));
+    }
+    if (seen.has(file)) {
+      issues.push(issue("invalid-manifest", `${path}.parallelFiles lists ${file} twice`));
+      continue;
+    }
+    if (isObject(serial) && Object.hasOwn(serial, file)) {
+      issues.push(issue("invalid-manifest", `${path}.parallelFiles ${file} is also serial`));
+    }
+    seen.add(file);
+  }
+  return parallel.filter(
+    (file) => paths.has(file) && !(isObject(serial) && Object.hasOwn(serial, file)),
+  );
+}
+
+function fileConcurrencyLimit(value, path, issues) {
+  if (value === undefined) {
+    return 1;
+  }
+  if (!Number.isInteger(value) || value < 1 || value > 32) {
+    issues.push(issue("invalid-manifest", `${path} must be an integer from 1 to 32`));
+    return 1;
+  }
+  return value;
+}
+
 function normalizeManifest(raw) {
   const issues = [];
   const lanes = new Map();
@@ -145,6 +196,12 @@ function normalizeManifest(raw) {
       name: laneName,
       env: envObject(lane.env, `lanes.${laneName}.env`, issues),
       requiredEnv: stringArray(lane.requiredEnv, `lanes.${laneName}.requiredEnv`, issues),
+      fileConcurrency: fileConcurrencyLimit(
+        lane.fileConcurrency,
+        `lanes.${laneName}.fileConcurrency`,
+        issues,
+      ),
+      parallelFiles: [...new Set(fileModes(lane, laneName, files, issues))],
       files,
     });
   }
@@ -365,6 +422,25 @@ function testTimeoutMs() {
   return 60 * 60 * 1000;
 }
 
+// The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
+// this runner may use. CI_RUNNER_FILE_CONCURRENCY replaces that limit for lanes that
+// allow concurrency (1 runs every file alone, as lanes without fileConcurrency do).
+function fileConcurrency(lane, issues) {
+  if (lane.fileConcurrency === 1) {
+    return 1;
+  }
+  const override = process.env.CI_RUNNER_FILE_CONCURRENCY;
+  if (override === undefined || override === "") {
+    return Math.max(1, Math.min(lane.fileConcurrency, availableParallelism()));
+  }
+  const value = Number(override);
+  if (!Number.isInteger(value) || value < 1 || value > 32) {
+    issues.push(issue("invalid-env", "CI_RUNNER_FILE_CONCURRENCY must be an integer from 1 to 32"));
+    return 1;
+  }
+  return value;
+}
+
 async function loadPrepare(root) {
   const preparePath = resolve(root, "scripts/ci/prepare.mjs");
   if (!(await exists(preparePath))) {
@@ -427,6 +503,68 @@ function validatePreparedEnv(value) {
     }
   }
   return value;
+}
+
+const maxReporterBytes = 50 * 1024 * 1024;
+
+// spawnSync's contract, without blocking the runner while other files run: stdout
+// is kept up to maxReporterBytes (ENOBUFS past it), stdin is closed at once, and the
+// timeout sends SIGTERM and reports ETIMEDOUT. Like spawnSync, stopping also closes
+// the pipes, so a grandchild holding them cannot keep the file running. Child
+// stderr is not retained.
+function runNode(args, { cwd, env, timeout }) {
+  return new Promise((resolvePromise) => {
+    const chunks = [];
+    let bytes = 0;
+    let error;
+    let settled = false;
+    const child = spawn(process.execPath, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const stop = (code) => {
+      if (error === undefined) {
+        error = Object.assign(new Error(`child ${code}`), { code });
+        child.kill("SIGTERM");
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+    };
+    const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      stream.on("error", () => {});
+    }
+    child.stdin.end();
+    child.stderr.resume();
+    child.stdout.on("data", (chunk) => {
+      if (error?.code === "ENOBUFS") {
+        return;
+      }
+      if (bytes + chunk.length > maxReporterBytes) {
+        chunks.push(chunk.subarray(0, maxReporterBytes - bytes));
+        bytes = maxReporterBytes;
+        stop("ENOBUFS");
+        return;
+      }
+      chunks.push(chunk);
+      bytes += chunk.length;
+    });
+    const finish = (status, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise({
+        status,
+        signal,
+        stdout: Buffer.concat(chunks).toString("utf8"),
+        ...(error ? { error } : {}),
+      });
+    };
+    child.on("error", (spawnError) => {
+      error ??= spawnError;
+      finish(null, null);
+    });
+    child.on("close", finish);
+  });
 }
 
 function parseReporter(stdout) {
@@ -504,7 +642,7 @@ function imageDigests(env) {
   );
 }
 
-async function runFile(root, lane, file, statePath, prepareFile) {
+async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
   const absolutePath = resolveRepoPath(root, file.path, issues, relativePath);
@@ -521,11 +659,13 @@ async function runFile(root, lane, file, statePath, prepareFile) {
   if (prepareFile) {
     try {
       const result =
-        (await prepareFile({
-          lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
-          file,
-          statePath,
-        })) ?? {};
+        (await setup(() =>
+          prepareFile({
+            lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
+            file,
+            statePath,
+          }),
+        )) ?? {};
       prepared.env = validatePreparedEnv(result.env);
       prepared.cleanup = result.cleanup ?? null;
       if (prepared.cleanup !== null && typeof prepared.cleanup !== "function") {
@@ -565,20 +705,23 @@ async function runFile(root, lane, file, statePath, prepareFile) {
         statePath,
         lane: lane.name,
         file: relativePath,
-      }).catch(() => undefined);
-      nodeResult = spawnSync(
-        process.execPath,
-        ["--test", "--test-reporter", reporterPath, absolutePath],
-        {
-          cwd: root,
-          encoding: "utf8",
-          env,
-          maxBuffer: 50 * 1024 * 1024,
-          timeout: testTimeoutMs(),
-        },
-      );
+      }).catch(() => {
+        console.error(
+          `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
+        );
+        return undefined;
+      });
+      nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
+        cwd: root,
+        env,
+        timeout: testTimeoutMs(),
+      });
 
       const events = parseReporter(nodeResult.stdout);
+      // The job env holds OCC_TEST_* values the child never got; the child env
+      // holds prepared values (database URLs) the job never had. Redact both.
+      const secrets = failureSecrets([process.env, env]);
+      const failureError = (error) => redactFailure(error, secrets, root);
       const rootFailure = events.find(
         (event) =>
           event.type === "test:fail" &&
@@ -587,7 +730,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
       );
       if (rootFailure) {
         fileFailure = {
-          error: rootFailure.data.error,
+          error: failureError(rootFailure.data.error),
           ...(events.some(
             (event) =>
               event.type === "test:diagnostic" && event.data?.kind === "post-test-async-activity",
@@ -609,7 +752,7 @@ async function runFile(root, lane, file, statePath, prepareFile) {
           column: event.data.column,
           skip: event.data.skip,
           todo: event.data.todo,
-          error: event.data.error,
+          error: failureError(event.data.error),
           durationMs: event.data.durationMs,
         }));
     }
@@ -622,10 +765,11 @@ async function runFile(root, lane, file, statePath, prepareFile) {
     );
   } finally {
     // Capture before cleanup so passing k3d runs keep their Agent Pod timeline.
-    await agentActivity?.finish();
+    // The capture updates the lane's diagnostics file; keep it out of other setup.
+    await setup(async () => agentActivity?.finish());
     if (prepared.cleanup) {
       try {
-        await prepared.cleanup();
+        await setup(prepared.cleanup);
         cleanupResult = { status: "passed" };
       } catch (error) {
         cleanupResult = { status: "failed", error: sanitizeError(error) };
@@ -725,12 +869,55 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
 
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
+  const laneStarted = performance.now();
+  const concurrency = lane ? fileConcurrency(lane, issues) : 1;
+  if (lane && lane.fileConcurrency > 1) {
+    process.stderr.write(
+      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length})\n`,
+    );
+  }
   if (lane && issues.length === 0) {
     await mkdir(dirname(statePath), { recursive: true });
-    for (const file of lane.files) {
+    // prepareFile and cleanup update the lane state file; never interleave them.
+    let setupQueue = Promise.resolve();
+    const setup = (step) => {
+      const next = setupQueue.then(step);
+      setupQueue = next.catch(() => {});
+      return next;
+    };
+    const results = new Array(lane.files.length);
+    const runAt = async (index, mode) => {
       const fileStarted = performance.now();
-      const result = await runFile(root, lane, file, statePath, prepareFile);
-      result.wallDurationMs = Math.round(performance.now() - fileStarted);
+      const result = await runFile(root, lane, lane.files[index], statePath, prepareFile, setup);
+      result.mode = mode;
+      // Round both ends, so start + duration is the rounded end and never passes a
+      // later file's start.
+      result.startOffsetMs = Math.round(fileStarted - laneStarted);
+      result.wallDurationMs = Math.round(performance.now() - laneStarted) - result.startOffsetMs;
+      results[index] = result;
+      process.stderr.write(
+        `run-tests: ${result.status} ${result.path} ${(result.wallDurationMs / 1000).toFixed(1)}s${mode === "parallel" ? " (parallel)" : ""}\n`,
+      );
+    };
+    const indexes = lane.files.map((_, index) => index);
+    const parallel =
+      concurrency > 1
+        ? lane.parallelFiles.map((path) => lane.files.findIndex((file) => file.path === path))
+        : [];
+    // Serial files run first and alone, in manifest order; then audited files share
+    // `concurrency` slots, started in parallelFiles order.
+    for (const index of indexes.filter((entry) => !parallel.includes(entry))) {
+      await runAt(index, "serial");
+    }
+    const queue = [...parallel];
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+        while (queue.length > 0) {
+          await runAt(queue.shift(), "parallel");
+        }
+      }),
+    );
+    for (const result of results) {
       files.push(result);
       if (preservedNodeExitCode === 0 && result.nodeExitCode && result.nodeExitCode !== 0) {
         preservedNodeExitCode = result.nodeExitCode;
@@ -748,6 +935,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
     lane: laneName,
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
+    fileConcurrency: concurrency,
     startedAt,
     endedAt: new Date().toISOString(),
     counts: files.reduce(
@@ -765,7 +953,45 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   };
 
   await writeSummary(resultsPath, summary);
+  logFailures(files);
+  logIssues(allIssues);
   return summary.exitCode;
+}
+
+// One job-log line per entry: a newline in a message or name cannot start a new
+// line (or a workflow command) of its own.
+function oneLine(text) {
+  return (text ?? "").trim().replace(/\s*\n\s*/gu, " | ");
+}
+
+// The job log keeps every attempt, so name each failure there as well. The
+// reporter has already bounded and redacted the message.
+function logFailures(files) {
+  for (const file of files) {
+    const failures = file.tests.filter((testCase) => testCase.status === "failed");
+    if (file.fileFailure) {
+      failures.push({ name: "(file)", line: undefined, error: file.fileFailure.error });
+    }
+    for (const { name, line, error } of failures) {
+      const at = error?.location?.line ?? line;
+      const message = oneLine(error?.message);
+      process.stderr.write(
+        `run-tests: failed ${file.path}${at ? `:${at}` : ""} ${JSON.stringify(name)}${message ? `: ${message}` : ""}${error?.frame ? ` (${oneLine(error.frame)})` : ""}\n`,
+      );
+    }
+  }
+}
+
+// A lane can fail on runner issues alone, with every test passing: an expected
+// test that did not run, a file that hit the runner timeout, an unexpected skip.
+// Name those in the job log too. Issue messages are built by the runner from
+// manifest entries, paths and test names, never from test output.
+function logIssues(issues) {
+  for (const { code, message, file } of issues) {
+    process.stderr.write(
+      `run-tests: issue ${code}${file ? ` ${file}` : ""}: ${oneLine(message)}\n`,
+    );
+  }
 }
 
 function laneNamesForTarget(manifest, target) {
@@ -841,10 +1067,32 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
   }
 }
 
-async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath) {
+// A verified test-only selection aggregates only its lanes, all from the group.
+function selectedLaneNames(groupLanes, selection, issues) {
+  let lanes;
+  try {
+    lanes = JSON.parse(selection);
+  } catch {
+    lanes = null;
+  }
+  if (
+    !Array.isArray(lanes) ||
+    lanes.length === 0 ||
+    new Set(lanes).size !== lanes.length ||
+    !lanes.every((lane) => typeof lane === "string" && groupLanes.includes(lane))
+  ) {
+    issues.push(
+      issue("invalid-lane-selection", "selected lanes must be distinct lanes of the target"),
+    );
+    return null;
+  }
+  return groupLanes.filter((lane) => lanes.includes(lane));
+}
+
+async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, selection) {
   const source = sourceEvidence(root);
   const issues = [...manifest.issues, ...source.issues];
-  const laneNames = laneNamesForTarget(manifest, groupName);
+  let laneNames = laneNamesForTarget(manifest, groupName);
   const lanes = [];
   const currentSha = source.sha;
 
@@ -854,6 +1102,8 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath) 
         target: groupName,
       }),
     );
+  } else if (selection !== undefined) {
+    laneNames = selectedLaneNames(laneNames, selection, issues);
   }
 
   let needs = null;
@@ -999,6 +1249,7 @@ async function main() {
     groupName,
     resolve(root, options["results-dir"]),
     options.needs ? resolve(root, options.needs) : null,
+    options.lanes,
   );
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;

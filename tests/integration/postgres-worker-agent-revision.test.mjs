@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request as httpsRequest } from "node:https";
+import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import test from "node:test";
+import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { prepareFile } from "../../scripts/ci/prepare.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
+import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
+  ActivationFailedError,
+  ActivationPendingError,
+  DependencyUnavailableError,
   PostgresMetricsSnapshot,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
@@ -23,18 +28,41 @@ import {
   backendDefinition,
   requiresPostgres,
   seedBackendBinding,
-  waitFor,
 } from "../helpers/postgres-backend-state.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
+
+// Each test owns a database (Work claims span one), copied from one migrated template
+// per file rather than migrated again. Nothing connects to the template itself. A failed
+// template preparation is not cached: the next test retries it, and cleanup ignores it.
+let template;
+after(async () => {
+  await (await template?.catch(() => undefined))?.cleanup();
+});
+
+// The worker emits worker.completed after its queue transaction commits, so another
+// connection can see the committed Work state first. Wait for the event instead of
+// reading the event list once.
+function completion(events, description, predicate) {
+  return waitFor(description, async () => events.find(predicate));
+}
 
 async function prepareDatabase(context) {
   assert.ok(
     process.env.OPENCLAW_ENTERPRISE_CI_STATE,
     "Worker tests require an owned PostgreSQL fixture; see docs/testing/postgresql.md.",
   );
-  const prepared = await prepareFile({
+  const fixture = {
     lane: "postgres-application",
     file: fileURLToPath(import.meta.url),
     statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
+  };
+  template ??= prepareFile(fixture).catch((error) => {
+    template = undefined;
+    throw error;
+  });
+  const prepared = await prepareFile({
+    ...fixture,
+    template: (await template).env.OCC_TEST_DATABASE_URL,
   });
   const pools = new Set();
   const workers = new Set();
@@ -65,6 +93,7 @@ async function setup(
     leaseDurationMs = 30_000,
     maxAttempts = 5,
     onHealthy,
+    onProgress,
     metrics,
     repoDriver,
     secretAuthMethod = "api_key",
@@ -395,6 +424,7 @@ async function setup(
       leaseDurationMs,
       maxAttempts,
       onHealthy,
+      onProgress,
       ...(drivers === undefined ? { computeDriver } : { drivers }),
       ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
       emit,
@@ -978,6 +1008,129 @@ test(
   },
 );
 
+/**
+ * Relay PostgreSQL connections through a local proxy that can go silent: it stops relaying on
+ * every open connection without closing it, as a client sees after a failover or partition
+ * that sent no RST. New connections still reach the server.
+ */
+async function startSilenceableProxy(context, databaseUrl) {
+  const { createServer, connect } = await import("node:net");
+  const target = new URL(databaseUrl);
+  const pairs = new Set();
+  const server = createServer((client) => {
+    const upstream = connect(Number(target.port || 5432), target.hostname);
+    const pair = { client, upstream };
+    pairs.add(pair);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const close = () => {
+      pairs.delete(pair);
+      client.destroy();
+      upstream.destroy();
+    };
+    for (const socket of [client, upstream]) {
+      socket.on("error", close);
+      socket.on("close", close);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const close = () => {
+    for (const { client, upstream } of pairs) {
+      client.destroy();
+      upstream.destroy();
+    }
+    return new Promise((resolve) => server.close(resolve));
+  };
+  context.after(close);
+  const url = new URL(databaseUrl);
+  url.hostname = "127.0.0.1";
+  url.port = String(server.address().port);
+  return {
+    url: url.toString(),
+    silence() {
+      for (const { client, upstream } of pairs) {
+        client.unpipe(upstream);
+        upstream.unpipe(client);
+        client.pause();
+        upstream.pause();
+      }
+    },
+    close,
+  };
+}
+
+test(
+  "a worker abandons a query on a silent database connection and resumes work",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const [{ Pool }, { workerDatabasePoolOptions }] = await Promise.all([
+      import("pg"),
+      import("../../apps/controller/src/worker.ts"),
+    ]);
+    const fixture = await setup(context);
+    const proxy = await startSilenceableProxy(context, fixture.database.url);
+    const pool = new Pool({
+      connectionString: proxy.url,
+      ...workerDatabasePoolOptions(3_000),
+      max: 2,
+    });
+    fixture.database.pools.add(pool);
+    const first = await fixture.agent("before-silence");
+    const before = await fixture.revision(first, 1);
+    await fixture.start(fixture.compute, undefined, undefined, undefined, pool);
+    await fixture.work(before, "succeeded");
+
+    // Every pooled connection now swallows queries without an answer or an error.
+    proxy.silence();
+    const second = await fixture.agent("after-silence");
+    const after = await fixture.revision(second, 1);
+    await fixture.work(after, "succeeded", 30_000);
+    await fixture.stop();
+    await proxy.close();
+  },
+);
+
+test(
+  "worker progress continues through a database outage and stops when the loop is stuck",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const { Pool } = await import("pg");
+    let progressed = 0;
+    const fixture = await setup(context, {
+      onProgress: async () => {
+        progressed += 1;
+      },
+    });
+    const proxy = await startSilenceableProxy(context, fixture.database.url);
+    // No query timeout: this isolates the liveness signal from the timeout that would unstick it.
+    const pool = new Pool({ connectionString: proxy.url, max: 1 });
+    fixture.database.pools.add(pool);
+    pool.on("error", () => {});
+    await fixture.start(fixture.compute, undefined, undefined, undefined, pool);
+    await waitFor("idle worker progress", async () => (progressed >= 2 ? true : undefined));
+
+    proxy.silence();
+    // A negative check needs a fixed window. Progress is reported at most once per second
+    // here (pollIntervalMs 15), so 1.5 s lets an in-flight pass settle and 3 s spans three
+    // reports a moving loop would have made.
+    await delay(1_500);
+    const stuck = progressed;
+    await delay(3_000);
+    assert.equal(
+      progressed,
+      stuck,
+      "a worker stuck on a silent query must stop reporting progress",
+    );
+
+    // Refused connections fail each pass fast; the loop still moves, so liveness holds.
+    await proxy.close();
+    await waitFor("progress through a database outage", async () =>
+      progressed >= stuck + 2 ? true : undefined,
+    );
+    await fixture.stop();
+  },
+);
+
 test(
   "worker readiness and fresh Agent admission require the broker capability",
   { ...requiresPostgres, timeout: 60_000 },
@@ -995,7 +1148,6 @@ test(
       { startRepositoryReceiptServer },
       { startControlResponseRelay },
       { createResourceScope },
-      { createServer },
       { dirname },
     ] = await Promise.all([
       import("../../apps/controller/src/drivers/repo/github/driver.ts"),
@@ -1004,21 +1156,13 @@ test(
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
       import("../fixtures/repository-credentials/control-relay.mjs"),
       import("../fixtures/repository-credentials/resources.mjs"),
-      import("node:net"),
       import("node:path"),
     ]);
-    const reservation = createServer();
-    await new Promise((resolve, reject) => {
-      reservation.once("error", reject);
-      reservation.listen(0, "127.0.0.1", resolve);
-    });
-    const port = reservation.address().port;
-    await new Promise((resolve) => reservation.close(resolve));
     const credentials = await startRegistryCredentialServiceFixture(context, {
       namespaceId: fixture.namespace.id,
       autoOpen: false,
       clock: { ...createControlledClock(), wallNow: Date.now },
-      gateway: { listen: `127.0.0.1:${port}` },
+      gateway: { listen: "127.0.0.1:0" },
     });
     const scope = createResourceScope();
     context.after(() => scope.close());
@@ -1132,20 +1276,11 @@ test(
       { GitHubRepoDriver },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
-      { createServer },
     ] = await Promise.all([
       import("../../apps/controller/src/drivers/repo/github/driver.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
-      import("node:net"),
     ]);
-    const reservation = createServer();
-    await new Promise((resolve, reject) => {
-      reservation.once("error", reject);
-      reservation.listen(0, "127.0.0.1", resolve);
-    });
-    const port = reservation.address().port;
-    await new Promise((resolve) => reservation.close(resolve));
     const clock = createControlledClock();
     const startedWall = clock.wallNow();
     const credentials = await startRegistryCredentialServiceFixture(context, {
@@ -1154,7 +1289,7 @@ test(
       // Worker admission IDs use real wall time. Preserve that progress while
       // allowing this fixture's provider-retirement expiry to advance explicitly.
       clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
-      gateway: { listen: `127.0.0.1:${port}` },
+      gateway: { listen: "127.0.0.1:0" },
     });
     const driver = new GitHubRepoDriver(
       {
@@ -1798,6 +1933,174 @@ test(
     assert.deepEqual(stopped, []);
   },
 );
+
+for (const [name, crashes, finishFails] of [
+  [
+    "a deployment whose lease expires on its last attempt after publishing its revision gets one more attempt",
+    1,
+    false,
+  ],
+  [
+    "a published deployment that loses its lease again fails without retiring the active runtime",
+    2,
+    false,
+  ],
+  [
+    "a published deployment whose extra attempt fails ends without retiring the active runtime",
+    1,
+    true,
+  ],
+]) {
+  test(name, requiresPostgres, async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
+    const owner = await fixture.agent(`publish-crash-${crashes}-${finishFails}`);
+    const first = await fixture.revision(owner, 1, undefined, repository.snapshot);
+    const stopped = [];
+    const retired = [];
+    let iamUnavailable = false;
+    const compute = {
+      ...fixture.compute,
+      async stopRevision(revision) {
+        stopped.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+      async retireRevision(revision) {
+        retired.push(revision.id);
+        return fixture.compute.retireRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    await fixture.work(first, "succeeded");
+    await fixture.stop();
+
+    // A worker claims the replacement on its last attempt, publishes the active pointer and
+    // crashes before activation, predecessor retirement and completion.
+    const second = await fixture.revision(owner, 2, undefined, repository.snapshot);
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, {
+      leaseDurationMs: 30_000,
+      maxAttempts: 1,
+      random: () => 0,
+    });
+    const crash = async () => {
+      const claim = await queue.claim();
+      assert.equal(claim?.idempotencyKey, second.idempotencyKey);
+      await fixture.observerPool.query(
+        `UPDATE occ.controller_work
+           SET lease_expires_at = clock_timestamp() - interval '1 second'
+           WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
+        [claim.idempotencyKey, claim.claimToken],
+      );
+      assert.equal((await queue.recoverStale()).recovered, 1);
+    };
+    await fixture.state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(fixture.namespace.id, owner.id, first.id, second.id),
+    );
+    for (let crash_ = 0; crash_ < crashes; crash_ += 1) {
+      await crash();
+    }
+    const row = async () =>
+      (
+        await fixture.observerPool.query(
+          "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+          [second.idempotencyKey],
+        )
+      ).rows[0];
+    const retirement = await fixture.observerPool.query(
+      "SELECT 1 FROM occ.controller_work WHERE idempotency_key LIKE $1",
+      [`agent_revision:${second.id}:repository_cleanup:retire:%`],
+    );
+    assert.equal(retirement.rowCount, 0, "recovery must not retire the active runtime");
+    const evidence = await fixture.observerPool.query(
+      `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
+         WHERE kind = 'mutation' AND action = 'reconcile' AND details->>'workId' = $1
+         ORDER BY occurred_at, id`,
+      [second.idempotencyKey],
+    );
+    if (crashes === 2) {
+      // The extra attempt is granted once; a second loss ends the deployment.
+      assert.deepEqual(await row(), {
+        state: "failed_permanent",
+        reason_code: "LEASE_EXPIRED",
+        attempt_count: 1,
+      });
+      assert.deepEqual(evidence.rows.map(({ reason_code }) => reason_code).slice(-2), [
+        "ACTIVE_REVISION_RECOVERY",
+        "LEASE_EXPIRED",
+      ]);
+      assert.deepEqual(stopped, []);
+      assert.deepEqual(retired, []);
+      return;
+    }
+    assert.deepEqual(await row(), { state: "queued", reason_code: null, attempt_count: 0 });
+    assert.equal(evidence.rows.at(-1).reason_code, "ACTIVE_REVISION_RECOVERY");
+    const progress = await fixture.state.read((view) =>
+      view.operations.findWorkAttempt(second.idempotencyKey),
+    );
+    assert.equal(progress?.code, "ACTIVE_REVISION_RECOVERY");
+
+    if (finishFails) {
+      // A retry outcome on the extra (last) attempt fails the deployment but keeps the
+      // runtime it already activated.
+      iamUnavailable = true;
+      await fixture.start(
+        compute,
+        () => {},
+        undefined,
+        undefined,
+        undefined,
+        (drivers) => {
+          const createIAMDriver = drivers.createIAMDriver;
+          return {
+            ...drivers,
+            createIAMDriver(state) {
+              const iam = createIAMDriver(state);
+              return {
+                id: iam.id,
+                implementation: iam.implementation,
+                capability: iam.capability,
+                lookupIdentity: iam.lookupIdentity.bind(iam),
+                async authorize(request) {
+                  if (iamUnavailable) {
+                    throw new Error("IAM is temporarily unavailable");
+                  }
+                  return iam.authorize(request);
+                },
+              };
+            },
+          };
+        },
+      );
+      await fixture.work(second, "failed_permanent");
+      await fixture.stop();
+      assert.deepEqual(await row(), {
+        state: "failed_permanent",
+        reason_code: "DEPENDENCY_UNAVAILABLE",
+        attempt_count: 1,
+      });
+      const retireAfterFailure = await fixture.observerPool.query(
+        "SELECT 1 FROM occ.controller_work WHERE idempotency_key LIKE $1",
+        [`agent_revision:${second.id}:repository_cleanup:retire:%`],
+      );
+      assert.equal(retireAfterFailure.rowCount, 0, "a failed finish must not retire the runtime");
+      assert.deepEqual(stopped, []);
+      assert.deepEqual(retired, []);
+      return;
+    }
+
+    // A worker finishes the published deployment through the already-active path.
+    await fixture.start(compute);
+    await fixture.work(second, "succeeded");
+    await fixture.stop();
+    assert.equal((await row()).reason_code, "REVISION_ALREADY_ACTIVE");
+    assert.deepEqual(retired, [first.id], "the predecessor must be retired");
+    assert.deepEqual(stopped, [], "the active revision must keep running");
+    const agent = await fixture.state.read((view) =>
+      view.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(agent.activeRevisionId, second.id);
+  });
+}
 
 for (const loss of ["missing", "closed-repair"]) {
   test(
@@ -2631,13 +2934,13 @@ test(
         preparingReplacement ? true : undefined,
       );
       assert.equal((await fixture.work(stop, "succeeded")).attempt_count, 1);
-      assert.ok(
-        events.some(
-          ({ event, workId, code }) =>
-            event === "worker.completed" &&
-            workId === stop.idempotencyKey &&
-            code === "STOP_SUPERSEDED",
-        ),
+      await completion(
+        events,
+        "the stop's STOP_SUPERSEDED completion",
+        ({ event, workId, code }) =>
+          event === "worker.completed" &&
+          workId === stop.idempotencyKey &&
+          code === "STOP_SUPERSEDED",
       );
       assert.deepEqual(stopped, []);
       assert.equal(
@@ -3194,7 +3497,7 @@ test(
 );
 
 test(
-  "an exhausted credential withdrawal stays pending with its reason until a replay retries it",
+  "an exhausted credential withdrawal stays pending, reports no attempt in progress, and a replay retries it",
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context, { maxAttempts: 2 });
@@ -3238,14 +3541,21 @@ test(
           [active.id],
         )
       ).rows;
-    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const requested = await fixture.controller.withdrawAgentCredentialSource(
+      fixture.actor.id,
+      request,
+    );
+    assert.equal(requested.withdrawalInProgress, true);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    assert.equal((await read()).withdrawalInProgress, true);
     const [first] = await withdrawalWork();
     await fixture.work(
       { id: active.id, idempotencyKey: first.idempotency_key },
       "failed_permanent",
     );
 
-    // Exhausting attempts leaves the withdrawal pending, and the row says why.
+    // Exhausting attempts leaves the withdrawal pending, and the row says why. Nothing retries
+    // it (this revision has no maintenance), so the read must not suggest an attempt is coming.
     const exhausted = await fixture.controller.readAgentCredentialWithdrawal(
       fixture.actor.id,
       request,
@@ -3253,6 +3563,7 @@ test(
     assert.equal(exhausted.state, "pending");
     assert.equal(exhausted.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
     assert.ok(exhausted.lastAttemptAt);
+    assert.equal(exhausted.withdrawalInProgress, false);
     const audit = await fixture.observerPool.query(
       `SELECT outcome, details->>'reasonCode' AS reason_code FROM occ.audit_events
        WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.credentials_withdraw'`,
@@ -3267,6 +3578,7 @@ test(
     await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
     const work = await withdrawalWork();
     assert.equal(work.length, 2);
+    assert.equal((await read()).withdrawalInProgress, true);
     await fixture.work({ id: active.id, idempotencyKey: work[1].idempotency_key }, "succeeded");
     const revoked = await fixture.controller.readAgentCredentialWithdrawal(
       fixture.actor.id,
@@ -3274,6 +3586,7 @@ test(
     );
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
+    assert.equal(revoked.withdrawalInProgress, false);
   },
 );
 
@@ -3659,8 +3972,16 @@ test(
     const completedStop = await fixture.work(firstStop, "succeeded");
     assert.equal(completedStop.attempt_count, 2);
     // Stop work must retain its own bounded kind and committed retry/success
-    // outcomes after integrating stop support with metrics instrumentation.
-    const exposition = await metrics.exposition();
+    // outcomes after integrating stop support with metrics instrumentation. Both
+    // are recorded after the stop commits, the attempt outcome last.
+    const exposition = await waitFor("the stop's successful attempt metric", async () => {
+      const text = await metrics.exposition();
+      return /occ_reconciliation_attempts_total\{[^\n]*work_kind="agent_stop"[^\n]*outcome="success"/.test(
+        text,
+      )
+        ? text
+        : undefined;
+    });
     assert.match(
       exposition,
       /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 1(?:\n|$)/,
@@ -3672,7 +3993,7 @@ test(
       assert.match(
         exposition,
         new RegExp(
-          `occ_reconciliation_attempts_total\\{[^\\n]*work_kind="agent_stop"[^\\n]*outcome="${outcome}"[^\\n]*\\} 1`,
+          `occ_reconciliation_attempts_total\\{[^\\n]*work_kind="agent_stop"[^\\n]*outcome="${outcome}"[^\\n]*\\} 1(?:\\n|$)`,
         ),
       );
     }
@@ -3936,6 +4257,95 @@ test(
         reason_code: "AGENT_DELETED",
       },
     ]);
+  },
+);
+
+test(
+  "a repository cleanup stuck on an invalidated attempt logs its cause once and backs off",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary({ count: 2 });
+    // The production default; the fixture's hour-long interval would hide the backoff.
+    repository.driver.maintenanceIntervalMs = 30_000;
+    const fixture = await setup(context, { repoDriver: repository.driver });
+    const owner = await fixture.agent("cleanup-invalidated");
+    const candidate = await fixture.revision(owner, 1, undefined, repository.snapshot);
+    const events = [];
+    await fixture.start(fixture.compute, (event) => events.push(event));
+    await fixture.work(candidate, "succeeded");
+    const [attempt, sibling] = await repositoryAttempts(fixture, candidate);
+    // An invalidated attempt has no outgoing transition, so no pass can settle this cleanup.
+    await fixture.observerPool.query(
+      `UPDATE occ.repository_session_attempts
+       SET phase = 'invalidated', updated_at = clock_timestamp()
+       WHERE admission_id = $1`,
+      [attempt.admissionId],
+    );
+    const cleanupKey = `agent_revision:${candidate.id}:repository_cleanup:${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+    await fixture.observerPool.query(
+      `INSERT INTO occ.controller_work
+         (idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+          namespace_target, agent_target, state, available_at, attempt_count, created_at,
+          updated_at)
+       VALUES ($1, $2, $3, $4, $5, NULL, NULL, 'queued',
+          clock_timestamp(), 0, clock_timestamp() - interval '1 day', clock_timestamp())`,
+      [cleanupKey, fixture.namespace.id, owner.id, candidate.id, fixture.actor.id],
+    );
+    const deferred = async (passes) =>
+      waitFor(`cleanup pass ${passes} to defer`, async () => {
+        const completed = events.filter(
+          (event) => event.event === "worker.completed" && event.workId === cleanupKey,
+        );
+        if (completed.length < passes) {
+          return undefined;
+        }
+        const { rows } = await fixture.observerPool.query(
+          `SELECT state, EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
+           FROM occ.controller_work WHERE idempotency_key = $1`,
+          [cleanupKey],
+        );
+        return rows[0]?.state === "queued" ? rows[0] : undefined;
+      });
+    // A day-old stuck cleanup rechecks every 10 minutes, not every 30 s.
+    const first = await deferred(1);
+    assert.ok(Number(first.delay_ms) >= 590_000, `delay ${first.delay_ms} ms`);
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
+      [cleanupKey],
+    );
+    await deferred(2);
+    // The cause is logged once, not on every recheck.
+    assert.deepEqual(
+      events
+        .filter(
+          (event) =>
+            event.event === "worker.repository-cleanup-warning" && event.workId === cleanupKey,
+        )
+        .map(({ code, cause }) => ({ code, cause })),
+      [{ code: "REPOSITORY_CLEANUP_STALLED", cause: "REPOSITORY_ATTEMPT_INVALIDATED" }],
+    );
+    // A session still closing keeps the configured cadence, even next to an invalidated one.
+    repository.driver.close = async () => {
+      throw new Error("REPOSITORY_BROKER_UNAVAILABLE");
+    };
+    await fixture.observerPool.query(
+      `UPDATE occ.repository_session_attempts
+       SET phase = 'closing', updated_at = clock_timestamp()
+       WHERE admission_id = $1`,
+      [sibling.admissionId],
+    );
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
+      [cleanupKey],
+    );
+    const closing = await deferred(3);
+    assert.ok(Number(closing.delay_ms) < 60_000, `delay ${closing.delay_ms} ms`);
+    // Retain the unsettled obligation while keeping it out of later scheduling.
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = 'infinity' WHERE idempotency_key = $1",
+      [cleanupKey],
+    );
+    await fixture.stop();
   },
 );
 
@@ -4657,6 +5067,68 @@ test(
         { outcome: "success", namespaceDeleted: true, convergencePending: undefined },
       ],
     );
+    // The queue's own reconcile evidence follows the same rule: one row for the
+    // unchanged waiting state, one for completion.
+    const reconcile = await fixture.observerPool.query(
+      `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'reconcile' AND resource_kind = 'namespace'
+       ORDER BY occurred_at, id`,
+      [namespace.id],
+    );
+    assert.deepEqual(
+      reconcile.rows.map(({ outcome, code }) => ({ outcome, code })),
+      [
+        { outcome: "success", code: "NAMESPACE_INCOMPLETE" },
+        { outcome: "success", code: "RECONCILE_SUCCEEDED" },
+      ],
+    );
+  },
+);
+
+test(
+  "Namespace teardown records the same waiting state again after a retry in between",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const namespace = {
+      id: `ns_${randomUUID()}`,
+      name: `delete-retry-audit-${randomUUID()}`,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
+    let deleteAttempts = 0;
+    await fixture.start({
+      ...fixture.compute,
+      async deleteNamespace(target) {
+        deleteAttempts += 1;
+        // waiting, waiting, retryable failure, waiting, waiting, deleted
+        return deleteAttempts === 3
+          ? { namespaceId: target.id, namespaceDeleted: false, failure: "retryable" }
+          : { namespaceId: target.id, namespaceDeleted: deleteAttempts >= 6 };
+      },
+    });
+    await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
+    await fixture.work(
+      { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:deleted` },
+      "succeeded",
+    );
+    assert.equal(deleteAttempts, 6);
+    const { rows } = await fixture.observerPool.query(
+      `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
+       WHERE namespace_id = $1 AND action = 'reconcile' AND resource_kind = 'namespace'
+       ORDER BY occurred_at, id`,
+      [namespace.id],
+    );
+    assert.deepEqual(
+      rows.map(({ outcome, code }) => ({ outcome, code })),
+      [
+        { outcome: "success", code: "NAMESPACE_INCOMPLETE" },
+        { outcome: "failure", code: "NAMESPACE_INCOMPLETE" },
+        { outcome: "success", code: "NAMESPACE_INCOMPLETE" },
+        { outcome: "success", code: "RECONCILE_SUCCEEDED" },
+      ],
+    );
   },
 );
 
@@ -5373,13 +5845,13 @@ test(
     );
     assert.equal(current.activeRevisionId, revision.id);
     assert.equal(current.desiredRuntimeState, "stopped");
-    assert.ok(
-      events.some(
-        ({ event, code, revisionId }) =>
-          event === "worker.completed" &&
-          code === "REVISION_MAINTENANCE_SUPERSEDED" &&
-          revisionId === revision.id,
-      ),
+    await completion(
+      events,
+      "the maintenance's REVISION_MAINTENANCE_SUPERSEDED completion",
+      ({ event, code, revisionId }) =>
+        event === "worker.completed" &&
+        code === "REVISION_MAINTENANCE_SUPERSEDED" &&
+        revisionId === revision.id,
     );
   },
 );
@@ -5445,6 +5917,18 @@ test(
       [fixture.namespace.id, candidate.id],
     );
     assert.deepEqual(activation.rows, []);
+    // The deployment did not activate, and its error says why instead of a generic failure.
+    const status = await fixture.controller.getDeploymentStatus(
+      fixture.actor.id,
+      fixture.namespace.id,
+      owner.id,
+      candidate.id,
+    );
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "REVISION_STOPPED",
+      message: "Deployment ended because the Agent was stopped.",
+    });
   },
 );
 
@@ -6116,6 +6600,20 @@ test(
     );
 
     await Promise.all([fixture.work(newer, "succeeded"), fixture.work(older, "succeeded")]);
+    // The deploy duration is observed just before the newer revision's completion
+    // event; the older retry's supersession completes without a deploy observation.
+    await completion(
+      events,
+      "the newer revision's successful completion",
+      ({ event, workId, outcome }) =>
+        event === "worker.completed" && workId === newer.idempotencyKey && outcome === "success",
+    );
+    await completion(
+      events,
+      "the older revision's REVISION_SUPERSEDED completion",
+      ({ event, code, revisionId }) =>
+        event === "worker.completed" && code === "REVISION_SUPERSEDED" && revisionId === older.id,
+    );
     assert.match(
       await metrics.exposition(),
       /occ_agent_operation_duration_seconds_count\{[^\n]*operation="deploy"[^\n]*\} 1(?:\n|$)/,
@@ -6147,12 +6645,6 @@ test(
         reason_code: "REVISION_SUPERSEDED",
       },
     ]);
-    assert.ok(
-      events.some(
-        ({ event, code, revisionId }) =>
-          event === "worker.completed" && code === "REVISION_SUPERSEDED" && revisionId === older.id,
-      ),
-    );
   },
 );
 
@@ -6495,6 +6987,72 @@ test(
 );
 
 test(
+  "the revision worker emits bounded Driver diagnostics for failed Compute preparation",
+  requiresPostgres,
+  async (context) => {
+    const events = [];
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const owner = await fixture.agent("compute-preparation-diagnostic");
+    const candidate = await fixture.revision(owner, 1);
+    const failure = new Error("opaque provider response that must not be logged");
+
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          if (revision.id === candidate.id) {
+            throw failure;
+          }
+          return fixture.compute.prepareRevision(revision);
+        },
+        describePrepareRevisionFailure(error) {
+          assert.equal(error, failure);
+          return {
+            code: "KUBERNETES_API_REJECTED",
+            stage: "gateway_deployment",
+            errorClass: "KubernetesApiError",
+            message: "The Kubernetes API rejected revision preparation.",
+            status: 422,
+          };
+        },
+      },
+      (event) => events.push(event),
+    );
+
+    await fixture.work(candidate, "failed_permanent");
+    await completion(
+      events,
+      "the failed preparation's completion",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.code === "DEPENDENCY_UNAVAILABLE" &&
+        event.outcome === "retry",
+    );
+    const diagnostic = events.find(
+      (event) =>
+        event.event === "worker.compute-prepare-failed" && event.revisionId === candidate.id,
+    );
+    assert.deepEqual(diagnostic, {
+      event: "worker.compute-prepare-failed",
+      workId: candidate.idempotencyKey,
+      attempt: 1,
+      operation: "agent_revision.reconcile",
+      namespaceId: fixture.namespace.id,
+      agentId: owner.id,
+      revisionId: candidate.id,
+      computeDriverId: fixture.compute.id,
+      code: "KUBERNETES_API_REJECTED",
+      step: "gateway_deployment",
+      errorClass: "KubernetesApiError",
+      message: "The Kubernetes API rejected revision preparation.",
+      status: 422,
+    });
+    assert.equal(JSON.stringify(events).includes(failure.message), false);
+  },
+);
+
+test(
   "an overdue Agent runtime fails closed without activating its incomplete revision",
   requiresPostgres,
   async (context) => {
@@ -6707,6 +7265,16 @@ test(
         "MODEL_PROBE_FAILED",
         "RUNTIME_MODEL_PROBE_FAILED",
         "Deployment runtime startup model check failed.",
+        // The runtime's classified cause is persisted with the failure it explains.
+        { kind: "PROBE_STATUS", detail: "format" },
+      ],
+      [
+        "agent",
+        "model-probe",
+        "MODEL_PROBE_FAILED",
+        "RUNTIME_MODEL_PROBE_FAILED",
+        "Deployment runtime startup model check failed.",
+        { kind: "WRAPPER_ERROR" },
       ],
       [
         "agent",
@@ -6725,7 +7293,7 @@ test(
     ];
     const failures = new Map();
     const candidates = [];
-    for (const [index, [component, check, runtimeCode]] of cases.entries()) {
+    for (const [index, [component, check, runtimeCode, , , cause]] of cases.entries()) {
       const owner = await fixture.agent(`held-runtime-${index}`);
       const candidate = await fixture.revision(owner, 1);
       failures.set(candidate.id, {
@@ -6733,6 +7301,7 @@ test(
         check,
         checkedAt: "2026-10-01T08:00:00.000Z",
         code: runtimeCode,
+        ...(cause === undefined ? {} : { cause }),
       });
       candidates.push({ owner, candidate });
     }
@@ -6755,7 +7324,12 @@ test(
         "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
         [candidate.idempotencyKey],
       );
-      assert.deepEqual(result.rows, [{ reason_code: code, result_data: null }]);
+      // Only a failed model probe keeps its runtime failure evidence.
+      const data =
+        code === "RUNTIME_MODEL_PROBE_FAILED"
+          ? { runtimeFailure: failures.get(candidate.id) }
+          : undefined;
+      assert.deepEqual(result.rows, [{ reason_code: code, result_data: data ?? null }]);
       const status = await fixture.controller.getDeploymentStatus(
         fixture.actor.id,
         fixture.namespace.id,
@@ -6763,7 +7337,32 @@ test(
         candidate.id,
       );
       assert.equal(status.status, "failed");
-      assert.deepEqual(status.error, { code, message });
+      assert.deepEqual(status.error, { code, message, ...(data === undefined ? {} : { data }) });
+    }
+
+    // The database admits only the classified shape: no extra fields, no
+    // unknown kind, no free text in the detail, and no cause on another code.
+    const [{ candidate: probeFailed }] = candidates.slice(1, 2);
+    const evidence = failures.get(probeFailed.id);
+    for (const invalid of [
+      {},
+      { runtimeFailure: { ...evidence, cause: { kind: "PROBE_STATUS", detail: "HTTP 404 body" } } },
+      { runtimeFailure: { ...evidence, cause: { kind: "PROVIDER_TEXT", detail: "format" } } },
+      { runtimeFailure: { ...evidence, cause: { detail: "format" } } },
+      { runtimeFailure: { ...evidence, cause: { kind: "PROBE_STATUS", message: "raw" } } },
+      { runtimeFailure: { ...evidence, error: "raw provider response" } },
+      { runtimeFailure: { ...evidence, code: "AUTHENTICATION_FAILED" } },
+      { runtimeFailure: evidence, timeoutMs: 1 },
+    ]) {
+      await assert.rejects(
+        fixture.observerPool.query(
+          "UPDATE occ.controller_work SET result_data = $2::jsonb WHERE idempotency_key = $1",
+          [probeFailed.idempotencyKey, JSON.stringify(invalid)],
+        ),
+        (error) =>
+          error.code === "23514" && error.constraint === "controller_work_result_data_state",
+        JSON.stringify(invalid),
+      );
     }
   },
 );
@@ -6874,7 +7473,7 @@ test(
         observations += 1;
         throw new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.3-pre.1 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell v0.1.3-pre.2 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         );
       },
     });
@@ -6987,56 +7586,380 @@ test(
 );
 
 test(
-  "a dependency still failing at the convergence deadline fails deployment with its own code",
+  "an activation wait or a lagging Gateway route keeps its own code, not REVISION_FINALIZATION_INCOMPLETE",
   requiresPostgres,
   async (context) => {
     const fixture = await setup(context);
-    const owner = await fixture.agent("kubernetes-api-down");
+    const owner = await fixture.agent("activation-wait-codes");
     const candidate = await fixture.revision(owner, 1);
-    let observations = 0;
+    const events = [];
+    const progress = [];
+    const readProgress = async () =>
+      (
+        await fixture.controller.getDeploymentStatus(
+          fixture.actor.id,
+          fixture.namespace.id,
+          owner.id,
+          candidate.id,
+        )
+      ).progress?.lastAttempt;
+    let activations = 0;
 
+    // D330: dedicated activation runs after the pointer is published. It waits
+    // for the Gateway to apply its workspace node, for the Harness node to
+    // connect, and reaches the Gateway through its route, which can answer 404
+    // while Envoy converges. Each pass must name what it waits on.
     await fixture.start(
       {
         ...fixture.compute,
-        async prepareRevision() {
-          observations += 1;
-          throw new TransientDependencyError(
-            "kubernetes_api",
-            "timeout",
-            "A Kubernetes API request timed out.",
-          );
+        async activateRevision(revision, revisionContext) {
+          activations += 1;
+          if (activations > 1) {
+            progress.push(await readProgress());
+          }
+          if (activations <= 2) {
+            throw new ActivationPendingError(
+              "WORKSPACE_NODE_BINDING_PENDING",
+              "The exact AgentRevision gateway has not applied its workspace node.",
+            );
+          }
+          if (activations === 3) {
+            throw new ActivationPendingError(
+              "WORKSPACE_NODE_PENDING",
+              "The exact AgentRevision Harness node is not ready.",
+            );
+          }
+          if (activations === 4) {
+            throw new TransientDependencyError(
+              "agent_gateway",
+              "unavailable",
+              "The Agent Gateway route answered HTTP 404 to the connection upgrade.",
+            );
+          }
+          if (activations === 5) {
+            throw new RangeError("unexpected activation failure");
+          }
+          return fixture.compute.activateRevision?.(revision, revisionContext);
         },
       },
-      undefined,
-      2_500,
+      (event) => events.push(event),
     );
 
-    const failed = await fixture.work(candidate, "failed_permanent", 30_000);
-    assert.ok(
-      observations > 5,
-      `expected more passes than the attempt budget, saw ${observations}`,
+    await fixture.work(candidate, "succeeded", 30_000);
+    assert.equal(activations, 6);
+    assert.deepEqual(
+      progress.map((attempt) => [attempt?.code, attempt?.message]),
+      [
+        [
+          "WORKSPACE_NODE_BINDING_PENDING",
+          "Workloads are ready; waiting for the Gateway to apply the workspace node.",
+        ],
+        [
+          "WORKSPACE_NODE_BINDING_PENDING",
+          "Workloads are ready; waiting for the Gateway to apply the workspace node.",
+        ],
+        [
+          "WORKSPACE_NODE_PENDING",
+          "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
+        ],
+        [
+          "AGENT_GATEWAY_UNAVAILABLE",
+          "The Agent Gateway was not reachable through its route yet. The controller will retry until the deployment deadline.",
+        ],
+        [
+          "RECONCILIATION_PENDING",
+          "Deployment has not completed. Another reconciliation is pending.",
+        ],
+      ],
     );
-    assert.equal(failed.attempt_count, 1);
-    const result = await fixture.observerPool.query(
-      "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
-      [candidate.idempotencyKey],
-    );
-    assert.deepEqual(result.rows, [
-      { reason_code: "KUBERNETES_API_UNAVAILABLE", result_data: null },
+    const passes = events
+      .filter(
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === candidate.id &&
+          event.outcome === "pending",
+      )
+      .slice(-5)
+      .map(({ code, dependency, cause }) => ({ code, dependency, cause }));
+    assert.deepEqual(passes, [
+      {
+        code: "WORKSPACE_NODE_BINDING_PENDING",
+        dependency: undefined,
+        cause: "ActivationPendingError",
+      },
+      {
+        code: "WORKSPACE_NODE_BINDING_PENDING",
+        dependency: undefined,
+        cause: "ActivationPendingError",
+      },
+      { code: "WORKSPACE_NODE_PENDING", dependency: undefined, cause: "ActivationPendingError" },
+      { code: "AGENT_GATEWAY_UNAVAILABLE", dependency: "agent_gateway", cause: "unavailable" },
+      { code: "REVISION_FINALIZATION_INCOMPLETE", dependency: undefined, cause: "RangeError" },
     ]);
-    const status = await fixture.controller.getDeploymentStatus(
-      fixture.actor.id,
-      fixture.namespace.id,
-      owner.id,
-      candidate.id,
-    );
-    assert.equal(status.status, "failed");
-    assert.deepEqual(status.error, {
-      code: "KUBERNETES_API_UNAVAILABLE",
-      message: "The Kubernetes API was still unavailable at the deployment deadline.",
-    });
+    const succeeded = await fixture.work(candidate, "succeeded");
+    assert.equal(succeeded.attempt_count, 1);
   },
 );
+
+test(
+  "an activation pass that a failed private Secret write ends logs the API status and reason",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const owner = await fixture.agent("activation-private-write-status");
+    const candidate = await fixture.revision(owner, 1);
+    const events = [];
+    let activations = 0;
+    const { ApiException } = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    )("@kubernetes/client-node");
+
+    // The Kubernetes Driver writes a revision's private Secrets on activation too. When the
+    // API server refuses such a write, it raises its own DependencyUnavailableError rather
+    // than the client error, whose message and body echo the Secret, and keeps only the HTTP
+    // status and Status reason as the cause. tests/conformance/kubernetes-compute.test.mjs
+    // pins that Driver shape; this case proves the worker's side: its log must carry that
+    // status and reason, not only the class. A 429 or 5xx answer is transient instead and
+    // keeps the same evidence as its cause. Any other 4xx client error, which the Driver
+    // passes on unchanged, carries the status in its own code.
+    const refused = new DependencyUnavailableError(
+      "Workspace setup private delivery is unavailable.",
+    );
+    refused.cause = Object.assign(new Error("The Kubernetes API answered HTTP 403 (Forbidden)."), {
+      code: 403,
+      reason: "Forbidden",
+    });
+    const unavailable = new TransientDependencyError(
+      "kubernetes_api",
+      "unavailable",
+      "The Kubernetes API answered HTTP 503.",
+      {
+        cause: Object.assign(
+          new Error("The Kubernetes API answered HTTP 503 (ServiceUnavailable)."),
+          { code: 503, reason: "ServiceUnavailable" },
+        ),
+      },
+    );
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async activateRevision(revision, revisionContext) {
+          activations += 1;
+          if (activations === 1) {
+            throw refused;
+          }
+          if (activations === 2) {
+            throw unavailable;
+          }
+          if (activations === 3) {
+            throw new ApiException(409, "conflict", "{}", {});
+          }
+          return fixture.compute.activateRevision?.(revision, revisionContext);
+        },
+      },
+      (event) => events.push(event),
+    );
+
+    await fixture.work(candidate, "succeeded", 30_000);
+    assert.equal(activations, 4);
+    const pending = events.filter(
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.outcome === "pending",
+    );
+    assert.deepEqual(
+      pending.map(({ code, dependency, cause, status, reason }) => ({
+        code,
+        dependency,
+        cause,
+        status,
+        reason,
+      })),
+      [
+        {
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          dependency: undefined,
+          cause: "DependencyUnavailableError",
+          status: 403,
+          reason: "Forbidden",
+        },
+        {
+          code: "KUBERNETES_API_UNAVAILABLE",
+          dependency: "kubernetes_api",
+          cause: "unavailable",
+          status: 503,
+          reason: "ServiceUnavailable",
+        },
+        {
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          dependency: undefined,
+          cause: "ApiException",
+          status: 409,
+          reason: undefined,
+        },
+      ],
+    );
+  },
+);
+
+// D381 follow-up: a dedicated Gateway that refuses its own in-Pod CLI as unauthorized
+// can never apply its workspace node for this revision, so activation must fail the
+// deployment with a named code instead of staying pending until the convergence
+// deadline. Both activation paths are covered: the pass that publishes the active
+// pointer, and a later pass that finds the pointer already published.
+for (const pendingPasses of [0, 1]) {
+  test(
+    `an activation the Gateway refuses as unauthorized fails deployment at once (after ${pendingPasses} pending passes)`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context);
+      const owner = await fixture.agent(`gateway-unauthorized-${pendingPasses}`);
+      const candidate = await fixture.revision(owner, 1);
+      const events = [];
+      let activations = 0;
+
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async activateRevision() {
+            activations += 1;
+            if (activations <= pendingPasses) {
+              throw new ActivationPendingError(
+                "WORKSPACE_NODE_BINDING_PENDING",
+                "The exact AgentRevision gateway has not applied its workspace node.",
+              );
+            }
+            throw new ActivationFailedError(
+              "AGENT_GATEWAY_UNAUTHORIZED",
+              "The exact AgentRevision gateway refused its own CLI as unauthorized.",
+            );
+          },
+        },
+        (event) => events.push(event),
+      );
+
+      const failed = await fixture.work(candidate, "failed_permanent", 30_000);
+      // No retry after the refusal: the first refused pass ends the deployment.
+      assert.equal(activations, pendingPasses + 1);
+      assert.equal(failed.attempt_count, 1);
+      const result = await fixture.observerPool.query(
+        "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
+        [candidate.idempotencyKey],
+      );
+      assert.deepEqual(result.rows, [
+        { reason_code: "AGENT_GATEWAY_UNAUTHORIZED", result_data: null },
+      ]);
+      const status = await fixture.controller.getDeploymentStatus(
+        fixture.actor.id,
+        fixture.namespace.id,
+        owner.id,
+        candidate.id,
+      );
+      assert.equal(status.status, "failed");
+      assert.deepEqual(status.error, {
+        code: "AGENT_GATEWAY_UNAUTHORIZED",
+        message:
+          "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
+      });
+      await completion(
+        events,
+        "the refused activation's terminal completion",
+        (event) =>
+          event.event === "worker.completed" &&
+          event.revisionId === candidate.id &&
+          event.outcome === "permanent",
+      );
+      const last = events
+        .filter((event) => event.event === "worker.completed" && event.revisionId === candidate.id)
+        .at(-1);
+      assert.deepEqual(
+        { outcome: last?.outcome, code: last?.code, cause: last?.cause },
+        {
+          outcome: "permanent",
+          code: "AGENT_GATEWAY_UNAUTHORIZED",
+          cause: "ActivationFailedError",
+        },
+      );
+    },
+  );
+}
+
+// The admission-limit case uses the real OpenShellAdmissionLimitError class, thrown from a
+// stubbed Compute prepareRevision; the gateway wire test proves the client raises it. The
+// limit frees up as completed admissions age out, so it must wait like any other dependency
+// instead of spending the attempt budget.
+for (const { label, failure, code, message } of [
+  {
+    label: "Kubernetes API",
+    failure: () =>
+      new TransientDependencyError(
+        "kubernetes_api",
+        "timeout",
+        "A Kubernetes API request timed out.",
+      ),
+    code: "KUBERNETES_API_UNAVAILABLE",
+    message: "The Kubernetes API was still unavailable at the deployment deadline.",
+  },
+  {
+    label: "OpenShell admission limit",
+    failure: () =>
+      new OpenShellAdmissionLimitError("CreateSandbox", {
+        code: 8,
+        details:
+          "caller has reached the durable mutation admission limit; unresolved requests require reconciliation",
+      }),
+    code: "SANDBOX_ADMISSION_LIMIT_REACHED",
+    message:
+      "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.",
+  },
+]) {
+  test(
+    `a dependency still failing at the convergence deadline fails deployment with its own code (${label})`,
+    requiresPostgres,
+    async (context) => {
+      // The 2.5 s deadline fits only four to six passes on a loaded runner, too close
+      // to the default budget of five; with one attempt, more passes than the budget
+      // means two.
+      const fixture = await setup(context, { maxAttempts: 1 });
+      const owner = await fixture.agent("dependency-down");
+      const candidate = await fixture.revision(owner, 1);
+      let observations = 0;
+
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async prepareRevision() {
+            observations += 1;
+            throw failure();
+          },
+        },
+        undefined,
+        2_500,
+      );
+
+      const failed = await fixture.work(candidate, "failed_permanent", 30_000);
+      assert.ok(
+        observations > 1,
+        `expected more passes than the attempt budget, saw ${observations}`,
+      );
+      assert.equal(failed.attempt_count, 1);
+      const result = await fixture.observerPool.query(
+        "SELECT reason_code, result_data FROM occ.controller_work WHERE idempotency_key = $1",
+        [candidate.idempotencyKey],
+      );
+      assert.deepEqual(result.rows, [{ reason_code: code, result_data: null }]);
+      const status = await fixture.controller.getDeploymentStatus(
+        fixture.actor.id,
+        fixture.namespace.id,
+        owner.id,
+        candidate.id,
+      );
+      assert.equal(status.status, "failed");
+      assert.deepEqual(status.error, { code, message });
+    },
+  );
+}
 
 test(
   "plugin startup warnings complete deployment and remain visible in status",

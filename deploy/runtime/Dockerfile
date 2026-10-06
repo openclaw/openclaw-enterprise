@@ -1,4 +1,4 @@
-ARG OPENCLAW_COMMIT=9d9c8568c51e340540f634f71bd7c7582a70debc
+ARG OPENCLAW_COMMIT=11d3d04a1279781a770f6a6aa09e6322b064b80a
 ARG NODE_BASE_IMAGE=docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
@@ -38,7 +38,7 @@ FROM ${NODE_BASE_IMAGE} AS openclaw-source
 # Keep the source identity separate from its unreleased package version.
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-29T15:00:01Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-05T19:03:10Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 RUN --mount=type=secret,id=build-ca,required=false \
@@ -46,12 +46,12 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
-    echo '175260a3e26e6de4c1225ff27d8c2b17b01b700640db915a8bac9ee3d4cf903f  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
+    echo 'b48a59055b2eeb39db06a7b900ade5208fa8f23c3f4f481fd5b5c455ea9436ab  /tmp/openclaw-source.tar.gz' | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
-RUN echo '705b21a67f344de66a5468a07b35f6fec01635331d99cb85d9254c56bccc0c7d  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
+RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw `connect --ephemeral` accepts an expired
 # replayed setup code for a node whose saved device token can reconnect.
@@ -61,10 +61,28 @@ RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 
+# @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
+# install, with no retry or checksum. Fetch the pinned library with the retrying,
+# checksum-verifying helper; both installs below get it from a loopback server.
+FROM ${NODE_BASE_IMAGE} AS matrix-sdk-crypto
+COPY scripts/ci/download-pinned.sh /tmp/download-pinned.sh
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    case "$(node -p 'process.arch')" in \
+      x64) library=matrix-sdk-crypto.linux-x64-gnu.node; sha256=aeb21029ac6bb29cd06493f67b19a5a75b3d0371a1ab452fe59f78249350f0f7 ;; \
+      arm64) library=matrix-sdk-crypto.linux-arm64-gnu.node; sha256=c43c347f39786ee9f2d11b5ae3088d182c1a81636f2b68dc2297fe6716be2891 ;; \
+      *) echo "Unsupported architecture for matrix-sdk-crypto: $(node -p 'process.arch')" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /out/v0.6.6; \
+    bash /tmp/download-pinned.sh \
+      "https://github.com/matrix-org/matrix-rust-sdk-crypto-nodejs/releases/download/v0.6.6/${library}" \
+      "/out/v0.6.6/${library}" "$sha256"
+
 FROM ${NODE_BASE_IMAGE} AS openclaw-dependency-inputs
 ARG OPENCLAW_COMMIT
 ENV GIT_COMMIT=${OPENCLAW_COMMIT}
-ENV OPENCLAW_BUILD_TIMESTAMP=2026-09-29T15:00:01Z
+ENV OPENCLAW_BUILD_TIMESTAMP=2026-10-05T19:03:10Z
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
@@ -73,9 +91,12 @@ FROM openclaw-dependency-inputs AS openclaw-build
 # Keep package-store downloads out of retained layers; installed files remain.
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
+    node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -92,9 +113,12 @@ RUN OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS=codex,slack \
 FROM openclaw-dependency-inputs AS openclaw-production-deps
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
+    node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --prod --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -148,7 +172,7 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 
 ARG TARGETARCH
-ENV OPENAI_CODEX_VERSION=0.158.0
+ENV OPENAI_CODEX_VERSION=0.160.0
 
 ENV NODE_ENV=production
 # Keep local npm commands from issuing unrelated background update requests.

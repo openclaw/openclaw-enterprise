@@ -114,6 +114,10 @@ export const CreateBoundCredentialPreset = {
   name: "Preset with saved model credential",
 };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
+export const CreateWithoutPreset = {
+  ...story("createWithoutPreset"),
+  name: "Start without Preset",
+};
 export const CreateAnthropic = {
   ...story("createAnthropic"),
   name: "Anthropic with OpenClaw harness",
@@ -151,6 +155,10 @@ export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning ou
 export const CreatePasswordPreset = {
   ...story("createPasswordPreset"),
   name: "Standard Codex password variable",
+};
+export const CreatePasswordPresetMissingModel = {
+  ...story("createPasswordPresetMissingModel"),
+  name: "Standard Codex missing model",
 };
 export const CreatePasswordPresetDraft = {
   ...story("createPasswordPresetDraft"),
@@ -196,3 +204,6 @@ export const CreatePresetNavigation = story("createPresetNavigation");
 export const PresetVariableNavigation = story("presetVariableNavigation");
 
 export const RepositoryNavigationOutage = story("createRepositoryNavigationOutage");
+
+export const DefaultPresetLoading = story("createDefaultPresetLoading");
+export const DefaultPresetDenied = story("createDefaultPresetDenied");

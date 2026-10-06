@@ -44,7 +44,7 @@ test("actual starved-case callback accepts READY; guard-removal control does not
     "utf8",
   );
   const body = source.slice(
-    source.indexOf('"runtime image embedded Gateway reports a CPU-starved model probe at its cap"'),
+    source.indexOf('"runtime image embedded Gateway settles its model probe under CPU contention"'),
   );
   const start = body.indexOf("until: ") + 7;
   const end = body.indexOf("\n      },", start) + 8;
@@ -107,7 +107,7 @@ test(
     await writeFile(
       fixture,
       `import test from 'node:test'; import assert from 'node:assert/strict';
-    test('owned failure',()=>{ const error=new assert.AssertionError({message:'must-not-be-retained'});
+    test('owned failure',()=>{ const error=new assert.AssertionError({message:'probe failed'});
     error.openclawCiDiagnostic={kind:'runtime-model-probe',reason:'outer-timeout',
     readyObserved:true,pluginReadyObserved:true,running:true,probeStage:'cleanup',probe:'READY',modelPhase:'ok',nativeSpawnPhaseObserved:true,failureObserved:false,
     capMs:110000,elapsedMs:120000,cpuWaitMs:null,loadClientsSubmitted:8,loadClientsStarted:7,loadClientsSettled:1,loadClientsRejected:1,
@@ -319,6 +319,27 @@ test("the upfront credential check runs only where OpenClaw would send the same 
     authorization: "Bearer fixture-key",
     "content-type": "application/json",
   });
+  // The request goes to the configured API's own path: OpenAI answers 401 to a key
+  // that lacks the scope of an endpoint OpenClaw would never call.
+  assert.equal(
+    upfrontCheck("openai", { api: "openai-completions" }).calls[0].options.env.U,
+    "https://api.openai.com/v1/chat/completions",
+  );
+  assert.equal(
+    upfrontCheck("openai", {
+      api: "openai-completions",
+      models: [{ id: "gpt-5", api: "openai-completions" }],
+    }).calls[0].options.env.U,
+    "https://api.openai.com/v1/chat/completions",
+  );
+  assert.equal(
+    upfrontCheck("openai", { api: "openai-responses" }).calls[0].options.env.U,
+    "https://api.openai.com/v1/responses",
+  );
+  assert.equal(
+    upfrontCheck("anthropic", undefined, "sk-ant-api03-fixture").calls[0].options.env.U,
+    "https://api.anthropic.com/v1/messages",
+  );
   // Only the provider's 401 (exit 3) is a rejection.
   for (const status of [0, 1, null]) {
     assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false);
@@ -340,6 +361,9 @@ test("the upfront credential check runs only where OpenClaw would send the same 
     ["openai", { authHeader: false }],
     ["openai", { request: { allowPrivateNetwork: true, proxy: { url: "http://proxy" } } }],
     ["openai", { models: [{ id: "gpt-5", headers: { "x-fixture": "1" } }] }],
+    ["openai", { models: [{ id: "gpt-5", api: "openai-completions" }] }],
+    ["openai", { models: [{ id: "gpt-5", baseUrl: "https://gateway.example/v1" }] }],
+    ["openai", { api: "__proto__" }],
     ["anthropic", { baseUrl: "https://api.openai.com/v1" }],
     ["anthropic", undefined, "sk-ant-oat01-fixture"],
     ["codex", undefined],

@@ -1,0 +1,25 @@
+{
+  "gateway": {
+    "publicOrigin": "https://credentials.dev.test",
+    "listen": "0.0.0.0:8443",
+    "tlsCertFile": "/run/repository-credentials/tls.crt",
+    "tlsKeyFile": "/run/repository-credentials/tls.key",
+    "controlSocket": "/run/repository-control/control.sock"
+  },
+  "sessionPolicy": {
+    "maximumDurationSeconds": 14400,
+    "defaultProfile": "git-write",
+    "allowedProfiles": ["git-read", "git-write"]
+  },
+  "limits": { "gitPushInputBytes": 67108864 },
+  "backend": {
+    "kind": "github-token",
+    "providerInstanceId": "github-local-dev",
+    "configVersion": "1",
+    "repositoryId": "123456789",
+    "repository": "OWNER/scratch-repo",
+    "tokenFile": "/run/repository-credentials/token",
+    "developmentOnly": true,
+    "pushRefAllowlist": ["refs/heads/agent/*"]
+  }
+}

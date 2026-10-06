@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: 2026-09-30
-last_updated_session: "authoring-run/00e5c01e-b8c9-46df-a8ac-45aa0e6932da"
+last_updated_session: "authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7"
 ---
 
 # Agent repository credential flow
@@ -131,7 +131,7 @@ preserves them and an empty array clears them.
 `packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
 re-resolves the draft, validates Compute topology and freezes Driver identity,
 grants and an absolute deadline unaffected by renewal or recovery. Duration
-`86400` allows 24 hours. `apps/controller/src/index.ts:clientRevision` returns
+`86400` allows 24 hours. `apps/controller/src/http/agents.ts:clientRevision` returns
 only Driver identity, references, profiles and deadline.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
@@ -170,7 +170,13 @@ finds or fences unfinished admissions and closes recovered sessions.
 Fresh material requires confirmed disposal or a missing opening without a recorded
 session ID; invalidated known sessions block automatic same-revision replacement.
 Closing sessions raise `REPOSITORY_CLEANUP_PENDING` until disposal, subject to Work
-bounds and the revision deadline. Validated `DISPOSED` observations survive service pruning.
+bounds and the revision deadline. While any session is still closing, cleanup
+keeps the configured interval. Otherwise cleanup that another pass cannot
+settle, an `invalidated` attempt or a cleanup error, keeps its obligation and
+its code but rechecks with the work row's age (`age / 40`, from the configured
+interval up to 10 minutes). Either way it logs
+`worker.repository-cleanup-warning` with the `cause` once per worker
+(`apps/controller/src/worker.ts:processRepositoryCleanup`). Validated `DISPOSED` observations survive service pruning.
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`
 reserves before releasing material. The worker's
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
@@ -322,6 +328,8 @@ Inspect worker events for
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
+A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
+`cause` once.
 
 `repository-not-admitted` means an unselected target; `name-one-repository-target`
 or `name-one-repository-ref` requires explicit selection. Inspect metadata
@@ -347,6 +355,9 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-03 16:30: Log a stuck repository cleanup's cause once and slow its rechecks with age. (fix-repo-cleanup-backoff)
+- 2026-10-01 17:20: Point the safe revision response projection at its Agent HTTP owner. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
 
 - 2026-09-30 05:21: Deliver broker CA settings to both repository consumers. (01a0ed9e-6c22-7671-9ee1-a58e1df39acd - ab0a1838)
 

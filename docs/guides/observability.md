@@ -201,7 +201,9 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system apply -f -
 ```
 
-Review the `deploy/logging/` diff between the two revisions first.
+Review the `deploy/logging/` diff between the two revisions first. The restart
+re-sends every collected Pod log still on each node, so expect duplicate or
+refused records in the backend (see [production readiness](#production-readiness)).
 `scripts/upgrade-production-images` compares both files with its checkout and
 stops before any change when they differ. Pass `--collector-config-reviewed`
 only to keep a reviewed custom configuration.
@@ -271,21 +273,31 @@ to assign alert recipients and response procedures alongside these collection ch
 - Keep runtime native OTLP export disabled and preserve Collector filtering.
   Local container logs and remotely exported records have different privacy
   boundaries; restrict access to both.
-- Keep exporter traffic within the approved `/32` and port, with DNS and
-  Kubernetes API access configured by the chart. Use an approved fixed proxy
-  when your backend cannot be represented by that egress policy. NetworkPolicies
-  are additive: the current shared dependency policy also permits Collector
-  traffic to the configured database destination; the dedicated Collector
-  policy does not remove that access.
+- Keep exporter traffic within the approved `/32` or in-cluster selector and
+  port, with DNS and Kubernetes API access configured by the chart. Use an
+  approved fixed proxy when your backend cannot be represented by that egress
+  policy. NetworkPolicies are additive, but no chart policy grants the
+  Collector database access; the shared dependency policy selects only the
+  API, worker and initialization Pods.
 - Alert on failed exports, refused records, queue saturation, and Collector
   restarts. Verify retention and access controls in your selected backend.
 - Treat delivery as best-effort. Docker keeps exporter queues in the
   `occ_otelcol_data` volume and bounded runtime log caches; its push-based
   Fluent Forward receiver has no file offsets. Kubernetes keeps file offsets
   and exporter queues in `/var/lib/otelcol` on bounded `emptyDir` storage,
-  which survives container restart but is lost on Pod or node replacement. An
-  outage can lose operational logs without blocking OCC work. Audit records are
-  stored separately in PostgreSQL.
+  which survives container restart but is lost on Pod or node replacement. A
+  replaced Collector Pod, including after the `rollout restart` an upgrade
+  refresh needs, reads every collected Pod log still on its node from the
+  beginning, so the backend receives duplicates of records it already has, with
+  their original timestamps. A backend can refuse the oldest of them instead:
+  Loki answers `400` `entry too far behind` for records outside its out-of-order
+  window (by default, one hour behind the newest record in the stream). The
+  Collector does not retry them; it logs `Exporting failed. Dropping data.` and
+  `otelcol_exporter_send_failed_log_records` rises. Expect this, and any
+  failed-export alert, after each Collector Pod replacement. Investigate if
+  failures continue after the replay or new records stop reaching the backend.
+  An outage can lose operational logs without blocking OCC work. Audit records
+  are stored separately in PostgreSQL.
 
 ## Troubleshooting
 

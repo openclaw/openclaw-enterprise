@@ -1,0 +1,98 @@
+name: CI Image Cache
+
+# Writes main's BuildKit cache for the controller and runtime images that the CI
+# image lanes restore. A merge cancels main's CI run, often before Images and
+# Packaging exports; this run is never cancelled, so main's cache catches up.
+# GitHub scopes cache writes to the run's ref: pull_request runs read main's
+# entries but write only their own merge ref.
+on:
+  push:
+    branches:
+      - main
+    # Inputs of the two image builds (both Dockerfiles' COPY and bind sources),
+    # the lane's Node base image pin, the build code and this workflow. Other
+    # changes leave the cache keys unchanged. A conformance test keeps this list
+    # covering the Dockerfiles.
+    paths:
+      - .dockerignore
+      - .github/workflows/ci-image-cache.yml
+      - Dockerfile
+      - LICENSE
+      - apps/controller/**
+      - deploy/presets/**
+      - deploy/runtime/**
+      - migrations/**
+      - package.json
+      - packages/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - scripts/*.mjs
+      - scripts/ci/download-pinned.sh
+      - scripts/ci/prepare.mjs
+      - scripts/ci/test-suites/images-packaging.json
+      - scripts/lib/**
+      - tsconfig.base.json
+      - tsconfig.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One export at a time, never cancelled; a newer push replaces only the pending
+# run, which the Actions list then shows as cancelled.
+concurrency:
+  group: ci-image-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: "1"
+  NODE_VERSION: "24.16.0"
+
+jobs:
+  warm:
+    name: Warm Image Cache
+    if: ${{ github.ref == 'refs/heads/main' }}
+    # The image lanes' runner, so the cache is written where they read it.
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify checkout source
+        run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Expose image cache credentials
+        id: image-cache
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const url = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !url) {
+              throw new Error('GitHub Actions cache credentials are unavailable');
+            }
+            core.setSecret(token);
+            // The cache service grants this token the scopes in its "ac" claim
+            // (Permission bit 2 is write). Export only if main is the sole writable scope.
+            const claims = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'));
+            const scopes = JSON.parse(claims.ac ?? '[]');
+            core.info(`Cache scopes: ${scopes.map(({ Scope, Permission }) => `${Scope} (${Permission})`).join(', ')}`);
+            const writable = scopes.filter(({ Permission }) => (Permission & 2) !== 0).map(({ Scope }) => Scope);
+            if (writable.length !== 1 || writable[0] !== 'refs/heads/main') {
+              throw new Error(`The image cache warms only main's scope; this token's scopes: ${JSON.stringify(scopes)}`);
+            }
+            core.setOutput('token', token);
+            core.setOutput('url', url);
+      - name: Build images and export their cache
+        env:
+          OCC_CI_IMAGE_CACHE: "1"
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
+          ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        run: node scripts/ci/prepare.mjs --warm-image-cache --state "$RUNNER_TEMP/state/image-cache-warm.json"
+      - name: Cleanup
+        if: always()
+        run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/image-cache-warm.json"

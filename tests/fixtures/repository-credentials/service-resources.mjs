@@ -3,7 +3,7 @@ import { chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { appModule } from "./runtime.mjs";
 import { temporaryDirectory } from "./process.mjs";
-import { githubConfigurationData } from "./builders.mjs";
+import { githubConfigurationData, githubTokenConfigurationData } from "./builders.mjs";
 import {
   fixtureAppId,
   fixtureInstallationId,
@@ -41,7 +41,42 @@ export async function createGitHubServiceFactory(
       repository,
       privateKeyFile: "/unused-fixture-key.pem",
     }),
-    key,
+    authority: key,
+    gatewayOrigin: config.gateway.publicOrigin,
+    limits: config.limits,
+    clock,
+    trustedEndpoints,
+  });
+}
+
+/** Development token authority: the service owns `token`; GitHub never issues one. */
+export async function createGitHubTokenServiceFactory(
+  resources,
+  {
+    config,
+    clock,
+    token,
+    configuration = {},
+    repository = fixtureRepository,
+    repositoryId = fixtureRepositoryId,
+    trustedEndpoints,
+    providerInstanceId = "github-fixture",
+  },
+) {
+  const { createGitHubDriverFactory, createGitHubStaticTokenOwner } = await appModule(
+    "drivers/repo/github/credentials/index",
+  );
+  const owner = createGitHubStaticTokenOwner({ token: Buffer.from(token) });
+  resources.after(() => owner.close());
+  return createGitHubDriverFactory({
+    configuration: githubTokenConfigurationData({
+      providerInstanceId,
+      repositoryId,
+      repository,
+      tokenFile: "/unused-fixture-token",
+      ...configuration,
+    }),
+    authority: owner,
     gatewayOrigin: config.gateway.publicOrigin,
     limits: config.limits,
     clock,

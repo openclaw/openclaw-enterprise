@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-09-30
-last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
+updated: 2026-10-05
+last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
 ---
 
 # Container publication flow
@@ -73,8 +73,8 @@ Jobs require at least four CPUs and 12 GiB RAM; the reported runner label alone
 is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
 for both native Linux architectures before runtime smoke tests.
-The standard AMD64 override retains guarded toolchain cleanup: required roots
-are checked, unsafe optional paths are skipped, and 36 GiB free is required.
+The standard AMD64 override requires 36 GiB free and, only below that, runs
+guarded toolchain cleanup that checks required roots and skips unsafe paths.
 Larger runners do not depend on deleting preinstalled SDKs.
 
 Each Buildx builder runs at most two steps concurrently. The default Blacksmith
@@ -92,7 +92,7 @@ source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive,
-uses its stock Codex 0.158.0 dependency/lockfile selection, and applies the temporary
+uses its stock Codex 0.160.0 dependency/lockfile selection, and applies the temporary
 OpenClaw read-only-paths compatibility patch and the `connect --ephemeral`
 expired-setup patch. The build verifies both patch hashes and records them in
 runtime provenance. The OpenClaw bridge forwards the bound
@@ -237,6 +237,10 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-05 12:10: Update the OpenClaw pin, workspace templates, and Codex sandbox qualification to 0.160.0. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - dd344a97)
+
+- 2026-10-03 16:19: Refresh the OpenClaw main pin to `6f91eda9c72` (openclaw/openclaw#162156), its archive checksum, the rebased read-only-paths bridge patch checksum, and the matching workspace-template version; bridge behavior is unchanged. (authoring-run/264cfb8c-8627-40cb-8ac4-0b67ef3134dc - 8193ad3cadec560e3f97401fb999e672b1517aec)
 
 - 2026-09-30 11:18: Change publication and recovery policy to public source with public GHCR packages; no-push preparation remains allowed only with literal `PUBLISH=false`. (authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584 - 76e9de599a1c5b1319af4f9003f86ecbf53aa9ec)
 

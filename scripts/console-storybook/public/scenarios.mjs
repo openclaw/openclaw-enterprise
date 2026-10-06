@@ -8,7 +8,7 @@ const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
-const form = [click("Start without Preset")];
+const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const createModelSecret = (value) => [
@@ -803,7 +803,7 @@ export const scenarios = {
     path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
     description: "Recover from a stale Namespace URL using the selector inside the message.",
     steps: [
-      "Choose Engineering under Choose a valid namespace; the URL changes and the warning disappears without leaving Namespaces.",
+      "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
       "Use browser Back to return to the unavailable selection and recover again.",
     ],
   },
@@ -1983,6 +1983,16 @@ export const scenarios = {
     ],
     gap: "All credentials and API responses in this preview are simulated.",
   },
+  createPasswordPresetMissingModel: {
+    group: "Pages/Create Agent",
+    name: "Standard Codex missing model",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm.filter((action) => action.selector !== "#preset-variable-model"),
+    description:
+      "Use Preset with an empty Model stops at the required Model field. Variables with defaults stay optional.",
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
   createPasswordPresetDraft: {
     group: "Pages/Create Agent",
     name: "Standard Codex password draft",
@@ -2032,12 +2042,38 @@ export const scenarios = {
     description:
       "Missing Secret create permission leaves the draft available with its password masked. No Agent is created.",
   },
+  createDefaultPresetLoading: {
+    group: "Pages/Create Agent",
+    name: "Loading default Preset",
+    path: create,
+    rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), hold: true }],
+    description: "Quick-start waits for the authorized Namespace Preset list.",
+  },
+  createDefaultPresetDenied: {
+    group: "Pages/Create Agent",
+    name: "Default Preset access denied",
+    path: create,
+    rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
+    description:
+      "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+  },
   createNoPresets: {
     group: "Pages/Create Agent",
     name: "No Presets",
     path: create,
     emptyPresets: true,
-    description: "Creation remains available without a Preset.",
+    description:
+      "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
+  },
+  createWithoutPreset: {
+    group: "Pages/Create Agent",
+    name: "Start without Preset",
+    path: create,
+    emptyPresets: true,
+    actions: [click("Start without Preset")],
+    description: "Create an editable Agent draft independently of a saved Preset.",
+    steps: ["Enter an Agent name, choose a model and credential, and review the Configuration."],
+    gap: "The fixture simulates API responses and does not verify deployment.",
   },
   createBoundCredentialPreset: {
     group: "Pages/Create Agent",
@@ -2218,6 +2254,12 @@ export const scenarios = {
     ],
     description:
       "Enter an explicit model ID when it is absent from the fixed list. The credential must have access to that model; the Console does not verify access.",
+    steps: [
+      "Select Choose a model from the list. Confirm the custom ID is cleared and Choose a model is selected, then select a listed model.",
+      "Select Enter model ID manually again. Confirm Model ID keeps the selected model and receives focus. Edit it to another listed model, then return to the list and confirm that model is selected.",
+      "Repeat the switch and edit Model ID to an ID outside the list. Return to the list and confirm a new selection is required; credentials and other form values remain.",
+      "Under Advanced settings, edit Configuration JSON to use an anthropic/ model. Select Choose a model from the list and confirm it offers Anthropic models.",
+    ],
   },
   createSecretDenied: {
     group: "Pages/Create Agent",
@@ -2399,12 +2441,12 @@ export const scenarios = {
   },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
-    name: "Enable Gateway password access",
+    name: "Enable gateway password access",
     path: draft,
     deployed: true,
-    description: "Configure the generated Gateway password without typing native JSON.",
+    description: "Configure the generated gateway password without typing native JSON.",
     steps: [
-      "Select Enable Gateway password access. The draft receives a password reference; no password value is displayed.",
+      "Select Enable gateway password access. The draft receives a password reference; no password value is displayed.",
       "Cancel to discard the edit, or Save Configuration to persist it.",
       "Confirm the saved-access message, then Deploy new version to apply the reference.",
     ],
@@ -2422,7 +2464,7 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",
     path: draft,
-    actions: [click("Enable Gateway password access"), click("Save Configuration")],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
     rules: [
       {
         method: "PATCH",
@@ -2436,7 +2478,7 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Gateway password save in progress",
     path: draft,
-    actions: [click("Enable Gateway password access"), click("Save Configuration")],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
     rules: [
       {
         method: "PATCH",
@@ -2710,6 +2752,16 @@ export const scenarios = {
     description:
       "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
   },
+  deploymentModelProbeFailed: {
+    group: "Pages/Agent detail",
+    name: "New version failed its model check",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    description:
+      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
+  },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
     name: "Deployment failed after selection",
@@ -2793,6 +2845,16 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     description:
       "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
+  },
+  runtimeLogsStartupWarnings: {
+    group: "Pages/Agent detail",
+    name: "Runtime status after a healthy first deploy",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    runtimePod: "startupWarnings",
+    description:
+      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -3853,11 +3915,11 @@ export const scenarios = {
     group: "Flows",
     name: "Restart Agent creation",
     path: create,
-    description: "Leave a no-Preset Agent form and return to the initial creation choices.",
+    description: "Leave a default starter Agent form and return to the initial creation choices.",
     steps: [
-      "Choose Start without Preset and enter an Agent name.",
+      "Choose Start with default Preset and enter an Agent name.",
       "Select Cancel or the Agents link, then choose Create Agent again.",
-      "Confirm the initial choices are shown. Start without Preset again and check that the name is empty.",
+      "Confirm the initial choices are shown. Start with default Preset again and check that the name is empty.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
   },
@@ -3868,9 +3930,9 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     description:
-      "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
+      "Create a Dedicated Agent from the default Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
+      "Start with default Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
@@ -3897,7 +3959,7 @@ export const scenarios = {
     description:
       "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
     steps: [
-      "Start without Preset and enter the Agent name.",
+      "Start with default Preset and enter the Agent name.",
       "Open Configure Slack, choose the existing Slack app Secret, create a new Slack bot Secret from the modal, and allow everyone in the selected channel.",
       'Apply channel settings. The form receives channel JSON with users: ["*"] and Secret binding JSON while token values stay hidden.',
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",

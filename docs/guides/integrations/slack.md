@@ -177,7 +177,7 @@ bot. To enable one-to-one messages:
    [App Home settings](https://docs.slack.dev/tools/python-slack-sdk/socket-mode/#using-socket-mode),
    enable sending messages from the **Messages** tab.
 2. In **Channels → Edit Slack**, select **Allowlist** under **Direct-message
-   policy** and enter **Allowed DM user IDs**. Save and redeploy. Choose
+   policy** and choose **Allowed people in direct messages**. Save and redeploy. Choose
    **Disabled** to block DMs (recommended for organization-wide installs), or
    use [Pairing or Open](../../reference/configuration/secrets.md#native-channel-configuration).
    Channel user IDs do not grant DM access. If native `dm.enabled` is `false`,

@@ -715,7 +715,10 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   // The Gateway starts before the node pairs: the optional binding file is absent.
   const { files, calls, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: codexGatewayConfig(),
-    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+    env: {
+      APP_SERVER_URL: "ws://harness.example.test:18790",
+      OPENCLAW_REMOTE_WORKSPACE_ROOT: "/sandbox/enterprise",
+    },
     workspaceNodeBindingPath: true,
     intervals,
     kills,
@@ -744,8 +747,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   const poll = intervals.find(({ ms }) => ms === 1000);
   assert.ok(poll, "the wrapper polls the binding every second");
   const tick = () => poll.callback();
-  const gatewayCalls = () =>
-    calls.filter(({ args }) => args?.[1] === "gateway" && args[2] === "call");
+  const gatewayCalls = () => calls.filter(({ method }) => method === "plugins.list");
 
   await tick();
   assert.equal(files.get(configPath), JSON.stringify(atStart), "no binding, no write");
@@ -774,11 +776,11 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   assert.equal(applied.plugins.entries["file-transfer"].enabled, true);
   assert.deepEqual(applied.plugins.entries["file-transfer"].config.workspaces.main, {
     nodeId: "enrolled-node",
-    remoteRoot: "/home/node/workspace",
+    remoteRoot: "/sandbox/enterprise",
   });
   assert.equal(
     applied.plugins.entries.codex.config.appServer.remoteWorkspaceRoot,
-    "/home/node/workspace",
+    "/sandbox/enterprise",
   );
   // The write was a whole-file replacement, not an in-place rewrite.
   assert.equal(
@@ -795,7 +797,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   await tick();
   assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
   assert.deepEqual(
-    gatewayCalls().map(({ args }) => args[3]),
+    gatewayCalls().map(({ method }) => method),
     ["plugins.list", "plugins.list", "plugins.list"],
   );
   // OpenClaw watches the file it was started with; the child is not replaced.
@@ -899,6 +901,103 @@ test("a Gateway reports why OpenClaw has not applied its workspace node and clea
     "FILE_TRANSFER_FAILED",
     "RELOAD_NOT_CONFIRMED",
   ]);
+});
+
+// The error OpenClaw's CLI call rejects with when the Gateway refuses its connect
+// handshake: a GatewayClientRequestError carrying the server's connect-error details.
+function gatewayConnectRefusal(detailCode, retryable = false) {
+  const error = new Error("unauthorized");
+  error.name = "GatewayClientRequestError";
+  error.gatewayCode = "INVALID_REQUEST";
+  error.retryable = retryable;
+  error.details = { code: detailCode, authReason: "trusted_proxy_untrusted_source" };
+  return error;
+}
+
+test("a Gateway that refuses its own CLI as unauthorized reports it at once; other refusals keep waiting", async () => {
+  const intervals = [];
+  let now = 1_000_000;
+  const clock = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+  const lines = [];
+  let refusal;
+  let openClaw;
+  const { files, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: codexGatewayConfig(),
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+    workspaceNodeBindingPath: true,
+    intervals,
+    Date: clock,
+    gatewayCall: () => {
+      if (refusal !== undefined) {
+        throw refusal;
+      }
+      return openClaw;
+    },
+    setTimeout: () => ({ unref() {} }),
+    console: { error: (line) => lines.push(JSON.parse(line)) },
+  });
+  const configPath = "/home/node/.openclaw/openclaw.json";
+  const tick = () => intervals.find(({ ms }) => ms === 1000).callback();
+  files.set(WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding("enrolled-node"));
+
+  // A rate-limited or pairing refusal clears by itself: it waits like an
+  // unreachable Gateway and is reported only as unavailable after the budget.
+  refusal = gatewayConnectRefusal("AUTH_RATE_LIMITED", true);
+  await tick();
+  refusal = gatewayConnectRefusal("PAIRING_REQUIRED");
+  await tick();
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: undefined, failure: undefined });
+  now += 31_000;
+  await tick();
+  assert.deepEqual(workspaceNodeState(sandbox), {
+    nodeId: undefined,
+    failure: "GATEWAY_UNAVAILABLE",
+  });
+
+  // D381: without gateway.auth.password the in-Pod CLI connects with no
+  // credential and the Gateway refuses it on every call. That is fixed by the
+  // admitted configuration, so it is reported on the first refusal.
+  refusal = gatewayConnectRefusal("AUTH_UNAUTHORIZED");
+  await tick();
+  assert.deepEqual(workspaceNodeState(sandbox), {
+    nodeId: undefined,
+    failure: "GATEWAY_UNAUTHORIZED",
+  });
+  assert.equal(JSON.parse(files.get(configPath)).plugins.entries["file-transfer"], undefined);
+  // The Pod log names OpenClaw's refusal reason, so the operator can see why.
+  assert.deepEqual(
+    lines
+      .filter(({ event }) => event === "runtime.workspace_node")
+      .map(({ code, reason }) => ({ code, reason })),
+    [
+      { code: "GATEWAY_UNAVAILABLE", reason: undefined },
+      { code: "GATEWAY_UNAUTHORIZED", reason: "trusted_proxy_untrusted_source" },
+    ],
+  );
+
+  // A refusal after the node was written is reported the same way.
+  refusal = undefined;
+  openClaw = pluginList("disabled", 1);
+  await tick();
+  assert.equal(
+    JSON.parse(files.get(configPath)).plugins.entries["file-transfer"].config.workspaces.main
+      .nodeId,
+    "enrolled-node",
+  );
+  refusal = gatewayConnectRefusal("AUTH_PASSWORD_MISSING");
+  await tick();
+  assert.deepEqual(workspaceNodeState(sandbox), {
+    nodeId: undefined,
+    failure: "GATEWAY_UNAUTHORIZED",
+  });
+  refusal = undefined;
+  openClaw = pluginList("active", 2);
+  await tick();
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
 });
 
 test("a Gateway that starts after its node paired applies the binding before OpenClaw starts", async () => {
@@ -1294,6 +1393,10 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
       (name) => "/home/node/workspace/" + name,
     ),
     "/home/node/workspace/skills",
+    "/home/node/workspace/skills/**",
+    "/home/node/workspace/.clawhub/lock.json",
+    "/home/node/workspace/.clawdhub/lock.json",
+    "/home/node/workspace/.openclaw/skill-installs/**",
     "/home/node/workspace/media/inbound/openclaw-staged-*/**",
   ]);
   assert.deepEqual(transfer.nodes["enrolled-node"].allowReadPaths, [
@@ -1321,7 +1424,15 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   assert.equal(effective.gateway.nodes.commands.allow.includes("workspace.skills"), true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].args[1], "gateway");
-  const explicit = { nodes: { "*": { ask: "off", allowReadPaths: ["/chosen/AGENTS.md"] } } };
+  const explicit = {
+    nodes: {
+      "*": {
+        ask: "off",
+        allowReadPaths: ["/chosen/AGENTS.md"],
+        allowWritePaths: ["/chosen/SOUL.md"],
+      },
+    },
+  };
   const configured = await runOpenClawRuntimeHelper(undefined, [], {
     baseConfig: {
       ...baseConfig,
@@ -1346,4 +1457,45 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
       /requires the file-transfer plugin/,
     );
   }
+});
+
+test("a timed-out workspace binding probe releases the poll and can recover", async () => {
+  const intervals = [];
+  let timeout;
+  let signal;
+  let unavailable = true;
+  let openClaw = pluginList("disabled", 1);
+  const { files, sandbox } = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: codexGatewayConfig(),
+    env: { APP_SERVER_URL: "ws://harness.example.test:18790" },
+    workspaceNodeBindingPath: true,
+    intervals,
+    gatewayCall: (_method, probeSignal) => {
+      signal = probeSignal;
+      return unavailable ? new Promise(() => {}) : openClaw;
+    },
+    setTimeout: (callback, ms) => {
+      if (ms === 8000) {
+        timeout = callback;
+      }
+      return { unref() {} };
+    },
+    console: { error() {} },
+  });
+  files.set(WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding("enrolled-node"));
+  const poll = intervals.find(({ ms }) => ms === 1000);
+  const pending = poll.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  // A probe that never settles must still release the single-flight poll.
+  timeout();
+  await pending;
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: undefined, failure: undefined });
+
+  unavailable = false;
+  await poll.callback();
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: undefined, failure: undefined });
+  openClaw = pluginList("active", 2);
+  await poll.callback();
+  assert.deepEqual(workspaceNodeState(sandbox), { nodeId: "enrolled-node", failure: undefined });
 });

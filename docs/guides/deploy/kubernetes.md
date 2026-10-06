@@ -11,8 +11,9 @@ enforces NetworkPolicies. The chart uses explicit IPv4 `/32` rules for database
 and Kubernetes API traffic. Install the tools in the [production
 prerequisites](../deploy.md#production-prerequisites). One cluster can host the
 OpenClaw Control Plane (OCC) and Agent workloads: OCC runs in `openclaw-system`,
-and Compute creates isolated tenant namespaces. Use separate node pools for OCC
-and Agents to control which nodes run each workload.
+and Compute creates isolated tenant namespaces. Use two node pools: a trusted
+pool for OCC and dedicated Agent gateways, and an Agent pool for Harness and
+embedded Agent Pods.
 
 Have the cluster administrator provide a protected kubeconfig and node pools
 labeled `oce-role=control` and `oce-role=agents`, or record the labels you will
@@ -32,7 +33,8 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get storageclasses
 ```
 
 Check that the node list shows both roles and that the expected StorageClasses
-exist. Allow capacity for all running Agents. Dedicated Codex also needs a node
+exist. Allow node memory on both pools for all running Agents; a dedicated Codex
+Agent's request is split between them ([sizing](installation-profiles.md)). Dedicated Codex also needs a node
 syscall policy compatible with its command sandbox; review the
 [Compute requirements](../../reference/drivers/kubernetes-compute.md#requirements)
 before selecting node images.
@@ -59,6 +61,12 @@ addresses and ports as observed from controller Pods. These become the shared
 installation's network settings; do not substitute whole cluster or VPC ranges.
 See [networking and isolation](../../reference/drivers/kubernetes-compute/networking-and-isolation.md).
 
+On OpenShift, select the actual DNS backend namespace and Pod labels; the
+[Helm DNS grants](../../reference/settings/production.md#required-production-controller-environment)
+permit both Service and backend ports. Verify UDP and TCP DNS resolution from
+the initialization, API, worker, and enabled supporting workloads, plus denied
+traffic to a Pod outside the configured DNS selectors.
+
 ## Configure the protected copies and install
 
 Continue with [production installation](production-installation.md), retaining
@@ -66,8 +74,8 @@ this shell's context. At its **Configure the Installation** step, edit the copie
 examples for your cluster:
 
 - Set `controlPlane.nodeSelector` and
-  `drivers.compute.configuration.runtime.nodeSelector` to the reviewed control
-  and runtime labels.
+  `drivers.compute.configuration.runtime.gatewayNodeSelector` to the trusted
+  pool's labels, and `runtime.nodeSelector` to the Agent pool's labels.
 - Replace the bootstrap and gateway StorageClass placeholders with the classes
   prepared above. The dedicated Harness workspace uses the cluster default.
 - Replace sample image references, CIDRs, DNS/client selectors, cluster name,

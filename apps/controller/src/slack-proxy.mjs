@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_PORT = 3128;
 const CONNECT_TIMEOUT_MS = 10_000;
+const SHUTDOWN_DRAIN_MS = 2_000;
 const ALLOWED_SUFFIXES = [".slack.com", ".slack-edge.com", ".slack-msgs.com"];
 const ALLOWED_HOSTS = new Set(["slack.com", "slack-edge.com", "slack-msgs.com"]);
 
@@ -44,6 +45,17 @@ function isAllowedSlackConnectTarget(target) {
   );
 }
 
+function closeOnSocketError(socket) {
+  let closing = false;
+  socket.on("error", () => {
+    if (closing) {
+      return;
+    }
+    closing = true;
+    socket.destroy();
+  });
+}
+
 function reject(socket, statusCode, message) {
   socket.end(`HTTP/1.1 ${statusCode} ${message}\r\nConnection: close\r\n\r\n`);
 }
@@ -55,6 +67,10 @@ function createSlackProxyServer() {
   });
 
   server.on("connect", (request, clientSocket, head) => {
+    // Attach this before reject(). A refused CONNECT that resets emits
+    // EPIPE or ECONNRESET while the 403 is written; without a listener
+    // that error exits the process.
+    closeOnSocketError(clientSocket);
     if (!isAllowedSlackConnectTarget(request.url)) {
       reject(clientSocket, 403, "Forbidden");
       return;
@@ -92,6 +108,27 @@ function createSlackProxyServer() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = parsePort(process.env.OCC_SLACK_PROXY_PORT);
   const server = createSlackProxyServer();
+  const sockets = new Set();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  // The proxy runs as PID 1 in its Pod, where the kernel drops a SIGTERM that has no
+  // handler; the Pod would then wait out its termination grace for SIGKILL. Stop
+  // listening at once and give short Web API calls a moment to finish. Tunnels are
+  // long-lived Socket Mode connections that never drain, so then close them: Slack
+  // clients reconnect through the Service to a ready replacement.
+  const shutdown = () => {
+    server.close();
+    const destroyAll = setTimeout(() => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+    }, SHUTDOWN_DRAIN_MS);
+    destroyAll.unref();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
   server.listen(port, "0.0.0.0", () => {
     const address = server.address();
     const selectedPort = typeof address === "object" && address !== null ? address.port : port;

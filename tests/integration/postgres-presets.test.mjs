@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const identifier = (kind) => `${kind}_${randomUUID()}`;
 
 async function exercisePresets(store, reopened = store) {
@@ -63,10 +63,13 @@ async function exercisePresets(store, reopened = store) {
     ),
   ]);
   assert.equal(contenders.filter((result) => result.status === "fulfilled").length, 1);
-  assert.equal(
-    contenders.find((result) => result.status === "rejected").reason.name,
-    "ResourceConflictError",
-  );
+  // A duplicate name names the taken kind; only server-chosen identity collisions stay generic.
+  const presetNameConflict = {
+    name: "ResourceStateConflictError",
+    message: "A Preset with this name already exists in this Namespace. Choose a different name.",
+  };
+  const { name, message } = contenders.find((result) => result.status === "rejected").reason;
+  assert.deepEqual({ name, message }, presetNameConflict);
   await store.transact((state) =>
     state.presets.createPreset({
       ...preset,
@@ -78,7 +81,7 @@ async function exercisePresets(store, reopened = store) {
     store.transact((state) =>
       state.presets.updatePreset(namespace.id, preset.id, { name: duplicate.name, template: {} }),
     ),
-    { name: "ResourceConflictError" },
+    presetNameConflict,
   );
   assert.deepEqual(
     await reopened.read((state) => state.presets.findPreset(namespace.id, preset.id)),
@@ -136,11 +139,7 @@ test("in-memory Presets preserve template copies, Namespace isolation, and delet
 
 test(
   "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-  },
+  requiresPostgres,
   async (context) => {
     const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
       import("pg"),

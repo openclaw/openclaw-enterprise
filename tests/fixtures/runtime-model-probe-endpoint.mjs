@@ -5,18 +5,29 @@ import { createServer } from "node:https";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 
-// Runs in a sidecar container of the runtime image that owns the network
-// namespace a runtime wrapper joins, with api.openai.com mapped to loopback.
-// It stands in for the model provider and observes the wrapper from outside:
-// when the native process accepts connections, what the private runtime and
-// plugin status report, and what the real readiness program decides. Every
-// line it prints is one JSON event with an epoch timestamp.
+// Runs in a container of the runtime image and stands in for the model provider
+// as api.openai.com. In the runtime image tests it is a sidecar that owns the
+// network namespace a runtime wrapper joins, with api.openai.com mapped to
+// loopback, and it also observes the wrapper from outside: when the native
+// process accepts connections, what the private runtime and plugin status
+// report, and what the real readiness program decides. The first-Agent smoke
+// (scripts/ci/first-agent-smoke.mjs) runs it without observation on an address
+// the cluster resolves api.openai.com to. Every line it prints is one JSON event
+// with an epoch timestamp.
 const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"
 const delayMs = Number(process.env.PROBE_ENDPOINT_DELAY_MS ?? 0);
+const listenHost = process.env.PROBE_ENDPOINT_HOST ?? "127.0.0.1";
+// When set, a turn answers with the last match of this pattern in its request
+// (a caller's nonce) instead of READY, so a caller can prove its own turn arrived.
+const echoPattern =
+  process.env.PROBE_ENDPOINT_ECHO_PATTERN === undefined
+    ? undefined
+    : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
+const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
 const readinessEnvironment = JSON.parse(process.env.PROBE_OBSERVE_READINESS_ENV ?? "{}");
-const readinessProgram = readFileSync("/fixture/readiness.cjs", "utf8");
+const readinessProgram = observing ? readFileSync("/fixture/readiness.cjs", "utf8") : "";
 // Codex opens the Responses API over a WebSocket first and falls back to HTTPS.
 // Use the WebSocket implementation the runtime image already ships.
 const { WebSocketServer } = createRequire("/app/node_modules/ws/package.json")("ws");
@@ -40,15 +51,21 @@ function sseResponse(response, events) {
   response.end();
 }
 
-// A minimal Responses API stream: one assistant message saying READY.
-function answerEvents(model) {
+function answerText(request) {
+  const matches = echoPattern === undefined ? [] : request.match(echoPattern);
+  return matches?.at(-1) ?? "READY";
+}
+
+// A minimal Responses API stream: one assistant message saying READY, or the
+// caller's echoed nonce.
+function answerEvents(model, text) {
   const id = "resp_runtime_probe";
   const message = {
     type: "message",
     id: "msg_runtime_probe",
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text: "READY", annotations: [] }],
+    content: [{ type: "output_text", text, annotations: [] }],
   };
   const usage = {
     input_tokens: 1,
@@ -77,14 +94,14 @@ function answerEvents(model) {
       item_id: message.id,
       output_index: 0,
       content_index: 0,
-      delta: "READY",
+      delta: text,
     },
     {
       type: "response.output_text.done",
       item_id: message.id,
       output_index: 0,
       content_index: 0,
-      text: "READY",
+      text,
     },
     {
       type: "response.content_part.done",
@@ -102,17 +119,23 @@ function answerEvents(model) {
 }
 
 // Answer one model turn after the configured delay, unless the caller left.
-function turn(transport, model, respond, closed) {
+function turn(transport, model, request, respond, closed) {
   emit({ event: "request", transport, turn: true });
   if (mode === "hang") {
     return;
   }
+  const text = answerText(request);
   setTimeout(() => {
     if (closed()) {
       return;
     }
-    respond(answerEvents(model));
-    emit({ event: "turn-answered", transport, status: 200 });
+    respond(answerEvents(model, text));
+    emit({
+      event: "turn-answered",
+      transport,
+      status: 200,
+      ...(echoPattern === undefined ? {} : { text }),
+    });
   }, delayMs);
 }
 
@@ -166,6 +189,7 @@ const server = createServer(
       turn(
         "https",
         model,
+        body,
         (events) => sseResponse(response, events),
         () => response.destroyed,
       );
@@ -222,6 +246,7 @@ server.on("upgrade", (request, socket, head) => {
       turn(
         "websocket",
         message.model ?? "unknown",
+        String(data),
         (events) => {
           for (const event of events) {
             webSocket.send(JSON.stringify(event));
@@ -302,8 +327,11 @@ function observe(key, value) {
   emit({ event: "observe", key, value });
 }
 
-server.listen(443, "127.0.0.1", () => {
+server.listen(443, listenHost, () => {
   emit({ event: "listening" });
+  if (!observing) {
+    return;
+  }
   (async () => {
     for (;;) {
       const [listening, runtime, plugin, readiness] = await Promise.all([

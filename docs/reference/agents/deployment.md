@@ -142,7 +142,13 @@ refused with its capability error even when the Agent principal also lacks a
 grant. When only the Agent principal's grant is missing, the `403` names that
 `servicePrincipalId`, the action, and the exact Secret or credential source,
 for example `The Agent service principal <id> is not authorized to operate
-secret <id>`. Denials of your own permissions stay generic.
+secret <id>`. Its audit event records your own request with reason code
+`AGENT_PRINCIPAL_NOT_AUTHORIZED` and names that principal, action, resource and
+IAM evidence in its details. Denials of your own permissions stay generic.
+Admission then asks Compute to check the Configuration's gateway settings. On
+Kubernetes, a gateway setting it refuses answers `409 RESOURCE_CONFLICT` naming
+the setting and what is accepted, never its value, before any revision is created
+(see [gateway authentication](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication)).
 
 ### Pending deployment progress
 
@@ -151,19 +157,56 @@ when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live Pod
 of the revision has `PodScheduled` `False` with reason `Unschedulable`, for
 example for want of node memory, and `WORKSPACE_NODE_PENDING` when the Harness
 and gateway are ready and only the workspace node's gateway connection is
-outstanding. Otherwise the code is `REVISION_INCOMPLETE`. These codes change no
+outstanding. Activation of a dedicated revision reports
+`WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
+workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
+not connected. Otherwise the code is `REVISION_INCOMPLETE`. These codes change no
 outcome: the revision stays pending until it is ready, a held runtime failure
 ends it, or the convergence deadline passes. The worker rechecks an unready
 revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
+
+A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
+apply its workspace node, so activation fails at once with
+`AGENT_GATEWAY_UNAUTHORIZED`. Check that the Agent's Configuration sets
+`gateway.auth.password` to `OPENCLAW_GATEWAY_PASSWORD` (**Enable gateway password
+access**) and deploy again; the gateway log's `runtime.workspace_node` line names
+OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
 
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
 through its route yet (for example, the route answers 404 until the gateway
 proxy has the new route, or 503 until it has the ready Pod), and
 `KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
-connect, or got 429 or 5xx. The worker retries on the same cadence without
-spending its `OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the
-convergence deadline fails the deployment with its own code.
+connect, or got 429 or 5xx. Both codes apply during preparation and
+activation alike. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
+refuses new requests from the controller because it holds OpenShell's limit of
+durable request admissions; see the
+[OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
+The worker retries on the same cadence without spending its
+`OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the convergence
+deadline fails the deployment with its own code.
+
+### Model check failure cause
+
+When the startup model check fails with `RUNTIME_MODEL_PROBE_FAILED`, the
+deployment error's `data.runtimeFailure` names the runtime component, check,
+time and, when the runtime classified it, a `cause`: a `kind` and an optional
+`detail` token from this closed vocabulary.
+
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                           |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                      |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                 |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                               |
+
+OpenClaw's `format` covers an unknown model and a request the provider rejected
+as malformed, such as invalid provider settings. A rejected credential is
+`RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
+neither has a cause. The runtime builds a cause only from these tokens, and
+Compute drops any other cause while keeping the code, so it never carries
+native output, provider text, or credentials. The console shows it as
+**Cause**, and `occ agent deployment-status` prints it in the error.
 
 ### The active revision after a failed deployment
 

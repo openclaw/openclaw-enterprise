@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type { Socket } from "node:net";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { hasControlCharacter } from "@openclaw-enterprise/utils";
 
 export interface NativeAdminProxyContext {
   readonly gatewayBase: string;
@@ -65,16 +66,6 @@ const STRIPPED_REQUEST_HEADERS = new Set([
 ]);
 
 const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie"]);
-
-function hasControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) {
-      return true;
-    }
-  }
-  return false;
-}
 
 function percentDecode(value: string): string | undefined {
   try {
@@ -427,6 +418,8 @@ export function proxyNativeAdminWebSocket(options: {
   readonly context: NativeAdminProxyContext;
   readonly connectionId: string;
   readonly lease: () => Promise<NativeAdminWebSocketCloseReason | undefined>;
+  /** Defaults to 25 s; only tests shorten it. */
+  readonly leaseIntervalMs?: number;
   readonly onConnect: () => Promise<void>;
   readonly onClose: (cause: NativeAdminWebSocketCloseCause) => void;
 }): void {
@@ -491,7 +484,7 @@ export function proxyNativeAdminWebSocket(options: {
         close(reason);
       }
     });
-  }, WS_LEASE_INTERVAL_MS);
+  }, options.leaseIntervalMs ?? WS_LEASE_INTERVAL_MS);
   leaseTimer.unref();
 
   upstreamRequest.once("upgrade", (response, upgradedSocket, upstreamHead) => {

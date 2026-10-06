@@ -28,8 +28,9 @@ Envoy Gateway and cert-manager controllers on trusted nodes as well.
 
 The shared Gateway and certificate resources are in the Helm release namespace.
 Envoy's proxy Service and Pods are in `envoyNamespace`. Each Agent's HTTPRoute
-and gateway Service are in its Gateway runtime namespace for dedicated execution,
-or its tenant data-plane namespace for embedded execution. The installer needs
+and gateway Service are in its tenant namespace, or for a dedicated Agent in the
+two-cluster profile, its `oce-gateways-<hash>` namespace in the control cluster.
+The installer needs
 permission to create the shared resources, including the NetworkPolicy in the
 Envoy namespace. The worker needs tenant HTTPRoute and SecurityPolicy permissions; the API does
 not need to write routes or execute commands in gateway Pods.
@@ -73,11 +74,15 @@ a revision. There is no separate periodic repair.
 
 Runtime-enabled dedicated revisions also receive an exact `/node` route and an
 exact `/node/__openclaw__/worker` route under the same Agent URL, hostname and
-`https` listener. Both use the same backend Service; the worker route rewrites
-to OpenClaw's `/__openclaw__/worker` ingress. The route removes `x-occ-identity`, `x-api-key`,
+`https` listener, plus `/node/__openclaw__/worker-bundle/v1/` and
+`/node/__openclaw__/worker-transfer/v1/` prefix routes. All use the same backend
+Service; the worker routes rewrite to OpenClaw's `/__openclaw__/` ingress paths.
+The route removes `x-occ-identity`, `x-api-key`, `authorization`, `cookie`,
 forwarded identity and scope headers, and Tailscale identity headers while
 setting `x-real-ip` from Envoy's downstream socket. This preserves trusted
-proxy attribution without granting the OCC administrative identity.
+proxy attribution without granting the OCC administrative identity. The bundle
+and transfer routes keep `authorization`, because those worker requests carry
+their own one-time bearer tokens.
 
 Compute attaches a tenant-local SecurityPolicy with no authentication fields
 to this node HTTPRoute. Envoy Gateway v1.6.7 replaces the entire inherited
@@ -118,14 +123,14 @@ header before forwarding.
 
 The tenant-worker role grants Secret get/create/update/delete for admitted Gateway
 credential delivery and Compute-owned node enrollment. Operators bind this role
-only in approved data-plane and Gateway namespaces; the chart creates no
+only in approved tenant runtime namespaces; the chart creates no
 cluster-wide binding for it. The worker
 is part of the trusted control plane. Harnesses receive a node-only setup code
 and public CA bundle, never this administrative service key.
 
 The HTTPRoute sets `x-occ-identity: occ-workspace-files` and sets `x-real-ip`
-from Envoy's direct downstream connection. It removes `x-forwarded-for`,
-`forwarded`, and `x-openclaw-scopes`. Kubernetes Compute renders native
+from Envoy's direct downstream connection. It removes `authorization`, `cookie`,
+`x-forwarded-for`, `forwarded`, and `x-openclaw-scopes`. Kubernetes Compute renders native
 trusted-proxy auth from the operator's `network.gatewayTrustedProxyCidrs`, enables
 `allowRealIpFallback`, and grants the fixed identity `operator.admin`. Agent
 Configuration cannot override that trust boundary. A direct loopback connection

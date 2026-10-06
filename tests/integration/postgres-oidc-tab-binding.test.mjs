@@ -5,8 +5,8 @@ import {
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
 import { proveTabBinding } from "../helpers/tab-binding.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const clientId = "tabs-oidc-client";
 const clientSecret = "tabs-oidc-client-secret";
 const aliceSubject = "auth0|tabs-alice";
@@ -17,7 +17,7 @@ const label = "Acme SSO";
 // another tab's sign-in replaced.
 test(
   "an OIDC tab keeps its own session: another tab's password sign-in signs it out",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
     let idp;
     await proveTabBinding(t, databaseUrl, {

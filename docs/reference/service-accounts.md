@@ -78,8 +78,10 @@ detaching an associated account requires current-account `read`; replacement
 requires `read` on both accounts. An Agent can reference an account before it
 has a credential, but deployment rejects that state.
 
-Deletion requires `delete` on the exact account and is rejected while an Agent
-draft, active revision, or queued or claimed deployment references it. Detaching
+Deletion requires `delete` on the exact account and is rejected with `409` while
+an Agent draft, active revision, queued or claimed deployment, or queued or running
+Agent provisioning request references it; the message lists these kinds, not the
+specific resources. Detaching
 the draft alone does not release an active or pending deployment's account.
 Inactive historical revisions and permanently failed deployments do not block
 deletion unless the account is still referenced by other live state.

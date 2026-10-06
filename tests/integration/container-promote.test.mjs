@@ -34,15 +34,27 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
     tag: `sha-${sourceSha}`,
   }));
   validateReceipt(receipt, env);
-  for (const patch of [
-    { sourceSha: "d".repeat(40) },
-    { attempt: "3" },
-    { ciRunId: "789" },
-    { nodeBaseImage: "docker.io/library/node:24" },
-    { tag: "latest" },
-    { destination: receipt[0].destination },
+  // Each rejection names the guard that must refuse it, so removing any one guard fails.
+  const runtime = (patch) => [receipt[0], { ...receipt[1], ...patch }];
+  const prepared = (key) => ({ message: new RegExp(`^Prepared image ${key} does not match`) });
+  for (const [changed, changedEnv, guard] of [
+    [{}, env, { name: "AssertionError", actual: false, expected: true }],
+    [[receipt[1], receipt[0]], env, { operator: "deepStrictEqual" }],
+    [[{ ...receipt[0], ciRunId: "0" }, receipt[1]], env, { operator: "match", actual: "0" }],
+    [[{ ...receipt[0], ciAttempt: "x" }, receipt[1]], env, { operator: "match", actual: "x" }],
+    [
+      receipt,
+      { ...env, NODE_BASE_IMAGE: "docker.io/library/node:24" },
+      { operator: "match", actual: "docker.io/library/node:24" },
+    ],
+    [runtime({ sourceSha: "d".repeat(40) }), env, prepared("sourceSha")],
+    [runtime({ attempt: "3" }), env, prepared("attempt")],
+    [runtime({ ciRunId: "789" }), env, prepared("ciRunId")],
+    [runtime({ nodeBaseImage: "docker.io/library/node:24" }), env, prepared("nodeBaseImage")],
+    [runtime({ tag: "latest" }), env, { actual: "latest", expected: `sha-${sourceSha}` }],
+    [runtime({ destination: receipt[0].destination }), env, { operator: "notStrictEqual" }],
   ]) {
-    assert.throws(() => validateReceipt([receipt[0], { ...receipt[1], ...patch }], env));
+    assert.throws(() => validateReceipt(changed, changedEnv), guard);
   }
   const workflow = { id: 789, path: publishWorkflow, state: "active" };
   const run = {
@@ -59,14 +71,35 @@ test("Docker Hub promotion rejects receipts from another source, CI run or publi
     conclusion: "success",
   };
   validatePublicationRun(run, workflow, env);
-  for (const patch of [
-    { workflow_id: 1 },
-    { head_sha: "d".repeat(40) },
-    { event: "pull_request" },
-    { conclusion: "failure" },
-    { run_attempt: 3 },
+  const other = ".github/workflows/other.yml";
+  for (const [changedRun, changedWorkflow, changedEnv, guard] of [
+    [run, workflow, { ...env, PUBLICATION_RUN_ID: "0" }, { operator: "match", actual: "0" }],
+    [run, workflow, { ...env, PUBLICATION_ATTEMPT: "x" }, { operator: "match", actual: "x" }],
+    [{ ...run, id: 124 }, workflow, env, { actual: "124", expected: "123" }],
+    [{ ...run, run_attempt: 3 }, workflow, env, { actual: "3", expected: "2" }],
+    [run, { ...workflow, path: other }, env, { actual: other, expected: publishWorkflow }],
+    [run, { ...workflow, state: "disabled_manually" }, env, { actual: "disabled_manually" }],
+    [{ ...run, workflow_id: 1 }, workflow, env, { actual: 1, expected: 789 }],
+    [{ ...run, path: other }, workflow, env, { actual: other, expected: publishWorkflow }],
+    [
+      { ...run, repository: { full_name: "other/enterprise" } },
+      workflow,
+      env,
+      { actual: "other/enterprise", expected: repository },
+    ],
+    [
+      { ...run, head_repository: { full_name: "fork/enterprise" } },
+      workflow,
+      env,
+      { actual: "fork/enterprise", expected: repository },
+    ],
+    [{ ...run, head_branch: "feature" }, workflow, env, { actual: "feature", expected: "main" }],
+    [{ ...run, head_sha: "d".repeat(40) }, workflow, env, { actual: "d".repeat(40) }],
+    [{ ...run, event: "pull_request" }, workflow, env, { actual: "pull_request" }],
+    [{ ...run, status: "in_progress" }, workflow, env, { actual: "in_progress" }],
+    [{ ...run, conclusion: "failure" }, workflow, env, { actual: "failure", expected: "success" }],
   ]) {
-    assert.throws(() => validatePublicationRun({ ...run, ...patch }, workflow, env));
+    assert.throws(() => validatePublicationRun(changedRun, changedWorkflow, changedEnv), guard);
   }
 });
 
@@ -78,13 +111,14 @@ test("Docker Hub promotion requires an exact pre-existing private repository", (
     "/v2/namespaces/example/repositories/enterprise-controller",
   );
   validateHubRepository(repo, image);
-  for (const patch of [
-    { is_private: false },
-    { is_private: undefined },
-    { namespace: "other" },
-    { name: "other" },
+  const notPrivate = { message: /^Docker Hub repository must already exist and be private\./ };
+  for (const [patch, guard] of [
+    [{ is_private: false }, notPrivate],
+    [{ is_private: undefined }, notPrivate],
+    [{ namespace: "other" }, { actual: "other", expected: "example" }],
+    [{ name: "other" }, { actual: "other", expected: "enterprise-controller" }],
   ]) {
-    assert.throws(() => validateHubRepository({ ...repo, ...patch }, image));
+    assert.throws(() => validateHubRepository({ ...repo, ...patch }, image), guard);
   }
   for (const invalid of [
     "",
@@ -93,6 +127,8 @@ test("Docker Hub promotion requires an exact pre-existing private repository", (
     `${image}:latest`,
     `ghcr.io/example/image`,
   ]) {
-    assert.throws(() => hubRepositoryPath(invalid));
+    assert.throws(() => hubRepositoryPath(invalid), {
+      message: /^Set an explicit Docker Hub namespace\/repository without a tag or digest\./,
+    });
   }
 });

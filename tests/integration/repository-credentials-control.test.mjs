@@ -1,13 +1,15 @@
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { request } from "node:http";
 import { createServer as createNetServer, connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import {
+  defaultRegistryRepositories,
+  startRegistryCredentialServiceFixture,
+} from "../fixtures/repository-credentials/registry.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { createServer as createTlsServer, request as tlsRequest } from "node:https";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -31,47 +33,22 @@ import {
   appModule,
   appRoot,
   appExtension,
+  controlRequest,
   createServiceConfiguration,
   eventually,
+  createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
 import {
   createGitHubServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
-function control(socketPath, method, path, value, extra = {}) {
-  const body = value === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(value));
-  return new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        socketPath,
-        method,
-        path,
-        headers: {
-          host: "localhost",
-          ...(path === "/v1/sessions" ? { "x-admission-id": `${Date.now()}-${randomUUID()}` } : {}),
-          "content-type": "application/json",
-          "content-length": body.length,
-          ...extra,
-        },
-        agent: false,
-      },
-      (incoming) => {
-        const chunks = [];
-        incoming.on("data", (chunk) => chunks.push(chunk));
-        incoming.once("error", reject);
-        incoming.once("end", () =>
-          resolve({
-            status: incoming.statusCode,
-            body: JSON.parse(Buffer.concat(chunks).toString()),
-          }),
-        );
-      },
-    );
-    outgoing.once("error", reject);
-    outgoing.end(body);
+// Session opens need an admission id; a fresh one per call unless the test names it.
+const control = (socketPath, method, path, value, extra = {}) =>
+  controlRequest(socketPath, method, path, value, {
+    ...(path === "/v1/sessions" ? { "x-admission-id": `${Date.now()}-${randomUUID()}` } : {}),
+    ...extra,
   });
-}
 
 // The relay consumes the real listener's response but disconnects its caller,
 // reproducing ambiguous loss after admission without replacing control behavior.
@@ -116,13 +93,11 @@ async function dropControlResponse(t, target) {
 }
 
 async function admissionFixture(t, onCreate) {
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
   const clock = createControlledClock();
   const tls = await createTlsMaterial(resources);
-  const base = await createServiceConfiguration(resources, { sessions: 1 });
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+  const config = await createLoopbackServiceConfiguration(resources, { sessions: 1 });
   const upstream = await startAlternateUpstream(resources, { clock, tls });
   const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
@@ -323,13 +298,11 @@ test(
   "private control socket opens, inspects and closes real sessions with bounded input",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
-    const base = await createServiceConfiguration(resources);
-    const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+    const config = await createLoopbackServiceConfiguration(resources);
     const github = await startGitHubFixture(resources, { clock, tls });
     const factory = await createGitHubServiceFactory(resources, {
       config,
@@ -544,14 +517,12 @@ test(
   "close after asynchronous authentication prevents actual upstream dispatch",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     const upstream = await startAlternateUpstream(resources, { tls });
-    const base = await createServiceConfiguration(resources);
-    const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+    const config = await createLoopbackServiceConfiguration(resources);
     let resume;
     const barrier = new Promise((resolve) => {
       resume = resolve;
@@ -610,8 +581,7 @@ test(
   "Agent response completion and premature close preserve lifecycle outcomes",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const [{ createSystemClock }, { createCredentialService }, { startListeners }] =
       await Promise.all([
         appModule("drivers/repo/credentials/clock"),
@@ -621,11 +591,10 @@ test(
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     // A single exchange slot makes leaked ownership observable on the next request.
-    const base = await createServiceConfiguration(resources, {
+    const config = await createLoopbackServiceConfiguration(resources, {
       exchanges: 1,
       exchangesPerSession: 1,
     });
-    const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
     const github = await startGitHubFixture(resources, { clock, tls });
     const received = [];
     let upstreamCancelled = false;
@@ -762,37 +731,38 @@ test(
   },
 );
 
-async function boundControlFixture(t, limits = {}) {
-  const reservation = createNetServer();
-  await new Promise((resolve, reject) => {
-    reservation.once("error", reject);
-    reservation.listen(0, "127.0.0.1", resolve);
-  });
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
+async function boundControlFixture(t, limits = {}, repositories = undefined) {
   const fixture = await startRegistryCredentialServiceFixture(t, {
     namespaceId: `ns_${randomUUID()}`,
     autoOpen: false,
     maximumDurationSeconds: 1200,
     durationSeconds: 600,
-    gateway: { listen: `127.0.0.1:${port}` },
+    gateway: { listen: "127.0.0.1:0" },
     limits,
+    ...(repositories === undefined ? {} : { repositories }),
   });
   const { resolveGitHubRepositoryBinding } = await githubProviderModule("registry");
-  const binding = resolveGitHubRepositoryBinding(fixture.registry, {
-    namespaceId: fixture.namespaceId,
-    repositoryRef: "repo-a",
-    profile: "git-full",
-  });
-  const input = {
-    namespaceId: fixture.namespaceId,
-    repositoryRef: binding.repositoryRef,
-    profile: binding.profile,
-    expectedBinding: binding.grant,
-    durationSeconds: 600,
-    deadlineWallMs: fixture.clock.wallNow() + 90_000,
+  const deadlineWallMs = fixture.clock.wallNow() + 90_000;
+  const bindings = (repositories ?? [{ repositoryRef: "repo-a" }]).map(({ repositoryRef }) =>
+    resolveGitHubRepositoryBinding(fixture.registry, {
+      namespaceId: fixture.namespaceId,
+      repositoryRef,
+      profile: "git-full",
+    }),
+  );
+  const inputFor = (repositoryRef) => {
+    const binding = bindings.find((entry) => entry.repositoryRef === repositoryRef);
+    return {
+      namespaceId: fixture.namespaceId,
+      repositoryRef: binding.repositoryRef,
+      profile: binding.profile,
+      expectedBinding: binding.grant,
+      durationSeconds: 600,
+      deadlineWallMs,
+    };
   };
-  const receipts = await startReceiptState(t, fixture, [binding], input.deadlineWallMs);
+  const input = inputFor(bindings[0].repositoryRef);
+  const receipts = await startReceiptState(t, fixture, bindings, deadlineWallMs);
   const freshId = () => `${fixture.clock.wallNow()}-${randomUUID()}`;
   const send = (value, id = freshId(), socketPath = fixture.config.gateway.controlSocket) =>
     control(
@@ -802,7 +772,7 @@ async function boundControlFixture(t, limits = {}) {
       { ...value, durableAdmission: true },
       { "x-admission-id": id },
     );
-  return { ...fixture, input, freshId, send, receipts };
+  return { ...fixture, input, inputFor, freshId, send, receipts };
 }
 
 test(
@@ -890,6 +860,49 @@ test(
   },
 );
 
+test("control refuses loose requests before acting on them", { timeout: 15000 }, async (t) => {
+  const fixture = await boundControlFixture(t);
+  const { input, send, freshId, clock, namespaceId } = fixture;
+  const socket = fixture.config.gateway.controlSocket;
+  const refused = { status: 400, body: { error: "invalid-request" } };
+  const plainText = { "content-type": "text/plain" };
+  const id = freshId();
+  await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+  const body = { ...input, durableAdmission: true };
+  assert.deepEqual(
+    await control(socket, "POST", "/v1/sessions", body, { ...plainText, "x-admission-id": id }),
+    refused,
+  );
+  // The refused request reserved nothing: the same admission id still creates the session.
+  const created = await send(input, id);
+  assert.equal(created.status, 201);
+  const sessionId = created.body.session.sessionId;
+
+  // An empty list starts no background lookup; it is the well-formed baseline.
+  const lookup = { namespaceId, repositoryRefs: [] };
+  const describe = (value, headers) =>
+    control(socket, "POST", "/v1/repository-descriptions", value, headers);
+  assert.equal((await describe(lookup)).status, 200);
+  assert.deepEqual(await describe(lookup, plainText), refused);
+  assert.deepEqual(await describe({ ...lookup, extra: true }), refused);
+  for (const value of [[namespaceId], 7]) {
+    assert.deepEqual(await describe({ ...lookup, namespaceId: value }), refused);
+  }
+
+  // Reads and close carry no body. The request head refuses a GET body and the handler a
+  // close body; neither changes the session.
+  for (const [method, path] of [
+    ["GET", "/healthz"],
+    ["GET", "/v1/capabilities"],
+    ["GET", `/v1/sessions/${sessionId}`],
+    ["POST", `/v1/sessions/${sessionId}/close`],
+  ]) {
+    assert.deepEqual(await control(socket, method, path, {}), refused, `${method} ${path}`);
+  }
+  await clock.advance(0);
+  assert.equal(fixture.service.status(sessionId).state, "OPEN");
+});
+
 async function holdControlRequest(t, target) {
   const directory = await temporaryDirectory(t, "rcs-held-");
   const socketPath = join(directory, "relay.sock");
@@ -973,13 +986,224 @@ test(
 );
 
 test(
+  "a refused bound open leaves no durable reservation, so retry and recovery converge",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = await boundControlFixture(t, { sessions: 1 }, [
+      ...defaultRegistryRepositories,
+      { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
+    ]);
+    const { inputFor, send, freshId, clock } = fixture;
+    const prepared = async (input) => {
+      const id = freshId();
+      await fixture.receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+      return id;
+    };
+    const [first, retried, recovered] = ["repo-a", "repo-b", "repo-c"].map(inputFor);
+    // Without a worker attempt the journal refuses after the session opens; that
+    // session is closed and its only slot is free for the next admission.
+    assert.deepEqual(await send(first, freshId()), {
+      status: 503,
+      body: { error: "unavailable" },
+    });
+    const opened = await send(first, await prepared(first));
+    assert.equal(opened.status, 201);
+    // Session capacity refuses these opens; neither may strand a durable reservation.
+    const retriedId = await prepared(retried);
+    const recoveredId = await prepared(recovered);
+    for (const [input, id] of [
+      [retried, retriedId],
+      [recovered, recoveredId],
+    ]) {
+      assert.deepEqual(await send(input, id), { status: 503, body: { error: "overloaded" } });
+    }
+    assert.deepEqual(await send({ ...recovered, recoverOnly: true }, recoveredId), {
+      status: 404,
+      body: { error: "admission-missing" },
+    });
+    fixture.service.close(opened.body.session.sessionId);
+    await clock.advance(0);
+    await eventually(
+      () => fixture.service.status(opened.body.session.sessionId).state === "DISPOSED",
+    );
+    // The fence stands. This plain retry opens a session, the journal answers
+    // missing, and that session is closed rather than handed out.
+    assert.deepEqual(await send(recovered, recoveredId), {
+      status: 404,
+      body: { error: "admission-missing" },
+    });
+    const reopened = await send(retried, retriedId);
+    assert.equal(reopened.status, 201);
+    assert.equal(reopened.body.session.state, "OPEN");
+  },
+);
+
+test(
+  "a session disposed and evicted while its admission awaits the journal still settles the receipt",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = await boundControlFixture(t, { sessions: 2 }, defaultRegistryRepositories);
+    const { inputFor, send, freshId, clock, receipts } = fixture;
+    const input = { ...inputFor("repo-a"), durationSeconds: 1 };
+    const id = freshId();
+    await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+    // Hold the journal's reservation until the opened session is disposed and evicted.
+    const transact = receipts.state.transact;
+    let held = false;
+    let entered;
+    let release;
+    const reached = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    receipts.state.transact = async function (work) {
+      if (!held) {
+        held = true;
+        entered();
+        await gate;
+      }
+      return transact.call(this, work);
+    };
+    t.after(() => {
+      receipts.state.transact = transact;
+      release();
+    });
+    const disposed = [];
+    t.after(fixture.service.observeDisposal((status) => disposed.push(status)));
+    const pending = send(input, id);
+    await reached;
+    await clock.advance(1000);
+    await eventually(() => disposed.length === 1);
+    const { sessionId } = disposed[0];
+    // Another admission's open evicts the disposed session from the service. No
+    // worker attempt was prepared for it, so the journal then refuses that admission.
+    assert.deepEqual(await send(inputFor("repo-b")), {
+      status: 503,
+      body: { error: "unavailable" },
+    });
+    assert.equal(fixture.service.status(sessionId), undefined);
+    release();
+    const answered = await pending;
+    assert.equal(answered.status, 200);
+    assert.equal(answered.body.sessionId, sessionId);
+    assert.equal(answered.body.state, "DISPOSED");
+    assert.equal(answered.body.bearer, undefined);
+    const receipt = await receipts.state.read((view) =>
+      view.repositorySessions.findBrokerReceipt(id),
+    );
+    assert.equal(receipt.state, "disposed");
+    assert.equal(receipt.sessionId, sessionId);
+    assert.deepEqual(await send({ ...input, recoverOnly: true }, id), answered);
+    assert.deepEqual(
+      await control(fixture.config.gateway.controlSocket, "GET", `/v1/sessions/${sessionId}`),
+      answered,
+    );
+  },
+);
+
+test(
+  "a reservation the broker cannot bind is fenced, so retry and recovery answer missing",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = await boundControlFixture(t, {}, [
+      ...defaultRegistryRepositories,
+      { repositoryRef: "repo-c", repository: "fixture/third", repositoryId: "75" },
+      { repositoryRef: "repo-d", repository: "fixture/fourth", repositoryId: "76" },
+    ]);
+    const { inputFor, send, freshId, receipts } = fixture;
+    const receipt = async (id) =>
+      receipts.state.read((view) => view.repositorySessions.findBrokerReceipt(id));
+    const prepared = async (input) => {
+      const id = freshId();
+      await receipts.prepare(id, input.repositoryRef, input.durationSeconds);
+      return id;
+    };
+    const missing = { status: 404, body: { error: "admission-missing" } };
+
+    // The journal reserves an admission the broker then refuses as invalid.
+    const invalid = { ...inputFor("repo-a"), durationSeconds: 172_801 };
+    const invalidId = await prepared(invalid);
+    assert.deepEqual(await send(invalid, invalidId), {
+      status: 400,
+      body: { error: "invalid-request" },
+    });
+    assert.equal((await receipt(invalidId)).state, "fenced");
+    assert.deepEqual(await send(invalid, invalidId), missing);
+    assert.deepEqual(await send({ ...invalid, recoverOnly: true }, invalidId), missing);
+
+    // The journal reserves, then fails to record the opened session.
+    const transact = receipts.state.transact;
+    t.after(() => {
+      receipts.state.transact = transact;
+    });
+    let calls = 0;
+    let outcome;
+    receipts.state.transact = async function (work) {
+      calls += 1;
+      if (
+        (calls === 2 && outcome === "refused") ||
+        (calls >= 2 && calls <= 3 && outcome === "away")
+      ) {
+        throw new Error("fixture-unavailable");
+      }
+      const result = await transact.call(this, work);
+      if (calls === 2 && outcome === "lost") {
+        throw new Error("fixture-response-lost");
+      }
+      return result;
+    };
+    const unbound = inputFor("repo-b");
+    const unboundId = await prepared(unbound);
+    calls = 0;
+    outcome = "refused";
+    assert.deepEqual(await send(unbound, unboundId), {
+      status: 503,
+      body: { error: "unavailable" },
+    });
+    assert.equal((await receipt(unboundId)).state, "fenced");
+    assert.deepEqual(await send(unbound, unboundId), missing);
+    assert.deepEqual(await send({ ...unbound, recoverOnly: true }, unboundId), missing);
+
+    // The journal is away for the bind and the fence; a retry fences instead.
+    const away = inputFor("repo-d");
+    const awayId = await prepared(away);
+    calls = 0;
+    outcome = "away";
+    assert.deepEqual(await send(away, awayId), { status: 503, body: { error: "unavailable" } });
+    assert.equal((await receipt(awayId)).state, "reserved");
+    outcome = undefined;
+    assert.deepEqual(await send(away, awayId), missing);
+    assert.equal((await receipt(awayId)).state, "fenced");
+    assert.deepEqual(await send({ ...away, recoverOnly: true }, awayId), missing);
+
+    // The bind is recorded but its answer is lost: the fence cannot apply, and the
+    // closed session's disposal is recorded instead.
+    const lost = inputFor("repo-c");
+    const lostId = await prepared(lost);
+    calls = 0;
+    outcome = "lost";
+    assert.deepEqual(await send(lost, lostId), { status: 503, body: { error: "unavailable" } });
+    outcome = undefined;
+    for (let i = 0; i < 300 && (await receipt(lostId)).state !== "disposed"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal((await receipt(lostId)).state, "disposed");
+    const recovered = await send({ ...lost, recoverOnly: true }, lostId);
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.body.state, "DISPOSED");
+    assert.equal(recovered.body.sessionId, (await receipt(lostId)).sessionId);
+  },
+);
+
+test(
   "admission recovery retains unresolved cleanup beyond freshness and session expiry",
   { timeout: 20000 },
   async (t) => {
     for (const closeBy of ["control", "deadline"]) {
       await t.test(closeBy, async (t) => {
-        const resources = createResourceScope();
-        t.after(() => resources.close());
+        const resources = createTestResourceScope(t);
         const clock = createControlledClock();
         const tls = await createTlsMaterial(resources);
         const github = await startGitHubFixture(resources, { clock, tls });
@@ -1014,8 +1238,7 @@ test(
           credentialDriverModule("service"),
           credentialDriverModule("server"),
         ]);
-        const base = await createServiceConfiguration(resources);
-        const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+        const config = await createLoopbackServiceConfiguration(resources);
         const factory = await createGitHubServiceFactory(resources, {
           config,
           clock,

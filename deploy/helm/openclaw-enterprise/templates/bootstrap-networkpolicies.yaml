@@ -10,20 +10,11 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: initialization
   policyTypes: [Ingress, Egress]
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
-          podSelector:
-            matchLabels:
-              {{- toYaml .Values.dns.podLabels | nindent 14 }}
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
+    {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
         {{- range .Values.database.cidrs }}
         - ipBlock:
