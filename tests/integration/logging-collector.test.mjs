@@ -989,6 +989,26 @@ test(
         discardWorkId: true,
       },
       {
+        operation: "agent_revision.credential_withdrawal",
+        workId: withdrawalWorkId,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `agent_revision:CANARY_SESSION:reconcile:credentials_withdrawn:${randomUUID()}`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId.replace("credentials_withdrawn", "stopped")}:${randomUUID()}`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credentials_withdrawn",
+        workId: `${withdrawalWorkId}:${randomUUID()}`,
+        discardOperation: true,
+      },
+      {
         operation: "agent.stop",
         workId: `agent:${agentId}:reconcile:stopped`,
         discardWorkId: true,

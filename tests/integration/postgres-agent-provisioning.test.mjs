@@ -1022,6 +1022,17 @@ test(
       return observed.rows[0].state === "failed_permanent" ? observed.rows[0] : undefined;
     });
     assert.equal(work.reason_code, "PROVISIONING_REJECTED");
+    // Only duplicate-name, plugin-policy and runtime-image refusals reach the status read; the
+    // error recorded for this authorization denial keeps its own message internal.
+    const job = await fixture.pool.query(
+      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+      [admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(job.rows, [
+      {
+        error: { code: "PROVISIONING_REJECTED", message: "Agent provisioning could not complete." },
+      },
+    ]);
     const denialAudit = await fixture.pool.query(
       `SELECT kind, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
        FROM occ.audit_events
@@ -1558,7 +1569,8 @@ test(
     });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const pluginId = "codex-plugin:linear@openai-curated-remote";
+    // A hosted-app plugin ID makes the refusal outgrow the 256-character status message.
+    const pluginId = "codex-plugin:app-69312da8e4dc81919370cb86fd172b6c@openai-curated-remote";
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: provisioningBody(namespace.id, secrets, { plugins: { [pluginId]: { enabled: true } } }),
     });
@@ -1589,6 +1601,9 @@ test(
       ),
       failed.data.error.message,
     );
+    // Cut to the 256-character cap with an ellipsis that says text is missing.
+    assert.equal(Array.from(failed.data.error.message).length, 256);
+    assert.ok(failed.data.error.message.endsWith("…"), failed.data.error.message);
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [admitted.data.provisioning.workId],

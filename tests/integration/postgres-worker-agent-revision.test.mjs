@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request as httpsRequest } from "node:https";
+import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -7686,6 +7687,9 @@ test(
     const candidate = await fixture.revision(owner, 1);
     const events = [];
     let activations = 0;
+    const { ApiException } = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    )("@kubernetes/client-node");
 
     // The Kubernetes Driver writes a revision's private Secrets on activation too. When the
     // API server refuses such a write, it raises its own DependencyUnavailableError rather
@@ -7693,7 +7697,8 @@ test(
     // status and Status reason as the cause. tests/conformance/kubernetes-compute.test.mjs
     // pins that Driver shape; this case proves the worker's side: its log must carry that
     // status and reason, not only the class. A 429 or 5xx answer is transient instead and
-    // keeps the same evidence as its cause.
+    // keeps the same evidence as its cause. Any other 4xx client error, which the Driver
+    // passes on unchanged, carries the status in its own code.
     const refused = new DependencyUnavailableError(
       "Workspace setup private delivery is unavailable.",
     );
@@ -7723,6 +7728,9 @@ test(
           if (activations === 2) {
             throw unavailable;
           }
+          if (activations === 3) {
+            throw new ApiException(409, "conflict", "{}", {});
+          }
           return fixture.compute.activateRevision?.(revision, revisionContext);
         },
       },
@@ -7730,7 +7738,7 @@ test(
     );
 
     await fixture.work(candidate, "succeeded", 30_000);
-    assert.equal(activations, 3);
+    assert.equal(activations, 4);
     const pending = events.filter(
       (event) =>
         event.event === "worker.completed" &&
@@ -7759,6 +7767,13 @@ test(
           cause: "unavailable",
           status: 503,
           reason: "ServiceUnavailable",
+        },
+        {
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          dependency: undefined,
+          cause: "ApiException",
+          status: 409,
+          reason: undefined,
         },
       ],
     );
