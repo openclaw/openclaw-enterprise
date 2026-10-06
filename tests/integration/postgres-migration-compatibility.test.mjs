@@ -16,6 +16,28 @@ import {
   migrationCatalog,
 } from "../../scripts/migration-catalog.mjs";
 
+// ci-speed-18 experiment only (never lands): CPU timeline published as subtest names.
+import { readFileSync as probeRead, readdirSync as probeDir } from "node:fs";
+const probeSamples = [];
+function probeSnap() {
+  const cpu = probeRead("/proc/stat", "utf8").split("\n")[0].trim().split(/\s+/).slice(1).map(Number);
+  const groups = { self: 0, pg: 0, shim: 0, dockerd: 0, containerd: 0, other: 0 };
+  for (const pid of probeDir("/proc")) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      const s = probeRead(`/proc/${pid}/stat`, "utf8");
+      const comm = s.slice(s.indexOf("(") + 1, s.lastIndexOf(")"));
+      const r = s.slice(s.lastIndexOf(")") + 2).split(" ");
+      const total = +r[11] + +r[12] + +r[13] + +r[14];
+      const key = Number(pid) === process.pid ? "self" : comm.startsWith("postgres") ? "pg" : comm.startsWith("containerd-shim") ? "shim" : comm === "dockerd" ? "dockerd" : comm === "containerd" ? "containerd" : "other";
+      groups[key] += total;
+    } catch {}
+  }
+  probeSamples.push({ t: Date.now(), cpu, groups });
+}
+probeSnap();
+setInterval(probeSnap, 10_000).unref();
+
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
 const providerMigrationsDirectory = join(
@@ -2578,3 +2600,20 @@ test(
     assert.equal(await authorize(principals[2], "read"), true);
   },
 );
+
+test("ci-speed-18 probe", async (context) => {
+  probeSnap();
+  const first = probeSamples[0];
+  const pts = [...probeSamples];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const d = b.cpu.map((v, j) => v - a.cpu[j]);
+    const total = d.reduce((x, y) => x + y, 0);
+    const idle = d[3] + d[4];
+    const g = Object.fromEntries(Object.keys(b.groups).map((k) => [k, ((b.groups[k] - a.groups[k]) / 100).toFixed(1)]));
+    const name = `probe t=${Math.round((b.t - first.t) / 1000)} busy=${(100 * (1 - idle / total)).toFixed(0)}% steal=${d[7]} iow=${d[4]} usr=${d[0]} sys=${d[2]} ${Object.entries(g).map(([k, v]) => `${k}=${v}`).join(" ")}`;
+    await context.test(name, () => {});
+  }
+  const last = pts.at(-1);
+  await context.test(`probe total ${Object.keys(last.groups).map((k) => `${k}=${((last.groups[k] - first.groups[k]) / 100).toFixed(0)}`).join(" ")} wall=${Math.round((last.t - first.t) / 1000)}`, () => {});
+});
