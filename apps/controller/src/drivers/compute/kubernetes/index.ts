@@ -9458,7 +9458,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       )
     ) {
       throw new ConfigurationFailure(
-        `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`,
+        roles === undefined
+          ? `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`
+          : "Kubernetes native trustedProxy.allowUsers must be empty when gateway.roles is configured.",
       );
     }
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
