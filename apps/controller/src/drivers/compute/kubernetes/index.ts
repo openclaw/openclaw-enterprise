@@ -9477,6 +9477,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `Kubernetes native identityScopes must grant only ${TRUSTED_PROXY_IDENTITY} operator.admin.`,
       );
     }
+    const proxy: Record<string, OpenClawConfigurationValue> = {
+      ...trustedProxy,
+      userHeader: TRUSTED_PROXY_HEADER,
+    };
+    if (roles === undefined) {
+      proxy.allowUsers = [TRUSTED_PROXY_IDENTITY];
+    } else {
+      proxy.allowUsers = [];
+      proxy.roleHeader = RUNTIME_ROLE_HEADER;
+      proxy.rolePolicyHashHeader = RUNTIME_ROLE_POLICY_HEADER;
+      proxy.managedIdentityPrefixes = [RUNTIME_PERSON_IDENTITY_PREFIX];
+      proxy.managedIdentities = [RUNTIME_SERVICE_IDENTITY];
+    }
     return {
       ...configuration,
       gateway: {
@@ -9487,19 +9500,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         auth: {
           ...auth,
           mode: "trusted-proxy",
-          trustedProxy: {
-            ...trustedProxy,
-            userHeader: TRUSTED_PROXY_HEADER,
-            allowUsers: roles === undefined ? [TRUSTED_PROXY_IDENTITY] : [],
-            ...(roles === undefined
-              ? {}
-              : {
-                  roleHeader: RUNTIME_ROLE_HEADER,
-                  rolePolicyHashHeader: RUNTIME_ROLE_POLICY_HEADER,
-                  managedIdentityPrefixes: [RUNTIME_PERSON_IDENTITY_PREFIX],
-                  managedIdentities: [RUNTIME_SERVICE_IDENTITY],
-                }),
-          },
+          trustedProxy: proxy,
           identityScopes: { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
         },
       },
