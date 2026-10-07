@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-03
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-05
+last_updated_session: authoring-run/05067642-df93-4716-8f90-5b7430e50c41
 ---
 
 # Harness Execution Topology Flow
@@ -137,6 +137,11 @@ Because the predecessor Gateway is stopped first (step 3) or otherwise not ready
 otherwise ready. That candidate Gateway provides the bootstrap endpoint and changes no unrelated
 Gateway; the revision remains not ready, and never activates, until its exact workspace node is
 enrolled and observed.
+`KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds dedicated Codex
+callbacks to the Agent's route. `AGENT_WITH_NODE_ENTRYPOINT` prepares private
+capability storage and TLS trust; OpenClaw authorizes callbacks. See
+[native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+
 A dedicated Codex Harness names its workspace node `agent-<agent digest>-workspace` on every
 start, so the Gateway's node list keeps one stable name across revisions.
 
@@ -312,6 +317,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 14:24: Route dedicated Codex native hook callbacks with per-relay capabilities. (authoring-run/05067642-df93-4716-8f90-5b7430e50c41 - dfa091b6)
 
 - 2026-10-03 16:02: Run configured development API and worker Compute preflight before admitting work. (01a0fe72-58b2-7cc3-b770-7310f5401deb - c04093189f2ba6240f8dc431847c2f487afd11de)
 

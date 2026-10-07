@@ -3361,7 +3361,7 @@ startAuthenticatedCodex();
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 export const AGENT_WITH_NODE_ENTRYPOINT = String.raw`
-const { mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
 ${WORKSPACE_ASSET_HELPERS}
@@ -3406,6 +3406,19 @@ logStartupPhase("workspace-baseline", baselineStartedAt, baseline.error || basel
 if (baseline.error) throw baseline.error;
 if (baseline.status !== 0) throw new Error("Workspace initialization failed.");
 const codexEnv = { ...process.env, PATH: harnessPath };
+// Per-run hook capabilities are delivered by the authenticated app-server connection.
+// Keep them outside the model workspace and the file-transfer plugin's roots.
+const hookDirectory = join(process.env.HOME, ".oce-native-hooks");
+mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
+chmodSync(hookDirectory, 0o700);
+if (process.env.OPENCLAW_NODE_CA_PEM) {
+  const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
+    ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
+    : "";
+  const caPath = join(hookDirectory, "gateway-ca.pem");
+  writeFileSync(caPath, [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"), { mode: 0o600 });
+  codexEnv.NODE_EXTRA_CA_CERTS = caPath;
+}
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
 delete codexEnv.OPENCLAW_NODE_CA_PEM;

@@ -3942,6 +3942,98 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   return JSON.parse(body).choices?.[0]?.message?.content ?? "";
 }
 
+async function assertDedicatedNativeChildRelay(topology) {
+  const marker = `OCE-NATIVE-CHILD-${randomUUID()}`;
+  const sessionKey = `agent:main:native-child-${randomUUID()}`;
+  await requestDedicatedAgentTurn(
+    topology,
+    sessionKey,
+    `Use native Codex spawn_agent to create exactly one child. Ask it to reply exactly ${marker}. ` +
+      "Wait for that child to finish and return its answer. Do not use OpenClaw sessions_spawn.",
+  );
+  const history = await assertConversation(topology, sessionKey, marker);
+  const assistant = assistantMessageContaining(history, marker);
+  const parentThreadId = assistant.idempotencyKey?.match(/^codex-app-server:([^:]+):/)?.[1];
+  assert.ok(parentThreadId, "the Gateway transcript must identify the native parent thread");
+
+  // A parent can repeat the marker without spawning. Read the native child, not just its summary.
+  const evidence = JSON.parse(
+    await execNode(
+      topology.gatewayPlacement,
+      topology.gatewayPod.metadata.name,
+      `
+      const assert = require("node:assert/strict");
+      const WebSocket = require("ws");
+      const socket = new WebSocket(process.env.APP_SERVER_URL, {
+        headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+        perMessageDeflate: false,
+        handshakeTimeout: 10_000,
+      });
+      const pending = new Map();
+      let nextId = 0;
+      const fail = () => {
+        for (const request of pending.values()) request.reject(new Error("Native child evidence connection closed"));
+        pending.clear();
+      };
+      socket.on("error", fail);
+      socket.on("close", fail);
+      socket.on("message", (data) => {
+        for (const line of data.toString().split("\\n").filter(Boolean)) {
+          const message = JSON.parse(line);
+          const request = pending.get(message.id);
+          if (!request) continue;
+          pending.delete(message.id);
+          if (message.error) request.reject(new Error("Native thread/read failed: " + message.error.code));
+          else request.resolve(message.result);
+        }
+      });
+      const request = (method, params) => new Promise((resolve, reject) => {
+        if (socket.readyState !== WebSocket.OPEN) return reject(new Error("Native child evidence connection is not open"));
+        const id = ++nextId;
+        pending.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+      const deadline = setTimeout(() => socket.terminate(), 20_000);
+      (async () => {
+        try {
+          await new Promise((resolve, reject) => {
+            socket.once("open", resolve);
+            socket.once("error", () => reject(new Error("Native child evidence connection failed")));
+          });
+          await request("initialize", {
+            clientInfo: { name: "oce-native-child-proof", version: "1.0.0" },
+            capabilities: { experimentalApi: true },
+          });
+          socket.send(JSON.stringify({ method: "initialized", params: {} }));
+          const parent = (await request("thread/read", {
+            threadId: ${JSON.stringify(parentThreadId)}, includeTurns: true,
+          })).thread;
+          const children = new Set(parent.turns.flatMap((turn) => turn.items.flatMap((item) => {
+            if (item.type === "subAgentActivity" && item.kind === "started") return [item.agentThreadId];
+            if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.status === "completed") return item.receiverThreadIds;
+            return [];
+          })));
+          assert.equal(children.size, 1, "expected one actual native child");
+          const childId = [...children][0];
+          const child = (await request("thread/read", { threadId: childId, includeTurns: true })).thread;
+          assert.equal(child.parentThreadId, parent.id, "child must belong to this Gateway turn");
+          const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
+            (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
+          ));
+          assert.ok(completed, "the child itself must complete with the expected answer");
+          process.stdout.write(JSON.stringify({ parentThreadId: parent.id, childThreadId: child.id }));
+        } finally {
+          clearTimeout(deadline);
+          socket.terminate();
+        }
+      })().catch((error) => { console.error(error.message); process.exitCode = 1; });
+    `,
+    ),
+  );
+  assert.equal(evidence.parentThreadId, parentThreadId);
+  assert.notEqual(evidence.childThreadId, parentThreadId);
+}
+
 async function requestFreshDedicatedHarnessTurn(topology) {
   return execNode(
     topology.gatewayPlacement,
@@ -5657,6 +5749,7 @@ export {
   arrangeProductionTopology,
   assertActualModelTurn,
   assertDedicatedAgentsInstructionsInFreshSession,
+  assertDedicatedNativeChildRelay,
   assertLegacyModelSecretBindingDenied,
   assertDedicatedToEmbeddedCutover,
   assertDedicatedWorkspaceResources,

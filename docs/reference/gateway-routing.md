@@ -89,6 +89,22 @@ node credentials as an operator fail at the native Gateway. Worker callbacks
 authenticate their first WebSocket frame with the Gateway-minted, session-bound
 worker admission credential; the Harness never receives the OCC service key.
 
+Dedicated Codex also receives a POST-only
+`/node/__openclaw__/native-hook/` prefix, rewritten to
+`/__openclaw__/native-hook/`. It preserves the Authorization header while
+removing the administrative identity headers listed above. OpenClaw authenticates
+each callback with its per-relay capability and generation; this route does not
+grant node or operator access. Compute derives the callback URL from this Agent's
+private endpoint and refuses a caller-selected override.
+
+The Gateway delivers each hook capability through its authenticated Codex
+app-server connection. The Harness stores it under `/home/node/.oce-native-hooks`
+with a private directory mode, outside the workspace and file-transfer roots.
+This directory is ephemeral Pod state. It is not an isolation boundary against
+compromised Harness code running as the same user; OpenClaw must constrain the
+capability to its live relay. Native hooks use the installation's public CA bundle
+with normal HTTPS certificate verification.
+
 Preparation creates or repairs these resources under the serving Gateway's
 revision. Preparing a replacement preserves that ownership until activation
 replaces the Deployment.

@@ -3108,7 +3108,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     service,
     "node",
   );
-  assert.equal(nodeRoute.spec.rules.length, 4);
+  assert.equal(nodeRoute.spec.rules.length, 5);
   assert.deepEqual(nodeRoute.spec.rules[0].matches, [
     { path: { type: "Exact", value: `/namespaces/${tenant.id}/agents/${revision.agentId}/node` } },
   ]);
@@ -3149,8 +3149,35 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
     ],
     backendRefs: [{ group: "", kind: "Service", name, port: 8080 }],
   });
+  const hookRoute = nodeRoute.spec.rules[2];
+  assert.deepEqual(hookRoute.matches, [
+    {
+      method: "POST",
+      path: {
+        type: "PathPrefix",
+        value: `/namespaces/${tenant.id}/agents/${revision.agentId}/node/__openclaw__/native-hook/`,
+      },
+    },
+  ]);
+  assert.deepEqual(hookRoute.filters[0], {
+    type: "URLRewrite",
+    urlRewrite: {
+      path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/__openclaw__/native-hook/" },
+    },
+  });
+  const hookHeaders = hookRoute.filters[1].requestHeaderModifier;
+  assert.equal(hookHeaders.remove.includes("authorization"), false);
+  for (const header of [
+    "cookie",
+    "x-occ-identity",
+    "x-api-key",
+    "x-openclaw-scopes",
+    "tailscale-user-login",
+  ]) {
+    assert.ok(hookHeaders.remove.includes(header), `hook route must strip ${header}`);
+  }
   for (const [rule, transferPath] of nodeRoute.spec.rules
-    .slice(2)
+    .slice(3)
     .map((rule, index) => [rule, ["worker-bundle/v1", "worker-transfer/v1"][index]])) {
     assert.deepEqual(rule.matches, [
       {
@@ -11280,6 +11307,29 @@ process.exitCode = 3;`;
   },
 );
 
+test("dedicated Codex refuses a caller-selected hook callback before provisioning", async () => {
+  const fixture = workspaceSetupFixture(false);
+  fixture.revision.configuration.plugins = {
+    entries: {
+      codex: {
+        config: {
+          appServer: {
+            nativeHookRelay: {
+              url: "https://other-agent.example.test/hooks",
+              credentialDirectory: "/tmp/hooks",
+            },
+          },
+        },
+      },
+    },
+  };
+  await assert.rejects(
+    fixture.driver.prepareRevision(fixture.revision, fixture.context),
+    /owned by the Compute Driver/,
+  );
+  assert.equal(fixture.records.length, 0);
+});
+
 test("Kubernetes workspace setup rejects foreign identities and unsupported storage before delivery", async () => {
   for (const mutate of [
     ...[
@@ -11400,6 +11450,20 @@ for (const method of ["api_key", "codex_pat"]) {
     const harness = values.find(
       ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
     );
+    const configurationName = gateway.spec.template.spec.volumes.find(
+      ({ name }) => name === "openclaw-configuration",
+    ).configMap.name;
+    const configuration = values.find(
+      ({ kind, metadata }) => kind === "ConfigMap" && metadata.name === configurationName,
+    );
+    const callback = JSON.parse(configuration.data["openclaw.json"]).plugins.entries.codex.config
+      .appServer.nativeHookRelay;
+    assert.deepEqual(callback, {
+      url:
+        driver.getGatewayEndpoint(revision).replace(/^wss:/, "https:") +
+        "/node/__openclaw__/native-hook",
+      credentialDirectory: "/home/node/.oce-native-hooks",
+    });
     assert.equal(gateway.metadata.namespace, gatewayNamespace);
     assert.equal(harness.metadata.namespace, namespace);
     assert.equal(gateway.spec.template.spec.automountServiceAccountToken, false);
