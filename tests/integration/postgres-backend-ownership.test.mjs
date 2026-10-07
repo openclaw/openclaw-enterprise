@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import {
   alternateWorkspaceId,
@@ -19,7 +21,7 @@ import {
   startBackendlessDevelopmentServer,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
@@ -96,7 +98,11 @@ test(
   "development API starts with stale Backend references and permits repair through Agent update",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const port = await availablePort();
+    // The port is part of the auth base URL. Hold it until the child binds it, and again
+    // across the restart, so no other socket takes it in between.
+    let reservation = await reservePort();
+    context.after(() => reservation.release());
+    const { port } = reservation;
     const origin = `http://127.0.0.1:${port}`;
     const email = "postgres-admin@openclaw.local";
     const password = "postgres-development-password";
@@ -109,7 +115,7 @@ test(
       installationName: "PostgreSQL Backend repair integration",
     });
     let server = await startBackendlessDevelopmentServer(context, {
-      port,
+      reservation,
       origin,
       authSecret,
       configurationRoot: fixture.configurationRoot,
@@ -148,6 +154,7 @@ test(
     );
     assert.equal(agent.response.status, 201);
 
+    reservation = await reservePort({ port });
     await stopProcess(server.child);
     await fixture.pool.query(
       "UPDATE occ.agents SET backend_id = $1 WHERE namespace_id = $2 AND id = $3",
@@ -155,7 +162,7 @@ test(
     );
 
     server = await startBackendlessDevelopmentServer(context, {
-      port,
+      reservation,
       origin,
       authSecret,
       configurationRoot: fixture.configurationRoot,
@@ -215,7 +222,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const fixture = await createBackendFixture(context);
-    const controller = createBackendController(fixture);
+    const controller = createBackendController(fixture, { nativeWorkerSupport: "custom-image" });
 
     const draftNamespace = await createReadyNamespace(fixture, "drafts");
     const draftConfiguration = await createConfiguration(fixture, controller, draftNamespace);
@@ -275,7 +282,10 @@ test(
       name: `dedicated-${randomUUID()}`,
       configurationId: dedicatedConfiguration.id,
       backendId,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       executionMode: "dedicated",
     });
     const admitted = await controller.deployAgent(
@@ -285,8 +295,8 @@ test(
     );
     assert.equal(admitted.backendId, backendId);
     assert.deepEqual(admitted.harnessAuth, {
-      method: "chatgpt_service_account",
-      serviceAccountId: account.id,
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
       credential: account.credential,
       backendBinding: binding,
     });
@@ -321,7 +331,10 @@ test(
       name: `embedded-${randomUUID()}`,
       configurationId: embeddedConfiguration.id,
       backendId,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       executionMode: "embedded",
     });
     await expectBackendConflict(
@@ -418,6 +431,57 @@ test(
       { action: "retire", revisionId: admitted.id, backendId },
     ]);
 
+    // A supported native-worker Sandbox lets both PAT sources reach the real
+    // Kubernetes topology validator; neither may become an OpenClaw deployment.
+    const sandbox = {
+      id: "sandbox-native-pat-admission",
+      implementation: "test/native-worker",
+      capability: "sandbox",
+      facets: ["networking", "filesystem", "process"],
+      async provisionHarness() {
+        assert.fail("Refused admission must not provision a Sandbox.");
+      },
+      async cleanup() {},
+    };
+    const kubernetes = new KubernetesComputeDriver(
+      conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+      { sandboxDriver: sandbox },
+    );
+    controller.selectedDriver("compute").validateHarnessAuth =
+      kubernetes.validateHarnessAuth.bind(kubernetes);
+    controller.registerDriver(sandbox);
+    controller.selectDriver("sandbox", sandbox.id);
+    const admissionCounts = async () =>
+      (
+        await fixture.pool.query(
+          `SELECT
+             (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id=$1 AND agent_id=$2) AS revisions,
+             (SELECT count(*)::integer FROM occ.controller_work WHERE namespace_id=$1) AS work`,
+          [exactNamespace.id, dedicated.id],
+        )
+      ).rows;
+    const beforeNativeAttempts = await admissionCounts();
+    for (const source of [dedicated.harnessAuth.source, replacementAuth.source]) {
+      await controller.updateAgent(fixture.actor.id, {
+        namespaceId: exactNamespace.id,
+        agentId: dedicated.id,
+        configurationId: embeddedConfiguration.id,
+        backendId: source.kind === "service_account" ? backendId : null,
+        harnessAuth: { method: "codex_pat", source },
+        executionMode: "dedicated",
+      });
+      await expectBackendConflict(
+        () =>
+          controller.deployAgent(
+            fixture.actor.id,
+            { namespaceId: exactNamespace.id, agentId: dedicated.id },
+            resolveApprovedHarness,
+          ),
+        /configured model and topology/,
+      );
+      assert.deepEqual(await admissionCounts(), beforeNativeAttempts, source.kind);
+    }
+
     const deletedAccount = await fixture.state.transact((unit) =>
       unit.serviceAccounts.deleteServiceAccount(exactNamespace.id, account.id),
     );
@@ -481,7 +545,14 @@ test(
         name: `${scenario.label}-${randomUUID()}`,
         configurationId: configuration.id,
         backendId: scenario.agentBackendId,
-        harnessAuth: { method: "chatgpt_service_account", serviceAccountId: brokenAccount.id },
+        harnessAuth: {
+          method: "codex_pat",
+          source: {
+            kind: "service_account",
+            namespaceId: brokenAccount.namespaceId,
+            id: brokenAccount.id,
+          },
+        },
         executionMode: "dedicated",
       });
       await expectBackendConflict(
@@ -524,7 +595,14 @@ test(
           name: crossNamespaceAgentName,
           configurationId: targetConfiguration.id,
           backendId,
-          harnessAuth: { method: "chatgpt_service_account", serviceAccountId: sourceAccount.id },
+          harnessAuth: {
+            method: "codex_pat",
+            source: {
+              kind: "service_account",
+              namespaceId: targetNamespace.id,
+              id: sourceAccount.id,
+            },
+          },
           executionMode: "dedicated",
         }),
       (error) =>

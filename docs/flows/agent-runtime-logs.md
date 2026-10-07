@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-05
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+last_updated_session: authoring-run/2afba01b-8db4-41d7-a942-e14bd7f44262
 ---
 
 # Agent runtime logs flow
@@ -183,10 +183,18 @@ page session, so reopening the Logs tab adds no audited denial, and another
 operator signing in on the tab asks again. Its status message names the
 log-text grants too. On the Gateway source it points to the Harness source while
 no Harness Pod is ready, or to Deployment activity while none exists. The
-CLI's `--follow` loop re-sends the cursor every 2 seconds. Driver errors map to
+CLI's `--follow` loop re-sends the cursor every 2 seconds.
+`internal/occcli/cli.go:runAgentLogs` treats command-context cancellation as a
+clean follow exit during both initial revision selection and page polling.
+Without `--follow`, a canceled request remains an error. Driver errors map to
 fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
 ## Debugging and Verification
+
+- `go test ./internal/occcli -run '^TestResourceRequestStopsWhenCommandContextIsCanceled$'`
+  exercises the real CLI and HTTP client against a loopback server, canceling
+  in-flight Agent and revision lookups. Follow exits successfully; one-shot reads
+  retain cancellation errors. This proves local CLI cancellation, not deployed OCC.
 
 - `503 RUNTIME_LOGS_CLUSTER_RBAC` means the API ServiceAccount lacks
   `pods/log`, `events` or, on an execution cluster, `pods` reads in that
@@ -217,6 +225,7 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
 ## Changelog
 
+- 2026-10-05 11:38: Document clean CLI follow cancellation during initial revision lookup with the accompanying fix. (authoring-run/2afba01b-8db4-41d7-a942-e14bd7f44262 - 0698d533b97dc3abe7bef7ff7907a0f4335c3182)
 - 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
 
 - 2026-10-04 07:00: Authorize before the rate and concurrency limits so every denial is audited. (bh11-runtime-log-authz)

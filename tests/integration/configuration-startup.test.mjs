@@ -1097,7 +1097,12 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
     },
   };
   const relativeConfiguration = installation();
-  relativeConfiguration.presets = { includeDefaults: false, files: ["presets/from-file.json"] };
+  // Entries are trimmed before they resolve, so whitespace inside a quoted YAML entry does not
+  // change the path.
+  relativeConfiguration.presets = {
+    includeDefaults: false,
+    files: ["  presets/from-file.json\t"],
+  };
   const relativePath = await fixture(t, relativeConfiguration);
   const relativeDirectory = dirname(relativePath);
   await mkdir(join(relativeDirectory, "presets"), { recursive: true });
@@ -1131,6 +1136,11 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
   for (const [filename, contents, expected] of [
     ["missing.json", undefined, /Preset file .* is unavailable/],
     ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
+    [
+      "missing-name.json",
+      JSON.stringify({ template: {} }),
+      /Preset file .*missing-name\.json\.name must be a nonempty string/,
+    ],
     [
       "unsupported.json",
       JSON.stringify({ name: "unsupported", template: {}, unexpected: true }),
@@ -1193,6 +1203,7 @@ test("API and worker name a Preset file failure in their startup error code", as
     ["invalid-name.json", JSON.stringify({ name: "line\u2028break", template: {} })],
     ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
     ["not-a-list.json", undefined, "cases/not-a-list.json"],
+    ["blank-entry", undefined, ["  "]],
   ]) {
     const configuration = installation();
     configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };

@@ -194,6 +194,7 @@ const profileEndpoint = "https://api.github.com/user";
 // The audited callback denials whose code the controller turns into a Console reason.
 export const MEMBERSHIP_DENIALS = ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_UNAVAILABLE"] as const;
 type MembershipDenial = (typeof MEMBERSHIP_DENIALS)[number];
+export const CALLBACK_DENIALS = [...MEMBERSHIP_DENIALS, "ACCOUNT_DISABLED"] as const;
 
 // GitHub logins are letters, digits and hyphens; older accounts may break today's hyphen rules.
 const loginPattern = /^[A-Za-z0-9-]{1,39}$/;
@@ -601,6 +602,17 @@ export function createHumanLogin(
     });
   }
 
+  // The provider authenticated this identity and it is attached to a disabled account. Only
+  // that person reaches this answer (the attempt is bound to their browser), so telling them
+  // reveals nothing to anyone else; the response code becomes the Console's reason.
+  async function refuseDisabled(provider: ExternalProviderName, userId: string): Promise<never> {
+    await state.recordDenied("ACCOUNT_DISABLED", provider, { userId });
+    throw APIError.fromStatus("UNAUTHORIZED", {
+      message: "Authentication was not accepted.",
+      code: "ACCOUNT_DISABLED",
+    });
+  }
+
   // A malformed, unknown, replayed or expired attempt proves nothing about its sender, who
   // can mint state and cookie values freely, so it is counted and not audited.
   function refuseUnmatched(provider: ExternalProviderName): never {
@@ -857,6 +869,9 @@ export function createHumanLogin(
               );
               if (!snapshot) {
                 return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED");
+              }
+              if ("disabled" in snapshot) {
+                return refuseDisabled(name, snapshot.userId);
               }
               const startedAt = performance.now();
               const session = await proofScope.run({ proof: snapshot.proof }, () =>

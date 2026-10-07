@@ -88,7 +88,7 @@ provisions the revision. See [Harness execution](harness-execution.md#harness-au
 for the supported topology.
 
 While a Credential Gateway is selected, deployment rejects `api_key`,
-`codex_pat`, and `chatgpt_service_account` bindings with `409`. Guided Agent
+and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`. Guided Agent
 provisioning rejects credential sources with `400`; create the Agent, then
 deploy it.
 

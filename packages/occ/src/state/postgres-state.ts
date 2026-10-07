@@ -41,6 +41,7 @@ import type {
   SecretBindings,
   ServiceAccount,
   ServiceAccountCredential,
+  ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 import {
   harnessAuthBindingFromSnapshot,
@@ -86,6 +87,7 @@ import type {
   PlatformReadView,
   PlatformStateStore,
   PlatformUnitOfWork,
+  SecretReferenceKind,
   SecretRepository,
   ServiceAccountRepository,
 } from "./platform-state.ts";
@@ -2281,26 +2283,26 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return immutableCopy(secret);
       },
-      hasReferences: async (namespaceId, secretId) => {
-        if ((await findSecret(namespaceId, secretId)) === undefined) {
-          return false;
-        }
+      listReferences: async (namespaceId, secretId, limit) => {
+        // One statement for every kind, and none for a Secret that is gone or whose Namespace
+        // is deleted (as findSecret); LIMIT limit + 1 tells a full page from a truncated one.
         const found = rows(
           (
             await client.query(
-              `SELECT EXISTS (
-                 SELECT 1 FROM occ.credential_source_secrets
+              `SELECT reference.kind, reference.id FROM (
+                 SELECT 'credential_source'::text AS kind, credential_source_id AS id
+                 FROM occ.credential_source_secrets
                  WHERE namespace_id = $1 AND secret_id = $2
-               ) OR EXISTS (
-                 SELECT 1
+                 UNION
+                 SELECT 'configuration', c.id
                  FROM occ.configurations AS c,
                       jsonb_each(COALESCE(c.secret_bindings, '{}'::jsonb)) AS binding(env, value)
                  WHERE c.namespace_id = $1
                    AND binding.value #>> '{source,kind}' = 'secret'
                    AND binding.value #>> '{source,namespaceId}' = $1
                    AND binding.value #>> '{source,id}' = $2
-               ) OR EXISTS (
-                 SELECT 1
+                 UNION
+                 SELECT 'agent', a.id
                  FROM occ.agents AS a
                  JOIN occ.agent_revisions AS r
                    ON r.namespace_id = a.namespace_id
@@ -2312,8 +2314,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND binding.value #>> '{source,kind}' = 'secret'
                    AND binding.value #>> '{source,namespaceId}' = $1
                    AND binding.value #>> '{source,id}' = $2
-               ) OR EXISTS (
-                 SELECT 1
+                 UNION
+                 SELECT 'agent', w.agent_id
                  FROM occ.controller_work AS w
                  JOIN occ.agent_revisions AS r
                    ON r.namespace_id = w.namespace_id
@@ -2326,28 +2328,28 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND binding.value #>> '{source,kind}' = 'secret'
                    AND binding.value #>> '{source,namespaceId}' = $1
                    AND binding.value #>> '{source,id}' = $2
-               ) OR EXISTS (
-                 SELECT 1 FROM occ.agents
+                 UNION
+                 SELECT 'agent', id FROM occ.agents
                  WHERE namespace_id = $1 AND harness_auth_secret_id = $2
-               ) OR EXISTS (
-                 SELECT 1 FROM occ.agents AS a
+                 UNION
+                 SELECT 'agent', a.id FROM occ.agents AS a
                  JOIN occ.agent_revisions AS r ON r.namespace_id = a.namespace_id
                    AND r.agent_id = a.id AND r.id = a.active_revision_id
                  WHERE a.namespace_id = $1
-                   AND r.admitted_spec #>> '{harness_auth,method}' IN ('api_key', 'codex_pat', 'oauth')
+                   AND r.admitted_spec #>> '{harness_auth,source,kind}' = 'secret'
                    AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
-               ) OR EXISTS (
-                 SELECT 1 FROM occ.controller_work AS w
+                 UNION
+                 SELECT 'agent', w.agent_id FROM occ.controller_work AS w
                  JOIN occ.agent_revisions AS r ON r.namespace_id = w.namespace_id
                    AND r.agent_id = w.agent_id AND r.id = w.revision_id
                  WHERE w.namespace_id = $1 AND w.state IN ('queued', 'claimed')
-                   AND r.admitted_spec #>> '{harness_auth,method}' IN ('api_key', 'codex_pat', 'oauth')
+                   AND r.admitted_spec #>> '{harness_auth,source,kind}' = 'secret'
                    AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
-               ) OR EXISTS (
+                 UNION
                  -- A queued or running guided provisioning plan creates its Configuration and
                  -- Agent from these references later. A failed plan does not block: nothing
                  -- removes it, and reading or retrying it then names the deleted Secret.
-                 SELECT 1 FROM occ.agent_provisioning_work AS p
+                 SELECT 'provisioning_request', p.work_id FROM occ.agent_provisioning_work AS p
                  WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
                    AND (
                      EXISTS (
@@ -2359,17 +2361,35 @@ export class PostgresPlatformState implements PlatformStateStore {
                          AND binding.value #>> '{source,namespaceId}' = $1
                          AND binding.value #>> '{source,id}' = $2
                      ) OR (
-                       p.plan #>> '{harnessAuth,method}' IN ('api_key', 'codex_pat', 'oauth')
+                       p.plan #>> '{harnessAuth,source,kind}' = 'secret'
                        AND p.plan #>> '{harnessAuth,source,id}' = $2
                      )
                    )
-               ) AS present`,
-              [namespaceId, secretId],
+               ) AS reference
+               WHERE EXISTS (
+                 SELECT 1 FROM occ.secrets AS s
+                 JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
+                 WHERE s.namespace_id = $1 AND s.id = $2
+               )
+               ORDER BY reference.kind COLLATE "C", reference.id COLLATE "C"
+               LIMIT $3`,
+              [namespaceId, secretId, limit + 1],
             )
           ).rows,
-        )[0];
-        return found?.present === true;
+        );
+        const references = found.slice(0, limit).map((row) =>
+          Object.freeze({
+            kind: text(row, "kind") as SecretReferenceKind,
+            id: text(row, "id"),
+          }),
+        );
+        return Object.freeze({
+          references: Object.freeze(references),
+          truncated: found.length > limit,
+        });
       },
+      hasReferences: async (namespaceId, secretId) =>
+        (await secrets.listReferences(namespaceId, secretId, 1)).references.length > 0,
       deleteSecret: async (namespaceId, secretId) => {
         if ((await findSecret(namespaceId, secretId)) === undefined) {
           return false;
@@ -2806,7 +2826,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                   AND r.agent_id = a.id
                   AND r.id = a.active_revision_id
                  WHERE a.namespace_id = $1
-                   AND r.admitted_spec #>> '{harness_auth,serviceAccountId}' = $2
+                   AND r.admitted_spec #>> '{harness_auth,source,kind}' = 'service_account'
+                   AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
                ) OR EXISTS (
                  SELECT 1 FROM occ.controller_work AS w
                  JOIN occ.agent_revisions AS r
@@ -2815,15 +2836,16 @@ export class PostgresPlatformState implements PlatformStateStore {
                   AND r.id = w.revision_id
                  WHERE w.namespace_id = $1
                    AND w.state IN ('queued', 'claimed')
-                   AND r.admitted_spec #>> '{harness_auth,serviceAccountId}' = $2
+                   AND r.admitted_spec #>> '{harness_auth,source,kind}' = 'service_account'
+                   AND r.admitted_spec #>> '{harness_auth,source,id}' = $2
                ) OR EXISTS (
                  -- A queued or running guided provisioning plan creates its Agent from this
                  -- account later. A failed plan does not block: nothing removes it, and
                  -- reading or retrying it then names the deleted ServiceAccount.
                  SELECT 1 FROM occ.agent_provisioning_work AS p
                  WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
-                   AND p.plan #>> '{harnessAuth,method}' = 'chatgpt_service_account'
-                   AND p.plan #>> '{harnessAuth,serviceAccountId}' = $2
+                   AND p.plan #>> '{harnessAuth,source,kind}' = 'service_account'
+                   AND p.plan #>> '{harnessAuth,source,id}' = $2
                ) AS present`,
               [namespaceId, serviceAccountId],
             )
@@ -3354,6 +3376,13 @@ export class PostgresPlatformState implements PlatformStateStore {
       });
     };
 
+    const servicePrincipalFromRow = (row: PostgresRow): Readonly<ServicePrincipal> =>
+      Object.freeze({
+        kind: "service_principal",
+        id: text(row, "id"),
+        namespaceId: text(row, "namespace_id"),
+      });
+
     const accessBindingFromRow = (row: PostgresRow): Readonly<AccessBinding> => {
       const namespaceId = optionalText(row, "namespace_id");
       const resourceKind = optionalText(row, "resource_kind");
@@ -3600,6 +3629,52 @@ export class PostgresPlatformState implements PlatformStateStore {
           [namespaceId, bindingId],
         );
         return deleted.rowCount === 1;
+      },
+      listServicePrincipals: async (namespaceId) =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT id, namespace_id FROM occ.iam_identities
+                 WHERE kind = 'service_principal' AND namespace_id = $1 AND agent_id IS NULL
+                 ORDER BY id`,
+                [namespaceId],
+              )
+            ).rows,
+          ).map(servicePrincipalFromRow),
+        ),
+      getServicePrincipal: async (namespaceId, servicePrincipalId) => {
+        const found = rows(
+          (
+            await client.query(
+              `SELECT id, namespace_id FROM occ.iam_identities
+               WHERE kind = 'service_principal' AND namespace_id = $1 AND agent_id IS NULL
+                 AND id = $2`,
+              [namespaceId, servicePrincipalId],
+            )
+          ).rows,
+        )[0];
+        return found === undefined ? undefined : servicePrincipalFromRow(found);
+      },
+      createServicePrincipal: async (servicePrincipal) => {
+        await this.requireInitialized(context);
+        const namespace = await namespaces.lockNamespace(servicePrincipal.namespaceId ?? "");
+        if (
+          namespace === undefined ||
+          (namespace.status !== "provisioning" && namespace.status !== "ready") ||
+          servicePrincipal.namespaceId !== namespace.id ||
+          servicePrincipal.agentId !== undefined
+        ) {
+          throw new ScopeViolationError(
+            "The ServicePrincipal must belong to an available Namespace.",
+          );
+        }
+        await client.query(
+          `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind, issuer, subject)
+           VALUES ($1, $2, NULL, 'service_principal', NULL, NULL)`,
+          [servicePrincipal.id, namespace.id],
+        );
+        return servicePrincipalFromRow({ id: servicePrincipal.id, namespace_id: namespace.id });
       },
     };
 

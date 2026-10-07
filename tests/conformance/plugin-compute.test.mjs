@@ -2740,6 +2740,16 @@ test("gateway runtime status maps native Slack channel status without provider d
       if (specifier === "openclaw/plugin-sdk/gateway-runtime") {
         return {
           isGatewayTransportError: (error) => error === transportError,
+          // OpenClaw's predicate for a request refusal the Gateway answered (call.ts).
+          isGatewayClientRequestError: (error) =>
+            error instanceof Error &&
+            error.name === "GatewayClientRequestError" &&
+            typeof error.gatewayCode === "string" &&
+            error.gatewayCode.length > 0 &&
+            error.message.length > 0 &&
+            typeof error.retryable === "boolean" &&
+            (error.retryAfterMs === undefined ||
+              (Number.isInteger(error.retryAfterMs) && error.retryAfterMs >= 0)),
           async callGatewayFromCli(method, options, params, { signal }) {
             assert.equal(method, "channels.status");
             assert.deepEqual(plain(params), { channel: "slack", probe: true, timeoutMs: 5000 });
@@ -2885,9 +2895,20 @@ test("gateway runtime status maps native Slack channel status without provider d
     "malformed live response",
   );
 
+  // The shape of a refusal the Gateway answers (OpenClaw's GatewayClientRequestError).
+  const gatewayRefusal = (gatewayCode, message) =>
+    Object.assign(new Error(message), {
+      name: "GatewayClientRequestError",
+      gatewayCode,
+      retryable: false,
+    });
   for (const [error, code] of [
     [transportError, "UNAVAILABLE"],
     [new Error("RPC failed"), "PROBE_FAILED"],
+    // Only the unknown-channel refusal for Slack itself means "no Slack channel".
+    [gatewayRefusal("INVALID_REQUEST", "unknown channel: teams"), "PROBE_FAILED"],
+    [gatewayRefusal("UNAVAILABLE", "unknown channel: slack"), "PROBE_FAILED"],
+    [new Error("unknown channel: slack"), "PROBE_FAILED"],
   ]) {
     channelError = error;
     const diagnostics = await readRuntimeChannelChecksFromHandler(statusHandler);
@@ -2896,6 +2917,24 @@ test("gateway runtime status maps native Slack channel status without provider d
       Array.from({ length: 3 }, () => ({ state: "unknown", code })),
     );
   }
+  // The Gateway loads the Slack plugin only when the Configuration sets up a Slack channel,
+  // so for an Agent without one it refuses channels.status as an unknown channel. That is
+  // the documented NOT_CONFIGURED answer, not a failed probe.
+  channelError = gatewayRefusal("INVALID_REQUEST", "unknown channel: slack");
+  const withoutSlack = await readRuntimeChannelChecksFromHandler(statusHandler);
+  assert.deepEqual(
+    withoutSlack.checks.map(({ component, check, state, code }) => ({
+      component,
+      check,
+      state,
+      code,
+    })),
+    [
+      { component: "gateway", check: "configuration", state: "failed", code: "NOT_CONFIGURED" },
+      { component: "gateway", check: "authentication", state: "unknown", code: undefined },
+      { component: "gateway", check: "connectivity", state: "unknown", code: undefined },
+    ],
+  );
   channelError = undefined;
 
   holdChannelStatusResponse = true;
@@ -2940,7 +2979,7 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(pendingChannelSignal.aborted, true);
   await abortedRequest;
   responseListeners.close?.();
-  assert.equal(channelStatusCalls, 11);
+  assert.equal(channelStatusCalls, 15);
 });
 
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {

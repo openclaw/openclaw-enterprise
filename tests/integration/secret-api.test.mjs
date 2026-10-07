@@ -599,7 +599,18 @@ test("Secret API stores values through the selected driver and returns metadata 
     `/namespaces/${namespace.id}/secrets/${created.data.id}`,
   );
   assert.equal(detail.status, 200);
-  assert.deepEqual(detail.data, created.data);
+  // The exact read adds the Secret's consumers; nothing references this one yet.
+  assert.deepEqual(detail.data, {
+    ...created.data,
+    consumers: {
+      agents: [],
+      configurations: [],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 0,
+      truncated: false,
+    },
+  });
 
   const updated = await request(
     fixture.app,
@@ -866,7 +877,7 @@ for (const [model, method, executionMode] of [
     assert.equal(blocked.status, 409);
     assert.equal(
       blocked.body.error.message,
-      "A Configuration, credential source, Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the Secret. Remove those references, or let provisioning finish, first.",
+      `The Secret is still referenced by Agent ${agent.id}. Remove those references first.`,
     );
     // Authorization precedes the reference check: a caller without delete learns nothing about references.
     const { app: outsiderApp } = await fixture.createPrincipal("secret-outsider");
@@ -946,6 +957,188 @@ for (const [model, method, executionMode] of [
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(value), false);
   });
 }
+
+// Exercises the HTTP routes, Native IAM and in-memory platform state; PostgreSQL's reference
+// query is covered by the platform state store contract.
+test("Secret consumers name only readable references, on GET and in the delete conflict", async () => {
+  const harnessAuthDriver = createTestKubernetesComputeDriver("compute-secret-consumers");
+  const fixture = await createFixture({
+    computeDriver: {
+      ...createReadyComputeDriver("compute-secret-api"),
+      validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
+    },
+  });
+  const model = "openai/gpt-5";
+  const { namespace, configuration, agent } = await bootstrapAgent(fixture, {
+    agents: {
+      defaults: { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+    },
+  });
+  const secrets = `/namespaces/${namespace.id}/secrets`;
+  const key = await request(fixture.app, "POST", secrets, {
+    body: { name: "Shared key", value: `synthetic-shared-key-${randomUUID()}` },
+  });
+  assert.equal(key.status, 201, JSON.stringify(key.body));
+  const keyPath = `${secrets}/${key.data.id}`;
+  const none = { agents: [], configurations: [], credentialSources: [], provisioningRequests: [] };
+  // A new Secret has no consumers, and the field is on the exact read only.
+  assert.deepEqual((await request(fixture.app, "GET", keyPath)).data.consumers, {
+    ...none,
+    unreadable: 0,
+    truncated: false,
+  });
+  assert.equal(key.data.consumers, undefined);
+
+  const bindTo = async () => {
+    const created = await request(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.id}/configurations`,
+      {
+        body: {
+          kind: "agent",
+          values: {},
+          secretBindings: { SLACK_BOT_TOKEN: { source: key.data.ref } },
+        },
+      },
+    );
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.data.id;
+  };
+  const visible = await bindTo();
+  const hidden = await bindTo();
+  // The Agent's draft model credential is the third reference.
+  const bound = await request(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+    {
+      body: {
+        configurationId: configuration.id,
+        harnessAuth: { method: "api_key", source: key.data.ref },
+      },
+    },
+  );
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+
+  const admin = await request(fixture.app, "GET", keyPath);
+  assert.equal(admin.status, 200);
+  assert.deepEqual(admin.data.consumers, {
+    ...none,
+    agents: [agent.id],
+    configurations: [visible, hidden].sort(),
+    unreadable: 0,
+    truncated: false,
+  });
+
+  // A member who may read and delete the Secret and read one of the Configurations, nothing else.
+  const { principal: member, app: memberApp } = await fixture.createPrincipal("secret-member");
+  grantRole(fixture.state, member.id, {
+    id: "role-consumer-secret",
+    namespaceId: namespace.id,
+    permissions: { secret: ["read", "delete"] },
+    resource: { kind: "secret", id: key.data.id },
+  });
+  grantRole(fixture.state, member.id, {
+    id: "role-consumer-configuration",
+    namespaceId: namespace.id,
+    permissions: { configuration: ["read"] },
+    resource: { kind: "configuration", id: visible },
+  });
+  const read = await request(memberApp, "GET", keyPath);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  // The Agent and the other Configuration are counted, never named: no existence oracle.
+  assert.deepEqual(read.data.consumers, {
+    ...none,
+    configurations: [visible],
+    unreadable: 2,
+    truncated: false,
+  });
+  const memberDelete = await request(memberApp, "DELETE", keyPath);
+  assert.equal(memberDelete.status, 409);
+  assert.equal(memberDelete.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    memberDelete.body.error.message,
+    `The Secret is still referenced by Configuration ${visible}; 2 resources you cannot read. Remove those references first.`,
+  );
+  for (const unreadable of [hidden, agent.id]) {
+    assert.doesNotMatch(JSON.stringify(read.body), new RegExp(unreadable));
+    assert.doesNotMatch(JSON.stringify(memberDelete.body), new RegExp(unreadable));
+  }
+  // Delete alone, without read on the Secret, gets the same answer: naming depends only on
+  // reading the referencing resources.
+  const { principal: deleter, app: deleterApp } = await fixture.createPrincipal("secret-deleter");
+  grantRole(fixture.state, deleter.id, {
+    id: "role-consumer-deleter",
+    namespaceId: namespace.id,
+    permissions: { secret: ["delete"] },
+    resource: { kind: "secret", id: key.data.id },
+  });
+  grantRole(fixture.state, deleter.id, {
+    id: "role-consumer-deleter-configuration",
+    namespaceId: namespace.id,
+    permissions: { configuration: ["read"] },
+    resource: { kind: "configuration", id: visible },
+  });
+  assert.equal((await request(deleterApp, "GET", keyPath)).status, 403);
+  assert.deepEqual(
+    (await request(deleterApp, "DELETE", keyPath)).body.error,
+    memberDelete.body.error,
+  );
+
+  // The caller who can read everything sees every ID that fits the 256-character message.
+  const adminDelete = await request(fixture.app, "DELETE", keyPath);
+  assert.equal(adminDelete.status, 409);
+  assert.equal(
+    adminDelete.body.error.message,
+    `The Secret is still referenced by Agent ${agent.id}; Configurations ${[visible, hidden].sort().join(", ")}. Remove those references first.`,
+  );
+
+  // Past the limit, OCC examines the first 50 references and says more exist; the message
+  // keeps to the error contract's cap and names IDs of each kind in turn.
+  const many = [visible, hidden];
+  while (many.length < 50) {
+    many.push(await bindTo());
+  }
+  const full = await request(fixture.app, "GET", keyPath);
+  assert.equal(full.data.consumers.truncated, true);
+  assert.deepEqual(full.data.consumers.agents, [agent.id]);
+  assert.deepEqual(full.data.consumers.configurations, many.sort().slice(0, 49));
+  const capped = await request(fixture.app, "DELETE", keyPath);
+  assert.equal(capped.status, 409);
+  assert.ok(capped.body.error.message.length <= 256, capped.body.error.message);
+  assert.match(
+    capped.body.error.message,
+    new RegExp(
+      `^The Secret is still referenced by Agent ${agent.id}; Configurations cfg_[^;]+ and \\d+ more; and more\\. Remove those references first\\.$`,
+    ),
+  );
+
+  // Clearing every reference empties consumers and lets deletion proceed.
+  const cleared = await request(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+    {
+      body: { configurationId: configuration.id, harnessAuth: null },
+    },
+  );
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  for (const id of many) {
+    const removed = await request(
+      fixture.app,
+      "DELETE",
+      `/namespaces/${namespace.id}/configurations/${id}`,
+    );
+    assert.equal(removed.status, 204, JSON.stringify(removed.body));
+  }
+  assert.deepEqual((await request(fixture.app, "GET", keyPath)).data.consumers, {
+    ...none,
+    unreadable: 0,
+    truncated: false,
+  });
+  assert.equal((await request(fixture.app, "DELETE", keyPath)).status, 204);
+});
 
 test("Changing Harness Secret bindings requires grants on both removed and replacement sources", async () => {
   const fixture = await createFixture();

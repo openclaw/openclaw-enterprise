@@ -24,7 +24,11 @@ export function createPlatformReadView(
     ]),
     configurations: bindRepository(repositories.configurations, lifetime, ["findConfiguration"]),
     presets: bindRepository(repositories.presets, lifetime, ["findPreset", "listPresets"]),
-    secrets: bindRepository(repositories.secrets, lifetime, ["findSecret", "listSecrets"]),
+    secrets: bindRepository(repositories.secrets, lifetime, [
+      "findSecret",
+      "listSecrets",
+      "listReferences",
+    ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
       "findCredentialSource",
       "listCredentialSources",
@@ -55,6 +59,8 @@ export function createPlatformReadView(
       "listAccessBindings",
       "getAccessBinding",
       "listRestrictionsTargeting",
+      "listServicePrincipals",
+      "getServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",

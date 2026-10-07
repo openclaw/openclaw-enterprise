@@ -373,7 +373,10 @@ test(
       harnessId: "codex",
       executionMode: "dedicated",
       name: `codex-linear-plugin-${randomUUID()}`,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       backendId: "openai",
     });
     await fixture.selectPlugin(agent.id, {
@@ -466,7 +469,10 @@ test(
       harnessId: "codex",
       executionMode: "dedicated",
       name: `codex-calendar-plugin-${randomUUID()}`,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       backendId: "openai",
     });
     const desired = await fixture.selectPlugin(agent.id, {
@@ -482,8 +488,8 @@ test(
     assert.ok(Object.hasOwn(deployed.revision.plugins?.plugins ?? {}, pluginId));
     assert.equal(Object.hasOwn(deployed.revision.plugins, "artifacts"), false);
     assert.deepEqual(deployed.revision.harnessAuth, {
-      method: "chatgpt_service_account",
-      serviceAccountId: account.id,
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
     });
 
     const calendarSessionKey = `agent:main:codex-calendar-${randomUUID()}`;
@@ -724,14 +730,20 @@ test(
       harnessId: "codex",
       executionMode: "dedicated",
       name: `cpf-primary-${randomUUID().slice(0, 8)}`,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       backendId: "openai",
     });
     const sibling = await fixture.createAgent({
       harnessId: "codex",
       executionMode: "dedicated",
       name: `cpf-sibling-${randomUUID().slice(0, 8)}`,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       backendId: "openai",
     });
 

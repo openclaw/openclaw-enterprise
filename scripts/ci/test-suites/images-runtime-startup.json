@@ -28,8 +28,8 @@
       "path": "tests/integration/runtime-image-native-worker.test.mjs",
       "expectedTests": [
         "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
-        "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
-        "runtime image reaps descendants during workspace node and Codex restarts"
+        "runtime image reaps descendants during workspace node and Codex restarts",
+        "runtime image omits inactive Slack approvers and checks native compatibility before gateway launch"
       ]
     }
   ]

@@ -66,13 +66,13 @@ A representative account-creation body is:
 accepts `{}` and issues a credential through the selected Driver. The `201`
 account envelope exposes safe credential readiness metadata; backend Secret
 locators and Backend/workspace identities remain private.
-Compute creates one account-owned token/workspace Secret in the tenant control plane; the Driver privately
+Compute creates one account-owned token Secret in the tenant control plane; the Driver privately
 persists the upstream credential ID for exact cleanup. A second issuance fails
 with `409`; rotation and reconciliation are not implemented. Calling issuance
 without a selected ServiceAccount Driver fails with `503 DEPENDENCY_UNAVAILABLE`.
 
 An Agent binds the same-Namespace account through
-`harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`.
+`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`.
 Association and deployment require `read` on the exact account. Updating or
 detaching an associated account requires current-account `read`; replacement
 requires `read` on both accounts. An Agent can reference an account before it
@@ -105,19 +105,21 @@ For an `access_token`, the Agent must select the binding's exact nonnull
 Admission and worker reconciliation validate that private metadata before
 workload effects; a public credential kind is not proof of ownership. Only
 dedicated Codex execution is supported. Kubernetes
-delivers both keys from the account-owned CP source through a revision-owned
+delivers the token from the account-owned CP source through a revision-owned
 data-plane runtime Secret into the exact
 Codex Pod:
 
-| Account Secret key | Codex environment variable   | Purpose                              |
-| ------------------ | ---------------------------- | ------------------------------------ |
-| `token`            | `CODEX_ACCESS_TOKEN`         | One upstream account access token.   |
-| `workspace-id`     | `CODEX_CHATGPT_WORKSPACE_ID` | Forced upstream workspace selection. |
+| Account Secret key | Codex environment variable | Purpose                            |
+| ------------------ | -------------------------- | ---------------------------------- |
+| `token`            | `CODEX_ACCESS_TOKEN`       | One upstream account access token. |
 
-Codex authenticates through
-`codex -c cli_auth_credentials_store=file -c forced_chatgpt_workspace_id="<workspace-id>" login --with-access-token`
-and saves login state only in its bounded ephemeral workload volume. Its
-gateway receives neither key. The trusted worker reads the source and manages
+Both managed-account and Secret sources use `codex_pat` with
+`CODEX_LOGIN_MODE=codex_pat`. Codex authenticates through
+`codex -c cli_auth_credentials_store=file login --with-access-token`, derives
+account identity from the token, and saves login state only in its bounded
+ephemeral workload volume. Workspace ownership remains a control-plane
+admission and reconciliation check; no workspace override is projected into
+Codex. The separate Gateway receives no model credential. The trusted worker reads the source and manages
 the revision projection; workloads receive no Secret API permission. No API-key
 fallback is used. The projection does not narrow provider-side token authority.
 

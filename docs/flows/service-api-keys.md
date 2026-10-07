@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: 2026-08-31
+updated: 2026-10-07
 last_updated_session: codex/01a05a69-3fbe-7441-9e6d-20394758cf94
 ---
 
@@ -39,8 +39,13 @@ optional Namespace at issuance, but it does not snapshot or grant permissions.
   [apps/controller/src/auth/index.ts:revokeServiceKey](../../apps/controller/src/auth/index.ts).
 
 The controller already has configured Better Auth storage and its selected IAM
-Driver. Native IAM requires an explicitly provisioned ServicePrincipal, Role,
-and AccessBinding; issuance creates none of them. Request fields and lifetime
+Driver. Native IAM requires an existing ServicePrincipal, Role, and
+AccessBinding; issuance creates none of them. For Namespace automation, an
+administrator creates the ServicePrincipal through `POST
+/namespaces/:namespaceId/iam/service-principals`
+([`createIAMServicePrincipal`](../../packages/occ/src/index.ts)), which writes a
+non-Agent `iam_identities` row under the Namespace lock with no grant and audits
+`openclaw.iam.service_principals.create` in the same transaction. Request fields and lifetime
 limits are defined in the [authentication reference](../reference/authentication/service-api-keys.md#issuance)
 and [API reference](../reference/api.md).
 
@@ -107,8 +112,9 @@ changing IAM scope later does not widen an existing credential. PostgreSQL
 uses the official Drizzle adapter and the `occ.apikey` table. Key-based sessions
 and public plugin management routes are not enabled.
 
-The controller appends an issuance audit containing the resolved issuer and
-non-secret key/principal IDs, then returns `201` with the plaintext key once.
+The controller appends an issuance audit containing the resolved issuer, the
+principal ID, and the key's ID (`serviceKeyId`) and name (`serviceKeyName`), then
+returns `201` with the plaintext key once.
 There is no plaintext retrieval endpoint. If creation or audit persistence
 fails, the response is `503` with no credential. If creation already succeeded,
 the controller attempts deletion of the unreturned key; this cleanup is best
@@ -151,7 +157,10 @@ A denied decision records authorization evidence and returns `403`. Unavailable
 required dependencies fail closed with `503`. An allowed read returns the
 Namespace response through the existing OCC API envelope. Other resource
 operations retain their own OCC authorization and mutation-audit behavior;
-key admission does not bypass them.
+key admission does not bypass them. Admission keeps the verified key's ID, and
+every route audit event built for the request (change, audited read, or denial)
+records it as `details.actorServiceKeyId`. Events OCC appends for the work
+itself, such as `openclaw.agents.provision`, carry only the principal.
 
 ### 5. Delete the credential and record revocation
 
@@ -217,6 +226,8 @@ These commands describe the proof hooks, not a new runtime execution record.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07: Namespace ServicePrincipals are created through the Namespace IAM policy API; `occ service-key` issues and revokes keys.
 
 - 2026-08-31 17:43: Document fresh human/service administrator bootstrap, private key delivery, and operator recovery. (codex/01a05a69-3fbe-7441-9e6d-20394758cf94 - 0797098646028ac00cb26cd4afcbc9b2cf8bcb24)
 

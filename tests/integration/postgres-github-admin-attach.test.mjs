@@ -76,9 +76,14 @@ test(
       const { callback } = await githubSignIn(app, origin, subject, address());
       return assertConsoleSignIn(app, callback, userId);
     }
-    async function assertGitHubRefused(subject) {
+    async function assertGitHubRefused(subject, consoleReason) {
       const { callback } = await githubSignIn(app, origin, subject, address());
-      assert.equal(callback.headers.location, "/console/?authError=github");
+      assert.equal(
+        callback.headers.location,
+        consoleReason === undefined
+          ? "/console/?authError=github"
+          : `/console/?authError=github&authReason=${consoleReason}`,
+      );
       assert.equal(callback.headers["set-cookie"], undefined);
     }
 
@@ -225,7 +230,8 @@ test(
       assert.equal(disabled.statusCode, 200, disabled.body);
       assert.equal(await currentSession(app, secondGitHubCookie), null);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 401);
-      await assertGitHubRefused(secondSubject);
+      // The attached GitHub identity is told its account is disabled; the password is not.
+      await assertGitHubRefused(secondSubject, "account-disabled");
 
       const disabledAccount = await readAccount(app, adminHeaders, second.id);
       assert.equal(disabledAccount.disabled, true);

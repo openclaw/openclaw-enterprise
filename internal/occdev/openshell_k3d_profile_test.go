@@ -1,6 +1,7 @@
 package occdev
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -332,25 +333,29 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 
 func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
 	state := kubernetesOnlyOpenShellState(t)
+	root := t.TempDir()
 	source := "ghcr.io/nvidia/openshell/gateway@" + profileTestDigest
 	staging := "openclaw-development/openshell-gateway:occ-dev-owned"
 	recorded := "localhost/" + staging
+	// The first import also loses its stream into the node, so the retry must
+	// keep the archive, import it again, and still verify the digest.
 	commands := fakeProfileCommands(t, map[string]string{
 		"podman": `"image inspect ` + source + `") ;;
 "image inspect ` + staging + `") exit 1 ;;
 "tag ` + source + ` ` + staging + `") ;;
 "image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + recorded + `"]' ;;
 "image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"image save --output "*" ` + recorded + `") ;;
+"image save --output "*" ` + recorded + `") printf archive > "$4" ;;
 "exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images list") echo "` + recorded + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
 "exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images tag ` + recorded + ` localhost/openclaw-development/openshell-gateway@` + profileTestDigest + `") ;;
 "image rm ` + staging + `") ;;`,
-		"k3d": `"image import --mode direct "*" -c occ-dev-owned") ;;`,
+		"k3d": flakyK3dImportCase(t, state.Cluster, ""),
 	})
-	r := newRunner(Options{Repository: state.Repository})
+	var stdout bytes.Buffer
+	r := newRunner(Options{Repository: state.Repository, Out: &stdout})
 	r.engine = "podman"
 
-	reference, err := r.importOpenShellImage(context.Background(), state, t.TempDir(), "gateway", source)
+	reference, err := r.importOpenShellImage(context.Background(), state, root, "gateway", source)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
 	}
@@ -359,6 +364,7 @@ func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
 	if reference != "localhost/openclaw-development/openshell-gateway@"+profileTestDigest {
 		t.Fatalf("unexpected runtime reference: %q", reference)
 	}
+	assertRetriedImport(t, commands(), filepath.Join(root, "gateway-image.tar"), state.Cluster, stdout.String())
 }
 
 func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testing.T) {

@@ -235,7 +235,8 @@ sessions drain.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24 or newer:
+Run the renderer from the repository root with Node.js 24 or newer. With native
+admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
 node scripts/render-installation-profile.mjs \

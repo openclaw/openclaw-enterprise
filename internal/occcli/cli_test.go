@@ -22,50 +22,74 @@ import (
 )
 
 func TestResourceRequestStopsWhenCommandContextIsCanceled(t *testing.T) {
-	requestStarted := make(chan struct{}, 1)
-	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
-		requestStarted <- struct{}{}
-		select {
-		case <-request.Context().Done():
-		case <-release:
-		}
-	}))
-	defer server.Close()
-	defer close(release)
+	for _, test := range []struct {
+		name            string
+		args            []string
+		lookupRevisions bool
+		cleanExit       bool
+	}{
+		{name: "installation", args: []string{"installation", "get"}},
+		{name: "logs Agent lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway"}},
+		{name: "follow Agent lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway", "--follow"}, cleanExit: true},
+		{name: "logs revision lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway"}, lookupRevisions: true},
+		{name: "follow revision lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway", "--follow"}, lookupRevisions: true, cleanExit: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requestStarted := make(chan struct{}, 1)
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if test.lookupRevisions && request.URL.Path == "/namespaces/ns_11111111-1111-4111-8111-111111111111/agents/agt_22222222-2222-4222-8222-222222222222" {
+					// A draft Agent makes revision selection issue its second HTTP request.
+					fmt.Fprint(writer, `{"data":{"id":"agt_22222222-2222-4222-8222-222222222222","activeRevisionId":null},"meta":{}}`)
+					return
+				}
+				requestStarted <- struct{}{}
+				select {
+				case <-request.Context().Done():
+				case <-release:
+				}
+			}))
+			defer server.Close()
+			defer close(release)
 
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+			keyFile := filepath.Join(t.TempDir(), "service-key.json")
+			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	command := New(io.Discard, io.Discard)
-	command.SetArgs([]string{
-		"installation", "get",
-		"--url", server.URL,
-		"--service-key-file", keyFile,
-		"--timeout-seconds", "30",
-	})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			command := New(io.Discard, io.Discard)
+			command.SetArgs(append(test.args,
+				"--namespace", "ns_11111111-1111-4111-8111-111111111111",
+				"--url", server.URL,
+				"--service-key-file", keyFile,
+				"--timeout-seconds", "30",
+			))
 
-	result := make(chan error, 1)
-	go func() { result <- command.ExecuteContext(ctx) }()
+			result := make(chan error, 1)
+			go func() { result <- command.ExecuteContext(ctx) }()
 
-	select {
-	case <-requestStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("request never reached the server")
-	}
-	cancel()
+			select {
+			case <-requestStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("request never reached the server")
+			}
+			cancel()
 
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("expected a canceled request to fail")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("command ignored context cancellation and kept waiting on the request")
+			select {
+			case err := <-result:
+				if test.cleanExit {
+					if err != nil {
+						t.Fatalf("log follow must exit cleanly on cancellation: %v", err)
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					t.Fatalf("expected a canceled request to fail with context cancellation, got %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("command ignored context cancellation and kept waiting on the request")
+			}
+		})
 	}
 }
 
@@ -334,13 +358,20 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 			t.Errorf("%v: sent requests %v", args, stub.paths)
 		}
 	}
-	stub := &runtimeLogStub{t: t}
-	_, _, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
-	if err == nil || !strings.Contains(err.Error(), "has no readable revisions") {
-		t.Fatalf("expected a missing revision error, got %v", err)
-	}
-	if len(stub.queries) != 0 {
-		t.Fatalf("sent %d log requests for an Agent without revisions", len(stub.queries))
+	// --follow exits cleanly only when the lookup failed because of cancellation.
+	for _, follow := range []bool{false, true} {
+		args := []string{"agent", "logs", "agt_1", "--source", "gateway"}
+		if follow {
+			args = append(args, "--follow")
+		}
+		stub := &runtimeLogStub{t: t}
+		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
+		if err == nil || !strings.Contains(err.Error(), "has no readable revisions") {
+			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
+		}
+		if len(stub.queries) != 0 {
+			t.Fatalf("follow=%v: sent %d log requests for an Agent without revisions", follow, len(stub.queries))
+		}
 	}
 }
 

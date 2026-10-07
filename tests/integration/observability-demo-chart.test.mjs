@@ -118,3 +118,61 @@ test("demo guide install can be rerun after a cold-cache wait timeout", async ()
   );
   assert.doesNotMatch(guide, /helm install demo/);
 });
+
+for (const value of ["407", "true", "null", "1e3"]) {
+  test(
+    `demo Kubernetes identifiers remain strings for ${value}`,
+    await helmAvailable(),
+    async () => {
+      const { stdout } = await execute(
+        helm,
+        [
+          "template",
+          value,
+          "deploy/helm/openclaw-observability-demo",
+          "--namespace",
+          value,
+          "--set-string",
+          `occ.namespace=${value},occ.release=${value},dns.namespace=${value},grafana.adminSecretName=${value},grafana.adminSecretKey=${value},grafana.clients[0].namespace=${value}`,
+          "--set-string",
+          "grafana.clients[0].podLabels.app=operator",
+          "--set",
+          "cluster.cidrs[0]=10.43.0.1/32",
+        ],
+        { cwd: repository, maxBuffer: 2_000_000 },
+      );
+      let checked = 0;
+      function check(object) {
+        if (Array.isArray(object)) {
+          for (const entry of object) {
+            check(entry);
+          }
+          return;
+        }
+        if (!object || typeof object !== "object") {
+          return;
+        }
+        for (const [key, field] of Object.entries(object)) {
+          if (["name", "namespace", "key"].includes(key) && field !== undefined) {
+            assert.equal(typeof field, "string", `${key} must be a string`);
+            checked += 1;
+          }
+          if (["labels", "matchLabels"].includes(key)) {
+            for (const label of Object.values(field)) {
+              assert.equal(typeof label, "string", "label and selector values must be strings");
+              checked += 1;
+            }
+          }
+          check(field);
+        }
+      }
+      for (const object of loadAllYaml(stdout)) {
+        check(object);
+      }
+      assert.ok(
+        checked > 50,
+        "the rendered workloads, RBAC, Secret references and selectors were checked",
+      );
+    },
+  );
+}

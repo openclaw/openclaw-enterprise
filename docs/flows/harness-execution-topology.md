@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-05
-last_updated_session: authoring-run/05067642-df93-4716-8f90-5b7430e50c41
+updated: 2026-10-07
+last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
 # Harness Execution Topology Flow
@@ -100,7 +100,7 @@ validation. See the [SSH flow](pr-24-ssh-compute.md).
 Kubernetes workload rendering calls `prepareHarnessAuth` once for the resolved
 source. It projects the OCC Secret key only into embedded OpenClaw or a dedicated
 Harness. Canonical sources live in the tenant storage target; Compute delivers selected fields into an
-exact revision-owned Harness Secret, including the account token/workspace for ChatGPT.
+exact revision-owned Harness Secret, including the account token for ChatGPT.
 Dedicated gateways receive neither model source. This namespace-local delivery
 also applies to fixture images without native runtime configuration; only the
 native dedicated transport token depends on that configuration.
@@ -133,17 +133,17 @@ stable route. These selectors match NetworkPolicy before destination translation
 owns app-server DNS, NetworkPolicy peers and Service selectors.
 `runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
-Because the predecessor Gateway is stopped first (step 3) or otherwise not ready, preparation starts the candidate Gateway after the candidate Harness is
-otherwise ready. That candidate Gateway provides the bootstrap endpoint and changes no unrelated
-Gateway; the revision remains not ready, and never activates, until its exact workspace node is
-enrolled and observed.
+With the predecessor Gateway stopped or not ready, preparation starts the candidate
+Gateway once its Harness is otherwise ready. It provides the bootstrap endpoint
+without changing unrelated Gateways. The revision cannot activate until its exact
+workspace node is enrolled and observed.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds dedicated Codex
 callbacks to the Agent's route. `AGENT_WITH_NODE_ENTRYPOINT` prepares private
 capability storage and TLS trust; OpenClaw authorizes callbacks. See
 [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
 
-A dedicated Codex Harness names its workspace node `agent-<agent digest>-workspace` on every
-start, so the Gateway's node list keeps one stable name across revisions.
+Dedicated Codex uses workspace-node name `agent-<agent digest>-workspace`, stable
+across restarts and revisions.
 
 Dedicated Codex and dedicated OpenClaw keep separate Agent-owned Gateway and
 Harness ServiceAccounts. Compute owns the Gateway Pod; the selected SandboxDriver
@@ -317,6 +317,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
 - 2026-10-05 14:24: Route dedicated Codex native hook callbacks with per-relay capabilities. (authoring-run/05067642-df93-4716-8f90-5b7430e50c41 - dfa091b6)
 

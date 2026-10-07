@@ -22,7 +22,9 @@ incorporating it into a release.
 
 The command supports the production Helm and Kubernetes Compute path. It does
 not build images, create backups, provision infrastructure, or prove model and
-external integration behavior.
+external integration behavior. It upgrades only the `openclaw-enterprise` chart:
+on the experimental two-cluster profile, first
+[upgrade the execution chart](../../testing/two-cluster-local.md#upgrade-the-execution-chart).
 
 ## Prepare the release
 

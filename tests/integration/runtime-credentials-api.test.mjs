@@ -19,7 +19,7 @@ import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-s
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -115,7 +115,11 @@ function createRuntimeCredentialComputeDriver(options = {}) {
 
 async function createFixture(t, options = {}) {
   const installationId = `ins_${randomUUID()}`;
-  const port = await availablePort();
+  // The port is part of the auth base URL and origin, so hold it until the app binds it; a
+  // released probe port can be taken by another socket while the account and app are built.
+  const reservation = await reservePort();
+  t.after(reservation.release);
+  const { port } = reservation;
   const origin = `http://127.0.0.1:${port}`;
   const auth = createControllerAuth({
     installationId,
@@ -169,8 +173,9 @@ async function createFixture(t, options = {}) {
       return controller;
     },
   });
-  await app.listen({ host: "127.0.0.1", port });
+  await app.listen({ host: "127.0.0.1", port, reusePort: reservation.reusePort });
   t.after(() => app.close());
+  await reservation.release();
   const adminSession = await signInWithEmailPassword({ origin, ...credentials });
   let bootstrapped = false;
 

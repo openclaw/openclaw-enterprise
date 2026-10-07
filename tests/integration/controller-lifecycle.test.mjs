@@ -460,7 +460,26 @@ test("a stored Installation or configured default Preset name follows the API Na
 });
 
 test("direct controller creates and renames apply the API Name rule", async () => {
-  const { controller } = createController();
+  // Provisioning authorizes its Namespace-level grants, Installation administration included,
+  // before it reads the plan, so the administrator needs that grant to reach the Name rule.
+  const { controller } = createController(
+    createIAMDriver({
+      roles: [
+        {
+          id: "role-installation-admin",
+          permissions: [{ action: "administer", resourceKind: "installation" }],
+        },
+      ],
+      bindings: [
+        {
+          id: "binding-installation-admin",
+          subjectKind: "identity",
+          subjectId: "principal-admin",
+          roleId: "role-installation-admin",
+        },
+      ],
+    }),
+  );
   const namespaceId = "ns_00000000-0000-4000-8000-000000000999";
   for (const name of namesOutsideTheNameRule) {
     const label = JSON.stringify(name);

@@ -165,6 +165,7 @@ export class ChatGPTClient {
           return { id: alreadyAbsent.id, deleted: true };
         }
       }
+      await response.body?.cancel().catch(() => {});
       throw new DependencyUnavailableError(
         `ChatGPT Admin API ${method} request failed with HTTP ${response.status}.`,
       );
@@ -177,6 +178,7 @@ export class ChatGPTClient {
     try {
       const declaredLength = Number(response.headers.get("content-length"));
       if (declaredLength > MAX_RESPONSE_BYTES) {
+        await response.body?.cancel().catch(() => {});
         throw new Error("oversized");
       }
       const contents = await response.text();

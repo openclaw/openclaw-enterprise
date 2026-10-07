@@ -1786,19 +1786,19 @@ test("contract error details stay within the published path cap and name what a 
   assert.ok(
     severalMessage.endsWith(
       "… is not an accepted field; body /harnessAuth/source is required;" +
-        " body /harnessAuth/serviceAccountId is required; and 3 more.",
+        " body /harnessAuth/sourceId is required; and 2 more.",
     ),
     severalMessage,
   );
   // Paths that exactly fill the cap stay whole.
   const exact = await request(fixture.app, agents, {
-    body: { ...agent, harnessAuth: { method: "x", ["Q".repeat(63)]: 1 } },
+    body: { ...agent, harnessAuth: { method: "x", ["Q".repeat(71)]: 1 } },
   });
   assert.equal(
     exact.payload.error.message,
-    `${contract} /harnessAuth/${"Q".repeat(63)} is not an accepted field;` +
-      " body /harnessAuth/source is required; body /harnessAuth/serviceAccountId is required;" +
-      " and 3 more.",
+    `${contract} /harnessAuth/${"Q".repeat(71)} is not an accepted field;` +
+      " body /harnessAuth/source is required; body /harnessAuth/sourceId is required;" +
+      " and 2 more.",
   );
   assert.equal(Array.from(exact.payload.error.message).length, 256);
   // The cap counts characters, not UTF-16 code units: an astral key that fits stays whole,

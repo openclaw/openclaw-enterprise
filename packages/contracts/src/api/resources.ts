@@ -2,6 +2,7 @@ import { Type } from "typebox";
 
 import {
   AgentId,
+  AgentProvisioningWorkId,
   PresetId,
   PresetTemplateSchema,
   ConfigurationGeneration,
@@ -449,6 +450,54 @@ export const SecretSchema = Type.Object(
   { additionalProperties: false },
 );
 
+/** Mirrors `SECRET_CONSUMER_LIMIT` in OCC: the most references one read examines. */
+const SECRET_CONSUMER_LIMIT = 50;
+
+export const SecretConsumersSchema = Type.Object(
+  {
+    agents: Type.Array(AgentId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description:
+        "Readable Agents whose draft, active revision, or pending deployment references the Secret. Each needs a new deployment to receive a rotated value.",
+    }),
+    configurations: Type.Array(ConfigurationId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description: "Readable Configurations whose `secretBindings` reference the Secret.",
+    }),
+    credentialSources: Type.Array(CredentialSourceId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description: "Readable credential sources that hold the Secret.",
+    }),
+    provisioningRequests: Type.Array(AgentProvisioningWorkId, {
+      maxItems: SECRET_CONSUMER_LIMIT,
+      description:
+        "Work IDs of queued or running Agent provisioning requests that reference the Secret, listed only for the actor that started them.",
+    }),
+    unreadable: Type.Integer({
+      minimum: 0,
+      maximum: SECRET_CONSUMER_LIMIT,
+      description:
+        "Examined references to resources the caller may not read. They are counted, never named.",
+    }),
+    truncated: Type.Boolean({
+      description: `\`true\` when the Secret has more than ${SECRET_CONSUMER_LIMIT} references; only the first ${SECRET_CONSUMER_LIMIT}, ordered by kind and ID, are examined.`,
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Current references that block deletion of the Secret. Returned by the exact Secret read only.",
+  },
+);
+
+export const SecretDetailSchema = Type.Object(
+  {
+    ...SecretSchema.properties,
+    consumers: SecretConsumersSchema,
+  },
+  { additionalProperties: false },
+);
+
 export const CredentialSourceStatusSchema = Type.Object(
   {
     state: Type.Union([
@@ -591,6 +640,18 @@ export const IAMAccessBindingSchema = Type.Union([
   ),
 ]);
 
+export const IAMServicePrincipalSchema = Type.Object(
+  {
+    id: Type.String({ minLength: 1, maxLength: 200 }),
+    namespaceId: NamespaceId,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "A non-Agent automation identity fixed to one Namespace. It holds only the grants of AccessBindings that name it.",
+  },
+);
+
 export const ServiceAccountSchema = Type.Object(
   {
     id: ServiceAccountId,
@@ -688,6 +749,11 @@ export const SecretResponse = Type.Object(
     $id: "SecretResponse",
     additionalProperties: false,
   },
+);
+
+export const SecretDetailResponse = Type.Object(
+  { data: SecretDetailSchema, meta: Meta },
+  { additionalProperties: false },
 );
 
 export const CredentialSourceResponse = Type.Object(
@@ -802,6 +868,16 @@ export const IAMRoleListResponse = Type.Object(
 
 export const IAMAccessBindingResponse = Type.Object(
   { data: IAMAccessBindingSchema, meta: Meta },
+  { additionalProperties: false },
+);
+
+export const IAMServicePrincipalResponse = Type.Object(
+  { data: IAMServicePrincipalSchema, meta: Meta },
+  { additionalProperties: false },
+);
+
+export const IAMServicePrincipalListResponse = Type.Object(
+  { data: Type.Array(IAMServicePrincipalSchema), meta: Meta },
   { additionalProperties: false },
 );
 
@@ -1385,6 +1461,7 @@ export type NamespaceResponse = Type.Static<typeof NamespaceResponse>;
 export type NamespaceListResponse = Type.Static<typeof NamespaceListResponse>;
 export type ConfigurationResponse = Type.Static<typeof ConfigurationResponse>;
 export type SecretResponse = Type.Static<typeof SecretResponse>;
+export type SecretDetailResponse = Type.Static<typeof SecretDetailResponse>;
 export type CredentialSourceWire = Type.Static<typeof CredentialSourceSchema>;
 export type CredentialSourceResponse = Type.Static<typeof CredentialSourceResponse>;
 export type CredentialSourceListResponse = Type.Static<typeof CredentialSourceListResponse>;
@@ -1399,6 +1476,8 @@ export type IAMRoleResponse = Type.Static<typeof IAMRoleResponse>;
 export type IAMRoleListResponse = Type.Static<typeof IAMRoleListResponse>;
 export type IAMAccessBindingResponse = Type.Static<typeof IAMAccessBindingResponse>;
 export type IAMAccessBindingListResponse = Type.Static<typeof IAMAccessBindingListResponse>;
+export type IAMServicePrincipalResponse = Type.Static<typeof IAMServicePrincipalResponse>;
+export type IAMServicePrincipalListResponse = Type.Static<typeof IAMServicePrincipalListResponse>;
 export type AgentListResponse = Type.Static<typeof AgentListResponse>;
 export type BackendListResponse = Type.Static<typeof BackendListResponse>;
 export type AgentProvisioningResponse = Type.Static<typeof AgentProvisioningResponse>;

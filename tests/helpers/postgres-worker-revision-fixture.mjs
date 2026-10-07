@@ -201,7 +201,10 @@ export function createWorkerRevisionFixtures(testFile) {
           source: { kind: "secret", namespaceId: namespace.id, id: identity.id },
         };
       } else {
-        harnessAuth = { method: "chatgpt_service_account", serviceAccountId };
+        harnessAuth = {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: namespace.id, id: serviceAccountId },
+        };
       }
       const owner = await state.transact(async (unit) => {
         await unit.configurations.createConfiguration({
@@ -251,6 +254,7 @@ export function createWorkerRevisionFixtures(testFile) {
       }
       if (
         (harnessAuth.method === "api_key" || harnessAuth.method === "codex_pat") &&
+        harnessAuth.source.kind === "secret" &&
         grantHarnessSecret
       ) {
         await observerPool.query(
@@ -288,9 +292,12 @@ export function createWorkerRevisionFixtures(testFile) {
           sourceType: source.type,
           loginMode: "api_key",
         };
-      } else if (owner.harnessAuth.method === "chatgpt_service_account") {
+      } else if (
+        owner.harnessAuth.method === "codex_pat" &&
+        owner.harnessAuth.source.kind === "service_account"
+      ) {
         const account = await state.read((view) =>
-          view.serviceAccounts.findServiceAccount(namespace.id, owner.harnessAuth.serviceAccountId),
+          view.serviceAccounts.findServiceAccount(namespace.id, owner.harnessAuth.source.id),
         );
         const backendBinding = await state.read((view) =>
           view.serviceAccounts.findServiceAccountBackendBinding(namespace.id, account.id),

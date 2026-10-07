@@ -36,6 +36,7 @@ const cheatSheetEntities = [
   { title: "Configurations" },
   { title: "IAM access bindings", tag: "IAM", paths: ["/iam/access-bindings"] },
   { title: "IAM roles", tag: "IAM", paths: ["/iam/roles"] },
+  { title: "IAM service principals", tag: "IAM", paths: ["/iam/service-principals"] },
   { title: "Secrets" },
   { title: "Service accounts" },
   {

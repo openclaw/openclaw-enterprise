@@ -192,8 +192,8 @@ test("an admitted AgentRevision is a detached and deeply immutable deployment sn
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     compute: { id: "compute-test", implementation: "deterministic-fake" },
     harnessAuth: {
-      method: "chatgpt_service_account",
-      serviceAccountId: "service-account-a",
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: "namespace-a", id: "service-account-a" },
       credential: { kind: "access_token", secretRef: { name: "account-source", key: "token" } },
       backendBinding: {
         backendId: "chatgpt",

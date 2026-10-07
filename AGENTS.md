@@ -36,16 +36,11 @@ Keep other authors' PRs, branches, and worktrees read-only unless explicitly
 assigned. Repository permissions and dependencies do not expand scope.
 Subagents inherit these limits.
 
-For new PRs, default to pushing a topic branch to the requesting user's fork
-and opening it against `openclaw/openclaw-enterprise`, including when the user
-has write access to the upstream repository. Use upstream topic branches when
-the user's instructions or an authorized maintainer workflow selects that path.
 Maintainers retain their review, merge, and approved bypass permissions.
 When assigned to update an existing PR, preserve its head repository and branch.
-Follow the [fork workflow](CONTRIBUTING.md#prepare-a-pull-request);
-verify repository URLs and ownership rather than assuming `origin` is the fork.
-Preserve existing remotes. Keep fork PRs editable by maintainers
-as described in the contribution policy.
+Follow the [PR workflow](CONTRIBUTING.md#prepare-a-pull-request);
+verify repository URLs and ownership rather than inferring them from remote names.
+Preserve existing remotes.
 
 "Refresh against main" does not authorize force pushes. Preserve published
 history by default. Rewrite history only with explicit authorization for the
@@ -126,6 +121,10 @@ Use [local-dev](.agents/skills/local-dev/SKILL.md) for repository development
 changes. It requires creating or updating a source-backed flow doc for non-trivial
 runtime changes and defines when trivial maintenance needs no new flow doc.
 Update the existing behavior owner under `docs/flows/` whenever possible.
+Complete its [PR readiness checklist](.agents/skills/local-dev/references/pr-readiness.md)
+before handoff. Default image-version changes must pass its
+[image verification workflow](.agents/skills/local-dev/references/image-version-verification.md)
+before merging; track the authorized publication from main separately.
 
 Use [spec](.agents/skills/spec/SKILL.md) to draft or update RFCs and implementation
 plans. Its `rfc` and `plan` commands follow the

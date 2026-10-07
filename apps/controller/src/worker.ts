@@ -1,3 +1,4 @@
+import { isSecretHarnessAuth, isServiceAccountHarnessAuth } from "@openclaw-enterprise/contracts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -2941,7 +2942,7 @@ export class ControllerWorker {
     }
     const refs = uniqueSecretRefs(secretBindings.bindings);
     const auth = revision.harnessAuth;
-    if (auth.method === "api_key" || auth.method === "codex_pat" || auth.method === "oauth") {
+    if (isSecretHarnessAuth(auth)) {
       if (auth.source?.kind !== "secret" || auth.source.namespaceId !== revision.namespaceId) {
         return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
       }
@@ -2953,7 +2954,7 @@ export class ControllerWorker {
         refs.push(auth.source);
       }
     } else if (
-      auth.method !== "chatgpt_service_account" &&
+      !isServiceAccountHarnessAuth(auth) &&
       auth.method !== "credential_source" &&
       auth.method !== "runtime"
     ) {
@@ -3001,13 +3002,16 @@ export class ControllerWorker {
       }
     }
 
-    if (auth.method === "chatgpt_service_account") {
+    if (isServiceAccountHarnessAuth(auth)) {
+      if (auth.source.namespaceId !== revision.namespaceId) {
+        return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
+      }
       const accountAuthorization: AuthorizationRequest = {
         principalId: claim.actorId,
         action: "read",
         resource: {
           kind: "service_account",
-          id: auth.serviceAccountId,
+          id: auth.source.id,
           namespaceId: revision.namespaceId,
         },
       };
@@ -3034,17 +3038,14 @@ export class ControllerWorker {
       return { outcome: "permanent", code: "BACKEND_UNAVAILABLE" };
     }
     const auth = revision.harnessAuth;
-    if (auth.method !== "chatgpt_service_account") {
+    if (!isServiceAccountHarnessAuth(auth)) {
       return undefined;
     }
     const { account, binding } = await this.state.read(async (view) => ({
-      account: await view.serviceAccounts.findServiceAccount(
-        revision.namespaceId,
-        auth.serviceAccountId,
-      ),
+      account: await view.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
       binding: await view.serviceAccounts.findServiceAccountBackendBinding(
         revision.namespaceId,
-        auth.serviceAccountId,
+        auth.source.id,
       ),
     }));
     if (
@@ -3182,11 +3183,7 @@ export class ControllerWorker {
     }
 
     let harnessAuth: ResolvedHarnessAuth;
-    if (
-      revision.harnessAuth.method === "api_key" ||
-      revision.harnessAuth.method === "codex_pat" ||
-      revision.harnessAuth.method === "oauth"
-    ) {
+    if (isSecretHarnessAuth(revision.harnessAuth)) {
       const auth = revision.harnessAuth;
       if (typeof secretDriverId !== "string" || auth.secretDriverId !== secretDriverId) {
         return { result: { outcome: "permanent", code: "SECRET_DRIVER_MISMATCH" } };

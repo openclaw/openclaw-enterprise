@@ -10,6 +10,7 @@ import test from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
+import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 
@@ -161,7 +162,14 @@ if (command === "docker" || command === "podman") {
     if (equals(args.slice(0, 3), ["inspect", "--format", "{{json .State}}"])) {
       finish(JSON.stringify({ Status: "running", Running: true, OOMKilled: false, ExitCode: 0 }));
     }
-    if (equals(args.slice(0, 3), ["logs", "--tail=100", "--timestamps"])) {
+    if (equals(args.slice(0, 3), ["logs", "--tail=20000", "--timestamps"])) {
+      // The node's own error on stderr, followed by more kubectl retries against
+      // localhost:8080 than the old 100-line tail held (finding 15).
+      const retries = Array.from({ length: 150 }, (_, second) =>
+        new Date(Date.UTC(2026, 8, 23, 0, 1, second)).toISOString() +
+        " The connection to the server localhost:8080 was refused - did you specify the right host or port?\n").join("");
+      process.stderr.write("2026-09-23T00:00:30Z E0923 00:00:30.000000 1 kubelet_node_status.go:1] " +
+        "\"Error updating node status\" err=\"fixture node lease timeout\"\n" + retries);
       finish("2026-09-23T00:00:00Z network plugin is not ready\nTOKEN=do-not-publish-node-token\n");
     }
   }
@@ -863,7 +871,12 @@ for (const { scenario, stage, error } of [
     for (const container of evidence.containers) {
       assert.equal(container.state.status, "ok");
       assert.equal(container.logs.status, "ok");
-      assert.match(container.logs.value, /network plugin is not ready/);
+      assert.match(
+        container.logs.value,
+        /network plugin is not ready\n.*Error updating node status/s,
+      );
+      assert.doesNotMatch(container.logs.value, /localhost:8080 was refused/);
+      assert.match(container.logs.value, /omitted 150 kubectl retry lines against localhost:8080/);
     }
     assert.doesNotMatch(artifactText, /do-not-publish/);
     assert.doesNotMatch(result.stderr, /do-not-publish/);
@@ -891,6 +904,39 @@ for (const { scenario, stage, error } of [
     assert.equal(await readFile(artifactPath, "utf8"), artifactText);
   });
 }
+
+test("k3d node log excerpts stay bounded and keep the start, later errors and the end", () => {
+  const at = (second) => new Date(Date.UTC(2026, 8, 23, 0, 0, second)).toISOString();
+  const info = (second) =>
+    `${at(second)} I0923 kubelet.go:1] "fixture progress ${second}" ${"x".repeat(200)}`;
+  const stdout = [
+    // An output cap can start a stream mid-line, past the keyword of a credential.
+    "=do-not-publish-cut-credential more",
+    `${at(0)} level=info msg="Starting k3s agent fixture"`,
+    ...Array.from({ length: 4_000 }, (_, second) => info(second + 1)),
+    `${at(4_001)} level=info msg="fixture end of log"`,
+  ].join("\n");
+  const stderr = [
+    `${at(2_000)} E0923 kubelet_node_status.go:1] "Error updating node status" err="fixture lease"`,
+    `${at(2_001)} level=error msg="fixture join token=do-not-publish-node-token"`,
+    // The credential keyword sits past the 1000-character line cut.
+    `${at(2_001)} level=warning msg="do-not-publish-long-line ${"y".repeat(1_100)} password=hidden"`,
+    ...Array.from(
+      { length: 500 },
+      (_, index) => `${at(2_002 + index)} The connection to the server localhost:8080 was refused`,
+    ),
+  ].join("\n");
+  const excerpt = nodeLogExcerpt(stdout, stderr);
+  assert.ok(excerpt.length < 42_000, `excerpt has ${excerpt.length} characters`);
+  assert.match(excerpt, /^\[diagnostics dropped 1 unstamped line fragments\]\n/);
+  assert.match(excerpt, /\n\[diagnostics omitted 500 kubectl retry lines against localhost:8080/);
+  assert.match(excerpt, /Starting k3s agent fixture/);
+  assert.match(excerpt, /Error updating node status/);
+  assert.match(excerpt, /\[redacted credential-bearing line\]/);
+  assert.match(excerpt, /fixture end of log"$/);
+  assert.match(excerpt, /\[diagnostics omitted \d+ lines; 3 of 3 error and warning lines/);
+  assert.doesNotMatch(excerpt, /do-not-publish|localhost:8080 was refused/);
+});
 
 for (const scenario of ["storage-unready", "storage-after-image-unready"]) {
   test(`fixture preparation reports unavailable storage without publishing workload inputs: ${scenario}`, async (t) => {

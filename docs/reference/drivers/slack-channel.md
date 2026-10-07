@@ -27,7 +27,8 @@ does not switch to everyone.
 
 An invalid token, missing scope, rate limit, invalid response, or unavailable
 Slack service produces a safe error without returning the token or upstream
-payload. Retry after fixing the token or scopes. Exact IDs can be entered when
+payload. Non-success HTTP responses release their unused response body before
+returning the error. Retry after fixing the token or scopes. Exact IDs can be entered when
 directory browsing is unavailable.
 
 ## Credential validation

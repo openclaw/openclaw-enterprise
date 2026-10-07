@@ -49,8 +49,12 @@ associating or deploying an Agent needs `read` on that exact account. See
    {
      "backendId": "openai",
      "harnessAuth": {
-       "method": "chatgpt_service_account",
-       "serviceAccountId": "<service-account-id>"
+       "method": "codex_pat",
+       "source": {
+         "kind": "service_account",
+         "namespaceId": "<namespace-id>",
+         "id": "<service-account-id>"
+       }
      }
    }
    ```

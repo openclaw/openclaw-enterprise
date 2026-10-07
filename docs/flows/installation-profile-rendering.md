@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-29
-last_updated_session: r2-fix-7
+updated: 2026-10-07
+last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
 ---
 
 # Installation Profile Rendering Flow
@@ -83,14 +83,14 @@ profile rejects Codex-only inputs.
 The input schema has no field for the hosted discovery and `codex_pat` runtime
 token because Installation startup configuration does not consume it.
 `preflight.json` tells the operator to add that credential later as a
-same-Namespace Secret or through the Console. Managed `chatgpt_service_account`
-provisioning is optional and renders only when `codex.managedServiceAccounts` is
+same-Namespace Secret or through the Console. Managed ServiceAccount
+provisioning for `codex_pat` is optional and renders only when `codex.managedServiceAccounts` is
 supplied.
 
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
-hostnames and their shared cookie parent domain, and paired metrics scraper
-selectors. Invalid values therefore fail before `values.yaml` or
-`installation.yaml` is written.
+hostnames and their shared cookie parent domain (not a public suffix, checked
+with the API's `tldts` list), and paired metrics scraper selectors. Invalid
+values therefore fail before `values.yaml` or `installation.yaml` is written.
 
 ### 4. Build Helm values
 
@@ -194,6 +194,9 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
+
+- 2026-10-07: Refuse a public-suffix shared cookie domain in preflight.
 - 2026-09-29 20:30: Stop defaulting the repository broker Service name so the chart upgrade guard applies.
 
 - 2026-09-29 18:00: Carry external sign-in, the recovery user ID, and trusted proxies through profile rerenders.

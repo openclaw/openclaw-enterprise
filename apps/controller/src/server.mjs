@@ -3,10 +3,10 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import {
-  PresetFileError,
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "./composition/installation-config.ts";
+import { PresetFileError } from "./composition/installation-presets.ts";
 import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
@@ -39,6 +39,15 @@ function startupFailureCode(error) {
   }
   if (/OCC_GATEWAY_API_KEY_PATH|gateway API key file/i.test(message)) {
     return "GATEWAY_API_KEY_UNAVAILABLE";
+  }
+  // Production composition refuses the combination before any database work; the auth
+  // composer's host-only cookie check is the backstop.
+  if (
+    /sign-in (does not support|supports host-only cookies without shared) native admin/.test(
+      message,
+    )
+  ) {
+    return "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED";
   }
   if (/OCC_AGENT_NATIVE_ADMIN|Native admin UI access|Native admin Agent domain/.test(message)) {
     return "AGENT_NATIVE_ADMIN_INVALID";

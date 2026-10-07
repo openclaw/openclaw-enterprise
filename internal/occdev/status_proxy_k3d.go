@@ -45,26 +45,27 @@ func (r *runner) developmentStatusProxySource(ctx context.Context, state *develo
 	// Any Pod address on this node routes through the bridge. Skip the network
 	// address and the bridge's own address, which the kernel reports as local.
 	destination := prefix.Addr().Next().Next()
-	deadline := time.Now().Add(developmentStatusProxyWait)
-	for {
+	var source string
+	err = poll(ctx, developmentStatusProxyWait, func(ctx context.Context) (bool, error) {
 		route, err := r.output(ctx, r.engine, "exec", server, "ip", "route", "get", destination.String())
 		if err != nil {
-			return "", err
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			return false, err
 		}
 		// cni0 appears with the node's first Pod. Before that the lookup takes
 		// the default route, whose source must never be admitted.
-		if developmentStatusProxyRoute.Match(route) {
-			return developmentStatusProxyCidr(route, prefix)
+		if !developmentStatusProxyRoute.Match(route) {
+			return false, nil
 		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("timed out waiting for the k3d Pod bridge route used by the API server Pod proxy")
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
+		source, err = developmentStatusProxyCidr(route, prefix)
+		return err == nil, err
+	})
+	if err != nil {
+		return "", fmt.Errorf("wait for the k3d Pod bridge route used by the API server Pod proxy: %w", err)
 	}
+	return source, nil
 }
 
 func developmentStatusProxyCidr(route []byte, podCIDR netip.Prefix) (string, error) {

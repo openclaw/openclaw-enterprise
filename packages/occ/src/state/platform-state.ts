@@ -42,6 +42,7 @@ import type {
   SecretBindings,
   ServiceAccount,
   ServiceAccountCredential,
+  ServicePrincipal,
   Role,
   IAMPolicyReadRepository,
   IAMPolicyRepository,
@@ -52,6 +53,8 @@ import {
   normalizePluginDesiredState,
   normalizePluginApprovers,
   normalizeHarnessAuthBinding,
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
   harnessAuthBindingFromSnapshot,
   normalizeSecretBindings,
   validPluginRevisionState,
@@ -277,9 +280,32 @@ export interface PresetRepository extends PresetReadRepository {
   deletePreset(namespaceId: string, presetId: string): Promise<boolean>;
 }
 
+/**
+ * The current platform state that keeps a Secret from deletion. An Agent appears once,
+ * whether its draft, active revision, or a pending deployment holds the reference.
+ */
+export type SecretReferenceKind =
+  "agent" | "configuration" | "credential_source" | "provisioning_request";
+
+export interface SecretReferenceEntry {
+  readonly kind: SecretReferenceKind;
+  readonly id: string;
+}
+
+/** At most `limit` references, ordered by kind then ID; `truncated` when more exist. */
+export interface SecretReferencePage {
+  readonly references: readonly Readonly<SecretReferenceEntry>[];
+  readonly truncated: boolean;
+}
+
 export interface SecretReadRepository {
   findSecret(namespaceId: string, secretId: string): Promise<Readonly<Secret> | undefined>;
   listSecrets(namespaceId: string): Promise<readonly Readonly<Secret>[]>;
+  listReferences(
+    namespaceId: string,
+    secretId: string,
+    limit: number,
+  ): Promise<Readonly<SecretReferencePage>>;
 }
 
 export interface SecretRepository extends SecretReadRepository {
@@ -455,27 +481,18 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
         value.loginMode === "api_key"
       );
     }
-    const binding =
-      value.method === "api_key" || value.method === "codex_pat" || value.method === "oauth"
-        ? normalizeHarnessAuthBinding({ method: value.method, source: value.source })
-        : normalizeHarnessAuthBinding({
-            method: value.method,
-            serviceAccountId: value.serviceAccountId,
-          });
-    if (
-      binding?.method === "api_key" ||
-      binding?.method === "codex_pat" ||
-      binding?.method === "oauth"
-    ) {
+    const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });
+    if (isSecretHarnessAuth(binding)) {
       return (
         Object.keys(value).length === 3 &&
         binding.source.namespaceId === namespaceId &&
-        (value.method === "api_key" || value.method === "codex_pat" || value.method === "oauth") &&
+        isSecretHarnessAuth(value) &&
         isNonEmptyString(value.secretDriverId)
       );
     }
     if (
-      value.method !== "chatgpt_service_account" ||
+      !isServiceAccountHarnessAuth(value) ||
+      value.source.namespaceId !== namespaceId ||
       Object.keys(value).length !== 4 ||
       !validCredential(value.credential) ||
       value.credential.kind !== "access_token"
@@ -508,19 +525,16 @@ export function harnessAuthMatches(
   if (binding.method === "runtime") {
     return true;
   }
-  return (binding.method === "api_key" ||
-    binding.method === "codex_pat" ||
-    binding.method === "oauth") &&
-    (snapshot.method === "api_key" ||
-      snapshot.method === "codex_pat" ||
-      snapshot.method === "oauth")
-    ? binding.source.namespaceId === snapshot.source.namespaceId &&
-        binding.source.id === snapshot.source.id
-    : binding.method === "credential_source" && snapshot.method === "credential_source"
-      ? binding.sourceId === snapshot.sourceId
-      : binding.method === "chatgpt_service_account" &&
-        snapshot.method === "chatgpt_service_account" &&
-        binding.serviceAccountId === snapshot.serviceAccountId;
+  if (binding.method === "credential_source" && snapshot.method === "credential_source") {
+    return binding.sourceId === snapshot.sourceId;
+  }
+  return (
+    "source" in binding &&
+    "source" in snapshot &&
+    binding.source.kind === snapshot.source.kind &&
+    binding.source.namespaceId === snapshot.source.namespaceId &&
+    binding.source.id === snapshot.source.id
+  );
 }
 
 function harnessSecretReference(
@@ -529,9 +543,7 @@ function harnessSecretReference(
   secretId: string,
 ): boolean {
   return (
-    (binding?.method === "api_key" ||
-      binding?.method === "codex_pat" ||
-      binding?.method === "oauth") &&
+    isSecretHarnessAuth(binding) &&
     binding.source.namespaceId === namespaceId &&
     binding.source.id === secretId
   );
@@ -548,9 +560,7 @@ function harnessAccountReference(
   binding: HarnessAuthBinding | undefined | null,
   serviceAccountId: string,
 ): boolean {
-  return (
-    binding?.method === "chatgpt_service_account" && binding.serviceAccountId === serviceAccountId
-  );
+  return isServiceAccountHarnessAuth(binding) && binding.source.id === serviceAccountId;
 }
 
 export async function assertHarnessAuthAvailable(
@@ -567,11 +577,7 @@ export async function assertHarnessAuthAvailable(
   if (binding === null || binding.method === "runtime") {
     return;
   }
-  if (
-    binding.method === "api_key" ||
-    binding.method === "codex_pat" ||
-    binding.method === "oauth"
-  ) {
+  if (isSecretHarnessAuth(binding)) {
     if (
       binding.source.namespaceId !== namespaceId ||
       (await state.secrets.findSecret(namespaceId, binding.source.id)) === undefined
@@ -591,8 +597,8 @@ export async function assertHarnessAuthAvailable(
       );
     }
   } else if (
-    (await state.serviceAccounts.findServiceAccount(namespaceId, binding.serviceAccountId)) ===
-    undefined
+    binding.source.namespaceId !== namespaceId ||
+    (await state.serviceAccounts.findServiceAccount(namespaceId, binding.source.id)) === undefined
   ) {
     throw new ScopeViolationError(
       "The Agent harness authentication references an unavailable ServiceAccount.",
@@ -807,6 +813,7 @@ interface PlatformSnapshot {
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
   readonly roles: Map<string, Readonly<Role>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
+  readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly audit: Readonly<AuditEvent>[];
@@ -885,6 +892,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),
     ),
+    servicePrincipals: new Map(snapshot.servicePrincipals),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, immutableCopy(attempt)]),
     ),
@@ -972,7 +980,7 @@ function secretBindingsReference(
 }
 
 async function assertSecretBindingsAvailable(
-  secrets: SecretReadRepository,
+  secrets: Pick<SecretReadRepository, "findSecret">,
   namespaceId: string,
   bindings: SecretBindings | undefined,
 ): Promise<void> {
@@ -1398,12 +1406,6 @@ function repositories(
             const secret = snapshot.secrets.get(agentKey(namespaceId, secretId));
             return secret === undefined ? undefined : immutableCopy(secret);
           },
-          listSecrets: async (namespaceId) =>
-            Object.freeze(
-              Array.from(snapshot.secrets.values())
-                .filter((secret) => secret.namespaceId === namespaceId)
-                .map((secret) => immutableCopy(secret)),
-            ),
         },
         configuration.namespaceId,
         secretBindings,
@@ -1516,49 +1518,72 @@ function repositories(
       snapshot.secrets.set(key, saved);
       return immutableCopy(saved);
     },
-    hasReferences: async (namespaceId, secretId) => {
+    listReferences: async (namespaceId, secretId, limit) => {
       if ((await secrets.findSecret(namespaceId, secretId)) === undefined) {
-        return false;
+        return Object.freeze({ references: Object.freeze([]), truncated: false });
       }
-      return (
-        Array.from(snapshot.configurations.values()).some(
-          (configuration) =>
-            configuration.namespaceId === namespaceId &&
-            secretBindingsReference(configuration.secretBindings, namespaceId, secretId),
-        ) ||
-        Array.from(snapshot.credentialSources.values()).some(
-          (source) =>
-            source.namespaceId === namespaceId &&
-            Object.values(source.secrets).some((reference) => reference.id === secretId),
-        ) ||
-        Array.from(snapshot.agents.values()).some((agent) => {
-          const activeRevision = (
-            snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
-          ).find((revision) => revision.id === agent.activeRevisionId);
-          return (
-            agent.namespaceId === namespaceId &&
-            (harnessSecretReference(agent.harnessAuth, namespaceId, secretId) ||
-              harnessSecretReference(activeRevision?.harnessAuth, namespaceId, secretId) ||
-              secretBindingsReference(activeRevision?.secretBindings, namespaceId, secretId))
+      const found = new Map<string, Readonly<SecretReferenceEntry>>();
+      const add = (kind: SecretReferenceKind, id: string): void => {
+        found.set(`${kind}\u0000${id}`, Object.freeze({ kind, id }));
+      };
+      for (const configuration of snapshot.configurations.values()) {
+        if (
+          configuration.namespaceId === namespaceId &&
+          secretBindingsReference(configuration.secretBindings, namespaceId, secretId)
+        ) {
+          add("configuration", configuration.id);
+        }
+      }
+      for (const source of snapshot.credentialSources.values()) {
+        if (
+          source.namespaceId === namespaceId &&
+          Object.values(source.secrets).some((reference) => reference.id === secretId)
+        ) {
+          add("credential_source", source.id);
+        }
+      }
+      for (const agent of snapshot.agents.values()) {
+        const activeRevision = (snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []).find(
+          (revision) => revision.id === agent.activeRevisionId,
+        );
+        if (
+          agent.namespaceId === namespaceId &&
+          (harnessSecretReference(agent.harnessAuth, namespaceId, secretId) ||
+            harnessSecretReference(activeRevision?.harnessAuth, namespaceId, secretId) ||
+            secretBindingsReference(activeRevision?.secretBindings, namespaceId, secretId))
+        ) {
+          add("agent", agent.id);
+        }
+      }
+      for (const operation of snapshot.operations) {
+        if (operation.kind !== "agent_revision" || operation.namespaceId !== namespaceId) {
+          continue;
+        }
+        const revision = Array.from(snapshot.revisions.values())
+          .flat()
+          .find(
+            (candidate) =>
+              candidate.namespaceId === namespaceId && candidate.id === operation.resourceId,
           );
-        }) ||
-        snapshot.operations.some((operation) => {
-          if (operation.kind !== "agent_revision" || operation.namespaceId !== namespaceId) {
-            return false;
-          }
-          const revision = Array.from(snapshot.revisions.values())
-            .flat()
-            .find(
-              (candidate) =>
-                candidate.namespaceId === namespaceId && candidate.id === operation.resourceId,
-            );
-          return (
-            secretBindingsReference(revision?.secretBindings, namespaceId, secretId) ||
-            harnessSecretReference(revision?.harnessAuth, namespaceId, secretId)
-          );
-        })
-      );
+        if (
+          revision !== undefined &&
+          (secretBindingsReference(revision.secretBindings, namespaceId, secretId) ||
+            harnessSecretReference(revision.harnessAuth, namespaceId, secretId))
+        ) {
+          add("agent", revision.agentId);
+        }
+      }
+      // Kind, then ID, in code-unit order, as PostgreSQL's COLLATE "C" sorts them.
+      const ordered = Array.from(found.keys())
+        .sort()
+        .map((key) => found.get(key) as Readonly<SecretReferenceEntry>);
+      return Object.freeze({
+        references: Object.freeze(ordered.slice(0, limit)),
+        truncated: ordered.length > limit,
+      });
     },
+    hasReferences: async (namespaceId, secretId) =>
+      (await secrets.listReferences(namespaceId, secretId, 1)).references.length > 0,
     deleteSecret: async (namespaceId, secretId) => {
       if ((await secrets.findSecret(namespaceId, secretId)) === undefined) {
         return false;
@@ -2372,6 +2397,9 @@ function repositories(
     if (namespaceServicePrincipalExists(namespaceId, identityId)) {
       return true;
     }
+    if (snapshot.servicePrincipals.get(identityId)?.namespaceId === namespaceId) {
+      return true;
+    }
     const resolved = iamSubjects.resolve?.(identityId);
     if (resolved?.id === identityId && bindableIdentity(namespaceId, resolved)) {
       return true;
@@ -2503,6 +2531,46 @@ function repositories(
     },
     deleteAccessBinding: async (namespaceId, bindingId) =>
       snapshot.bindings.delete(iamPolicyKey(namespaceId, bindingId)),
+    listServicePrincipals: async (namespaceId) =>
+      Object.freeze(
+        Array.from(snapshot.servicePrincipals.values()).filter(
+          (servicePrincipal) => servicePrincipal.namespaceId === namespaceId,
+        ),
+      ),
+    getServicePrincipal: async (namespaceId, servicePrincipalId) => {
+      const found = snapshot.servicePrincipals.get(servicePrincipalId);
+      return found?.namespaceId === namespaceId ? found : undefined;
+    },
+    createServicePrincipal: async (servicePrincipal) => {
+      assertInitialized(snapshot);
+      const namespace = await namespaces.lockNamespace(servicePrincipal.namespaceId ?? "");
+      if (
+        namespace === undefined ||
+        (namespace.status !== "provisioning" && namespace.status !== "ready") ||
+        servicePrincipal.namespaceId !== namespace.id ||
+        servicePrincipal.agentId !== undefined
+      ) {
+        throw new ScopeViolationError(
+          "The ServicePrincipal must belong to an available Namespace.",
+        );
+      }
+      if (
+        snapshot.servicePrincipals.has(servicePrincipal.id) ||
+        iamSubjects.resolve?.(servicePrincipal.id) !== undefined ||
+        iamSubjects.identities.some((identity) => identity.id === servicePrincipal.id)
+      ) {
+        throw new ResourceConflictError(
+          "The server generated an existing ServicePrincipal identity.",
+        );
+      }
+      const saved = Object.freeze({
+        kind: "service_principal" as const,
+        id: servicePrincipal.id,
+        namespaceId: namespace.id,
+      });
+      snapshot.servicePrincipals.set(saved.id, saved);
+      return saved;
+    },
   };
 
   const repositorySessions = memoryRepositorySessions(
@@ -2704,6 +2772,106 @@ function repositories(
   };
 }
 
+/**
+ * The memory counterpart of `occ.finalize_agent_deletion` (migrations/0035), applied to the
+ * records this adapter keeps. Returns false unless the Agent's deletion was admitted: it is
+ * `deleting`, stopped, and its `deleted` lifecycle work is recorded.
+ */
+function finalizeAgentDeletion(
+  snapshot: PlatformSnapshot,
+  namespaceId: string,
+  agentId: string,
+): boolean {
+  const work = snapshot.operations.find(
+    (operation) =>
+      operation.kind === "agent" &&
+      operation.target === "deleted" &&
+      operation.namespaceId === namespaceId &&
+      operation.resourceId === agentId,
+  );
+  const key = agentKey(namespaceId, agentId);
+  const agent = snapshot.agents.get(key);
+  if (
+    work === undefined ||
+    snapshot.namespaces.get(namespaceId) === undefined ||
+    agent === undefined ||
+    agent.status !== "deleting" ||
+    agent.desiredRuntimeState !== "stopped"
+  ) {
+    return false;
+  }
+  const installation = snapshot.installation;
+  if (installation === undefined) {
+    throw new ScopeViolationError("The server-owned Installation has not been initialized.");
+  }
+  const revisionIds = new Set((snapshot.revisions.get(key) ?? []).map((revision) => revision.id));
+
+  // Attempts outlive their revision as evidence (migrations/0035): completion detaches every
+  // attempt's live revision without waiting for repository cleanup, whatever its phase.
+  for (const [admissionId, attempt] of snapshot.repositorySessions) {
+    if (
+      attempt.namespaceId === namespaceId &&
+      attempt.agentId === agentId &&
+      attempt.liveRevisionId !== null
+    ) {
+      snapshot.repositorySessions.set(
+        admissionId,
+        immutableCopy({ ...attempt, liveRevisionId: null }),
+      );
+    }
+  }
+
+  // The finalizer's three AccessBinding groups: the Agent's ServicePrincipal as subject, the
+  // Agent as target, and the Agent's AgentRevisions as target. Like the SQL, the first two are
+  // not Namespace-scoped. Restrictions live in the IAM driver's seed here, not in this state.
+  for (const [bindingKey, binding] of snapshot.bindings) {
+    if (
+      (binding.subjectKind === "identity" && binding.subjectId === agent.servicePrincipalId) ||
+      (binding.resourceKind === "agent" && binding.resourceId === agentId) ||
+      (binding.resourceKind === "agent_revision" &&
+        binding.resourceId !== undefined &&
+        revisionIds.has(binding.resourceId))
+    ) {
+      snapshot.bindings.delete(bindingKey);
+    }
+  }
+
+  // The setup cascades with its Agent. Credential withdrawals already end with their revision
+  // here (liveWithdrawal), as the database cascade does.
+  snapshot.workspaceSetups.delete(key);
+  snapshot.revisions.delete(key);
+  snapshot.agents.delete(key);
+
+  snapshot.audit.push(
+    immutableCopy({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: installation.id,
+      namespaceId,
+      occurredAt: new Date().toISOString(),
+      kind: "mutation" as const,
+      actorId: work.actorId,
+      source: "occ" as const,
+      action: "openclaw.agents.lifecycle.delete",
+      resource: { kind: "agent" as const, id: agentId, namespaceId },
+      outcome: "success" as const,
+      // Memory work is never claimed or retried, so its completion is the first attempt.
+      details: { reasonCode: "AGENT_DELETED", attemptCount: 1 },
+    }),
+  );
+
+  // The Agent's own lifecycle work and its revisions' work end with it.
+  const remaining = snapshot.operations.filter(
+    (operation) =>
+      operation.namespaceId !== namespaceId ||
+      !(
+        (operation.kind === "agent" && operation.resourceId === agentId) ||
+        (operation.kind === "agent_revision" && revisionIds.has(operation.resourceId))
+      ),
+  );
+  snapshot.operations.splice(0, snapshot.operations.length, ...remaining);
+  return true;
+}
+
 /** Process-local, single-writer state. No restart or multi-process durability. */
 export class InMemoryPlatformState implements PlatformStateStore {
   private snapshot: PlatformSnapshot = {
@@ -2720,6 +2888,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     revisions: new Map(),
     roles: new Map(),
     bindings: new Map(),
+    servicePrincipals: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],
@@ -2757,6 +2926,25 @@ export class InMemoryPlatformState implements PlatformStateStore {
   }
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.commit((working, lifetime) =>
+      work(bindPlatformUnitOfWork(repositories(working, this.iamSubjects), lifetime)),
+    );
+  }
+
+  /**
+   * Completes an admitted Agent deletion the way the PostgreSQL worker's finalizer does
+   * (`PostgresWorkQueue.completeAgentDeletion`). Memory records lifecycle work but never
+   * executes it, so dev and test callers complete it here. Removes the Agent, its
+   * AgentRevisions and every AccessBinding the deletion audit listed, and records the
+   * `openclaw.agents.lifecycle.delete` success. Returns false when no deletion was admitted.
+   */
+  async completeAgentDeletion(namespaceId: string, agentId: string): Promise<boolean> {
+    return this.commit(async (working) => finalizeAgentDeletion(working, namespaceId, agentId));
+  }
+
+  private async commit<T>(
+    work: (working: PlatformSnapshot, lifetime: RepositoryTransactionLifetime) => Promise<T>,
+  ): Promise<T> {
     const previous = this.pending;
     let release: (() => void) | undefined;
     this.pending = new Promise<void>((resolve) => {
@@ -2767,9 +2955,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
       await previous;
       const working = cloneSnapshot(this.snapshot);
       const committedAuditCount = working.audit.length;
-      const result = await work(
-        bindPlatformUnitOfWork(repositories(working, this.iamSubjects), lifetime),
-      );
+      const result = await work(working, lifetime);
       await lifetime.finish();
       await this.publishAudit(working.audit.slice(committedAuditCount));
       this.snapshot = working;

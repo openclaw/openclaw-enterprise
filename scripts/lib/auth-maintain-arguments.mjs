@@ -40,7 +40,7 @@ function nonEmpty(value, name) {
 /** Parse argv after the script path. Mutating commands must name --writers-stopped. */
 export function parseAuthMaintainArguments(args) {
   const [command, ...rest] = args[0] === "--" ? args.slice(1) : args;
-  const spec = COMMANDS[command];
+  const spec = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
   if (spec === undefined) {
     throw new AuthMaintainUsageError(`Unknown command: ${command ?? "(none)"}.`);
   }

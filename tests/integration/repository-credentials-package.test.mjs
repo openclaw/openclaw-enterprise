@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 
 const root = resolve(".");
 
@@ -120,14 +120,19 @@ test(
     assert.equal(openssl.status, 0);
     await chmod(key, 0o600);
     await chmod(certificate, 0o644);
-    const port = await availablePort();
+    // Both services below bind a configured gateway port long after it is chosen. Hold each
+    // port until its service has bound it, so no other socket takes it in between.
+    const serviceReservation = await reservePort();
+    t.after(serviceReservation.release);
+    const developmentReservation = await reservePort();
+    t.after(developmentReservation.release);
     const configuration = join(temporary, "service.json");
     await writeFile(
       configuration,
       JSON.stringify({
         gateway: {
           publicOrigin: "https://credentials.example.test",
-          listen: `127.0.0.1:${port}`,
+          listen: `127.0.0.1:${serviceReservation.port}`,
           tlsCertFile: certificate,
           tlsKeyFile: key,
           controlSocket: join(temporary, "control.sock"),
@@ -173,7 +178,7 @@ test(
       JSON.stringify({
         gateway: {
           ...appConfiguration.gateway,
-          listen: `127.0.0.1:${await availablePort()}`,
+          listen: `127.0.0.1:${developmentReservation.port}`,
           controlSocket: join(temporary, "token-control.sock"),
         },
         sessionPolicy: {
@@ -237,12 +242,17 @@ test(
     const development = spawn(
       process.execPath,
       [
+        ...reservedPortArgs(developmentReservation),
         join(runtime, "dist/repository-credentials.js"),
         "--config",
         tokenConfiguration,
         "--development-authority",
       ],
-      { cwd: runtime, env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: runtime,
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
     let developmentOutput = "";
     development.stdout.on("data", (chunk) => (developmentOutput += chunk));
@@ -261,6 +271,8 @@ test(
         ),
         "development service did not report its authority",
       );
+      // The service reports "started" after its listeners are bound.
+      await developmentReservation.release();
       development.kill("SIGTERM");
       assert.deepEqual(await developmentExit, { code: 0, signal: null });
       assert.equal(developmentOutput.includes(token), false);
@@ -278,7 +290,12 @@ test(
     );
     const service = spawn(
       process.execPath,
-      [join(runtime, "dist/repository-credentials.js"), "--config", configuration],
+      [
+        ...reservedPortArgs(serviceReservation),
+        join(runtime, "dist/repository-credentials.js"),
+        "--config",
+        configuration,
+      ],
       {
         cwd: runtime,
         env: { PATH: process.env.PATH },
@@ -309,6 +326,8 @@ test(
         (await lstat(socket)).isSocket(),
         "emitted process did not bind its control socket",
       );
+      // The control socket is bound after the gateway port, so the hold can end.
+      await serviceReservation.release();
       const clientRoot = join(client, "dist/drivers/repo/github/credentials/client");
       const invoke = (entrypoint, args, input) =>
         spawnSync(process.execPath, [join(clientRoot, entrypoint), ...args], {

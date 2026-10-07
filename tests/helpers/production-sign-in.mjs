@@ -325,12 +325,19 @@ export async function assertExternalSignInRefused(
   { pool, provider, denials, signIn },
   message,
   reason = "EXTERNAL_IDENTITY_REJECTED",
+  consoleReason = undefined,
 ) {
   const before = await authRowCounts(pool);
   const deniedBefore = await denials(reason);
   const { callback } = await signIn();
   assert.equal(callback.statusCode, 302, message);
-  assert.equal(callback.headers.location, `/console/?authError=${provider}`, message);
+  assert.equal(
+    callback.headers.location,
+    consoleReason === undefined
+      ? `/console/?authError=${provider}`
+      : `/console/?authError=${provider}&authReason=${consoleReason}`,
+    message,
+  );
   assert.equal(
     String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName),
     false,

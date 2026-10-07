@@ -5345,6 +5345,74 @@ revisionTest(
 );
 
 revisionTest(
+  "a stop committed after the last running check never publishes the candidate",
+  async (fixture) => {
+    const { owner, candidate: predecessor } =
+      await fixture.admitInitialRevision("stop-before-publication");
+    await fixture.start(fixture.compute);
+    await fixture.work(predecessor, "succeeded");
+    await fixture.stop();
+
+    // A before-commit Driver activates the candidate after the worker's last check
+    // that the Agent runs. A stop admitted then is seen only when publication locks
+    // the Agent: the candidate must stay unpublished, and the predecessor is left
+    // to the stop instead of being retired by a candidate that never served.
+    const candidate = await fixture.revision(owner, 2);
+    let releaseActivation;
+    const activationReleased = new Promise((resolve) => {
+      releaseActivation = resolve;
+    });
+    let activationStarted = false;
+    const stoppedRevisions = [];
+    const retiredRevisions = [];
+    await fixture.start({
+      ...fixture.compute,
+      activationOrder: "beforeCommit",
+      async activateRevision(revision) {
+        if (revision.id === candidate.id) {
+          activationStarted = true;
+          await activationReleased;
+        }
+      },
+      async stopRevision(revision) {
+        stoppedRevisions.push(revision.id);
+        return fixture.compute.stopRevision(revision);
+      },
+      async retireRevision(revision) {
+        retiredRevisions.push(revision.id);
+        return fixture.compute.retireRevision(revision);
+      },
+    });
+    await waitFor("candidate activation to start", async () =>
+      activationStarted ? true : undefined,
+    );
+
+    let stop;
+    try {
+      stop = await fixture.requestStop(owner);
+    } finally {
+      releaseActivation();
+    }
+    await fixture.work(candidate, "succeeded");
+    await fixture.work(stop, "succeeded");
+
+    const stopped = await fixture.currentAgent(owner);
+    assert.equal(stopped.desiredRuntimeState, "stopped");
+    assert.equal(stopped.activeRevisionId, undefined);
+    // The candidate stops itself. The stop work then stops the still-serving predecessor
+    // first and cleans up the candidate after it.
+    assert.deepEqual(stoppedRevisions, [candidate.id, predecessor.id, candidate.id]);
+    assert.deepEqual(retiredRevisions, []);
+    const status = await fixture.deploymentStatus(owner, candidate);
+    assert.equal(status.status, "failed");
+    assert.deepEqual(status.error, {
+      code: "REVISION_STOPPED",
+      message: "Deployment ended because the Agent was stopped.",
+    });
+  },
+);
+
+revisionTest(
   "a stop admitted immediately after publication retires the predecessor before completion",
   async (fixture, context) => {
     const { owner, candidate: predecessor } =
@@ -6995,6 +7063,81 @@ revisionTest(
           dependency: undefined,
           cause: "ApiException",
           status: 409,
+          reason: undefined,
+        },
+      ],
+    );
+  },
+);
+
+revisionTest(
+  "an activation failure logs only an HTTP status and a one-word Status reason",
+  async (fixture) => {
+    const { candidate } = await fixture.admitInitialRevision("activation-status-filter");
+    const events = [];
+    let activations = 0;
+    // The worker filters what any Driver hands it, not only the Kubernetes Driver's shapes.
+    // An HTTP status text is free text, so a reason with a space is dropped while the
+    // status stays. A gRPC client error carries its own numeric status code (14 is
+    // UNAVAILABLE), which is not an HTTP status and must not be logged as one.
+    const statusText = new TransientDependencyError(
+      "kubernetes_api",
+      "unavailable",
+      "The Kubernetes API answered HTTP 503.",
+      {
+        cause: Object.assign(new Error("HTTP 503 Service Unavailable"), {
+          code: 503,
+          reason: "Service Unavailable",
+        }),
+      },
+    );
+    const grpc = Object.assign(new Error("14 UNAVAILABLE: connection refused"), { code: 14 });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async activateRevision(revision, revisionContext) {
+          activations += 1;
+          if (activations === 1) {
+            throw statusText;
+          }
+          if (activations === 2) {
+            throw grpc;
+          }
+          return fixture.compute.activateRevision?.(revision, revisionContext);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+
+    await fixture.work(candidate, "succeeded", 30_000);
+    assert.equal(activations, 3);
+    const pending = events.filter(
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.outcome === "pending",
+    );
+    assert.deepEqual(
+      pending.map(({ code, dependency, cause, status, reason }) => ({
+        code,
+        dependency,
+        cause,
+        status,
+        reason,
+      })),
+      [
+        {
+          code: "KUBERNETES_API_UNAVAILABLE",
+          dependency: "kubernetes_api",
+          cause: "unavailable",
+          status: 503,
+          reason: undefined,
+        },
+        {
+          code: "REVISION_FINALIZATION_INCOMPLETE",
+          dependency: undefined,
+          cause: "Error",
+          status: undefined,
           reason: undefined,
         },
       ],

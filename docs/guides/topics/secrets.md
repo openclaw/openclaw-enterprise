@@ -39,9 +39,10 @@ require an administrator with access to the configured IAM authority.
 
 Updating a Secret changes the stored value. It does not restart a workload or
 change a running process's environment. Redeploy each consumer through OCE and
-verify the new revision. There is no value history or automatic rotation. If a
+verify the new revision. `occ secret get` lists the consumers you may read and
+counts the others; see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers). There is no value history or automatic rotation. If a
 credential is exposed, stop the affected workloads, revoke it at the upstream
 provider, store a replacement, and redeploy. OCC rejects deletion while a
 current Configuration, credential source, Agent draft, active revision,
 pending deployment, or pending Agent provisioning request still references the
-Secret. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+Secret; the `409` names the references you may read. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).

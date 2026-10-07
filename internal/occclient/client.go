@@ -98,6 +98,36 @@ func (client *Client) DeleteIAMAccessBinding(namespaceID, bindingID string) erro
 	)
 }
 
+// CreateIAMServicePrincipal creates a Namespace ServicePrincipal that holds no grant.
+func (client *Client) CreateIAMServicePrincipal(namespaceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "iam", "service-principals"},
+		map[string]any{},
+	)
+}
+
+// ListIAMServicePrincipals lists a Namespace's non-Agent ServicePrincipals.
+func (client *Client) ListIAMServicePrincipals(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "iam", "service-principals")
+}
+
+// GetIAMServicePrincipal fetches a Namespace ServicePrincipal.
+func (client *Client) GetIAMServicePrincipal(namespaceID, servicePrincipalID string) (any, error) {
+	return client.get("namespaces", namespaceID, "iam", "service-principals", servicePrincipalID)
+}
+
+// CreateServiceKey issues a key for an existing non-Agent ServicePrincipal. The
+// response holds the plaintext key, which the server returns only once.
+func (client *Client) CreateServiceKey(body map[string]any) (any, error) {
+	return client.send(http.MethodPost, []string{"api", "auth", "service-keys"}, body)
+}
+
+// RevokeServiceKey deletes a service key so it can no longer authenticate.
+func (client *Client) RevokeServiceKey(keyID string) (any, error) {
+	return client.send(http.MethodDelete, []string{"api", "auth", "service-keys", keyID}, nil)
+}
+
 // CreateConfiguration creates a Configuration in a Namespace.
 func (client *Client) CreateConfiguration(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(

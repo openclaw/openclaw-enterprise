@@ -321,11 +321,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   if (
     binding != null &&
     (!isObject(binding) ||
-      !["runtime", "api_key", "codex_pat", "chatgpt_service_account"].includes(binding.method) ||
-      (binding.method === "chatgpt_service_account" &&
-        typeof binding.serviceAccountId !== "string") ||
+      !["runtime", "api_key", "codex_pat"].includes(binding.method) ||
       (["api_key", "codex_pat"].includes(binding.method) &&
-        (binding.source?.kind !== "secret" ||
+        (!["secret", ...(binding.method === "codex_pat" ? ["service_account"] : [])].includes(
+          binding.source?.kind,
+        ) ||
           binding.source.namespaceId !== namespaceId ||
           typeof binding.source.id !== "string")))
   ) {
@@ -1771,7 +1771,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         savedSecret ??
         modelCredentialSecret ??
         presetExistingSecret ??
-        (hasBoundModelCredential ? binding.source : undefined);
+        (hasBoundModelCredential && binding.source.kind === "secret" ? binding.source : undefined);
       if (modelSecret) {
         await ensureSecretOperateBinding(context, savedAgent, modelSecret);
       }

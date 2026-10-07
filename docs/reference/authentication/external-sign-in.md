@@ -10,8 +10,9 @@ covers bootstrap, password sessions, request origin, provisioning, and failures.
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
 its restricted application role, native IAM, one GitHub App on github.com, and one
 canonical HTTPS Console origin with host-only cookies. Shared-cookie native
-administration, other session readers, rolling or mixed-version serving, and
-mutable Installation policy are unsupported. Keep bootstrap, seeding, external
+administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
+other session readers, rolling or mixed-version serving, and mutable Installation
+policy are unsupported. Keep bootstrap, seeding, external
 policy writers, and recovery-affecting changes stopped.
 Native IAM's policy read remains separate from State's actor guard. Loopback
 development does not qualify deployed HTTPS.
@@ -78,7 +79,9 @@ an allowlist someone who left can still sign in, and live sessions continue unti
 expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
 access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
-sessions; revoke ends sessions but allows a fresh sign-in.
+sessions; revoke ends sessions but allows a fresh sign-in. None of these ends a
+[service key](service-api-keys.md#revoke-or-rotate-a-service-key) the person uses
+from the CLI: revoke it, or delete its service principal's AccessBindings.
 
 `GET /api/auth/providers` returns `github`, `google`, `oidc`, and `sessionBinding` as `true` when enabled,
 with `oidcSignIn` (`label`, `authorizationUrl`) while OIDC is configured,
@@ -92,7 +95,10 @@ The callback consumes a short-lived, browser-bound attempt once before code
 exchange and resolves the immutable numeric GitHub user ID's exact enrollment.
 Unknown identities fail without signup. Success returns to exactly `/console/`
 and sets a two-minute HttpOnly, `SameSite=Strict` login receipt; failure returns
-to `/console/?authError=github` without automatic retry. The starting tab sends its
+to `/console/?authError=github` without automatic retry. An identity attached to a
+disabled account returns with `authReason=account-disabled`, audited as `ACCOUNT_DISABLED`
+with the account's `userId`; only the person the provider just authenticated reaches it,
+and every other refusal stays generic. The starting tab sends its
 `attemptId` with the configured Origin to `POST /api/auth/providers/github/result`,
 which returns the callback session's `sessionKey` once, only while that session's
 cookie is current. It never issues or extends a session.
@@ -211,7 +217,7 @@ one straight after creation.
 
 ## Session and recovery controls
 
-Password and GitHub sessions share admission rules: an eight-hour lifetime without refresh, current account and
+Password, GitHub, Google and OIDC sessions share admission rules: an eight-hour lifetime without refresh, current account and
 method checks, and required audit before a cookie is released or, on logout,
 cleared. Older sessions without account/method binding are rejected; users sign in again.
 An external session authenticates only while its provider instance is configured: removing

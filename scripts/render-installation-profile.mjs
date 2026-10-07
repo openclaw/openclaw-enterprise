@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -195,6 +196,56 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
   return value;
 }
 
+// URL parsing strips only C0 controls and spaces (U+0000 to U+0020) from the ends.
+function stripUrlEdges(value) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) <= 0x20) {
+    start += 1;
+  }
+  while (end > start && value.charCodeAt(end - 1) <= 0x20) {
+    end -= 1;
+  }
+  return value.slice(start, end);
+}
+
+// The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL).
+// Like the chart, this also refuses spellings URL parsing repairs: https:host, /. and /%2e,
+// and other Unicode spaces or invisible characters at either end (NBSP, U+3000, U+FEFF,
+// U+200B), which the API's parser keeps and mostly refuses. Both ends must be a letter, mark,
+// number, punctuation or symbol, as in the chart. Inside, the chart also allows the joiners
+// U+200C and U+200D that some IDN labels need, and refuses other spaces and invisible
+// characters: the host parser refuses spaces, and drops tabs and most invisible characters.
+// (URL parsing below refuses < and >, which the chart refuses explicitly.) Node's Unicode
+// tables can be newer than Helm's, so a letter assigned since then passes here and fails in
+// the chart; no realistic host uses one. Like both, it refuses a bare ? or # (https://host?),
+// which parses to an empty query or fragment but would break the API's auth routes.
+function httpOrigin(value) {
+  const stripped = stripUrlEdges(value);
+  if (
+    /[?#]/.test(stripped) ||
+    /^[^\p{L}\p{M}\p{N}\p{P}\p{S}]|[^\p{L}\p{M}\p{N}\p{P}\p{S}]$/u.test(stripped) ||
+    /[^\p{L}\p{M}\p{N}\p{P}\p{S}\u200c\u200d]/u.test(stripped) ||
+    !/^https?:\/\/[^/?#]*\/?$/i.test(stripped)
+  ) {
+    return false;
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    url.username.length === 0 &&
+    url.password.length === 0 &&
+    url.pathname === "/" &&
+    url.search.length === 0 &&
+    url.hash.length === 0
+  );
+}
+
 function observabilityDestination(value) {
   let url;
   try {
@@ -309,7 +360,22 @@ function isIpv4Cidr(value, requiredPrefix) {
   return requiredPrefix === undefined || prefix === requiredPrefix;
 }
 
-function validateNativeAdminDomains(domain, sharedCookieDomain, diagnostics) {
+// The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
+// with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
+// list without a new root dependency; load it only when native admin is configured.
+function isPublicSuffix(hostname) {
+  const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
+  let tldts;
+  try {
+    tldts = require("tldts");
+  } catch {
+    return undefined;
+  }
+  const parsed = tldts.parse(hostname, { allowPrivateDomains: true, validateHostname: true });
+  return parsed.isIp || parsed.domain === null || parsed.publicSuffix === hostname;
+}
+
+function validateNativeAdminDomains(domain, sharedCookieDomain, authBaseUrl, diagnostics) {
   const lowerDomain = domain.toLowerCase();
   const lowerSharedCookieDomain = sharedCookieDomain.toLowerCase();
   if (!dnsHostname.test(lowerDomain)) {
@@ -321,6 +387,15 @@ function validateNativeAdminDomains(domain, sharedCookieDomain, diagnostics) {
     diagnostics.errors.push(
       "controlPlane.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
     );
+  } else {
+    const publicSuffix = isPublicSuffix(lowerSharedCookieDomain);
+    if (publicSuffix === undefined) {
+      diagnostics.errors.push(
+        "controlPlane.sharedCookieDomain needs the public suffix list: run pnpm install first.",
+      );
+    } else if (publicSuffix) {
+      diagnostics.errors.push("controlPlane.sharedCookieDomain must not be a public suffix.");
+    }
   }
   if (
     dnsHostname.test(lowerDomain) &&
@@ -331,6 +406,25 @@ function validateNativeAdminDomains(domain, sharedCookieDomain, diagnostics) {
     diagnostics.errors.push(
       "controlPlane.agentNativeAdminDomain must be inside controlPlane.sharedCookieDomain.",
     );
+  }
+  // The API refuses these at startup: shared session cookies are secure-only, and the
+  // console host must be inside their parent.
+  let baseUrl;
+  try {
+    baseUrl = new URL(authBaseUrl);
+  } catch {
+    // asString already reported it as not an absolute HTTP(S) origin.
+    return;
+  }
+  if (baseUrl.protocol !== "https:") {
+    diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with native admin.");
+  } else if (dnsHostname.test(lowerSharedCookieDomain)) {
+    const host = baseUrl.hostname.replace(/\.$/, "");
+    if (host !== lowerSharedCookieDomain && !host.endsWith(`.${lowerSharedCookieDomain}`)) {
+      diagnostics.errors.push(
+        "controlPlane.authBaseUrl host must be inside controlPlane.sharedCookieDomain.",
+      );
+    }
   }
 }
 
@@ -419,15 +513,25 @@ function signInProvider(source, name, diagnostics) {
   return rendered;
 }
 
-// The OIDC URLs as the chart and API accept them: https on 443, a DNS host, and no
-// userinfo, query or fragment. Returns the lowercase host, or undefined.
-function oidcEndpointHost(value) {
-  if (/[?#]/.test(value)) {
+// The chart's OIDC URL pattern: https, a DNS host spelled in ASCII, an optional :443, and a
+// path without a query or fragment.
+const oidcEndpoint =
+  /^https:\/\/((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(?::443)?(?:\/[^?#]*)?$/i;
+
+// The OIDC URLs as both the chart and the API accept them: https on 443, a DNS host, and no
+// userinfo, query or fragment. Like both, it checks the value after JavaScript's trim, which
+// the API applies. URL parsing repairs spellings the chart refuses (a tab or a percent-escape
+// in the host, an IDN host, backslashes), so the chart's pattern applies too, and an issuer
+// must not name a port. Returns the lowercase host, or undefined.
+function oidcEndpointHost(value, { issuer = false } = {}) {
+  const trimmed = value.trim();
+  const match = oidcEndpoint.exec(trimmed);
+  if (match === null || match[1].length > 253 || (issuer && /^https:\/\/[^/]*:/i.test(trimmed))) {
     return undefined;
   }
   let url;
   try {
-    url = new URL(value);
+    url = new URL(trimmed);
   } catch {
     return undefined;
   }
@@ -445,11 +549,12 @@ function renderOidc(source, diagnostics) {
   const path = ["controlPlane", "oidc"];
   const rendered = signInProvider(source, "oidc", diagnostics);
   const issuer = asString(source, [...path, "issuer"], diagnostics, {
-    validate: (value) => oidcEndpointHost(value) !== undefined,
-    description: "an https URL on port 443 with a DNS host name and no query or fragment",
+    validate: (value) => oidcEndpointHost(value, { issuer: true }) !== undefined,
+    description:
+      "an https URL on port 443 with a DNS host name and no query or fragment, written without a port",
   });
   rendered.issuer = issuer;
-  const host = oidcEndpointHost(issuer);
+  const host = oidcEndpointHost(issuer, { issuer: true });
   for (const key of ["authorizationUrl", "tokenUrl", "jwksUrl"]) {
     rendered[key] = asString(source, [...path, key], diagnostics, {
       validate: (value) => host === undefined || oidcEndpointHost(value) === host,
@@ -476,7 +581,8 @@ function renderOidc(source, diagnostics) {
 // Mirrors the chart's auth.github/auth.google/auth.oidc checks. Activation is one-way, so every
 // profile rerender after activation must keep rendering these values.
 function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, diagnostics) {
-  if (!authBaseUrl.startsWith("https://")) {
+  // The scheme as URL parsing reads it, like the API: HTTPS:// and surrounding spaces pass.
+  if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
   }
   for (const key of ["agentNativeAdminDomain", "sharedCookieDomain"]) {
@@ -767,7 +873,10 @@ function buildRendered(profile, parsed, diagnostics) {
     pattern: digestImage,
     description: "an immutable image reference with a SHA-256 digest",
   });
-  const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics);
+  const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
+    validate: httpOrigin,
+    description: "an absolute HTTP(S) origin URL without a path, query, fragment, or user info",
+  });
   const externalSignIn =
     controlPlane.github !== undefined ||
     controlPlane.google !== undefined ||
@@ -807,8 +916,18 @@ function buildRendered(profile, parsed, diagnostics) {
       ["controlPlane", "sharedCookieDomain"],
       diagnostics,
     );
-    validateNativeAdminDomains(agentNativeAdminDomain, sharedCookieDomain, diagnostics);
-    agentNativeAdmin = { enabled: true, domain: agentNativeAdminDomain, sharedCookieDomain };
+    validateNativeAdminDomains(
+      agentNativeAdminDomain,
+      sharedCookieDomain,
+      authBaseUrl,
+      diagnostics,
+    );
+    // The API lowercases both at startup; the chart accepts only lowercase.
+    agentNativeAdmin = {
+      enabled: true,
+      domain: agentNativeAdminDomain.toLowerCase(),
+      sharedCookieDomain: sharedCookieDomain.toLowerCase(),
+    };
   }
   const envoyNamespace =
     optionalString(controlPlane, ["controlPlane", "envoyNamespace"], diagnostics) ??
@@ -1298,7 +1417,7 @@ function buildRendered(profile, parsed, diagnostics) {
       );
     } else {
       diagnostics.prerequisites.push(
-        "ChatGPT service-account app connections configured outside OCE before Agents use chatgpt_service_account auth.",
+        "ChatGPT service-account app connections configured outside OCE before Agents select a managed ServiceAccount as their codex_pat source.",
       );
       diagnostics.warnings.push(
         "Managed ChatGPT service-account issuance is wired but remains unverified until a live admin credential flow is qualified.",
