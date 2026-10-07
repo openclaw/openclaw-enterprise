@@ -60,6 +60,8 @@ test(
         `${bindingPath}:/etc/openclaw-workspace-node/workspace-node.json:ro`,
       ],
       extraEnvironment: [
+        // This isolated fixture uses synthetic credentials; retain startup causes.
+        "OPENCLAW_DEBUG=1",
         "APP_SERVER_URL=ws://[::1]:4500",
         `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
         "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
@@ -101,8 +103,12 @@ test(
       const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
       // CI truncates error messages; preserve complete container logs separately.
       t.diagnostic(commandOutput(logs));
+      const runtimeErrors = jsonLogEntries(commandOutput(logs))
+        .filter((entry) => entry.level === "error")
+        .map((entry) => entry.message)
+        .join("\n");
       throw new Error(
-        `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${commandOutput(error).trim() || "no fixture output"}`,
+        `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${runtimeErrors || commandOutput(error).trim() || "no fixture output"}`,
         { cause: error },
       );
     }
