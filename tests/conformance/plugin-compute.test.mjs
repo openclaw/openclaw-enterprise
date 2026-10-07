@@ -2750,7 +2750,8 @@ test("gateway runtime status maps native Slack channel status without provider d
             typeof error.retryable === "boolean" &&
             (error.retryAfterMs === undefined ||
               (Number.isInteger(error.retryAfterMs) && error.retryAfterMs >= 0)),
-          async callGatewayFromCli(method, options, params, { signal }) {
+          async callGatewayFromCli(method, options, params, { signal, sharedStateMode }) {
+            assert.equal(sharedStateMode, "read-only");
             assert.equal(method, "channels.status");
             assert.deepEqual(plain(params), { channel: "slack", probe: true, timeoutMs: 5000 });
             channelStatusCalls += 1;

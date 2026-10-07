@@ -421,6 +421,8 @@ function callNativeGateway(method, params, timeoutMs, abortSignal, maxBytes = 65
       gatewayRuntime = require("openclaw/plugin-sdk/gateway-runtime");
       const value = await gatewayRuntime.callGatewayFromCli(method, { json: true, timeout: String(timeoutMs) }, params, {
         progress: false,
+        // Status probes must not initialize shared state alongside Gateway startup.
+        sharedStateMode: "read-only",
         signal: controller.signal,
       });
       if (settled) return;
