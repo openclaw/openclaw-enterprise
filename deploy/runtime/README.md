@@ -37,11 +37,10 @@ upstream `node run --pair-if-needed` already does.
 The source archive and patch hashes identify the resulting custom build.
 
 The selected commit does not support dedicated native OpenClaw. That Harness
-needs required worker placement (`cloudWorkers.requiredProfile`) and native
-worker inference (`nodeHost.workerRuns.nativeInferenceConfig`), which are not in
-upstream main yet. This image's configuration validation rejects both keys, so
-its Gateway and Harness exit at startup rather than place sessions on the
-Gateway. `PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
+needs both required worker placement (`cloudWorkers.requiredProfile`) and native
+worker inference (`nodeHost.workerRuns.nativeInferenceConfig`). The selected
+commit supports required placement, but still rejects native inference, so the
+Harness refuses to start. `PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS` in
 `packages/occ/src/native-worker-support.ts` records this, and admission refuses
 dedicated native OpenClaw while it is `false`. The images-runtime-startup lane
 runs both entrypoints against this image and fails when the image disagrees with it.

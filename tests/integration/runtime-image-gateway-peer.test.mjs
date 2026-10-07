@@ -99,7 +99,12 @@ test(
       ));
     } catch (error) {
       const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-      throw new Error(`${commandOutput(error)}\n${commandOutput(logs)}`, { cause: error });
+      // CI truncates error messages; preserve complete container logs separately.
+      t.diagnostic(commandOutput(logs));
+      throw new Error(
+        `Peer respawn fixture failed (code=${error.code}, signal=${error.signal}): ${commandOutput(error).trim() || "no fixture output"}`,
+        { cause: error },
+      );
     }
     const result = JSON.parse(stdout.trim().split("\n").at(-1));
     assert.ok(result.samePeerOutageResponses >= 2);

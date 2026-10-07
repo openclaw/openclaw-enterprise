@@ -1069,17 +1069,15 @@ test(
   },
 );
 
-// The pinned OpenClaw lacks required worker placement and native worker
-// inference (upstream openclaw/openclaw#154390). Its strict schema rejects the
-// keys dedicated native OpenClaw writes, so both workloads refuse to start rather
-// than run sessions on the Gateway, and admission refuses the Agent first. When
-// the pin accepts them, flip PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS and
+// The pinned OpenClaw accepts required worker placement, but still rejects
+// native worker inference. Admission therefore refuses dedicated native OpenClaw.
+// When the Harness supports inference, flip PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS and
 // update the native worker notes in docs/reference/harness-execution.md and
 // deploy/runtime/README.md.
 const pinnedNativeOpenClawSchemaGaps = PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS
   ? { gateway: [], harness: [] }
   : {
-      gateway: [{ path: "cloudWorkers", message: 'Unrecognized key: "requiredProfile"' }],
+      gateway: [],
       harness: [
         { path: "nodeHost.workerRuns", message: 'Unrecognized key: "nativeInferenceConfig"' },
       ],
@@ -1109,17 +1107,38 @@ function validate(path) {
   const report = JSON.parse(result.stdout);
   return { status: result.status, valid: report.valid, issues: report.issues ?? [] };
 }
-function run(args, env) {
-  const child = cp.spawn("node", args, { env: { PATH: process.env.PATH, HOME: "/home/node", ...env }, stdio: ["ignore", "pipe", "pipe"] });
+function run(args, env, readinessUrl) {
+  const child = cp.spawn("node", args, { env: { PATH: process.env.PATH, HOME: "/home/node", ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (value) => { output += value; });
   child.stderr.on("data", (value) => { output += value; });
-  return new Promise((resolve) => {
-    const deadline = setTimeout(() => child.kill("SIGKILL"), 90000);
-    child.once("exit", (code, signal) => {
-      clearTimeout(deadline);
-      resolve({ code, signal, output });
+  let ready = false;
+  let stopped = false;
+  function killGroup(signal) {
+    try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; }
+  }
+  return new Promise((resolve, reject) => {
+    // Kill the owned process group: a launcher can leave native children holding
+    // stdout open even after it exits. Container removal is the outer safeguard.
+    const deadline = setTimeout(() => killGroup("SIGKILL"), 90000);
+    child.once("error", reject);
+    child.once("exit", () => {
+      stopped = true;
+      killGroup("SIGKILL");
     });
+    child.once("close", (code, signal) => {
+      clearTimeout(deadline);
+      resolve({ code, signal, output, ready });
+    });
+    if (readinessUrl) {
+      (async () => {
+        while (!stopped) {
+          try { ready = (await fetch(readinessUrl, { signal: AbortSignal.timeout(1000) })).ok; } catch {}
+          if (ready) { child.kill("SIGTERM"); return; }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      })().catch(reject);
+    }
   });
 }
 (async () => {
@@ -1132,7 +1151,7 @@ function run(args, env) {
     OPENCLAW_GATEWAY_PASSWORD: "openclaw-runtime-image-schema-password",
     OPENCLAW_WORKSPACE_NODE_ID: workspaceNodeId,
     OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
-  });
+  }, "http://127.0.0.1:18789/readyz");
   const gatewayConfig = "/home/node/.openclaw/openclaw.json";
   const probe = JSON.stringify({ auth: { probes: { results: [{ provider: "openai", model, source: "env", status: "ok" }] } } });
   fs.writeFileSync("/tmp/probe.cjs", [
@@ -1206,16 +1225,14 @@ function run(args, env) {
     );
     assert.deepEqual(gateway.validation.issues, pinnedNativeOpenClawSchemaGaps.gateway);
     assert.deepEqual(harness.validation.issues, pinnedNativeOpenClawSchemaGaps.harness);
-    // Fail closed: neither workload runs with the placement key dropped.
-    for (const [name, { code, signal, output, validation }] of Object.entries({
-      gateway,
-      harness,
-    })) {
-      assert.equal(validation.valid, PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS, name);
-      if (!PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS) {
-        assert.ok(code !== 0 && signal === null, `${name} must refuse to start:\n${output}`);
-        assert.match(output, /Unrecognized key/, name);
-      }
+    assert.equal(gateway.validation.valid, true);
+    assert.equal(gateway.ready, true, gateway.output);
+    assert.equal(harness.validation.valid, PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS);
+    // Until native inference is supported, the Harness must reject its config.
+    // Gateway placement support alone must not enable dedicated native Agents.
+    if (!PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS) {
+      assert.ok(harness.code !== 0 && harness.signal === null, harness.output);
+      assert.match(harness.output, /Unrecognized key/);
     }
   },
 );
