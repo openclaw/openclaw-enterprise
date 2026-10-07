@@ -146,7 +146,7 @@ is_dns_label "$namespace" ||
   die "--namespace must be a DNS label."
 is_dns_subdomain "$claim" ||
   die "--claim must be a DNS subdomain."
-[[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[A-Fa-f0-9]{64}$ ]] ||
+[[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] ||
   die "--image must be an approved immutable SHA-256 image reference."
 
 suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)

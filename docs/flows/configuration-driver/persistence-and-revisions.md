@@ -71,7 +71,11 @@ Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
-stored reusable Configuration and its generation remain unchanged. OCC freezes
+stored reusable Configuration and its generation remain unchanged. Compute then
+checks the Harness authentication binding and, through optional
+`validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
+a setting every preparation would refuse with `409`, naming the setting and never
+its value, before a revision exists. OCC freezes
 the admitted values, including any remaining inline unresolved SecretRefs, into
 `AgentRevision.configuration`; separate `configurationId`, `configurationKind`,
 and `configurationGeneration` fields pin the selected Configuration metadata.

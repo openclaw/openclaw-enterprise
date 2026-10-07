@@ -33,9 +33,8 @@ images; individual Agents cannot choose their own implementations.
 
 Default Docker or Podman Compose can run the control plane for development,
 but its Docker Compute Driver rejects the authentication used for new Agents.
-Stock OpenShell cannot provide the app-server token and workload-identity
-projections needed to deploy a sandboxed Agent; see its
-[current upstream blockers](openshell-sandbox.md#current-upstream-preconditions).
+The OpenShell development path remains experimental and unqualified; see its
+[qualification requirements](openshell-sandbox.md#qualification-contract).
 
 ## Supported selections
 

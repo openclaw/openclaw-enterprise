@@ -119,7 +119,7 @@ async function privatePath(path, directory = false) {
   );
 }
 
-async function recordedStack(directory) {
+async function recordedStack(directory, sandboxDriver) {
   if (!directory || !isAbsolute(directory)) {
     return undefined;
   }
@@ -142,7 +142,7 @@ async function recordedStack(directory) {
     if (
       state.version !== 3 ||
       state.computeDriver !== "kubernetes" ||
-      state.sandboxDriver !== "none" ||
+      state.sandboxDriver !== sandboxDriver ||
       !["docker", "podman"].includes(state.containerEngine) ||
       !["", undefined, "k3d"].includes(state.deploymentMode) ||
       (state.deploymentMode === "k3d"
@@ -256,11 +256,15 @@ export async function localFirstAgentStack(context) {
     throw new Error("The protected local first-Agent test must be explicitly enabled.");
   }
   const testEnvironment = { ...process.env };
+  const sandboxDriver = process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER ?? "none";
+  if (!["none", "openshell"].includes(sandboxDriver)) {
+    throw new Error("OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER must be none or openshell.");
+  }
   if (!testEnvironment.OPENCLAW_FIRST_AGENT_MODEL && testEnvironment.OCC_TEST_OPENAI_MODEL) {
     testEnvironment.OPENCLAW_FIRST_AGENT_MODEL = testEnvironment.OCC_TEST_OPENAI_MODEL;
   }
   const selected = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
-  const existing = await recordedStack(selected);
+  const existing = await recordedStack(selected, sandboxDriver);
   if (existing) {
     return {
       directory: selected,
@@ -294,14 +298,24 @@ export async function localFirstAgentStack(context) {
     );
   }
   const [controller, kubernetes, browser] = await availablePorts();
-  const suffix = randomUUID().replaceAll("-", "").slice(0, 16);
+  // k3d rejects cluster names longer than 32 characters; the prefix below uses 20.
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
   const directory = join(await realpath("/tmp"), "occ-first-agent-" + suffix);
+  // OpenShell proofs run against either development control plane; Compose remains its
+  // default because the first OpenShell first-Agent proof used it.
+  const controlPlane =
+    process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE ??
+    (sandboxDriver === "openshell" ? "compose" : "kubernetes");
+  if (!["compose", "kubernetes"].includes(controlPlane)) {
+    throw new Error("OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE must be compose or kubernetes.");
+  }
   const environment = {
     ...testEnvironment,
     COMPOSE_DISABLE_ENV_FILE: "1",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
-    OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
-    OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
+    OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
+    OCC_DEVELOPMENT_COMPOSE_PROJECT: "occ_first_agent_" + suffix,
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     OCC_DEVELOPMENT_STATE_DIRECTORY: directory,
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-first-agent-" + suffix,

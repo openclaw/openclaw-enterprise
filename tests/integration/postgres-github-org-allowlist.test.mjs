@@ -1,21 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  attachProvider,
+  assertProviderAttached,
+  assertSessionUser,
   authRowCounts,
   composeProductionSignIn,
   consoleOrigin as origin,
-  currentSession,
   githubSignIn,
   githubUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "allowlist-recovery@example.test";
@@ -38,13 +36,8 @@ test(
   "a GitHub org and team allowlist refuses non-members before the account lookup and fails closed when GitHub cannot answer",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const github = await startFakeGitHub(t);
     let memberships = {};
     // Compare with the fixed paths; never select a handler by the request's own key.
@@ -72,14 +65,7 @@ test(
       secrets,
     });
     const adminHeaders = await signedInHeaders(app, origin, admin);
-    const attached = await attachProvider(
-      app,
-      adminHeaders,
-      member.id,
-      "github",
-      String(memberSubject),
-    );
-    assert.equal(attached.statusCode, 200, attached.body);
+    await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));
 
     const sessionCount = async () => (await authRowCounts(pool)).sessions;
     const loginDenials = async () =>
@@ -116,8 +102,7 @@ test(
       const { callback, paths } = await signIn(memberSubject);
       assert.equal(callback.headers.location, "/console/", callback.body);
       assert.deepEqual(paths, ["/login/oauth/access_token", "/user", acme]);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      await assertSessionUser(app, callback, member.id);
     });
 
     await t.test("an active member of the listed team signs in", async () => {

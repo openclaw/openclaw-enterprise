@@ -165,13 +165,12 @@ the draft, not access, execution, or admitted revisions.
 
 Slack requires dedicated execution and Kubernetes runtime projection. Socket Mode
 uses unresolved `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` references.
-New configurations use allowlist policies. **Allowed channel user IDs** replaces
-selected channels' `users` lists while preserving unrelated settings.
-**Allow everyone in these channels to mention the agent** writes `users: ["*"]`;
-it and ID entry are mutually exclusive. **Require a mention** is independent of
-sender access.
-Channel edits preserve DM and group policies. Change DM access separately with
-**Direct-message policy** and **Allowed DM user IDs**; see
+New configurations use allowlist policies. **Allowed people in these channels**
+replaces selected channels' `users` lists while preserving unrelated settings.
+**Everyone in these channels** writes `users: ["*"]`; it and specific people are
+mutually exclusive. **Require a mention** is independent of sender access.
+Channel edits preserve group policies. Change DM access with
+**Direct-message policy** and **Allowed people in direct messages** in the same drawer; see
 [Slack policies](configuration/secrets.md#native-channel-configuration).
 
 Model, Harness, and Slack credentials share one searchable Secret picker; the
@@ -191,9 +190,8 @@ Saving patches Configuration, then grants Agent access through Namespace IAM;
 both require caller permission. A failed grant leaves Configuration saved and
 requires access recovery. Neither creation nor saving deploys a Secret.
 
-Metadata and **Open Agent Credentials** links open new tabs, preserving edits.
-Save channel changes before editing credentials there, then refresh the original
-page.
+Secret metadata links open new tabs, preserving edits. Save channel changes
+before editing credentials on the Credentials tab.
 
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed

@@ -1,7 +1,9 @@
+import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import pg from "pg";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
@@ -10,6 +12,7 @@ import {
 } from "../../apps/controller/src/auth/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
@@ -21,6 +24,7 @@ import {
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { databaseUrl as testDatabaseUrl } from "./postgres-database.mjs";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
 // Authentication, State, IAM, audit and Fastify are the production implementations.
@@ -70,6 +74,7 @@ export function memoryLogger() {
 }
 
 export const consoleOrigin = "https://console.oce.example.internal";
+export const sessionCookieName = "__Host-openclaw_occ.session_token";
 const gatewayApiKeyPath = "/etc/openclaw/gateway-api-key/key";
 const secretRef = (name, key) => ({ secretKeyRef: { name, key } });
 
@@ -284,6 +289,73 @@ export async function signedInHeaders(app, origin, account, remoteAddress) {
 
 export async function currentSession(app, cookie) {
   return (await app.inject({ url: "/api/auth/session", headers: { cookie } })).json().data;
+}
+
+/** Asserts that a sign-in response's cookie is a session for `userId`; returns the cookie header. */
+export async function assertSessionUser(app, response, userId) {
+  const cookie = cookieHeaderFromSetCookie(response.headers["set-cookie"]);
+  assert.equal((await currentSession(app, cookie)).user.id, userId);
+  return cookie;
+}
+
+/** Asserts that a provider callback lands on the Console signed in as `userId`; returns the cookie header. */
+export async function assertConsoleSignIn(app, callback, userId) {
+  assert.equal(callback.headers.location, "/console/", callback.body);
+  return assertSessionUser(app, callback, userId);
+}
+
+/** Audited login denials with `reason`, only those for `provider` when one is given. */
+export async function loginDenialCount(state, reason, provider) {
+  return (await state.transact((unit) => unit.audit.list())).filter(
+    ({ action, outcome, reasonCode, details }) =>
+      action === "authentication.login" &&
+      outcome === "denied" &&
+      reasonCode === reason &&
+      (provider === undefined || details?.provider === provider),
+  ).length;
+}
+
+/**
+ * Asserts that an external provider's callback was refused: a redirect to the Console with
+ * `authError=<provider>`, no session cookie, no new user, method or session row, and one more
+ * login denial with `reason`. `signIn()` resolves to `{ callback }`; `denials(reason)` resolves
+ * to the number of matching denials so far (usually `loginDenialCount`).
+ */
+export async function assertExternalSignInRefused(
+  { pool, provider, denials, signIn },
+  message,
+  reason = "EXTERNAL_IDENTITY_REJECTED",
+) {
+  const before = await authRowCounts(pool);
+  const deniedBefore = await denials(reason);
+  const { callback } = await signIn();
+  assert.equal(callback.statusCode, 302, message);
+  assert.equal(callback.headers.location, `/console/?authError=${provider}`, message);
+  assert.equal(
+    String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName),
+    false,
+    `${message}: no session cookie`,
+  );
+  assert.deepEqual(await authRowCounts(pool), before, `${message}: no user, method or session`);
+  assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
+}
+
+/**
+ * A pool and PlatformState on the test database for one sign-in test. After the test, each
+ * object `closeFirst()` returns (an app, or anything with `close()`) closes in order, then
+ * the pool ends.
+ * `let app; const { pool, state } = postgresSignInState(t, () => [app]);`
+ */
+export function postgresSignInState(context, closeFirst = () => []) {
+  const pool = new pg.Pool({ connectionString: testDatabaseUrl });
+  const state = new PostgresPlatformState(pool);
+  context.after(async () => {
+    for (const closable of closeFirst()) {
+      await closable?.close();
+    }
+    await pool.end();
+  });
+  return { pool, state };
 }
 
 /** Distinct client addresses, so a suite's many sign-ins never meet the per-address limit. */
@@ -808,6 +880,13 @@ export async function attachProvider(app, headers, userId, provider, subject) {
     headers,
     payload: { subject, expectedVersion: version },
   });
+}
+
+/** Attaches a provider subject like attachProvider and asserts that the attach succeeded. */
+export async function assertProviderAttached(app, headers, userId, provider, subject) {
+  const response = await attachProvider(app, headers, userId, provider, subject);
+  assert.equal(response.statusCode, 200, response.body);
+  return response;
 }
 
 /** Rows that sign-in creates: users, their sign-in methods (occ.account) and sessions. */

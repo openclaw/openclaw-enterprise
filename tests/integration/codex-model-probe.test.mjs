@@ -106,6 +106,8 @@ async function startLauncher(t, scenario, stopAfterTimeout = false) {
       "-e",
       "CODEX_HOME=/home/node/codex",
       "-e",
+      "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
+      "-e",
       "CODEX_LOGIN_MODE=api_key",
       "-e",
       "OPENAI_API_KEY=credential-canary",

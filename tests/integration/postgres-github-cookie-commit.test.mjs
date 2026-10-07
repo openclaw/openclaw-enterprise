@@ -12,7 +12,7 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import {
-  attachProvider,
+  assertProviderAttached,
   authRowCounts,
   currentSession,
   readAccount,
@@ -297,14 +297,13 @@ test(
     await t.test(
       "a lost GitHub session COMMIT reply preserves the committed login without identity denial",
       async (callbackTest) => {
-        const attached = await attachProvider(
+        await assertProviderAttached(
           ordinary,
           recoveredHeaders,
           recoveryUserId,
           "github",
           "12345678",
         );
-        assert.equal(attached.statusCode, 200, attached.body);
         const originalFetch = globalThis.fetch;
         let exchanges = 0;
         callbackTest.mock.method(globalThis, "fetch", async (input, init) => {

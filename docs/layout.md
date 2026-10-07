@@ -136,7 +136,7 @@ Do not install dependencies as a verification side effect.
 | `docs/contributing/`                  | Onboarding and workflows for people changing the platform source or docs.                          |
 | `docs/flows/`                         | Source-backed runtime execution traces.                                                            |
 | `docs/testing/`                       | Contributor test setup, environments, fixtures, and proof limits.                                  |
-| `specs/README.md`                     | Shared index of RFCs, plans, and historical records.                                               |
+| `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |

@@ -452,6 +452,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     if (descriptor === undefined) {
       throw Object.assign(new Error("Unknown OpenClaw plugin selection."), {
         policyField: "pluginId",
+        pluginId,
       });
     }
     return descriptor;
@@ -465,7 +466,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     if (!prefixed.endsWith(suffix)) {
       throw Object.assign(
         new Error("Codex plugin ID must identify the curated remote marketplace."),
-        { policyField: "pluginId" },
+        { policyField: "pluginId", pluginId },
       );
     }
     return prefixed;

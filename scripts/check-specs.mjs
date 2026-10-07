@@ -14,6 +14,7 @@ const rfcs = path.join(specs, "rfcs");
 const md = createDocsMarkdown();
 const githubAnchors = createGithubAnchorReader(md);
 const statuses = new Set(["Proposed", "Accepted", "Rejected", "Superseded", "Unspecified"]);
+const implementationStatuses = new Set(["Not implemented", "Partially implemented", "Implemented"]);
 const errors = [];
 let links = 0;
 let historicalLinks = 0;
@@ -44,9 +45,35 @@ const rfcEntries = new Set(
     return entry.name.endsWith(".md") ? [path.join(rfcs, entry.name)] : [];
   }),
 );
+const rfcIds = new Set();
 for (const file of rfcEntries) {
+  const name =
+    path.basename(file) === "index.md"
+      ? path.basename(path.dirname(file))
+      : path.basename(file, ".md");
+  const number = name.match(/^(\d{4,})-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/)?.[1];
+  const id = Number(number);
+  if (!number || !Number.isSafeInteger(id) || id < 1) {
+    errors.push(
+      `${path.relative(root, file)}: RFC requires a numeric prefix of at least four digits (0001 or higher)`,
+    );
+  } else if (rfcIds.has(id)) {
+    errors.push(`${path.relative(root, file)}: duplicate RFC number ${number}`);
+  } else {
+    rfcIds.add(id);
+  }
   if (!fs.existsSync(file)) {
     errors.push(`${path.relative(root, file)}: missing RFC entry point`);
+  }
+}
+
+for (const [index, id] of [...rfcIds].sort((a, b) => a - b).entries()) {
+  const expected = index + 1;
+  if (id !== expected) {
+    errors.push(
+      `RFC numbers must be continuous from 0001: expected ${String(expected).padStart(4, "0")}, found ${String(id).padStart(4, "0")}`,
+    );
+    break;
   }
 }
 
@@ -81,6 +108,17 @@ for (const file of files) {
       throw new Error("frontmatter must be a YAML mapping");
     }
     if (rfcEntries.has(file)) {
+      if (
+        typeof data.author !== "string" ||
+        !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(data.author) ||
+        data.author.includes("--") ||
+        data.author === "github-login"
+      ) {
+        throw new Error("RFC requires an author GitHub login in frontmatter (without @)");
+      }
+      if (!implementationStatuses.has(data.implementation_status)) {
+        throw new Error("RFC requires a valid implementation_status in frontmatter");
+      }
       if (!statuses.has(data.status)) {
         throw new Error("RFC requires a valid status in frontmatter");
       }
@@ -134,7 +172,7 @@ if (errors.length) {
   process.exitCode = 1;
 } else {
   console.log(
-    `Validated ${files.length} spec documents, ${rfcEntries.size} RFC statuses, and ${links} local link targets.`,
+    `Validated ${files.length} spec documents, ${rfcEntries.size} RFC numbers, statuses and authors, and ${links} local link targets.`,
   );
 }
 if (historicalLinks) {

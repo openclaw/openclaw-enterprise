@@ -10,9 +10,13 @@ but you must deploy each Agent that should use the change.
 
 Use the [OCC CLI](../cli.md#connect-to-your-installation) with an identity that
 can read the Agent, read and update its Configuration, and deploy the exact
-Agent. The Namespace must be `ready`. Reading revision history requires
-permission to read the returned revisions. The selected model credential may
-require [additional permissions](../../reference/agents.md#harness-authentication).
+Agent. Deploying also needs `operate` on each bound Secret or credential source,
+including an API-key or token model Secret; other
+[model credentials](../../reference/agents.md#harness-authentication) have their
+own requirements. Deployment status and revision history need `agent_revision`
+`read` on each exact revision. Without a broader Role, an administrator must
+bind it after each deployment; a Namespace-scoped binding of a revision-only
+Role is refused. The Namespace must be `ready`.
 The commands below also use `jq`.
 
 1. Set the Namespace and Agent IDs and find the Agent's Configuration:
@@ -42,20 +46,25 @@ The commands below also use `jq`.
    `configurationGeneration`. An accepted request means the control plane stored
    the revision and queued deployment; it does not mean the Agent is running.
    If the response is lost, check revision history before retrying: a second
-   accepted request creates another revision.
+   accepted request creates another revision. An empty history can mean you
+   lack `read` on the new revision; ask an administrator before retrying.
 
-4. Check whether the worker selected that revision:
+4. Check the deployment until it reports `succeeded` or `failed`:
 
    ```bash
+   occ agent deployment-status "$AGENT_ID" '<revision-id>'
    occ agent get "$AGENT_ID" --output json |
      jq '{desiredRuntimeState, activeRevisionId}'
    ```
 
-   `activeRevisionId` should match the revision ID from deployment. If it does
-   not, run `occ agent deployment-status "$AGENT_ID" '<revision-id>'` to see
-   where work stopped. The [deployment status reference](../../reference/agents.md#deployment-status)
-   defines each result. An active revision does not prove that the model
-   responds; use the [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
+   `queued` and `running` are not final; run the command again. The
+   [deployment status reference](../../reference/agents.md#deployment-status)
+   defines each result. After `succeeded`, `activeRevisionId` should equal the
+   revision ID. The worker can set it before the runtime is ready, and a failed
+   deployment can leave it set to the failed revision
+   ([details](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment)).
+   A succeeded deployment does not prove that the model responds; use the
+   [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
 
 ## Inspect an earlier revision
 

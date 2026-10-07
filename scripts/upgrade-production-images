@@ -63,7 +63,7 @@ require_private_file() {
 }
 
 immutable_image() {
-  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[A-Fa-f0-9]{64}$ ]]
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]]
 }
 
 json_file_name() {
@@ -275,7 +275,7 @@ trap 'cleanup_preflight; rmdir "$evidence_dir/.upgrade-lock" 2>/dev/null || true
 # such as split-layout Gateway storage, would otherwise crash-loop both after the
 # migration.
 preflight_startup() {
-  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal
+  local suffix secret component pod phase waiting deadline remaining_seconds message failures refusal name_refusal
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   secret="$release-upgrade-preflight-$suffix"
   yq -p=yaml -o=json -I=0 '.' "$rendered" >"$evidence_dir/preflight-rendered.jsonl" ||
@@ -298,7 +298,8 @@ preflight_startup() {
     pod="$release-upgrade-preflight-$component-$suffix"
     node scripts/upgrade-startup-preflight.mjs pod "$evidence_dir/preflight-rendered.jsonl" \
       "$component" "$pod" "$namespace" "$release" "$installation_secret" "$secret" \
-      "$selected_controller" "$timeout_seconds" >"$evidence_dir/preflight-$component-pod.json" ||
+      "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" \
+      >"$evidence_dir/preflight-$component-pod.json" ||
       die "cannot build the $component startup preflight Pod from the rendered chart; no OCC writer was stopped."
     preflight_resources+=("pod/$pod")
     "${kube[@]}" --request-timeout=30s --namespace "$namespace" create \
@@ -350,9 +351,13 @@ preflight_startup() {
           message="the $component startup preflight Pod cannot start (${phase#Stuck:}); no OCC writer was stopped."
           ;;
         *)
+          name_refusal=$(grep -m 1 '^The stored Installation name breaks the Name rule: ' \
+            "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
           refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
-          if [[ -n "$refusal" ]]; then
+          if [[ -n "$name_refusal" ]]; then
+            message="the $component startup preflight stopped: $name_refusal (INSTALLATION_NAME_INVALID) No OCC writer was stopped; the old release keeps serving. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery.md#correct-an-invalid-installation-name, then start again with a new evidence directory."
+          elif [[ -n "$refusal" ]]; then
             message="the $component startup preflight stopped: $refusal No OCC writer was stopped; the old release keeps serving."
             if [[ "$refusal" == *split-layout* ]]; then
               message+=" See docs/reference/drivers/kubernetes-compute.md#existing-split-layout-installations."

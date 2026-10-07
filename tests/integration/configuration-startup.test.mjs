@@ -222,7 +222,7 @@ async function repositoryInstallation(t) {
 }
 
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
-  const { configuration } = await repositoryInstallation(t);
+  const { configuration, registry, registrySource } = await repositoryInstallation(t);
   const path = await fixture(t, configuration);
   const api = await loadInstallationConfiguration({
     mode: "production",
@@ -261,6 +261,30 @@ test("repository startup constructs the same local resolver without a private so
     combinedDrivers.installation.backend.map((backend) => backend.type),
     ["github", "chatgpt"],
   );
+  // Repository bindings store a GitHub Backend ID under a 200 UTF-16 code unit bound, so
+  // 101 emoji (101 characters, 202 units) is refused for a GitHub Backend only.
+  const astral = structuredClone(configuration);
+  astral.backend[0].id = "😀".repeat(101);
+  await assert.rejects(
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, astral) },
+    }),
+    /backend\[0\]\.id must fit in 200 UTF-16 code units for a GitHub Backend, because/,
+  );
+  // 100 emoji is exactly 200 units, so it fits; its registry names the same Backend ID.
+  astral.backend[0].id = "😀".repeat(100);
+  astral.backend[0].configuration.registryPath = join(dirname(registrySource), "astral.json");
+  await writeFile(
+    astral.backend[0].configuration.registryPath,
+    JSON.stringify({ ...registry, backendId: astral.backend[0].id }),
+    { mode: 0o644 },
+  );
+  const fits = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, astral) },
+  });
+  assert.equal(fits.installation.backend[0].id, astral.backend[0].id);
 
   // The actual API reaches its ordinary database dependency while the configured
   // Unix directory is absent. No private service inputs are supplied to it.
@@ -438,6 +462,28 @@ test("ChatGPT startup rejects retired integrations and unsafe backend configurat
       (value) => (value.backend[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
       /adminKeyPath.*unsupported/,
     ],
+    [
+      (value) => (value.backend[0].id = " openai"),
+      /backend\[0\]\.id must be a string of 1 to 200 characters with no leading or trailing whitespace and no control characters or line or paragraph separators\./,
+    ],
+    [
+      (value) => (value.backend[0].id = "a".repeat(201)),
+      /backend\[0\]\.id must be a string of 1 to 200/,
+    ],
+    // 201 code points, a C1 control and a line separator, refused as the API refuses them, and
+    // a lone surrogate, which has no UTF-8 spelling.
+    ...[
+      "openai ",
+      "open\u0007ai",
+      7,
+      "😀".repeat(201),
+      "open\u0085ai",
+      "open\u2028ai",
+      "open\ud800ai",
+    ].map((id) => [
+      (value) => (value.backend[0].id = id),
+      /backend\[0\]\.id must be a string of 1 to 200/,
+    ]),
     [(value) => (value.backend[0].type = "installed"), /must be chatgpt/],
     [(value) => (value.backend[0].package = "@example/backend"), /unsupported option package/],
     [
@@ -471,6 +517,15 @@ test("ChatGPT startup rejects retired integrations and unsafe backend configurat
       expected,
     );
   }
+
+  // The stated rule's upper edge: 200 characters, interior whitespace allowed.
+  const longest = chatgptInstallation();
+  longest.backend[0].id = `open ${"a".repeat(195)}`;
+  const accepted = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, longest) },
+  });
+  assert.equal(accepted.installation.backend[0].id, longest.backend[0].id);
 });
 
 test("production embedded replacements preserve their active Service across failed activation", async (t) => {
@@ -703,7 +758,7 @@ test("startup accepts actual block-style YAML instead of requiring JSON", async 
   assert.equal(loaded.installation.occ.cluster, "production-west");
 });
 
-test("production requires one YAML while development may start without a ConfigurationDriver", async () => {
+test("production requires one YAML while development may start without a ConfigurationDriver", async (t) => {
   await assert.rejects(
     loadInstallationConfiguration({ mode: "production", environment: {} }),
     /OCC_CONFIG_PATH/,
@@ -712,6 +767,25 @@ test("production requires one YAML while development may start without a Configu
     await loadInstallationConfiguration({ mode: "development", environment: {} }),
     undefined,
   );
+  // Unusable paths and unparsable files get fixed messages that never echo the path or the
+  // filesystem or parser error.
+  const invalidYaml = await fixture(t);
+  await writeFile(invalidYaml, "drivers: [\n", "utf8");
+  for (const [path, message] of [
+    [" ", "OCC_CONFIG_PATH must identify the Installation startup YAML."],
+    [
+      "relative/installation.yaml",
+      "OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.",
+    ],
+    [`${invalidYaml}.missing`, "The configured Installation startup YAML is unavailable."],
+    [invalidYaml, "The configured Installation startup file must contain valid YAML."],
+  ]) {
+    await assert.rejects(
+      loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
+      { message },
+      JSON.stringify(path),
+    );
+  }
 });
 
 test("production server and worker resolve singleton startup without an Installation ID", async (t) => {
@@ -894,6 +968,19 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
           value.drivers.compute.configuration.runtime.transportSecretPrefix),
       /schema|unsupported option/,
     ],
+    // The reader refuses these anywhere in the file, before any Driver schema runs.
+    [
+      (value) => (value.drivers.compute.configuration.unexpected = 2 ** 53 + 2),
+      /\.unexpected must be a safe integer\.$/,
+    ],
+    [
+      (value) => (value.drivers.compute.configuration.constructor = {}),
+      /contains an unsafe configuration key\.$/,
+    ],
+    [
+      (value) => (value.drivers.compute.configuration.secretRef = "installation-secret"),
+      /Installation-scoped secret references cannot be resolved safely\.$/,
+    ],
   ]) {
     const configuration = installation();
     mutate(configuration);
@@ -1055,6 +1142,11 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
       /Preset agent: contains unsupported fields/,
     ],
     [
+      "invalid-name.json",
+      JSON.stringify({ name: "edge\u00a0", template: {} }),
+      /Preset file .*invalid-name\.json\.name must follow the Name rule: 1 to 200 characters/,
+    ],
+    [
       "duplicate.json",
       JSON.stringify({ name: "Standard Codex", template: {} }),
       /Default Preset Standard Codex is configured more than once: .*duplicate\.json and .*duplicate-b\.json/,
@@ -1098,6 +1190,7 @@ test("API and worker name a Preset file failure in their startup error code", as
       "invalid-template.json",
       JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
     ],
+    ["invalid-name.json", JSON.stringify({ name: "line\u2028break", template: {} })],
     ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
     ["not-a-list.json", undefined, "cases/not-a-list.json"],
   ]) {

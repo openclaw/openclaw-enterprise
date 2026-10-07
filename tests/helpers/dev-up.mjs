@@ -534,9 +534,9 @@ if (command === engine) {
       ["openclaw-enterprise-runtime:kubernetes-quickstart", "a".repeat(64)],
       ["openclaw-enterprise-controller:kubernetes-quickstart", "b".repeat(64)],
       ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
-      ["openclaw-development/openshell-gateway:occ-dev-owned", "9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39"],
-      ["openclaw-development/openshell-sandbox:occ-dev-owned", "3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65"],
-      ["openclaw-development/openshell-supervisor:occ-dev-owned", "cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f"],
+      ["openclaw-development/openshell-gateway:occ-dev-owned", "17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea"],
+      ["openclaw-development/openshell-sandbox:occ-dev-owned", "b46ed57b080946d0fe80490dbe1441ebf4a83c6eec79369ddbcfc49ec19dc0cf"],
+      ["openclaw-development/openshell-supervisor:occ-dev-owned", "971d71f45f677a7b1084385322bae4ac6fd09e9450e680684ab79a04d07c5c9f"],
     ].map(([name, digest]) => importedTag(name) + " application/vnd.oci.image.manifest.v1+json sha256:" + digest).join("\\n"));
   } else if (args[0] === "cp") {
     fs.writeFileSync(args.at(-1), JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));
@@ -579,6 +579,7 @@ if (command === engine) {
   else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes") && args.includes("jsonpath={.subsets[0].ports[0].port}")) output("6443");
   else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes")) output("172.30.42.3");
   else if (args[0] === "get" && args[1] === "service" && args[2] === "kubernetes") output(JSON.stringify({ spec: { clusterIP: "10.43.0.1" } }));
+  else if (args[0] === "get" && args[1] === "service" && args[2] === "openshell-gateway" && args.includes("jsonpath={.spec.clusterIP}")) output("10.43.0.50");
   else if (args[0] === "get" && args[1] === "endpoints" && args[2] === "kubernetes") output(JSON.stringify({ subsets: [{ addresses: [{ ip: "172.30.41.4" }] }] }));
   else if (args[0] === "get" && args[1] === "namespaces") output(JSON.stringify({ items: [{ metadata: { name: "oce-123456789012345", labels: { "openclaw.dev/namespace": "namespace_fixture" }, annotations: { "openclaw.dev/namespace-id": "namespace_fixture" } } }] }));
   else if (args[0] === "get" && args[1] === "service" && args.includes("jsonpath={.spec.ports[0].nodePort}")) output("30051");

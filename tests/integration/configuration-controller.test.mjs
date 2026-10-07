@@ -18,6 +18,7 @@ import {
   createTestAuthPrincipal,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
+import { bindRole } from "../helpers/iam-grants.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -215,14 +216,11 @@ async function configureAgentHarnessSecret(context, namespace, agent, configurat
     id: "model-consumer",
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
-  context.bindings.push({
+  bindRole(context, admittedAgent.servicePrincipalId, {
     id: "model-consumer",
-    subjectKind: "identity",
-    subjectId: admittedAgent.servicePrincipalId,
     roleId: "model-consumer",
     namespaceId: namespace.id,
-    resourceKind: "secret",
-    resourceId: harnessSecret.id,
+    resource: { kind: "secret", id: harnessSecret.id },
   });
 }
 
@@ -351,13 +349,14 @@ test("Configuration HTTP requires native supported requests and rejects immutabl
     );
     assert.deepEqual(rejected.body.error.details, [{ path: `/${field}`, code: "UNKNOWN_FIELD" }]);
   }
-  // A long unknown field name still fits the 256-character error message contract.
+  // A long unknown field name still fits the 256-character error message contract; the
+  // name is cut, not the problem wording.
   const longField = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
     body: { values: {}, ["x".repeat(400)]: true },
   });
   assert.equal(longField.status, 400, JSON.stringify(longField.body));
-  assert.ok(longField.body.error.message.length <= 256, longField.body.error.message);
-  assert.match(longField.body.error.message, /: body \/x+…$/);
+  assert.equal(longField.body.error.message.length, 256, longField.body.error.message);
+  assert.match(longField.body.error.message, /: body \/x+… is not an accepted field\.$/);
 
   const unchanged = await request(context.app, "GET", `${collection}/${created.body.data.id}`);
   assert.deepEqual(unchanged.body.data, created.body.data);

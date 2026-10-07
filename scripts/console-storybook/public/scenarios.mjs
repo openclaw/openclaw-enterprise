@@ -2254,6 +2254,12 @@ export const scenarios = {
     ],
     description:
       "Enter an explicit model ID when it is absent from the fixed list. The credential must have access to that model; the Console does not verify access.",
+    steps: [
+      "Select Choose a model from the list. Confirm the custom ID is cleared and Choose a model is selected, then select a listed model.",
+      "Select Enter model ID manually again. Confirm Model ID keeps the selected model and receives focus. Edit it to another listed model, then return to the list and confirm that model is selected.",
+      "Repeat the switch and edit Model ID to an ID outside the list. Return to the list and confirm a new selection is required; credentials and other form values remain.",
+      "Under Advanced settings, edit Configuration JSON to use an anthropic/ model. Select Choose a model from the list and confirm it offers Anthropic models.",
+    ],
   },
   createSecretDenied: {
     group: "Pages/Create Agent",

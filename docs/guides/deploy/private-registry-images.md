@@ -143,7 +143,17 @@ export CONTROLLER_IMAGE="$ECR_CONTROLLER@sha256:<verified-controller-digest>"
 export RUNTIME_IMAGE="$ECR_RUNTIME@sha256:<verified-runtime-digest>"
 ```
 
-Configure node pull permissions separately. EKS managed nodes use their node
+## Configure node pull access
+
+Configure node pull permissions separately. OCE adds no `imagePullSecrets` to the Pods
+it creates, so every node that runs control-plane or Agent Pods needs its own pull
+access. Don't pull an OCE image through a Pod's `imagePullSecrets` either: where
+kubelet verifies pull credentials (`KubeletEnsureSecretPulledImages`), every later Pod
+on that node that uses the image without that Secret, such as a restarted API or
+worker or the initialization Job, must then pull it again, which fails without node
+access.
+
+EKS managed nodes use their node
 IAM role for ECR pulls; cross-account repository policies may also be needed.
 For nodes without internet egress, configure ECR API and registry endpoints,
 S3 layer access, DNS, routes, security groups, and endpoint policies as described

@@ -225,7 +225,7 @@ spec:
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_SECRET" "secretName" $.Values.auth.secretName "key" $.Values.auth.secretKey) | nindent 12 }}
             - name: OCC_AUTH_BASE_URL
               value: {{ $.Values.auth.baseUrl | quote }}
-            {{- if $.Values.auth.github.enabled }}
+            {{- if and $.Values.auth.github $.Values.auth.github.enabled }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_ID" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientIdKey) | nindent 12 }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_SECRET" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientSecretKey) | nindent 12 }}
             {{- if $.Values.auth.github.allowedOrgs }}
@@ -273,12 +273,13 @@ spec:
             - name: OCC_AUTH_PASSWORD_SIGN_IN
               value: recovery-only
             {{- end }}
-            {{- if $.Values.api.trustedProxy.preset }}
+            {{- $trustedProxy := default dict $.Values.api.trustedProxy }}
+            {{- if $trustedProxy.preset }}
             - name: OCC_AUTH_TRUSTED_PROXY_CIDRS
-              value: {{ join "," $.Values.api.trustedProxy.cidrs | quote }}
+              value: {{ join "," $trustedProxy.cidrs | quote }}
             - name: OCC_AUTH_TRUSTED_PROXY_PRESET
-              value: {{ $.Values.api.trustedProxy.preset | quote }}
-            {{- if eq $.Values.api.trustedProxy.preset "generic" }}
+              value: {{ $trustedProxy.preset | quote }}
+            {{- if eq $trustedProxy.preset "generic" }}
             - name: OCC_AUTH_CLIENT_IP_HEADER
               value: {{ include "openclaw.trustedProxy.header" $ | quote }}
             {{- end }}

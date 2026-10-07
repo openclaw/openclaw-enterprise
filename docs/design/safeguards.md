@@ -56,7 +56,8 @@ Environment-delivery guarantees do not describe this path. The project-root `ref
 the external broker-target owner handoff outside this implementation worktree.
 
 Production execution retains scoped direct-credential delivery, because the
-Credential Gateway path is limited to the unsupported OpenShell Sandbox. The Agent's `harnessAuth`
+Credential Gateway path is limited to the experimental local OpenShell Sandbox
+workflow. The Agent's `harnessAuth`
 API-key binding references an OCC Secret in its exact Namespace. The Secret
 Driver owns storage; Kubernetes projects the source only into dedicated Codex
 or the combined embedded OpenClaw gateway/Harness. Each consumer requires its

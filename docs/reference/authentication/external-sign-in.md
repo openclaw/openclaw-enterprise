@@ -77,7 +77,7 @@ does not learn when someone leaves the organization or GitHub suspends them: wit
 an allowlist someone who left can still sign in, and live sessions continue until they
 expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
-access and its sessions, or detach its GitHub method to end GitHub sign-in and those
+access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
 sessions; revoke ends sessions but allows a fresh sign-in.
 
 `GET /api/auth/providers` returns `github`, `google`, `oidc`, and `sessionBinding` as `true` when enabled,
@@ -244,12 +244,12 @@ session. A stale
 
 Send the version just read, such as `{"expectedVersion":1}`:
 
-| Operation                                                  | Effect                                                                                     |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `POST /api/auth/accounts/:userId/disable`                  | Disables the account, invalidating sessions and pending proofs; refuses the recovery user. |
-| `POST /api/auth/accounts/:userId/enable`                   | Re-enables a disabled account; users sign in again.                                        |
-| `POST /api/auth/accounts/:userId/revoke`                   | Invalidates all account sessions and pending proofs; fresh sign-in still works.            |
-| `POST /api/auth/accounts/:userId/methods/:methodId/detach` | Removes one attached external identity and its sessions; password methods return `409`.    |
+| Operation                                                  | Effect                                                                                                |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/accounts/:userId/disable`                  | Disables the account, invalidating sessions and pending proofs; refuses the recovery user.            |
+| `POST /api/auth/accounts/:userId/enable`                   | Re-enables a disabled account; users sign in again.                                                   |
+| `POST /api/auth/accounts/:userId/revoke`                   | Invalidates all account sessions and pending proofs; fresh sign-in still works.                       |
+| `POST /api/auth/accounts/:userId/methods/:methodId/detach` | Removes one attached external identity and ends every account session; password methods return `409`. |
 
 `POST /api/auth/accounts/:userId/enrol` (no body) enrolls a skipped account holding
 its Principal and one password. These operations serialize with session issuance

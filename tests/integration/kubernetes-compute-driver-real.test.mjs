@@ -94,6 +94,9 @@ test(
 
     // Refuse an existing split layout before controller startup can mutate tenant
     // labels or create empty replacement state in another namespace.
+    // Until it is gone, this Namespace fails every single-cluster Compute preflight in
+    // the cluster (driver.preflight, worker start, development composition). Under
+    // fileConcurrency, keep this file's lane free of other files that preflight.
     const legacyOwner = namespace("split-upgrade");
     const legacyName = `oce-gateways-${hash(legacyOwner.id, 24)}`;
     await kubectl("create", "namespace", legacyName);
@@ -698,6 +701,7 @@ test(
       namespaceId: foreign.id,
       namespaceReady: false,
       failure: "permanent",
+      reason: `Refusing unowned Kubernetes Namespace ${foreignName}.`,
     });
     const foreignLabels = (await resource("namespace", foreignName)).metadata.labels ?? {};
     assert.equal(

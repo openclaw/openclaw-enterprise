@@ -492,7 +492,9 @@ const FAIL_EXHAUSTED_NAMESPACES_SQL = `
 
 /**
  * Queue transitions append `reconcile` evidence in the same statement. `filter` narrows which
- * transitioned rows get a row; it is appended to the evidence SELECT's WHERE clause.
+ * transitioned rows get a row; it is appended to the evidence SELECT's WHERE clause. A failure
+ * that ends the work item (`failed_permanent`) also carries `final: true`, so it differs from a
+ * retry with the same reason code.
  * `reasonCode` is a raw SQL expression: pass parameters or constants, never input.
  */
 const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text") => `
@@ -532,6 +534,8 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text") => `
       $3::text,
       jsonb_build_object('reasonCode', ${reasonCode}, 'attemptCount', transitioned.attempt_count,
         'workId', transitioned.idempotency_key)
+        || CASE WHEN transitioned.state = 'failed_permanent'
+             THEN jsonb_build_object('final', true) ELSE '{}'::jsonb END
     FROM evidence_targets AS transitioned
     WHERE true ${filter}
     RETURNING id

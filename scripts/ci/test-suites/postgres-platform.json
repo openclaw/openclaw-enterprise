@@ -48,6 +48,8 @@
         "concurrent development bootstrap subprocesses reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
         "known bootstrap failures preserve created artifacts and report safe diagnostics",
+        "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
+        "API and worker startup refuse a stored Installation name outside the Name rule",
         "development bootstrap preserves credentials when COMMIT acknowledgement is lost"
       ]
     },
@@ -138,7 +140,8 @@
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
-        "failed provisioning keeps the accepted plan reserved until retry or deletion"
+        "failed provisioning keeps the accepted plan reserved until retry or deletion",
+        "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan"
       ]
     },
     {

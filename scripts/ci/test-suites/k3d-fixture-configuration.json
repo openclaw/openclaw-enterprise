@@ -13,6 +13,11 @@
     "k3d": true,
     "requiresPreparedStateForFile": true
   },
+  "fileConcurrency": 2,
+  "parallelFiles": [
+    "tests/integration/kubernetes-compute-real.test.mjs",
+    "tests/integration/kubernetes-plugin-status-real.test.mjs"
+  ],
   "files": [
     {
       "path": "tests/integration/kubernetes-plugin-status-real.test.mjs",
@@ -24,8 +29,6 @@
     {
       "path": "tests/integration/kubernetes-compute-real.test.mjs",
       "expectedTests": [
-        "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
-        "provisioning API and worker hand off a dedicated Agent with real Kubernetes fixture storage",
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
       ]
     }

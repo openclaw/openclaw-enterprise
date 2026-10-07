@@ -51,7 +51,9 @@ what each Agent actually holds; limits cover measured peaks:
 | Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
 
 Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
-dedicated Codex Agent reserves `2560Mi` (Gateway plus Harness). A Harness runs
+dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
+`runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
+`runtime.nodeSelector` pool. A Harness runs
 the Agent's shell commands, so builds and test suites in large repositories can
 need more than `6Gi`; raise `resources.agent.limits.memory` in the Installation
 for such workloads. Limits reserve no node memory, so Harnesses building at the
@@ -132,7 +134,7 @@ discovery egress into the base input:
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.158.0-<profile-sha256>.json"
+    "codexSeccompProfile": "openclaw/codex-0.160.0-<profile-sha256>.json"
   },
   "codex": {
     "modelDiscoveryCidrs": ["198.51.100.20/32"]
@@ -263,6 +265,10 @@ malformed, it exits without writing a preflight report.
 
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).
+That setup reads the cluster kubeconfig from `$OCC_INPUT_DIRECTORY/kubeconfig`:
+copy it there with mode `0600` first, or render straight into the protected
+directory as the runbook's [profile branch](production-installation.md#recommended-generate-profile-configuration)
+does.
 Skip both configuration-generation branches and continue at the
 [shared bootstrap PVC and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,

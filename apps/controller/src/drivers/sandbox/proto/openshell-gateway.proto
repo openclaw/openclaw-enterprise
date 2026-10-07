@@ -1,4 +1,4 @@
-// Minimal OpenShell v0.1.3-pre.1 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.3-pre.2 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only
@@ -19,7 +19,9 @@ service OpenShell {
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   rpc CreateSandbox(CreateSandboxRequest) returns (SandboxResponse);
+  // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
+  // Read-only. Recovers the stable create-time route without replaying CreateSandbox.
   rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
@@ -184,6 +186,10 @@ message NetworkPolicyRule {
   repeated NetworkBinary binaries = 3;
 }
 
+message NetworkCredentialBinding {
+  string provider = 1;
+}
+
 message NetworkEndpoint {
   string host = 1;
   uint32 port = 2;
@@ -193,6 +199,8 @@ message NetworkEndpoint {
   NetworkAccessPreset access = 6;
   repeated uint32 ports = 9;
   string path = 15;
+  bool websocket_credential_rewrite = 16;
+  NetworkCredentialBinding credential_binding = 24;
 }
 
 enum NetworkTlsMode {
@@ -280,6 +288,13 @@ message CreateSandboxRequest {
 message SandboxServiceExposure {
   string service = 1;
   uint32 target_port = 2;
+  ServiceAuthorizationMode authorization_mode = 3;
+}
+
+enum ServiceAuthorizationMode {
+  SERVICE_AUTHORIZATION_MODE_UNSPECIFIED = 0;
+  SERVICE_AUTHORIZATION_MODE_STRIP = 1;
+  SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH = 2;
 }
 
 message DeleteSandboxRequest {
@@ -299,19 +314,6 @@ message GetServiceRequest {
   WorkspaceSelector workspace_scope = 3;
 }
 
-message ServiceEndpoint {
-  ObjectMeta metadata = 1;
-  string sandbox_id = 2;
-  string sandbox = 3;
-  string name = 4;
-  uint32 target_port = 5;
-}
-
-message ServiceEndpointResponse {
-  ServiceEndpoint endpoint = 1;
-  string url = 2;
-}
-
 message WorkspaceSelector {
   oneof selection {
     string workspace = 1;
@@ -321,6 +323,21 @@ message WorkspaceSelector {
 message SandboxResponse {
   Sandbox sandbox = 1;
   map<string, string> service_urls = 2;
+}
+
+message ServiceEndpoint {
+  ObjectMeta metadata = 1;
+  string sandbox_id = 2;
+  string sandbox = 3;
+  string name = 4;
+  uint32 target_port = 5;
+  bool domain = 6;
+  ServiceAuthorizationMode authorization_mode = 7;
+}
+
+message ServiceEndpointResponse {
+  ServiceEndpoint endpoint = 1;
+  string url = 2;
 }
 
 message DeleteSandboxResponse {
@@ -334,6 +351,7 @@ message Provider {
   string type = 2;
   map<string, string> credentials = 3;
   map<string, string> config = 4;
+  map<string, google.protobuf.Timestamp> credential_expiration_times = 105;
   // Workspace that stores this provider's profile; empty selects platform scope.
   string profile_workspace = 6;
 }
@@ -348,10 +366,11 @@ message ProviderResponse {
   Provider provider = 1;
 }
 
-// Non-empty credential values merge into the existing provider; type and profile are fixed.
+// Non-empty config or credential values merge into the existing provider; type and profile are fixed.
 message UpdateProviderRequest {
   Provider provider = 1;
   WorkspaceSelector workspace_scope = 3;
+  map<string, google.protobuf.Timestamp> credential_expiration_times = 102;
   string request_id = 4;
 }
 
@@ -438,6 +457,13 @@ message ProviderProfile {
   map<string, string> annotations = 11;
   string source = 12;
   string scope = 13;
+  repeated ProviderProfileFile files = 14;
+}
+
+message ProviderProfileFile {
+  string path = 1;
+  string content = 2;
+  string env_var = 3;
 }
 
 message ProviderProfileImportItem {

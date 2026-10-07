@@ -23,6 +23,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -254,19 +255,11 @@ async function fixture(
       id: internal.servicePrincipalId,
       namespaceId: namespace.id,
     });
-    iamState.roles.push({
+    grantRole(iamState, internal.servicePrincipalId, {
       id: roleId,
       namespaceId: namespace.id,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    iamState.bindings.push({
-      id: roleId,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: internal.servicePrincipalId,
-      roleId,
-      resourceKind: "secret",
-      resourceId: secret.data.id,
+      permissions: { secret: ["operate"] },
+      resource: { kind: "secret", id: secret.data.id },
     });
     const updated = await composed.request("PATCH", `${collection}/${agent.id}`, {
       configurationId: configuration.id,

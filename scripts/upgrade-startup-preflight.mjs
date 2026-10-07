@@ -10,6 +10,10 @@ import { readFileSync } from "node:fs";
 // anything else, such as a denied or unreachable Kubernetes API, is incomplete.
 const computeRefusal = "Kubernetes Compute startup preflight refused the candidate release:";
 const computeIncomplete = "Kubernetes Compute startup preflight could not complete:";
+// Printed when the stored Installation name breaks the image's Name rule; the
+// controller's own startup refusal uses the same words.
+const nameRefusal = "The stored Installation name breaks the Name rule:";
+const nameVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME";
 
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
 // environment, loads Drivers and Preset files, and never opens the database.
@@ -45,6 +49,29 @@ try {
       " " +
       message +
       "\\n",
+  );
+  process.exit(1);
+}
+// The stored Installation name, read through OCC before the preflight. The API and
+// worker load it from the database and refuse to start when it breaks this image's
+// Name rule (INSTALLATION_NAME_INVALID). An image without the rule skips the check.
+let contracts;
+try {
+  contracts = await import("/app/packages/contracts/src/index.ts");
+} catch (error) {
+  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+  process.exit(1);
+}
+let storedName;
+try {
+  storedName = JSON.parse(process.env.${nameVariable});
+} catch (error) {
+  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+  process.exit(1);
+}
+if (typeof contracts.isName === "function" && !contracts.isName(storedName)) {
+  process.stderr.write(
+    ${JSON.stringify(nameRefusal)} + " " + contracts.NAME_RULE + ".\\n",
   );
   process.exit(1);
 }
@@ -108,7 +135,8 @@ const containerFields = [
 // One Pod per component, copied from the rendered candidate Deployment: the same
 // image, environment, mounts, service account and placement, with the Installation
 // volume pointed at the temporary candidate Secret. Probes, ports and the chart's
-// other containers are left out; the Pod runs the startup check once.
+// other containers are left out; the Pod runs the startup check once. The stored
+// Installation name comes from the helper's `occ installation get` output.
 function pod([
   renderedPath,
   component,
@@ -119,7 +147,12 @@ function pod([
   candidateSecret,
   image,
   timeoutSeconds,
+  storedInstallationPath,
 ]) {
+  const storedName = JSON.parse(readFileSync(storedInstallationPath, "utf8")).name;
+  if (typeof storedName !== "string") {
+    fail("OCC did not return the stored Installation name.");
+  }
   const deployments = documents(renderedPath).filter(
     (document) =>
       document.kind === "Deployment" &&
@@ -148,6 +181,13 @@ function pod([
   // The image entrypoint is node; name it so a chart command cannot change the check.
   container.command = ["node"];
   container.args = ["--input-type=module", "-e", startupCheck];
+  // JSON keeps any control character in the name intact through the environment.
+  // Kubernetes expands $(VAR) and turns $$ into $ in env values; doubling every $
+  // makes it deliver the name unchanged.
+  container.env = [
+    ...(container.env ?? []).filter((variable) => variable.name !== nameVariable),
+    { name: nameVariable, value: JSON.stringify(storedName).replaceAll("$", () => "$$") },
+  ];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   const volumes = structuredClone(
     (spec.volumes ?? []).filter((volume) => mounted.has(volume.name)),
@@ -242,7 +282,7 @@ function phase([statusPath]) {
 const [action, ...input] = process.argv.slice(2);
 const actions = {
   secret: [5, (values) => JSON.stringify(secret(values))],
-  pod: [9, (values) => JSON.stringify(pod(values))],
+  pod: [10, (values) => JSON.stringify(pod(values))],
   networkpolicy: [4, (values) => JSON.stringify(networkPolicy(values))],
   phase: [1, phase],
 };

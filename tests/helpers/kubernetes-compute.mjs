@@ -3,7 +3,11 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 /** Construct the production Kubernetes Driver without starting clients or contacting a cluster. */
 export function createTestKubernetesComputeDriver(
   id,
-  { repositoryCredentials = false, authentication = { mode: "inCluster" } } = {},
+  {
+    repositoryCredentials = false,
+    authentication = { mode: "inCluster" },
+    gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
+  } = {},
 ) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
@@ -22,7 +26,7 @@ export function createTestKubernetesComputeDriver(
       network: {
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
-        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+        gatewayTrustedProxyCidrs,
         gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
         ...(repositoryCredentials
           ? {

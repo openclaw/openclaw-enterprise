@@ -1,6 +1,6 @@
 ---
 created: 2026-09-04
-updated: 2026-10-04
+updated: 2026-10-05
 last_updated_session: authoring-run/5808365b-c590-4c11-92d6-4ee32efc3626
 ---
 
@@ -13,7 +13,7 @@ GitHub Actions selects coverage for each event and ends at `CI Required` and res
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/full-integration.yml:jobs`: manual integration from main or an explicitly approved Kubernetes model branch, bound to the dispatched commit.
+- `.github/workflows/full-integration.yml:jobs`: manual integration from main or an explicitly approved Kubernetes model or OpenShell branch, bound to the dispatched commit.
 - `scripts/ci/run-tests.mjs:main`: local or workflow `audit`, `run` and `aggregate` commands; the suite map is the coverage owner.
 
 ## Flow
@@ -61,13 +61,19 @@ CI uses the event checkout without external service credentials. Impact and Suit
 
 For a PR, the selector verifies the tested checkout and that the event head is the merge's second parent, then compares the first parent (the current base) and tested trees. Git path decoding preserves a leading UTF-8 BOM as filename data; paths outside the allowlist select full. API reference outputs and Markdown under `docs/reference/api/` select full for `openapi:check`. Only nonempty changes to allowlisted regular Markdown files select docs mode. Registered test files (with documentation and their own lane manifest entries) select tests mode: their `ci` lanes in either tree plus `checks-baseline-1`. Other test-tree, code, configuration, workflow or unknown changes and non-PR events select full. Missing or unverifiable policy or source evidence selects full or fails closed. Policy comes from that first parent; a base without it selects full. `CI Required` re-verifies the mode (and tests mode's lane set) and requires impact, audit and every selected job to succeed and the rest skipped. Missing, failed, cancelled, or unexpectedly skipped selected jobs fail the gate. Full and tests modes aggregate same-source results of their lanes; docs mode does not aggregate or invent test artifacts.
 
-The impact job's advisory run summary shows the mode, a fixed reason category (event, identity, checkout, policy, Git, diff, filename, eligibility, manifest or test-file outcomes, or verified selection) and tests mode's accepted lanes. Bootstrap guard categories identify their source; selector execution failures fail the impact job. A failed selection, or a missing, malformed or older-selector reason, reports unavailable. It includes no changed paths or arbitrary selector output.
+The impact summary shows the mode, a fixed reason category, and accepted test
+lanes. Selector failures fail the job; unavailable evidence reports unavailable.
+The summary includes no changed paths or arbitrary selector output.
 
-For full-mode PRs, `affected-packages` verifies merge identity and checkout cleanliness around pnpm inspection, then reports declared workspace dependents. Unsupported changes report unavailable. This advisory does not prove test coverage, select tests, or gate `CI Required`.
+For full-mode PRs, `affected-packages` verifies merge identity and checkout
+cleanliness, then reports declared workspace dependents. It is advisory and does
+not select tests or gate `CI Required`.
 
-The PR can change the `pull_request` workflow definition loaded from its merge checkout, bypassing or replacing these steps despite base-loaded policy. A separately trusted required workflow or equivalent external enforcement is a deployment decision, not an established source property. Hosted behavior, including fork and required-check enforcement, remains unverified.
+A PR can change the workflow loaded from its merge checkout despite base-loaded
+policy. Separately trusted enforcement is a deployment decision, not an
+established source property.
 
-Full Integration checks environment protection and checks out the immutable event SHA. Every lane admits `refs/heads/main`; only `k3d-model` may use another branch, with an exact `integration-model` branch rule and GitHub reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected; the administrator removes the temporary rule after verification. Manual dispatch selects a lane or `all`; pushes, merges, and PR events do not start this credentialed workflow. Manual runs share one concurrency group without cancelling in-progress runs. The provider environment must allow exactly `main` and needs no per-run review; other credentialed environments require reviewers with self-review prevention. A targeted run proves less than a full inventory run.
+Full Integration checks environment protection and checks out the immutable event SHA. Every lane admits `refs/heads/main`. The `k3d-model` and `openshell` lanes may also use an explicitly approved branch: the matching protected environment must have an exact branch rule and require GitHub reviewer approval with self-review prevention. Wildcards, tags, and other non-main lanes are rejected; the administrator removes the temporary rule after verification. Manual dispatch selects a lane or `all`; pushes, merges, and PR events do not start this credentialed workflow. Manual runs share one concurrency group without cancelling in-progress runs. The provider environment must allow exactly `main` and needs no per-run review; other credentialed environments require reviewers with self-review prevention. A targeted run proves less than a full inventory run.
 
 PostgreSQL migration and application suites own separate servers; each of three Kubernetes fixture files owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -102,8 +108,11 @@ in ready k3d clusters; `scripts/ci/k3d-diagnostics.mjs:projectAgentNamespaceActi
 appends Pod transitions and those namespaces' events to the report under
 `agentNamespaces` on pass or failure. Each file retains at most 200 Pod and 200
 event records, and the report retains 40 files. Messages are redacted and
-truncated, Pod specs dropped, and raw watch streams kept in the cluster directory
-for cleanup. Each lane that writes the artifact uploads it.
+truncated, and Pod specs dropped. Each file streams raw watches to its own files
+in the cluster directory and removes them when done. Watches are cluster-wide, so
+under `fileConcurrency` a record can include a sibling's namespaces. A failed
+start logs `Agent namespace activity unavailable`. Each lane that writes the
+artifact uploads it.
 
 Dedicated Codex preparation and the operator's offline profile generator share
 `scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
@@ -182,6 +191,8 @@ Per-file cleanup releases its disposable database; job cleanup removes only stat
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 02:00: Per-file Agent namespace watch files. (audit-followup-ci-runner)
 
 - 2026-10-04 03:44: Add a non-required affected-package advisory to the accompanying CI change. (authoring-run/5808365b-c590-4c11-92d6-4ee32efc3626 - 070147565f45e720918de9e649b93cad71820b07)
 

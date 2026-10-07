@@ -48,6 +48,9 @@ function execFile(command, args, { timeoutMs: commandTimeoutMs }) {
           const failure = new Error(failureMessage(command, error, stderr));
           failure.stdout = stdout;
           failure.stderr = stderr;
+          failure.exitCode = error.code;
+          failure.signal = error.signal;
+          failure.killed = error.killed;
           failure.timedOut = error.killed === true;
           reject(failure);
         } else {

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -10,6 +9,7 @@ import {
   defaultInstallSettings,
   installationRoles,
   passwordSignIn,
+  postgresSignInState,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
@@ -27,12 +27,8 @@ test(
   "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool } = postgresSignInState(t, () => [app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,

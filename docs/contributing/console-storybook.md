@@ -139,6 +139,13 @@ allows manual entry but does not prove access. Execution mode follows the
 harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
 the runtime-build warning; Embedded OpenClaw does not.
 
+In **Enter another model ID**, switch to **Choose a model from the list** and
+back. Check that listed models survive both switches, focus moves to the active
+input, and other settings are preserved. Edit the manual ID to another listed
+model and confirm that returning selects it. A custom ID outside the list must
+instead require a new selection. After changing the provider through Configuration
+JSON, verify that the list matches and never retains a model from the old provider.
+
 The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no dedicated console
 pages. New version model Secrets and Slack tokens (Credentials tab and Channels

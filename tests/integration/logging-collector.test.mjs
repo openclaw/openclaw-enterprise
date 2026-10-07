@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -22,15 +22,29 @@ async function docker(args) {
   return (await exec("docker", args, { timeout: 120_000, maxBuffer: 1024 * 1024 })).stdout.trim();
 }
 
-async function waitFor(check) {
+// A timeout or failed check names the outcome it waited for and, given the
+// fixture, the state of the Collector and backend containers with the Collector's
+// last log lines, so a CI failure shows which step stalled and whether a container
+// had stopped.
+async function waitFor(outcome, check, fixture) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (await check()) {
+    let done;
+    try {
+      done = await check();
+    } catch (error) {
+      const state = fixture ? ` ${await fixture.describe()}` : "";
+      throw new Error(`Waiting for ${outcome} failed: ${error.message}.${state}`, {
+        cause: error,
+      });
+    }
+    if (done) {
       return;
     }
     await delay(100);
   }
-  assert.fail("Timed out waiting for the real Collector outcome.");
+  const state = fixture ? ` ${await fixture.describe()}` : "";
+  assert.fail(`Timed out waiting for ${outcome}.${state}`);
 }
 
 function attributes(entries = []) {
@@ -122,6 +136,30 @@ async function collectorFixture(t, prefix) {
     port(containerPort) {
       return docker(["port", collector, `${containerPort}/tcp`]);
     },
+    async describe() {
+      const states = [];
+      for (const [role, name] of [
+        ["Collector", collector],
+        ["backend", backend],
+      ]) {
+        const state = await exec(
+          "docker",
+          ["inspect", "--format", "{{.State.Status}} (exit {{.State.ExitCode}})", name],
+          { timeout: 10_000 },
+        )
+          .then(({ stdout }) => stdout.trim())
+          .catch(() => "absent");
+        states.push(`${role} ${state}`);
+      }
+      // The Collector logs at error level, so these are its recent failures.
+      const log = await exec("docker", ["logs", "--tail", "5", collector], {
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      })
+        .then(({ stdout, stderr }) => `${stdout}${stderr}`.trim())
+        .catch((error) => `unavailable: ${error.message}`);
+      return `${states.join(", ")}; Collector log: ${log.slice(-800) || "empty"}`;
+    },
   };
 }
 
@@ -182,26 +220,33 @@ function sentinelLogs(resource) {
 }
 
 // Waits for the sentinel and returns the other exported records.
-async function exportedThroughSentinel(out, mapRecord) {
+async function exportedThroughSentinel(fixture, mapRecord) {
   const isSentinel = (record) =>
     attributes(record.attributes)["occ.startup.phase"] === sentinelPhase;
   let exported = [];
   let unreadable;
   try {
-    await waitFor(async () => {
-      try {
-        exported = await exportedRecords(out, (resource, record) => ({ resource, record }));
-        unreadable = undefined;
-      } catch (error) {
-        // The backend may still be writing the export line.
-        if (error instanceof SyntaxError) {
-          unreadable = error;
-          return false;
+    await waitFor(
+      "the exported sentinel record",
+      async () => {
+        try {
+          exported = await exportedRecords(fixture.out, (resource, record) => ({
+            resource,
+            record,
+          }));
+          unreadable = undefined;
+        } catch (error) {
+          // The backend may still be writing the export line.
+          if (error instanceof SyntaxError) {
+            unreadable = error;
+            return false;
+          }
+          throw error;
         }
-        throw error;
-      }
-      return exported.some(({ record }) => isSentinel(record));
-    });
+        return exported.some(({ record }) => isSentinel(record));
+      },
+      fixture,
+    );
   } catch (error) {
     if (unreadable !== undefined) {
       throw new Error(`The Collector export never became readable: ${unreadable.message}`, {
@@ -214,6 +259,68 @@ async function exportedThroughSentinel(out, mapRecord) {
     .filter(({ record }) => !isSentinel(record))
     .map(({ resource, record }) => mapRecord(resource, record));
 }
+
+// The OCC API and worker event names the Collector exports; every other OCC event is dropped.
+async function exportedOccEventPattern() {
+  const collector = loadYaml(await readFile(join(root, "deploy/logging/collector.yaml"), "utf8"));
+  const statement = collector.processors["transform/operational"].log_statements
+    .flatMap(({ statements }) => statements)
+    .find(
+      (entry) =>
+        entry.startsWith('set(attributes["event.name"], cache["record"]["event"])') &&
+        entry.includes('"occ-api"'),
+    );
+  const [, pattern] = statement.match(/IsMatch\(cache\["record"\]\["event"\], "([^"]+)"\)/);
+  // The Collector escapes `$` as `$$` in its configuration.
+  return new RegExp(pattern.replaceAll("$$", "$"));
+}
+
+async function sourceFiles(directory, extensions) {
+  return (await readdir(join(root, directory), { recursive: true }))
+    .filter((path) => extensions.some((extension) => path.endsWith(extension)))
+    .map((path) => join(directory, path));
+}
+
+// Guides, references and flows tell operators to look for OCC events by name. A named
+// event the Collector drops never reaches the log backend those operators search, as
+// happened to `shutdown.failed` and `device_authorization.start_failed` (finding 600).
+// The scan covers dotted names emitted as `event: "<name>"` literals; undotted names such
+// as `listening` and names built at runtime need their own Collector case.
+test("the Collector exports every OCC API and worker event the docs name", async () => {
+  const pattern = await exportedOccEventPattern();
+  const emitted = new Set();
+  for (const path of [
+    ...(await sourceFiles("apps/controller/src", [".ts", ".mjs"])),
+    ...(await sourceFiles("packages/occ/src", [".ts"])),
+  ]) {
+    // The Kubernetes Compute Driver renders this file's events into Gateway and Codex
+    // Pods; the Collector classifies those runtime wrapper diagnostics separately.
+    if (path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts")) {
+      continue;
+    }
+    const text = await readFile(join(root, path), "utf8");
+    for (const [, event] of text.matchAll(/\bevent: "([a-z_]+[.][a-z_.-]+)"/g)) {
+      emitted.add(event);
+    }
+  }
+  const named = new Map();
+  for (const path of await sourceFiles("docs", [".md"])) {
+    const text = await readFile(join(root, path), "utf8");
+    for (const [, event] of text.matchAll(/`([a-z_]+[.][a-z_.-]+)`/g)) {
+      if (emitted.has(event) && !named.has(event)) {
+        named.set(event, path);
+      }
+    }
+  }
+  // Guard the scan itself: these documented events must be found, or the check is vacuous.
+  for (const event of ["http.completed", "worker.compute-prepare-failed", "shutdown.failed"]) {
+    assert.ok(named.has(event), `${event} is emitted and documented`);
+  }
+  const dropped = [...named]
+    .filter(([event]) => !pattern.test(event))
+    .map(([event, path]) => `${event} (${path})`);
+  assert.deepEqual(dropped, [], "documented OCC events the Collector drops");
+});
 
 test(
   "native Collector filters actual Docker forwarding, binds transport identity, and survives exporter outage",
@@ -231,10 +338,13 @@ test(
     });
     const forwardAddress = await fixture.port(24224);
     let metricsAddress = await fixture.port(8888);
-    await waitFor(async () =>
-      fetch(`http://${metricsAddress}/metrics`)
-        .then((r) => r.ok)
-        .catch(() => false),
+    await waitFor(
+      "the Collector metrics endpoint",
+      async () =>
+        fetch(`http://${metricsAddress}/metrics`)
+          .then((r) => r.ok)
+          .catch(() => false),
+      fixture,
     );
     const records = async () => {
       return exportedRecords(fixture.out, (resource, record) => ({
@@ -317,7 +427,7 @@ test(
       [],
       ["com.docker.compose.service=worker"],
     );
-    await waitFor(filtered);
+    await waitFor("the Collector to count the filtered near-match", filtered, fixture);
 
     await send("gateway", [
       JSON.stringify({
@@ -426,7 +536,25 @@ test(
     );
     await send(
       "worker",
-      [warningLine("compute.preflight-warning")],
+      [
+        warningLine("compute.preflight-warning"),
+        JSON.stringify({
+          event: "worker.compute-prepare-failed",
+          severity: "ERROR",
+          workId: `agent_revision:${revisionId}:reconcile`,
+          operation: "agent_revision.reconcile",
+          namespaceId,
+          agentId,
+          revisionId,
+          computeDriverId: "kubernetes",
+          code: "KUBERNETES_API_REJECTED",
+          step: "gateway",
+          errorClass: "HttpError",
+          status: 403,
+          message: canaries.join(" "),
+          ...payload,
+        }),
+      ],
       [],
       ["com.docker.compose.service=worker"],
     );
@@ -435,9 +563,13 @@ test(
       "{invalid json",
       JSON.stringify({ level: "info", subsystem: "gateway", message: "x".repeat(33_000) }),
     ]);
-    await waitFor(async () => (await records()).length >= 12);
+    await waitFor(
+      "at least 13 exported records",
+      async () => (await records()).length >= 13,
+      fixture,
+    );
     const initial = await records();
-    assert.equal(initial.length, 12, "only reviewed JSON classes and Codex stderr pass");
+    assert.equal(initial.length, 13, "only reviewed JSON classes and Codex stderr pass");
     const warningEvents = [
       "compute.preflight-warning",
       "authentication.sign-in-limited",
@@ -450,8 +582,12 @@ test(
       assert.ok(record.timeUnixNano, "OTLP record has an Engine timestamp");
       assert.equal(
         record.severityNumber,
-        warningEvents.includes(record.body.stringValue) ? 13 : 9,
-        "severity maps to OTel WARN or INFO, not Pino's numeric level",
+        record.body.stringValue === "worker.compute-prepare-failed"
+          ? 17
+          : warningEvents.includes(record.body.stringValue)
+            ? 13
+            : 9,
+        "severity maps to OTel ERROR, WARN or INFO, not Pino's numeric level",
       );
       assert.equal(resource["openclaw.agent.id"], agentId);
       assert.equal(resource["openclaw.namespace.id"], namespaceId);
@@ -470,6 +606,7 @@ test(
       "occ-api",
       "occ-api",
       "occ-worker",
+      "occ-worker",
       "openclaw-gateway",
     ]);
     const http = initial.find(({ record }) => record.body.stringValue === "http.completed");
@@ -481,13 +618,33 @@ test(
     );
     assert.equal(httpAttributes["http.request.method"], "GET");
     assert.equal(httpAttributes["http.response.status_code"], 200);
-    const warning = initial.find(({ resource }) => resource["service.name"] === "occ-worker");
-    assert.equal(warning.record.body.stringValue, "compute.preflight-warning");
+    const warning = initial.find(
+      ({ record }) => record.body.stringValue === "compute.preflight-warning",
+    );
+    assert.equal(warning.resource["service.name"], "occ-worker");
     assert.equal(warning.record.severityText, "WARN");
     assert.deepEqual(attributes(warning.record.attributes), {
       "event.name": "compute.preflight-warning",
       "log.iostream": "stdout",
       "occ.code": "KUBERNETES_VERSION_BELOW_MINIMUM",
+    });
+    // A failed Compute prepare is exported at ERROR with its bounded code and the IDs and
+    // work identity other worker events keep; the stage, error class, status and message
+    // stay in local logs.
+    const prepareFailed = initial.find(
+      ({ record }) => record.body.stringValue === "worker.compute-prepare-failed",
+    );
+    assert.equal(prepareFailed.resource["service.name"], "occ-worker");
+    assert.equal(prepareFailed.record.severityText, "ERROR");
+    assert.deepEqual(attributes(prepareFailed.record.attributes), {
+      "event.name": "worker.compute-prepare-failed",
+      "log.iostream": "stdout",
+      "occ.agent.id": agentId,
+      "occ.code": "KUBERNETES_API_REJECTED",
+      "occ.namespace.id": namespaceId,
+      "occ.revision.id": revisionId,
+      "work.id": `agent_revision:${revisionId}:reconcile`,
+      "work.operation": "agent_revision.reconcile",
     });
     // A limited sign-in lane is promoted with its lane; the hashed key stays in local logs.
     const limited = initial.find(
@@ -588,7 +745,7 @@ test(
     }
     assert.equal(serialized.includes(`limitkey${fixture.suffix}`), false);
     assert.equal(serialized.includes(`providerkey${fixture.suffix}`), false);
-    for (const value of [...canaries, "forged-service", "forged-agent"]) {
+    for (const value of [...canaries, "forged-service", "forged-agent", "HttpError"]) {
       assert.equal(serialized.includes(value), false);
     }
     const metrics = await fetch(`http://${metricsAddress}/metrics`).then((r) => r.text());
@@ -609,30 +766,41 @@ test(
     // file-backed queue survives a process restart before the destination returns.
     await docker(["stop", "--time", "5", fixture.backend]);
     await send("gateway", [JSON.stringify({ level: "warn", subsystem: "gateway" })]);
-    await waitFor(async () => {
-      const current = await fetch(`http://${metricsAddress}/metrics`).then((response) =>
-        response.text(),
-      );
-      return /otelcol_exporter_queue_size[^\n]* [1-9]/.test(current);
-    });
+    await waitFor(
+      "a queued export while the destination is stopped",
+      async () => {
+        const current = await fetch(`http://${metricsAddress}/metrics`).then((response) =>
+          response.text(),
+        );
+        return /otelcol_exporter_queue_size[^\n]* [1-9]/.test(current);
+      },
+      fixture,
+    );
     await docker(["stop", "--time", "10", fixture.collector]);
     await docker(["start", fixture.collector]);
     metricsAddress = (await fixture.port(8888)).trim();
-    await waitFor(async () => {
-      try {
-        return (await fetch(`http://${metricsAddress}/metrics`)).status === 200;
-      } catch {
-        return false;
-      }
-    });
+    await waitFor(
+      "the restarted Collector metrics endpoint",
+      async () => {
+        try {
+          return (await fetch(`http://${metricsAddress}/metrics`)).status === 200;
+        } catch {
+          return false;
+        }
+      },
+      fixture,
+    );
     await docker(["start", fixture.backend]);
-    await waitFor(async () =>
-      (await records()).some(
-        ({ resource, record }) =>
-          resource["service.name"] === "openclaw-gateway" &&
-          record.severityNumber === 13 &&
-          record.body.stringValue === "gateway.operational",
-      ),
+    await waitFor(
+      "the queued record at the restored destination",
+      async () =>
+        (await records()).some(
+          ({ resource, record }) =>
+            resource["service.name"] === "openclaw-gateway" &&
+            record.severityNumber === 13 &&
+            record.body.stringValue === "gateway.operational",
+        ),
+      fixture,
     );
     await docker(["stop", "--time", "10", fixture.collector]);
     // The file-export test destination starts a new capture segment on restart.
@@ -673,14 +841,17 @@ async function startKubernetesProcessors(fixture) {
     publish: ["127.0.0.1::4318"],
   });
   const receiverAddress = await fixture.port(4318);
-  await waitFor(async () =>
-    fetch(`http://${receiverAddress}/v1/logs`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ resourceLogs: [] }),
-    })
-      .then((response) => response.status < 500)
-      .catch(() => false),
+  await waitFor(
+    "the Collector OTLP receiver",
+    async () =>
+      fetch(`http://${receiverAddress}/v1/logs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resourceLogs: [] }),
+      })
+        .then((response) => response.status < 500)
+        .catch(() => false),
+    fixture,
   );
   return receiverAddress;
 }
@@ -778,7 +949,7 @@ test(
         record,
       }));
     };
-    await waitFor(async () => (await records()).length === 1);
+    await waitFor("the exported record", async () => (await records()).length === 1, fixture);
     const [exported] = await records();
     assert.equal(exported.resource["service.name"], "occ-api");
     assert.equal(exported.resource["service.instance.id"], podUid);
@@ -799,14 +970,44 @@ test(
       assert.equal(serialized.includes(internal), false, `${internal} must not leak downstream`);
     }
 
-    // Stop work includes a per-operation UUID; deletion work has no suffix.
-    // Unsupported shapes must lose correlation fields without losing the event.
+    // Stop and credential withdrawal work include a per-operation UUID; deletion work has no
+    // suffix. Unsupported shapes must lose correlation fields without losing the event.
     const agentId = `agt_${randomUUID()}`;
     const stopWorkId = `agent:${agentId}:reconcile:stopped:${randomUUID()}`;
     const deleteWorkId = `agent:${agentId}:reconcile:deleted`;
+    const withdrawalWorkId = `agent_revision:rev_${randomUUID()}:reconcile:credentials_withdrawn`;
     const cases = [
       { operation: "agent.stop", workId: stopWorkId },
       { operation: "agent.delete", workId: deleteWorkId },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId}:${randomUUID()}`,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId}:CANARY_SESSION`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: withdrawalWorkId,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `agent_revision:CANARY_SESSION:reconcile:credentials_withdrawn:${randomUUID()}`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId.replace("credentials_withdrawn", "stopped")}:${randomUUID()}`,
+        discardWorkId: true,
+      },
+      {
+        operation: "agent_revision.credentials_withdrawn",
+        workId: `${withdrawalWorkId}:${randomUUID()}`,
+        discardOperation: true,
+      },
       {
         operation: "agent.stop",
         workId: `agent:${agentId}:reconcile:stopped`,
@@ -867,7 +1068,11 @@ test(
       body: JSON.stringify({ resourceLogs: [workerResource] }),
     });
     assert.equal(workerResponse.status, 200, await workerResponse.text());
-    await waitFor(async () => (await records()).length === 1 + cases.length);
+    await waitFor(
+      `${1 + cases.length} exported records`,
+      async () => (await records()).length === 1 + cases.length,
+      fixture,
+    );
     const workerRecords = (await records()).filter(
       ({ resource }) => resource["service.name"] === "occ-worker",
     );
@@ -1000,7 +1205,7 @@ test(
       },
       sentinelLogs(resource("gateway")),
     ]);
-    const exported = await exportedThroughSentinel(fixture.out, (resource, record) => ({
+    const exported = await exportedThroughSentinel(fixture, (resource, record) => ({
       resource: attributes(resource.resource?.attributes),
       attributes: attributes(record.attributes),
       record,
@@ -1054,6 +1259,229 @@ test(
       ]),
     );
     assert.doesNotMatch(JSON.stringify(exported), /CANARY_/);
+  },
+);
+
+test(
+  "native Collector exports OCC lifecycle, dependency and authentication warnings with bounded fields",
+  {
+    skip: selected
+      ? false
+      : "Set OCC_TEST_LOGGING_COLLECTOR=1 for pinned Collector OCC warning proof.",
+    timeout: 180_000,
+  },
+  async (t) => {
+    const fixture = await collectorFixture(t, "occ-warnings");
+    const receiverAddress = await startKubernetesProcessors(fixture);
+    const canary = `canary${fixture.suffix}`;
+    const resource = (component) => ({
+      attributes: Object.entries({
+        "occ.application": "openclaw-enterprise",
+        "occ.component": component,
+        "k8s.pod.uid": `pod-${randomUUID()}`,
+        "container.id": `containerd://${randomUUID()}`,
+      }).map(([key, value]) => ({ key, value: { stringValue: value } })),
+    });
+    // Records as the API and worker print them: Pino JSON on stdout (with the `service`
+    // base field and an ISO time), and the PostgreSQL pool's idle-connection warning written
+    // directly to stderr. `note` is a hostile extra field that must never be exported.
+    const line = (record, stream = "stdout") => ({
+      timeUnixNano: String(BigInt(Date.now()) * 1000000n),
+      body: {
+        stringValue: JSON.stringify({
+          time: new Date().toISOString(),
+          service: "api",
+          note: canary,
+          ...record,
+        }),
+      },
+      attributes: [{ key: "log.iostream", value: { stringValue: stream } }],
+    });
+    const requestId = `req_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const agentId = `agt_${randomUUID()}`;
+    const revisionId = `rev_${randomUUID()}`;
+    await postLogs(receiverAddress, [
+      {
+        resource: resource("api"),
+        scopeLogs: [
+          {
+            logRecords: [
+              line({ severity: "INFO", event: "shutdown.started", signal: "SIGTERM" }),
+              line({ severity: "INFO", event: "shutdown.completed", durationMs: 1250.375 }),
+              line({
+                severity: "ERROR",
+                event: "shutdown.failed",
+                code: "SHUTDOWN_FAILED",
+                durationMs: 30000.5,
+              }),
+              line({ level: "warn", event: "database.idle-client-error", code: "57P01" }, "stderr"),
+              // The pool logs a Node transport code when the socket fails first.
+              line(
+                { level: "warn", event: "database.idle-client-error", code: "ECONNRESET" },
+                "stderr",
+              ),
+              // An unbounded code loses the field, never the event.
+              line({ level: "warn", event: "database.idle-client-error", code: canary }, "stderr"),
+              line({
+                severity: "WARN",
+                event: "device_authorization.start_failed",
+                requestId,
+                route: `/api/${canary}`,
+                host: "auth.openai.com",
+                reason: "unreachable",
+                failure: "TimeoutError",
+              }),
+              // The denied call and Kubernetes namespace stay in local logs.
+              line({
+                severity: "WARN",
+                event: "agent_runtime_credentials.cluster_denied",
+                requestId,
+                route: `/api/${canary}`,
+                verb: "get",
+                resource: "secrets",
+                kubernetesNamespace: `tenant-${canary}`,
+                plane: "execution",
+                kubernetesStatus: 403,
+              }),
+              // A failed audit write keeps the Agent's IDs; the error stays local.
+              line({
+                severity: "WARN",
+                event: "native_admin.websocket_audit_failed",
+                error: { type: "Error", message: canary, stack: `Error: ${canary}` },
+                namespaceId,
+                agentId,
+                revisionId,
+              }),
+              line({ severity: "WARN", event: "native_admin.websocket_denial_audit_failed" }),
+              // Account IDs and messages that name them stay in local logs.
+              line({
+                severity: "WARN",
+                event: "authentication.activation-warning",
+                reason: "Accounts without a Principal or exactly one password were not enrolled.",
+                skippedUserIds: [`user_${canary}`],
+                skippedUserCount: 1,
+                skippedUserIdsTruncated: false,
+              }),
+              line({
+                severity: "WARN",
+                event: "authentication.password-sign-in-warning",
+                code: "EXTERNAL_IDENTITY_MISSING",
+                skippedUserIds: [`user_${canary}`],
+                skippedUserCount: 1,
+                skippedUserIdsTruncated: false,
+              }),
+              line({
+                severity: "WARN",
+                event: "authentication.recovery-seed-warning",
+                message: `OCC_AUTH_GITHUB_RECOVERY_USER_ID differs ${canary}`,
+              }),
+              // A near-match of a reviewed name is still dropped.
+              line({ severity: "WARN", event: "shutdown.failed-unreviewed" }),
+            ],
+          },
+        ],
+      },
+      {
+        resource: resource("worker"),
+        scopeLogs: [
+          {
+            logRecords: [
+              line({ level: "warn", event: "database.idle-client-error", code: "57P01" }, "stderr"),
+            ],
+          },
+        ],
+      },
+      // The sentinel is a runtime wrapper record, which the Collector exports only from
+      // a managed Gateway Pod.
+      sentinelLogs({
+        attributes: Object.entries({
+          "occ.managed_by": "openclaw-enterprise",
+          "occ.role": "gateway",
+          "k8s.pod.uid": `pod-${randomUUID()}`,
+          "container.id": `containerd://${randomUUID()}`,
+        }).map(([key, value]) => ({ key, value: { stringValue: value } })),
+      }),
+    ]);
+    const exported = await exportedThroughSentinel(fixture, (resource, record) => ({
+      resource: attributes(resource.resource?.attributes),
+      record,
+    }));
+    const summary = (service, severity, stream, fields) =>
+      JSON.stringify([
+        service,
+        severity,
+        Object.entries({ "log.iostream": stream, ...fields }).sort(([a], [b]) =>
+          a.localeCompare(b),
+        ),
+      ]);
+    const api = (severity, fields, stream = "stdout") =>
+      summary("occ-api", severity, stream, fields);
+    const sort = (entries) => [...entries].sort();
+    assert.deepEqual(
+      sort(
+        exported.map(({ resource, record }) => {
+          const fields = Object.fromEntries(
+            record.attributes.map(({ key, value }) => [
+              key,
+              // OTLP JSON carries an int64 as a string; a JSON number may arrive as either.
+              value.stringValue ?? String(value.intValue ?? value.doubleValue),
+            ]),
+          );
+          assert.equal(record.body.stringValue, fields["event.name"]);
+          return summary(
+            resource["service.name"],
+            record.severityText,
+            fields["log.iostream"],
+            fields,
+          );
+        }),
+      ),
+      sort([
+        api("INFO", { "event.name": "shutdown.started" }),
+        api("INFO", { "event.name": "shutdown.completed", duration_ms: "1250.375" }),
+        api("ERROR", {
+          "event.name": "shutdown.failed",
+          "occ.code": "SHUTDOWN_FAILED",
+          duration_ms: "30000.5",
+        }),
+        api("WARN", { "event.name": "database.idle-client-error", "occ.code": "57P01" }, "stderr"),
+        api(
+          "WARN",
+          { "event.name": "database.idle-client-error", "occ.code": "ECONNRESET" },
+          "stderr",
+        ),
+        api("WARN", { "event.name": "database.idle-client-error" }, "stderr"),
+        api("WARN", {
+          "event.name": "device_authorization.start_failed",
+          "request.id": requestId,
+          "occ.device_authorization.reason": "unreachable",
+          "occ.device_authorization.failure": "TimeoutError",
+        }),
+        api("WARN", {
+          "event.name": "agent_runtime_credentials.cluster_denied",
+          "request.id": requestId,
+        }),
+        api("WARN", {
+          "event.name": "native_admin.websocket_audit_failed",
+          "occ.namespace.id": namespaceId,
+          "occ.agent.id": agentId,
+          "occ.revision.id": revisionId,
+        }),
+        api("WARN", { "event.name": "native_admin.websocket_denial_audit_failed" }),
+        api("WARN", { "event.name": "authentication.activation-warning" }),
+        api("WARN", {
+          "event.name": "authentication.password-sign-in-warning",
+          "occ.code": "EXTERNAL_IDENTITY_MISSING",
+        }),
+        api("WARN", { "event.name": "authentication.recovery-seed-warning" }),
+        summary("occ-worker", "WARN", "stderr", {
+          "event.name": "database.idle-client-error",
+          "occ.code": "57P01",
+        }),
+      ]),
+    );
+    assert.doesNotMatch(JSON.stringify(exported), new RegExp(canary));
   },
 );
 
@@ -1179,7 +1607,7 @@ test(
       },
       sentinelLogs(resource),
     ]);
-    const exported = await exportedThroughSentinel(fixture.out, (_resource, record) => ({
+    const exported = await exportedThroughSentinel(fixture, (_resource, record) => ({
       attributes: attributes(record.attributes),
       record,
     }));
@@ -1305,7 +1733,7 @@ test(
       },
       sentinelLogs(resource),
     ]);
-    const exported = await exportedThroughSentinel(fixture.out, (_resource, record) => ({
+    const exported = await exportedThroughSentinel(fixture, (_resource, record) => ({
       attributes: attributes(record.attributes),
       record,
     }));
@@ -1438,7 +1866,7 @@ test(
       fetch(`${control}/requests`)
         .then((response) => response.json())
         .catch(() => []);
-    await waitFor(async () =>
+    await waitFor("the Pod metadata fixture", async () =>
       fetch(`${control}/requests`)
         .then((response) => response.ok)
         .catch(() => false),
@@ -1477,12 +1905,20 @@ test(
 
     // Hold Pod metadata well past filelog's first 200 ms poll. A pipeline that
     // started without metadata has read, dropped and committed the record by now.
-    await waitFor(async () => (await podRequests()).length > 0);
+    await waitFor(
+      "the Collector's first Pod metadata request",
+      async () => (await podRequests()).length > 0,
+      fixture,
+    );
     await delay(3_000);
     assert.deepEqual(await records(), []);
     await fetch(`${control}/release`, { method: "POST" });
 
-    await waitFor(async () => (await records()).length > 0);
+    await waitFor(
+      "the record after Pod metadata syncs",
+      async () => (await records()).length > 0,
+      fixture,
+    );
     const exported = await records();
     assert.equal(exported.length, 1);
     assert.equal(exported[0].resource["service.name"], "occ-worker");

@@ -23,6 +23,9 @@ function startupFailureCode(error) {
     return "PRESET_FILE_INVALID";
   }
   const message = error instanceof Error ? error.message : "";
+  if (/stored Installation name breaks the Name rule/.test(message)) {
+    return "INSTALLATION_NAME_INVALID";
+  }
   if (/OCC_AUTH_SECRET/.test(message)) {
     return "AUTH_SECRET_INVALID";
   }

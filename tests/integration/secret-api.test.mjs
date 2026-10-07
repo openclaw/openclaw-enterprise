@@ -1058,17 +1058,22 @@ test("Harness source admission rejects foreign references and superseded model s
     },
   });
   assert.equal(malformed.status, 400);
-  // Provider keys, reserved prefixes and process-control names, in any letter case.
-  for (const destination of [
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "openclaw_gateway_token",
-    "LD_PRELOAD",
-    "KUBECONFIG",
-    "PATH",
-    "path",
-    "HTTPS_PROXY",
+  // Provider keys, reserved prefixes and process-control names, in any letter case. The
+  // message names the rule and the destination, and the detail points at its binding.
+  const reservedPrefix = (prefix, name) =>
+    `A secret binding destination uses the reserved prefix ${prefix}*: ${name}.`;
+  const reservedName = (name) =>
+    `A secret binding destination is a reserved process or platform variable name: ${name}.`;
+  for (const [destination, message] of [
+    ["OPENAI_API_KEY", reservedPrefix("OPENAI_", "OPENAI_API_KEY")],
+    ["ANTHROPIC_API_KEY", reservedPrefix("ANTHROPIC_", "ANTHROPIC_API_KEY")],
+    ["ANTHROPIC_AUTH_TOKEN", reservedPrefix("ANTHROPIC_", "ANTHROPIC_AUTH_TOKEN")],
+    ["openclaw_gateway_token", reservedPrefix("OPENCLAW_", "openclaw_gateway_token")],
+    ["LD_PRELOAD", reservedPrefix("LD_", "LD_PRELOAD")],
+    ["KUBECONFIG", reservedName("KUBECONFIG")],
+    ["PATH", reservedName("PATH")],
+    ["path", reservedName("path")],
+    ["HTTPS_PROXY", reservedName("HTTPS_PROXY")],
   ]) {
     const reserved = await request(
       fixture.app,
@@ -1083,9 +1088,15 @@ test("Harness source admission rejects foreign references and superseded model s
       },
     );
     assert.equal(reserved.status, 400, destination);
-    assert.equal(
-      reserved.body.error.message,
-      "A secret binding uses a reserved or invalid environment destination.",
+    assert.equal(reserved.body.error.message, message, destination);
+    assert.deepEqual(
+      reserved.body.error.details,
+      [{ path: `/secretBindings/${destination}`, code: "INVALID_VALUE" }],
+      destination,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(reserved.body),
+      new RegExp(localKey.data.ref.id),
       destination,
     );
   }

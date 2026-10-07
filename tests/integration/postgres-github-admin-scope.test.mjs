@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
+  assertConsoleSignIn,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -10,11 +9,11 @@ import {
   githubSignIn,
   githubUpgradeSettings,
   onboardPasswordAccounts,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "scope-recovery@example.test";
@@ -35,13 +34,8 @@ test(
   "an exact-scope Installation administrator cannot manage an account with broader grants",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     await startFakeGitHub(t);
     const address = clientAddresses("198.19");
     const {
@@ -132,9 +126,7 @@ test(
     });
     assert.equal(covered.statusCode, 200, covered.body);
     const signedIn = await githubSignIn(app, origin, limitedSubject, address());
-    assert.equal(signedIn.callback.headers.location, "/console/", signedIn.callback.body);
-    const cookie = cookieHeaderFromSetCookie(signedIn.callback.headers["set-cookie"]);
-    assert.equal((await currentSession(app, cookie)).user.id, limited.id);
+    await assertConsoleSignIn(app, signedIn.callback, limited.id);
 
     // Taking the recovery designation acts against its holder: disabling a holder returns 409,
     // so a narrower administrator must not move it onto itself and lock the broader one out.

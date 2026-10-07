@@ -5,7 +5,7 @@ import { createServer as httpsServer } from "node:https";
 import { connect } from "node:net";
 import { gzipSync } from "node:zlib";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
 import {
   gatewayRequest,
@@ -251,8 +251,7 @@ test(
   "repository transport framing, bounded streams and dispatch outcomes",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     const received = [];

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-09-01
-last_updated_session: codex/01a05f95-dd80-7011-990f-d1c46b5bb3cc
+updated: 2026-10-05
+last_updated_session: authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -126,13 +126,25 @@ preserves them in `values`. OCC separately authorizes `operate` on each Secret
 selected by `secretBindings`, including retained bindings when PATCH omits the
 field. Omission preserves bindings; `{}` clears them. A submitted binding with a
 reserved or invalid destination, or a Secret reference to another Namespace, fails
-with `400 INVALID_REQUEST` and a message naming the rule; a Secret the Namespace
-does not hold stays `404`. The
+with `400 INVALID_REQUEST` and a message naming the rule. A reserved destination
+is also named, with a `/secretBindings/<key>` detail; a malformed one is not
+echoed. A Secret the Namespace does not hold stays `404`. The
 [Configuration reference](../reference/configuration/secrets.md#secret-bindings) owns
 the binding contract, and the [Secret flow](secret-storage-and-delivery.md)
 traces storage and delivery. Secret Broker substitution remains unimplemented.
 
 ### 4–5. Persist Configuration and freeze its revision
+
+`apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver.write`
+
+Default Compose development uses the filesystem Driver. Each write exclusively
+creates a private temporary file under the exact Namespace directory, writes the
+approved document, closes the file, then atomically renames it to the Configuration
+path. A finally block removes only that write's temporary file, including after
+partial writes such as `ENOSPC` or a failed rename. The prior destination stays
+intact until rename succeeds, and other writers' temporary files remain untouched. Storage
+and cleanup failures propagate to the caller; this does not add automatic retries
+or alter OCC's metadata transaction and compensation boundary.
 
 [Configuration persistence and revision snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
 
@@ -141,7 +153,7 @@ traces storage and delivery. Secret Broker substitution remains unimplemented.
 Run focused Configuration conformance and integration checks:
 
 ```bash
-node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.mjs
+node --test tests/conformance/configuration-occ.test.mjs tests/conformance/kubernetes-configuration.test.mjs tests/conformance/filesystem-configuration.test.mjs
 node --test tests/integration/configuration-controller.test.mjs tests/integration/postgres-platform-state.test.mjs
 node --test tests/integration/postgres-platform-state-kubernetes.test.mjs
 ```
@@ -182,6 +194,9 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 15:00: Deployment admission refuses a native gateway setting Kubernetes Compute cannot deploy, naming it, instead of failing every preparation attempt. (dogfood-r36/deploy-gateway-settings)
+- 2026-10-05 16:38: Trace owned temporary-file cleanup after filesystem Configuration write or rename failure. (authoring-run/794614ec-1b79-47ec-95ed-f11128b4c611 - 69b5c21806187125a7a20b9ca447bb15f6f3e890)
 
 - 2026-10-03 16:30: Configuration writes reject reserved binding destinations and cross-Namespace Secret references as invalid requests instead of not-found, as provisioning does. (binding-400)
 

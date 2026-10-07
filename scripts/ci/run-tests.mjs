@@ -705,7 +705,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         statePath,
         lane: lane.name,
         file: relativePath,
-      }).catch(() => undefined);
+      }).catch(() => {
+        console.error(
+          `[run:${lane.name}] Agent namespace activity unavailable for ${relativePath}`,
+        );
+        return undefined;
+      });
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,

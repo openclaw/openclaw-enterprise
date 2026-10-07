@@ -1277,7 +1277,9 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentProvisioningParams,
-      response: { 200: AgentProvisioningStatusResponse, ...readErrors },
+      // A failed plan whose Secret or ServiceAccount was deleted, or whose Harness
+      // authentication no longer fits, is a conflict naming the cause.
+      response: { 200: AgentProvisioningStatusResponse, ...readErrors, 409: ErrorResponseRef },
     },
   },
   {

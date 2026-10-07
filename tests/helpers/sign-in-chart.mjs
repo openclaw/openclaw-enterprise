@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parseProductionChart } from "./production-chart.mjs";
 
 const execute = promisify(execFile);
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -34,16 +35,7 @@ export async function renderChart(overrides = {}) {
     cwd: repository,
     maxBuffer: 2_000_000,
   });
-  const parsed = await new Promise((resolve, reject) => {
-    const child = execFile(
-      "yq",
-      ["eval-all", "-o=json", "-I=0", ".", "-"],
-      { cwd: repository, maxBuffer: 2_000_000 },
-      (error, output) => (error ? reject(error) : resolve(output)),
-    );
-    child.stdin.end(stdout);
-  });
-  return parsed.trim().split("\n").map(JSON.parse);
+  return parseProductionChart(stdout);
 }
 
 /**

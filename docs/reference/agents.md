@@ -165,10 +165,10 @@ topology checks, and process readiness remain required; no credential-source
 permission is needed. Kubernetes and Docker reject this method. See
 [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
-API-key, OAuth, and service account token bindings require the actor's exact Secret `operate`. Deployment also
+API-key, OAuth, and service account token bindings require the actor's exact Secret `operate`. That includes
+the Secret the Agent already uses: every draft update checks it, including one that replaces it. Deployment also
 requires the Agent service principal's exact Secret `operate`. ChatGPT binding
-requires the actor's exact account `read`, including the current account when
-replacing or clearing a binding. There is no implied account grant for the Agent
+requires the actor's exact account `read`, including the current account on every draft update. There is no implied account grant for the Agent
 principal. Each consumer of a shared source is authorized independently.
 
 Deployment freezes binding references; dispatch rechecks source ownership and
@@ -219,7 +219,7 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.7` defaults with this identity. A stale identity rejects
+all four rendered `2026.9.8` defaults with this identity. A stale identity rejects
 creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
 See the [workspace guide](../guides/topics/workspace-files.md) and
 [setup flow](../flows/workspace-files.md) for recovery and runtime requirements.

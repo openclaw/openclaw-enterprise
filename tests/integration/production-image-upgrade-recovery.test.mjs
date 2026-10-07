@@ -74,13 +74,19 @@ const runPreflight = (pod) => {
     }
     mounts.push([directory, mount.mountPath]);
   }
-  const env = (container.env ?? []).filter((item) => typeof item.value === 'string');
+  // Kubernetes expands $(VAR) in literal values from earlier variables and turns $$ into $.
+  const expanded = {};
+  const env = (container.env ?? []).filter((item) => typeof item.value === 'string').map((item) => {
+    const value = item.value.replace(/\\$\\$|\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)/g, (match, name) => match === '$$' ? '$' : expanded[name] ?? match);
+    expanded[item.name] = value;
+    return {name: item.name, value};
+  });
   const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
   const result = image
     // Host networking reaches the test's loopback Kubernetes API only with rootful Docker.
     ? spawnSync('docker', ['run', '--rm', ...(state.kubeconfig ? ['--network', 'host', '--mount', 'type=bind,src=' + state.kubeconfig + ',dst=' + state.kubeconfig + ',readonly'] : ['--network', 'none']), ...mounts.flatMap(([source, target]) => ['--mount', 'type=bind,src=' + source + ',dst=' + target + ',readonly']), ...env.flatMap((item) => ['--env', item.name + '=' + item.value]), '--entrypoint', container.command[0], image, ...container.args], {encoding: 'utf8'})
     : (() => {
-      const local = (value) => mounts.reduce((current, [source, target]) => current.split(target).join(source), value).split('/app/apps/').join(process.cwd() + '/apps/');
+      const local = (value) => mounts.reduce((current, [source, target]) => current.split(target).join(source), value).split('/app/apps/').join(process.cwd() + '/apps/').split('/app/packages/').join(process.cwd() + '/packages/');
       return spawnSync(process.execPath, container.args.map(local), {encoding: 'utf8', env: Object.fromEntries(env.map((item) => [item.name, local(item.value)]))});
     })();
   return {phase: result.status === 0 ? 'Succeeded' : 'Failed', log: (result.stdout ?? '') + (result.stderr ?? '')};
@@ -218,7 +224,7 @@ if (tool === 'helm') {
     out({id: 'rev_new'});
   } else if (args.includes('agent') && args.includes('get')) out({id: 'agt_test', activeRevisionId: state.activeRevision ?? 'rev_old'});
   else if (args.includes('deployment-status')) out({status: 'succeeded'});
-  else out({id: 'ins_test'});
+  else out({id: 'ins_test', name: state.installationName});
 }
 `;
 
@@ -358,6 +364,7 @@ async function fixture(
     preflightResults = null,
     kubernetesNamespaces = [],
     kubernetesDenied = false,
+    installationName = "Production",
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
@@ -491,6 +498,7 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
     startupCheck: Boolean(chart),
     kubeconfig: api?.kubeconfig ?? null,
     preflightResults,
+    installationName,
     version: 1,
     helmStatus: "deployed",
     api: 1,
@@ -1237,6 +1245,49 @@ test("an Installation the selected controller image cannot load stops before any
   ]);
 });
 
+// The API and worker read the stored Installation name from the database and refuse
+// one that breaks the Name rule (INSTALLATION_NAME_INVALID). The preflight Pods check
+// the name OCC returns with the selected image's rule, so the refusal comes before any
+// writer stops instead of after (dogfood D525).
+test("a stored Installation name that breaks the Name rule stops before any writer stops", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    installationName: "Production\u00a0",
+    chart: { installation: (installation) => installation },
+  });
+  await assert.rejects(f.run(), (error) => {
+    for (const component of ["api", "worker"]) {
+      assert.match(
+        error.stderr,
+        new RegExp(
+          `the ${component} startup preflight stopped: The stored Installation name breaks the Name rule: 1 to 200 characters, .*\\. \\(INSTALLATION_NAME_INVALID\\) No OCC writer was stopped; the old release keeps serving\\. Rename the Installation as in docs/guides/deploy/production-upgrade-recovery\\.md#correct-an-invalid-installation-name`,
+        ),
+      );
+    }
+    return true;
+  });
+  const state = await f.state();
+  assert.equal(state.api, 1);
+  assert.equal(state.worker, 1);
+  assert.equal(state.version, 1);
+  assert.deepEqual(await f.events(), []);
+  // The Pod carries the stored name as JSON, so the trailing no-break space survives.
+  const pod = JSON.parse(await readFile(join(f.evidence, "preflight-api-pod.json"), "utf8"));
+  assert.deepEqual(
+    pod.spec.containers[0].env.find(
+      (variable) => variable.name === "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME",
+    ),
+    { name: "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME", value: JSON.stringify("Production\u00a0") },
+  );
+  assert.deepEqual(state.preflight.secrets, {});
+  assert.deepEqual(state.preflight.pods, {});
+  assert.deepEqual(state.preflight.networkpolicies, {});
+});
+
 // Releases with the shared tenant namespace refuse to start on a single-cluster
 // Installation that still has split-layout Gateway storage. The startup preflight
 // runs that Compute check with the selected image before quiescence, so the old
@@ -1410,6 +1461,9 @@ test("an Installation the selected controller image loads passes the preflight a
   }
   const f = await fixture(t, {
     controllerOnly: true,
+    // A 200-character name: if Kubernetes expanded $(OCC_CONFIG_PATH) in the Pod's
+    // environment, the preflight would see a longer name and refuse it.
+    installationName: `${"A".repeat(182)}$(OCC_CONFIG_PATH)`,
     chart: { installation: (installation) => installation },
   });
   await f.run();

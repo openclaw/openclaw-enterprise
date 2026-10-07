@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -119,6 +119,7 @@ async function ownedPostgres() {
     database,
     port,
     migrationUrl: migration.toString(),
+    composeProjectArgs: ["compose", "-f", server.composeFile, "-p", server.name],
     composeArgs: ["compose", "-f", server.composeFile, "-p", server.name, "exec", "-T", "postgres"],
   };
 }
@@ -769,9 +770,116 @@ test(
     // Native preparation performed the first migration; rerun the supported entry point.
     await runCommand(fixture, "corepack", ["pnpm", "db:migrate"]);
     assert.deepEqual((await pool.query(journalQuery)).rows, beforeJournal);
+    // The history cases run the script text directly; prove pnpm forwards --check too.
+    const checked = await runCommand(fixture, "corepack", [
+      "pnpm",
+      "db:migrate:production",
+      "--check",
+    ]);
+    assert.ok(
+      checked
+        .split("\n")
+        .some(
+          (line) => line === JSON.stringify({ event: "migration.checked", history: "completed" }),
+        ),
+    );
+
+    // The migration command reads only the logging section of the Installation startup file,
+    // through the controller's own startup reader. A file the controller would refuse fails the
+    // command with no migration output and the usual single structured failure line.
+    const configDirectory = await mkdtemp(join(tmpdir(), "occ-migration-config-"));
+    context.after(() => rm(configDirectory, { recursive: true, force: true }));
+    const startupFile = async (name, contents) => {
+      const path = join(configDirectory, name);
+      await writeFile(path, contents, "utf8");
+      return path;
+    };
+    // One refusal from each layer: the logging section, the file reader, and the path rules.
+    const refused = [
+      await startupFile("trace.yaml", "logging:\n  level: trace\n"),
+      await startupFile("invalid.yaml", "logging: [\n"),
+      "relative/startup.yaml",
+    ];
+    for (const path of refused) {
+      const result = await runMigrationCheck(fixture, path);
+      assert.equal(result.code, 1, path);
+      assert.equal(result.stdout, "", path);
+      assert.deepEqual(
+        logEvents(result.stderr),
+        [
+          {
+            severity: "ERROR",
+            service: "occ-migration",
+            event: "migration.failed",
+            code: "MIGRATION_FAILED",
+          },
+        ],
+        path,
+      );
+    }
+    // An accepted file sets the command's log level: info keeps the success event, warn drops it.
+    const checkedOutput = `${JSON.stringify({ event: "migration.checked", history: "completed" })}\n`;
+    const atInfo = await runMigrationCheck(
+      fixture,
+      await startupFile("info.yaml", "logging:\n  level: info\n"),
+    );
+    assert.equal(atInfo.code, 0);
+    assert.equal(atInfo.stdout, checkedOutput);
+    assert.deepEqual(logEvents(atInfo.stderr), [
+      { severity: "INFO", service: "occ-migration", event: "migration.checked" },
+    ]);
+    const atWarn = await runMigrationCheck(
+      fixture,
+      await startupFile("warn.yaml", "logging:\n  level: warn\n"),
+    );
+    assert.equal(atWarn.code, 0);
+    assert.equal(atWarn.stdout, checkedOutput);
+    assert.deepEqual(logEvents(atWarn.stderr), []);
     assert.equal(await runCommand(fixture, "docker", dumpArgs), beforeSchema);
   },
 );
+
+async function runMigrationCheck(fixture, configPath) {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      ["scripts/migrate-production.mjs", "--check"],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          NODE_ENV: "production",
+          OCC_MIGRATION_DATABASE_URL: fixture.migrationUrl,
+          OCC_CONFIG_PATH: configPath,
+        },
+        encoding: "utf8",
+        timeout: 180_000,
+      },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    if (typeof error.code !== "number") {
+      // Subprocess errors can retain connection credentials in stdout or stderr.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error(
+        `Migration subprocess failed unexpectedly (signal=${error.signal ?? "none"}).`,
+      );
+    }
+    return { code: error.code, stdout: error.stdout, stderr: error.stderr };
+  }
+}
+
+// Structured log lines without their timestamps.
+function logEvents(stderr) {
+  return stderr
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const { time, ...event } = JSON.parse(line);
+      assert.equal(typeof time, "string");
+      return event;
+    });
+}
 
 const historySelectors = [
   process.env.OCC_MIGRATION_HISTORY_DATABASE_URL,
@@ -789,7 +897,18 @@ const concurrentHistoryPostgres = { ...requiresHistoryPostgres, concurrency: 4 }
 
 async function migrationHistoryFixture() {
   if (historySelectors.every((value) => value === undefined)) {
-    return { ...(await ownedPostgres()), databasePrefix: "openclaw_ci_canonical" };
+    const fixture = await ownedPostgres();
+    // Resolve the Compose service's container once: `docker exec` skips the Compose
+    // project load that each of the several hundred administrator psql calls would repeat.
+    const container = (
+      await runCommand(fixture, "docker", [...fixture.composeProjectArgs, "ps", "-q", "postgres"])
+    ).trim();
+    assert.match(container, /^[a-f0-9]{12,64}$/);
+    return {
+      ...fixture,
+      composeArgs: ["exec", container],
+      databasePrefix: "openclaw_ci_canonical",
+    };
   }
   assert.ok(historySelectors.every((value) => typeof value === "string" && value.length > 0));
   const [migrationUrl, container, databasePrefix] = historySelectors;
@@ -927,18 +1046,27 @@ async function installProviderCompletedHistory(db) {
   }
 }
 
+// The history cases start several hundred migration commands on a CPU-bound 2-CPU CI
+// runner, and pnpm's own startup costs about 1 s of CPU per call. Run each package.json
+// script's exact text through `sh` with this Node first on PATH, as pnpm does. The "Drizzle
+// second migration" case still runs both commands through `corepack pnpm`, every prepared CI
+// database is migrated that way, and the Helm migration Job runs the script file directly.
+const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").then(
+  (text) => JSON.parse(text).scripts,
+);
+
 async function runHistoryMigration(db, mode = "development", checkOnly = false) {
-  const args = [
-    "pnpm",
-    mode === "production" ? "db:migrate:production" : "db:migrate",
-    ...(checkOnly ? ["--check"] : []),
+  const script = (await migrationScripts)[
+    mode === "production" ? "db:migrate:production" : "db:migrate"
   ];
+  assert.equal(typeof script, "string");
+  const args = ["-c", `${script} "$@"`, "sh", ...(checkOnly ? ["--check"] : [])];
   try {
-    const { stdout } = await execFileAsync("corepack", args, {
+    const { stdout } = await execFileAsync("sh", args, {
       cwd: repositoryRoot,
       env: {
         ...process.env,
-        pnpm_config_verify_deps_before_run: "false",
+        PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
         OCC_MIGRATION_DATABASE_URL: db.migrationUrl,
       },
       encoding: "utf8",

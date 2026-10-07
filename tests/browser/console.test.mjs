@@ -333,18 +333,30 @@ test("console shows the external observability link only to Installation adminis
   assert.equal(await link.getAttribute("href"), url);
   assert.equal(probes, 1);
 
+  // An expired session leaves this tab's settled answer behind; logout clears it.
+  const adminAnswer = await page.evaluate(() =>
+    globalThis.sessionStorage.getItem("occ.console.installationAccess"),
+  );
+  assert.ok(adminAnswer);
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Logout" }).click();
   // Navigating away before the sign-out request is answered aborts it, and the old session
   // then opens the Console again instead of the login form.
   await page.waitForURL(/\/console\/login$/);
+  // Restore the administrator's answer as an expiry would leave it: it belongs to another
+  // session owner, so the next sign-in must probe (a reused answer sends no probe below).
+  await page.evaluate((answer) => {
+    globalThis.sessionStorage.setItem("occ.console.installationAccess", answer);
+  }, adminAnswer);
   // The shell renders before the probe is answered, so wait for the denial itself.
   const limitedProbe = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/observability",
   );
   await login(page, fixture, "/console/", limited.credentials);
   assert.equal((await limitedProbe).status(), 403);
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  // The limited user reads no Agents. The empty list renders only after the page applied the
+  // denied probe, so the link checks below see the settled shell, not the loading one.
+  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   // A denied read is audited, so navigation must not repeat it.
   await page.getByRole("link", { name: "Namespaces" }).click();
@@ -354,12 +366,12 @@ test("console shows the external observability link only to Installation adminis
   );
   await page.getByRole("link", { name: "Agents" }).click();
   await namespacesRead;
-  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 2);
   // A reload in the same tab reuses the settled answer for this session owner.
   await page.reload();
-  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   assert.equal(await page.getByRole("link", { name: "Observability" }).count(), 0);
   assert.equal(probes, 2);
 });

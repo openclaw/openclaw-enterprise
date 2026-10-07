@@ -8,10 +8,10 @@ after the command exits.
 ## Before you start
 
 - Complete [Local setup](quickstart.md) and leave the installation running.
-- Start Local setup without the OpenShell Sandbox Driver, using
-  `OCC_DEVELOPMENT_SANDBOX_DRIVER=none`.
-- Leave about 1.75 GiB of cluster memory free: the Agent's Gateway Pod
-  requests `1792Mi` ([sizing](deploy/installation-profiles.md)).
+- Select either `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` for the default embedded
+  OpenClaw Agent or `openshell` for the experimental dedicated Codex path.
+- For the default path, leave about 1.75 GiB of cluster memory free: the Agent's
+  Gateway Pod requests `1792Mi` ([sizing](deploy/installation-profiles.md)).
 - Use the same checkout and development state directory. If you set
   `OCC_DEVELOPMENT_STATE_DIRECTORY` during setup, use the same value here.
 - Have an OpenAI API key that can use [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra), the default model. To use a
@@ -69,6 +69,18 @@ disabled. The command refuses to reuse it if you change its Configuration
 elsewhere. For an Agent that can use tools or the native admin UI, create a
 separate console-managed Agent; see [Agent Configuration](../reference/configuration.md),
 [Plugins](../reference/agent-plugins.md), and [local native admin setup](quickstart.md#open-an-agents-native-admin-ui).
+
+If Local setup selected OpenShell, add `--harness codex`:
+
+```bash
+node scripts/first-agent.mjs my-agent --harness codex --prompt 'What is 2 + 2?'
+```
+
+That path stores the key in the same platform Secret, registers an OpenAI
+CredentialSource, and grants the Agent access to the source—not the Secret. It
+uses OpenShell's experimental provider-file and bearer-passthrough APIs, so it
+is a development workflow rather than production qualification. Reuse the same
+`--harness` selection with that Agent name.
 
 Keep the command running until it prints `Model response verified:` followed by
 the phrase it asked the model to repeat. Under `Agent response:`, it then prints
@@ -129,6 +141,12 @@ remembers the Agent name; use a new name for the next run.
 
 ## Troubleshoot
 
+- **`No Namespace named default exists`:** the command creates its Agent only in
+  the `default` Namespace from Local setup. After that Namespace is deleted, its
+  name [cannot be reused](../reference/namespaces.md#deletion-and-tombstones), so
+  the command cannot run on that installation. Start a new
+  [Local setup](quickstart.md); [cleanup](quickstart.md#clean-up-and-stop)
+  deletes the current installation and its Agents.
 - **`default` stays in `provisioning` or fails:** [check that OCC and Kubernetes are reachable](deploy/local-kubernetes-development.md#verify-the-local-boundary),
   then check the [Namespace status](../reference/namespaces.md#lifecycle).
 - **A name is already in use:** use a new name if the existing Agent was
@@ -141,6 +159,8 @@ remembers the Agent name; use a new name for the next run.
   supply the new key when prompted. An active revision without
   `Model response verified` is not a successful model check. See
   [Troubleshoot Agents](topics/agent-troubleshoot.md).
-- **The selected setup uses OpenShell:** stop that development environment and
-  start [Local setup](quickstart.md) without OpenShell. The current OpenShell
-  development profile does not support this first-Agent model-turn workflow.
+- **OpenShell rejects the default Harness:** rerun with `--harness codex` and a
+  new Agent name. Embedded OpenClaw remains unsupported with OpenShell.
+  Contributors reproducing the Compose-plus-k3d path can use the
+  [OpenShell first-Agent handoff](../testing/openshell-first-agent.md) for exact
+  setup and recovery checks.

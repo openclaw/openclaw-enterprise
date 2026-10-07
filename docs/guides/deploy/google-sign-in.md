@@ -20,8 +20,9 @@ enable Google alone or together with GitHub.
 - Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
   Console origin, and `agentNativeAdmin.enabled: false`.
-- A controller image that includes Google sign-in; the published image does not.
-  [Build a compatible image](production-installation.md#build-and-publish-production-images).
+- A controller image that includes Google sign-in: a
+  [published image](production-installation.md#use-published-images) from a revision that
+  has it, or [your own build](production-installation.md#build-and-publish-production-images).
 - A Google Cloud project where you can create an OAuth client.
 - API Pod HTTPS egress to `oauth2.googleapis.com` (code exchange) and
   `www.googleapis.com` (signing keys). Browsers, not the API, reach
@@ -82,8 +83,9 @@ also fails when `allowedDomains` is set without `auth.google.enabled`.
 
 The chart adds the API-only NetworkPolicy
 `openclaw-enterprise-api-google-login-egress` on TCP 443. Empty
-`auth.google.egressCidrs` allows `0.0.0.0/0`. Google publishes no small, stable address
-range for these hosts, so narrow egress with an egress proxy rather than static CIDRs.
+`auth.google.egressCidrs` allows any address except link-local `169.254.0.0/16`. Google
+publishes no small, stable address range for these hosts, so narrow egress with an egress
+proxy rather than static CIDRs.
 
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#google-sign-in):
@@ -155,12 +157,13 @@ jq -n --arg subject '<google sub>' --argjson version "$VERSION" \
 ```
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
-when Google is not configured, the version is stale, or another account owns the
-subject. Attachment advances the account version and ends the account's existing
-sessions. The account read then lists a method whose `providerId` starts with
+when Google is not configured, the version is stale, the account is disabled, or another
+account holds the subject ("The external identity is already assigned."). Attachment
+advances the account version and ends the account's existing sessions. The account read then lists a method whose `providerId` starts with
 `google:`. Detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for GitHub; the account's
-Google sessions end and the password keeps working.
+`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for GitHub. Detaching ends
+every session of the account, password sessions included; the password keeps working for
+new sign-ins.
 
 ## Rotation and outages
 

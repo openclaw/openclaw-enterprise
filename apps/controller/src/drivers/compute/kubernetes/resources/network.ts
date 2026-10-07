@@ -4,8 +4,9 @@
  * This module is the single home for network profile constants. Compute-owned
  * workloads carry the ordinary profile. Harness Pods provisioned by a
  * SandboxDriver carry the provider-fenced profile: they receive Compute's
- * ingress grants (Gateway transport and plugin status) but none of its egress
- * grants, so the provider's own egress fence is the only egress that applies. */
+ * ingress grants (Gateway transport and plugin status) and only the exact
+ * workspace-node enrollment egress grant. The provider owns every other egress
+ * decision. */
 export const NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile";
 export const ORDINARY_NETWORK_PROFILE = "broad-egress-v1";
 export const PROVIDER_FENCED_NETWORK_PROFILE = "provider-fenced-v1";

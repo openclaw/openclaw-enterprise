@@ -112,3 +112,46 @@ test("memory revision histories stay isolated across committed and rolled-back a
     [revision, committed],
   );
 });
+
+test("memory state refuses an Agent backendId outside the API's Backend ID rule", async () => {
+  const store = new InMemoryPlatformState();
+  const { namespace, configuration, agent, revision } = await seedSessionRevision(store);
+  // The API schema refuses each of these, so the state store does too: a C1 control, a line
+  // separator and 201 code points.
+  for (const backendId of ["open\u0085ai", "open\u2028ai", "😀".repeat(201)]) {
+    const label = JSON.stringify(backendId);
+    await assert.rejects(
+      store.transact((unit) =>
+        unit.agents.createAgent({ ...agent, id: `agt_${randomUUID()}`, backendId }),
+      ),
+      { message: "The Agent Backend identity is invalid." },
+      label,
+    );
+    await assert.rejects(
+      store.transact((unit) =>
+        unit.agents.updateConfiguration(
+          namespace.id,
+          agent.id,
+          configuration.id,
+          undefined,
+          undefined,
+          backendId,
+        ),
+      ),
+      { message: "The Agent Backend identity is invalid." },
+      label,
+    );
+    await assert.rejects(
+      store.transact((unit) =>
+        unit.revisions.createRevision({
+          ...revision,
+          id: `rev_${randomUUID()}`,
+          revision: 2,
+          backendId,
+        }),
+      ),
+      { message: /^An AgentRevision requires valid Configuration metadata/ },
+      label,
+    );
+  }
+});

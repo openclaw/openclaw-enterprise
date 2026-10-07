@@ -13,10 +13,10 @@ import {
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
 import {
   appModule,
-  createServiceConfiguration,
   eventually,
+  createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import {
   createGitHubServiceFactory,
   startServiceListeners,
@@ -32,20 +32,18 @@ const responseLimit = 4096;
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
 async function startTransport(t, onRequest, limits = {}) {
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
   const clock = createSystemClock();
   const tls = await createTlsMaterial(resources);
   // One exchange slot makes leaked reservations visible to the following request.
-  const base = await createServiceConfiguration(resources, {
+  const config = await createLoopbackServiceConfiguration(resources, {
     exchanges: 1,
     exchangesPerSession: 1,
     exchangeMs: 10000,
     firstHeaderMs: 5000,
     ...limits,
   });
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
   const github = await startGitHubFixture(resources, { clock, tls });
   const received = [];
   const upstream = createServer(tls, (incoming, outgoing) => {

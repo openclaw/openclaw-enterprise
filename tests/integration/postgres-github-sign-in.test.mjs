@@ -18,6 +18,7 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import {
+  assertProviderAttached,
   assertReservedLane,
   attachProvider,
   serveAsGitHub,
@@ -377,8 +378,7 @@ test(
       ).statusCode,
       403,
     );
-    const attach = await attachProvider(app, headers, recovery, "github", "12345678");
-    assert.equal(attach.statusCode, 200, attach.body);
+    await assertProviderAttached(app, headers, recovery, "github", "12345678");
     assert.equal(
       (await app.inject({ url: "/api/auth/session", headers })).json().data,
       null,

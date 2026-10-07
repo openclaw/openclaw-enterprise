@@ -56,6 +56,7 @@ import {
   normalizeSecretBindings,
   validPluginRevisionState,
   validPluginApprovers,
+  isBackendId,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
@@ -392,7 +393,6 @@ const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
-const backendIdentifier = /^(?!\s)(?!.*\s$)(?!.*[\x00-\x1f\x7f]).{1,200}$/;
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
@@ -602,8 +602,7 @@ export async function assertHarnessAuthAvailable(
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   if (
-    (revision.backendId !== null &&
-      (typeof revision.backendId !== "string" || !backendIdentifier.test(revision.backendId))) ||
+    (revision.backendId !== null && !isBackendId(revision.backendId)) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       revision.configurationId,
     ) ||
@@ -2027,10 +2026,7 @@ function repositories(
       if (agent.executionMode !== "embedded" && agent.executionMode !== "dedicated") {
         throw new ScopeViolationError("The Agent execution mode is invalid.");
       }
-      if (
-        agent.backendId !== null &&
-        (typeof agent.backendId !== "string" || !backendIdentifier.test(agent.backendId))
-      ) {
+      if (agent.backendId !== null && !isBackendId(agent.backendId)) {
         throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       const plugins = normalizedPlugins(agent.plugins);
@@ -2152,7 +2148,7 @@ function repositories(
       if (!current) {
         return undefined;
       }
-      if (backendId !== undefined && backendId !== null && !backendIdentifier.test(backendId)) {
+      if (backendId !== undefined && backendId !== null && !isBackendId(backendId)) {
         throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       if (

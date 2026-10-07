@@ -2,7 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { appModule } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { createResourceScope } from "./resources.mjs";
-import { githubConfigurationData, serviceConfigurationData } from "./builders.mjs";
+import { githubConfigurationData, serviceConfigurationData, custodyLimits } from "./builders.mjs";
 
 export async function createGitHubPlanningFixture(t) {
   const resources = createResourceScope();
@@ -39,10 +39,7 @@ export async function createGitHubPlanningFixture(t) {
       );
       const custody = createCustody({
         clock,
-        maximumSlots: 2,
-        maximumAccessBytes: 16384,
-        maximumRenewalBytes: 16384,
-        maximumCallbacks: 2,
+        ...custodyLimits,
         admitted: () => true,
         changed() {},
       });

@@ -732,12 +732,12 @@ test("NUL characters and unpaired surrogates are refused in bodies and path para
     assert.equal(result.response.status, 400, body.slice(0, 80));
     assert.equal(result.payload.error.code, "INVALID_REQUEST");
     assert.deepEqual(result.payload.error.details, [{ path, code }]);
-    const expected = `The request does not match the operation contract: body ${path} contains ${problem}.`;
-    // The deep path is cut to the 256-character message cap.
-    assert.equal(
-      result.payload.error.message,
-      expected.length <= 256 ? expected : `${expected.slice(0, 255)}…`,
-    );
+    const before = "The request does not match the operation contract: body ";
+    const after = ` contains ${problem}.`;
+    // A path too long for the 256-character message cap is cut, never the problem wording.
+    const room = 256 - before.length - after.length;
+    const shown = path.length <= room ? path : `${path.slice(0, room - 1)}…`;
+    assert.equal(result.payload.error.message, `${before}${shown}${after}`);
   }
   // A surrogate pair is one well-formed character.
   const paired = await request(fixture.app, "/namespaces", { body: { name: "Paired \u{1F600}" } });
@@ -1653,6 +1653,216 @@ test("runtime routes reject the Agent draft and unknown revisions without a Driv
     }
   }
   assert.equal(fixture.computeDriver.calls.length, 0);
+});
+
+test("contract error details stay within the published path cap and name what a field accepts", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Contract detail tenant");
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const configuration = { kind: "agent", values: {} };
+  const source = { kind: "secret", namespaceId: namespace.id, id: `sec_${randomUUID()}` };
+  const longBinding = "K".repeat(600);
+  let deepValues = {};
+  for (let depth = 0; depth < 26; depth += 1) {
+    deepValues = { ["d".repeat(40)]: deepValues };
+  }
+  const contract = "The request does not match the operation contract: body";
+  const cases = [
+    // A submitted field name too long for the 512-character detail path is cut, as the NUL
+    // check cuts it.
+    [{ ...configuration, ["k".repeat(700)]: 1 }, `/${"k".repeat(511)}`, "UNKNOWN_FIELD"],
+    // The cut keeps whole escapes: no dangling "~".
+    [{ ...configuration, ["~".repeat(300)]: 1 }, `/${"~0".repeat(255)}`, "UNKNOWN_FIELD"],
+    // Keys that the Configuration check refuses are named by a capped path too.
+    [{ kind: "agent", values: { [longBinding]: { prototype: 1 } } }, "/values", "INVALID_VALUE"],
+    // Under a long map key the instance path itself is too long: whole leading segments stay.
+    [
+      { ...configuration, secretBindings: { [longBinding]: { source, extra: 1 } } },
+      "/secretBindings",
+      "UNKNOWN_FIELD",
+    ],
+    [
+      { ...configuration, secretBindings: { [longBinding]: { source: "x" } } },
+      "/secretBindings",
+      "INVALID_TYPE",
+    ],
+    // Leading segments that end exactly at 512 characters all stay.
+    [
+      { ...configuration, secretBindings: { ["K".repeat(496)]: { source, extra: 1 } } },
+      `/secretBindings/${"K".repeat(496)}`,
+      "UNKNOWN_FIELD",
+    ],
+    // The Configuration check's depth limit names a capped path under long keys.
+    [
+      { kind: "agent", values: deepValues },
+      `/values${`/${"d".repeat(40)}`.repeat(12)}`,
+      "TOO_DEEP",
+    ],
+  ];
+  for (const [body, path, code] of cases) {
+    const result = await request(fixture.app, configurations, { body });
+    assert.equal(result.response.status, 400, JSON.stringify(result.payload).slice(0, 200));
+    assert.deepEqual(result.payload.error.details, [{ path, code }]);
+  }
+
+  // A cut path names an ancestor of the offending field, which itself is accepted, so the
+  // message says the problem is inside it. Uncut paths keep naming the field itself.
+  const agents = `/namespaces/${namespace.id}/agents`;
+  const agent = { name: "Contract detail agent", configurationId: `cfg_${randomUUID()}` };
+  const messages = [
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source, extra: 1 } } },
+      "/secretBindings contains a field that is not accepted.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source: "x" } } },
+      "/secretBindings contains a field that has the wrong type (expected object).",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: {} } },
+      "/secretBindings or an object under it is missing a required field.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source: { ...source, id: "x" } } } },
+      "/secretBindings contains a field that has an invalid format.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source: { ...source, kind: "x" } } } },
+      '/secretBindings contains a field that has an unsupported value (expected "secret").',
+    ],
+    [
+      agents,
+      { ...agent, harnessAuth: { method: "api_key", source, [longBinding]: 1 } },
+      "/harnessAuth contains a field that is not accepted.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { short: { source, extra: 1 } } },
+      "/secretBindings/short/extra is not an accepted field.",
+    ],
+    [
+      agents,
+      { ...agent, harnessAuth: { method: "api_key", source, extra: 1 } },
+      "/harnessAuth/extra is not an accepted field.",
+    ],
+  ];
+  for (const [route, body, message] of messages) {
+    const result = await request(fixture.app, route, { body });
+    assert.equal(result.response.status, 400, JSON.stringify(result.payload).slice(0, 200));
+    assert.equal(result.payload.error.message, `${contract} ${message}`);
+  }
+
+  // A path too long for the 256-character message cap is cut, never the problem wording,
+  // whether the detail path kept the long key or dropped it.
+  for (const [length, wording] of [
+    [300, " has an invalid format."],
+    // The detail path keeps /secretBindings/<key> and drops the field under it.
+    [494, " contains a field that has an invalid format."],
+  ]) {
+    const key = "K".repeat(length);
+    const result = await request(fixture.app, configurations, {
+      body: { ...configuration, secretBindings: { [key]: { source: { ...source, id: "x" } } } },
+    });
+    assert.equal(result.response.status, 400);
+    const { message } = result.payload.error;
+    assert.equal(Array.from(message).length, 256, message);
+    assert.ok(message.startsWith(`${contract} /secretBindings/KKK`), message);
+    assert.ok(message.endsWith(`…${wording}`), message);
+  }
+  // With several problems the long path is cut, and the short ones and every wording stay.
+  const several = await request(fixture.app, agents, {
+    body: { ...agent, harnessAuth: { method: "x", ["Q".repeat(150)]: 1 } },
+  });
+  assert.equal(several.response.status, 400);
+  const severalMessage = several.payload.error.message;
+  assert.equal(Array.from(severalMessage).length, 256, severalMessage);
+  assert.ok(severalMessage.startsWith(`${contract} /harnessAuth/QQQ`), severalMessage);
+  assert.ok(
+    severalMessage.endsWith(
+      "… is not an accepted field; body /harnessAuth/source is required;" +
+        " body /harnessAuth/serviceAccountId is required; and 3 more.",
+    ),
+    severalMessage,
+  );
+  // Paths that exactly fill the cap stay whole.
+  const exact = await request(fixture.app, agents, {
+    body: { ...agent, harnessAuth: { method: "x", ["Q".repeat(63)]: 1 } },
+  });
+  assert.equal(
+    exact.payload.error.message,
+    `${contract} /harnessAuth/${"Q".repeat(63)} is not an accepted field;` +
+      " body /harnessAuth/source is required; body /harnessAuth/serviceAccountId is required;" +
+      " and 3 more.",
+  );
+  assert.equal(Array.from(exact.payload.error.message).length, 256);
+  // The cap counts characters, not UTF-16 code units: an astral key that fits stays whole,
+  // and a cut keeps whole characters.
+  const room = 256 - `${contract} / is not an accepted field.`.length;
+  for (const [count, shown] of [
+    [150, "\u{1F600}".repeat(150)],
+    [200, `${"\u{1F600}".repeat(room - 1)}…`],
+  ]) {
+    const astral = await request(fixture.app, agents, {
+      body: { ...agent, ["\u{1F600}".repeat(count)]: 1 },
+    });
+    assert.equal(astral.response.status, 400);
+    assert.equal(astral.payload.error.message, `${contract} /${shown} is not an accepted field.`);
+  }
+
+  // A union whose shapes all accept one type names that type, not "one of" a single entry.
+  const wholeBody = await request(
+    fixture.app,
+    `/namespaces/${namespace.id}/channel-directory/lookup`,
+    { body: '"x"' },
+  );
+  assert.equal(wholeBody.response.status, 400);
+  assert.deepEqual(wholeBody.payload.error.details, [{ path: "", code: "INVALID_TYPE" }]);
+  assert.equal(
+    wholeBody.payload.error.message,
+    `${contract} / has the wrong type (expected object).`,
+  );
+  // The method selects the api_key shape, so a problem inside it names what its field accepts.
+  const wrongSource = await request(fixture.app, `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Contract detail agent",
+      configurationId: `cfg_${randomUUID()}`,
+      harnessAuth: { method: "api_key", source: "x" },
+    },
+  });
+  assert.equal(wrongSource.response.status, 400);
+  assert.deepEqual(wrongSource.payload.error.details, [
+    { path: "/harnessAuth/source", code: "INVALID_TYPE" },
+  ]);
+  assert.equal(
+    wrongSource.payload.error.message,
+    `${contract} /harnessAuth/source has the wrong type (expected object).`,
+  );
+
+  // An operation without query parameters or a request body says which one it refused.
+  const query = await request(fixture.app, `/namespaces/${namespace.id}/agents?limit=5`);
+  assert.equal(query.response.status, 400);
+  assert.equal(
+    query.payload.error.message,
+    "The request does not match the operation contract: this operation accepts no query parameters.",
+  );
+  const emptyBody = await request(fixture.app, `/namespaces/${namespace.id}`, {
+    method: "DELETE",
+    body: {},
+  });
+  assert.equal(emptyBody.response.status, 400);
+  assert.equal(
+    emptyBody.payload.error.message,
+    "The request does not match the operation contract: this operation accepts no request body.",
+  );
+  const kept = await request(fixture.app, `/namespaces/${namespace.id}`);
+  assert.equal(kept.response.status, 200);
+  assert.equal(kept.payload.data.id, namespace.id);
 });
 
 test("log polls describe only the requested source and skip Event lists", async () => {

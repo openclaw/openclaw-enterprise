@@ -299,7 +299,8 @@ an independent plan can build on the existing architecture without a new RFC.
 Keep verification in the owning document or its supporting pages, not a separate
 reports area. Keep completed and superseded records in place.
 
-RFC entry points require `status` in YAML frontmatter. Companion notes link to
+RFC entry points require `status` and the original PR author's GitHub login in
+`author` YAML frontmatter. Companion notes link to
 their parent through `rfc` frontmatter instead of duplicating its decision
 status. Follow the specification process for historical status uncertainty.
 
@@ -310,7 +311,8 @@ retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
 Use stable feature names in `docs/reference/` and preserve grandfathered
-specification names and IDs when grouping companions under `index.md`.
+plan names when grouping companions under `index.md`. RFCs require unique numeric
+IDs of at least four digits; keep the old-to-new lookup current when renumbering.
 This first organization phase preserves `specs/.archive/` content and placement;
 only the removed console-image links change to a preserved Git revision. Do not
 add new records to it. A behavior-changing implementation PR

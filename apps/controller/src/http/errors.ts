@@ -84,6 +84,51 @@ export function jsonPointer(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
+/**
+ * One INVALID_VALUE detail for a submitted object key under `parent`. The error contract
+ * caps detail paths at 512 characters; a key too long to fit points at `parent` instead.
+ */
+function pointerDetail(
+  parent: string,
+  key: string,
+  code: ErrorDetail["code"] = "INVALID_VALUE",
+): readonly ErrorDetail[] {
+  const path = `${parent}/${jsonPointer(key.replaceAll("\u0000", "?").replace(/\p{Cs}/gu, "?"))}`;
+  return [{ path: path.length <= 512 ? path : parent, code }];
+}
+
+/**
+ * Caps a JSON Pointer, given as its escaped segments, at the 512 characters that the error
+ * contract allows for detail paths. It keeps whole leading segments, so a cut path still
+ * names an ancestor of the offending field, or as much of the first one as fits (cut between
+ * escapes and whole characters).
+ */
+function cappedPointer(segments: readonly string[]): string {
+  let path = "";
+  for (const segment of segments) {
+    if (path.length + segment.length + 1 <= 512) {
+      path += `/${segment}`;
+      continue;
+    }
+    if (path === "") {
+      path = "/";
+      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
+        if (path.length + piece.length > 512) {
+          break;
+        }
+        path += piece;
+      }
+    }
+    break;
+  }
+  return path;
+}
+
+/** `cappedPointer` for a whole JSON Pointer, such as an Ajv instance path. */
+export function cappedPath(pointer: string): string {
+  return pointer.length <= 512 ? pointer : cappedPointer(pointer.split("/").slice(1));
+}
+
 export function responseHeaders(reply: FastifyReply, requestId: string): void {
   reply.header("cache-control", "no-store");
   reply.header("content-type", "application/json; charset=utf-8");
@@ -128,6 +173,8 @@ interface ContractProblem {
   readonly detail: ErrorDetail;
   /** The accepted type or values, taken from the schema, never from the request. */
   readonly expected?: string;
+  /** The path lost segments to the detail path cap, so it names an ancestor of the field. */
+  readonly shortened?: boolean;
 }
 
 function expectedType(parameters: Record<string, unknown>): string | undefined {
@@ -166,58 +213,225 @@ function expectedBound(keyword: string, parameters: Record<string, unknown>): st
     : `${relation} ${limit} ${unit}${limit === 1 ? "" : "s"}`;
 }
 
-// A union of literals or scalar types fails once per member, at the same field. Report that
-// field once with the accepted members instead of one contradictory problem per member.
-function collapseScalarUnions(entries: readonly ValidationEntry[]): readonly ContractProblem[] {
-  const collapsed = new Map<ValidationEntry, ContractProblem | null>();
-  // A member of a union that does not collapse names only one alternative, so it gets no hint.
-  const unionMembers = new Set<ValidationEntry>();
-  for (const union of entries) {
-    if (union.keyword !== "anyOf" || typeof union.schemaPath !== "string") {
+// Ajv reports a failed union's members with schema paths under the union's own path and
+// instance paths at or below its value.
+function unionMembersOf(
+  union: ValidationEntry,
+  entries: readonly ValidationEntry[],
+): readonly ValidationEntry[] {
+  return entries.filter(
+    (entry) =>
+      entry.schemaPath.startsWith(`${union.schemaPath}/`) &&
+      (entry.instancePath === union.instancePath ||
+        entry.instancePath.startsWith(`${union.instancePath}/`)),
+  );
+}
+
+function unionBranch(union: ValidationEntry, member: ValidationEntry): string {
+  return member.schemaPath.slice(union.schemaPath.length + 1).split("/")[0] ?? "";
+}
+
+// A member failure that says the value has another shape than this branch: the wrong type or
+// literal, a field the branch requires or does not accept, or a field outside the literal,
+// enum or union of literals that the branch declares for it, which is how a discriminated
+// union tells its shapes apart. Ajv stops each branch at its first failure and checks
+// properties in declaration order: declare such fields before content fields in request
+// unions, or a content failure can hide that the branch has the wrong shape.
+function rejectsBranchShape(union: ValidationEntry, member: ValidationEntry): boolean {
+  if (member.instancePath === union.instancePath) {
+    return ["required", "additionalProperties", "type", "const", "enum", "anyOf"].includes(
+      member.keyword,
+    );
+  }
+  const [, keyword, field] = member.schemaPath.slice(union.schemaPath.length + 1).split("/");
+  return (
+    keyword === "properties" &&
+    member.instancePath === `${union.instancePath}/${field}` &&
+    ["const", "enum", "anyOf"].includes(member.keyword)
+  );
+}
+
+// The literal that each required field of an object shape declares with `const`, as a
+// TypeBox Literal does.
+function literalFields(shape: unknown): ReadonlyMap<string, unknown> {
+  const literals = new Map<string, unknown>();
+  const { properties, required } = (shape ?? {}) as { properties?: unknown; required?: unknown };
+  if (properties === null || typeof properties !== "object" || !Array.isArray(required)) {
+    return literals;
+  }
+  for (const field of required.filter((name) => typeof name === "string")) {
+    const property: unknown = Object.hasOwn(properties, field)
+      ? (properties as Record<string, unknown>)[field]
+      : undefined;
+    if (property !== null && typeof property === "object" && Object.hasOwn(property, "const")) {
+      literals.set(field, (property as { const: unknown }).const);
+    }
+  }
+  return literals;
+}
+
+// The shape a discriminated union selects: every shape requires the same field with its own
+// literal, and the value's field equals exactly one shape's literal. That shape's problems are
+// the request's, even a missing field, so `{"method":"api_key"}` reports only the missing
+// source instead of every other method's fields. Ajv (verbose) attaches the union's shapes and
+// value to its failure. No such field, or a value naming no shape or several, selects none.
+function discriminatedBranch(union: ValidationEntry): string | undefined {
+  const { schema: shapes, data: value } = union as { schema?: unknown; data?: unknown };
+  if (!Array.isArray(shapes) || value === null || typeof value !== "object") {
+    return undefined;
+  }
+  const literals = shapes.map(literalFields);
+  for (const field of literals[0]?.keys() ?? []) {
+    if (!literals.every((shape) => shape.has(field))) {
       continue;
     }
-    const members = entries.filter(
-      (entry) =>
-        entry.schemaPath.startsWith(`${union.schemaPath}/`) &&
-        (entry.instancePath === union.instancePath ||
-          entry.instancePath.startsWith(`${union.instancePath}/`)),
+    const chosen = Object.hasOwn(value, field)
+      ? (value as Record<string, unknown>)[field]
+      : undefined;
+    const matching = literals.flatMap((shape, index) =>
+      shape.get(field) === chosen ? [String(index)] : [],
     );
-    for (const member of members) {
-      unionMembers.add(member);
+    if (matching.length === 1) {
+      return matching[0];
     }
+  }
+  return undefined;
+}
+
+// A union of object shapes fails once per shape, so its message would also list the fields
+// that the other shapes require. When the value selects one shape of a discriminated union,
+// or some shapes fit the value and fail only on a field's content, report just those shapes'
+// problems and drop the others and the union itself. When no shape fits, every problem stays:
+// the request matches none of them. Unions that came down to one shape are `resolved`: that
+// shape's problems are the request's, so each can name what its field accepts.
+function mismatchedUnionShapes(entries: readonly ValidationEntry[]): {
+  readonly dropped: ReadonlySet<ValidationEntry>;
+  readonly resolved: ReadonlySet<ValidationEntry>;
+} {
+  const dropped = new Set<ValidationEntry>();
+  const resolved = new Set<ValidationEntry>();
+  // Problems of a shape that a discriminated union selected. An outer union's branch that
+  // holds them fits the value, whatever the problems are.
+  const selected = new Set<ValidationEntry>();
+  // Inner unions first: a nested union that found its shape no longer counts against the
+  // outer union's branch that contains it.
+  const unions = entries
+    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
+    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  for (const union of unions) {
+    // A recursive union reports every level with one schema path, so its members cannot be
+    // told apart by level.
+    if (unions.some((other) => other !== union && other.schemaPath === union.schemaPath)) {
+      continue;
+    }
+    const branches = new Map<string, ValidationEntry[]>();
+    const remaining = entries.filter((entry) => !dropped.has(entry));
+    for (const member of unionMembersOf(union, remaining)) {
+      const branch = unionBranch(union, member);
+      branches.set(branch, [...(branches.get(branch) ?? []), member]);
+    }
+    const chosen = discriminatedBranch(union);
+    if (chosen !== undefined && branches.has(chosen)) {
+      dropped.add(union);
+      resolved.add(union);
+      for (const [branch, failures] of branches) {
+        for (const member of failures) {
+          (branch === chosen ? selected : dropped).add(member);
+        }
+      }
+      continue;
+    }
+    const mismatched = [...branches.values()].filter((failures) =>
+      failures.some((member) => !selected.has(member) && rejectsBranchShape(union, member)),
+    );
+    if (mismatched.length === branches.size) {
+      continue;
+    }
+    dropped.add(union);
+    if (branches.size - mismatched.length === 1) {
+      resolved.add(union);
+    }
+    for (const member of mismatched.flat()) {
+      dropped.add(member);
+    }
+  }
+  return { dropped, resolved };
+}
+
+// A union of literals or scalar types fails once per member, at the same field. Report that
+// field once with the accepted members instead of one contradictory problem per member. A
+// member that is itself such a union counts with its accepted members, so a string sent for
+// an object-shape union or null is one wrong-type problem naming object and null.
+function collapseScalarUnions(allEntries: readonly ValidationEntry[]): readonly ContractProblem[] {
+  const { dropped, resolved } = mismatchedUnionShapes(allEntries);
+  const entries = allEntries.filter((entry) => !dropped.has(entry));
+  const collapsed = new Map<ValidationEntry, ContractProblem | null>();
+  // A member of a union that does not collapse names only one alternative, so it gets no hint,
+  // unless the union resolved to that member's shape. Only anyOf unions resolve; a oneOf
+  // never does.
+  const unionMembers = new Set<ValidationEntry>();
+  for (const union of allEntries) {
+    if (
+      (union.keyword === "anyOf" || union.keyword === "oneOf") &&
+      typeof union.schemaPath === "string" &&
+      !resolved.has(union)
+    ) {
+      for (const member of unionMembersOf(union, allEntries)) {
+        unionMembers.add(member);
+      }
+    }
+  }
+  // Accepted members of each collapsed union, for an outer union that has it as a member.
+  const acceptedBy = new Map<
+    ValidationEntry,
+    { readonly values: readonly (string | undefined)[]; readonly literals: boolean }
+  >();
+  // Inner unions first, so an outer union sees which of its members collapsed.
+  const unions = entries
+    .filter((entry) => entry.keyword === "anyOf" && typeof entry.schemaPath === "string")
+    .sort((left, right) => right.schemaPath.length - left.schemaPath.length);
+  for (const union of unions) {
+    const allMembers = unionMembersOf(union, entries);
+    // A collapsed inner union stands for its own members. Every member, collapsed or not, must
+    // fail at the union's own value: a recursive union's deeper level shares its schema path,
+    // so it is no member that could block a collapse here.
+    const members = allMembers.filter((entry) => collapsed.get(entry) !== null);
     if (
       members.length === 0 ||
+      !allMembers.every((entry) => entry.instancePath === union.instancePath) ||
       !members.every(
-        (entry) =>
-          entry.instancePath === union.instancePath &&
-          (entry.keyword === "const" || entry.keyword === "type"),
+        (entry) => entry.keyword === "const" || entry.keyword === "type" || acceptedBy.has(entry),
       )
     ) {
       continue;
     }
-    // A literal member can fail on both its JSON type and its value; name it by its value.
     const branches = new Map<string, ValidationEntry[]>();
     for (const member of members) {
-      const branch = member.schemaPath.slice(union.schemaPath.length + 1).split("/")[0] ?? "";
+      const branch = unionBranch(union, member);
       branches.set(branch, [...(branches.get(branch) ?? []), member]);
     }
-    const accepted = [
-      ...new Set(
-        [...branches.values()].map((failures) => {
-          const literal = failures.find((entry) => entry.keyword === "const");
-          return literal === undefined
-            ? expectedType(failures[0]!.params as Record<string, unknown>)
-            : JSON.stringify((literal.params as Record<string, unknown>).allowedValue);
-        }),
-      ),
-    ];
+    const values = [...branches.values()].flatMap((failures) => {
+      const inner = failures.find((entry) => acceptedBy.has(entry));
+      if (inner !== undefined) {
+        return failures.length === 1 ? acceptedBy.get(inner)!.values : [undefined];
+      }
+      // A literal member can fail on both its JSON type and its value; name it by its value.
+      const literal = failures.find((entry) => entry.keyword === "const");
+      return literal === undefined
+        ? expectedType(failures[0]!.params as Record<string, unknown>)
+        : JSON.stringify((literal.params as Record<string, unknown>).allowedValue);
+    });
+    const accepted = [...new Set(values)];
     if (accepted.some((value) => value === undefined)) {
       continue;
     }
-    const literals = members.some((entry) => entry.keyword === "const");
+    const literals = members.some(
+      (entry) => entry.keyword === "const" || acceptedBy.get(entry)?.literals === true,
+    );
+    acceptedBy.set(union, { values: accepted, literals });
     collapsed.set(union, {
       detail: { path: union.instancePath, code: literals ? "INVALID_VALUE" : "INVALID_TYPE" },
-      expected: `one of ${accepted.join(", ")}`,
+      expected: `${accepted.length === 1 ? "" : "one of "}${accepted.join(", ")}`,
     });
     for (const member of members) {
       collapsed.set(member, null);
@@ -251,11 +465,48 @@ function collapseScalarUnions(entries: readonly ValidationEntry[]): readonly Con
   });
 }
 
+// Ajv runs in verbose mode (index.ts), so each entry also holds the request value it judged
+// (`data`, which can be a token or a whole body) and its schema. Problems are built from paths
+// and schema values only; once they are, drop those fields so that nothing that later logs or
+// serializes the error can carry request values.
+function forgetValidationValues(entries: readonly ValidationEntry[]): void {
+  for (const entry of entries) {
+    const verbose = entry as { data?: unknown; schema?: unknown; parentSchema?: unknown };
+    delete verbose.data;
+    delete verbose.schema;
+    delete verbose.parentSchema;
+  }
+}
+
+// Runs once per error (the app's error handler): a discriminated union is read from the
+// verbose fields that this drops, so a second call would report every shape again.
 function validationProblems(error: FastifyError): readonly ContractProblem[] {
   if (!Array.isArray(error.validation)) {
     return [];
   }
-  return collapseScalarUnions(error.validation).slice(0, 32);
+  // Shapes that fail the same way report the same problem; list it once, in first-seen order.
+  const seen = new Set<string>();
+  // Instance paths name submitted object keys, such as an unknown field or a map entry, so
+  // they are capped like other detail paths.
+  const problems = collapseScalarUnions(error.validation)
+    .map((problem): ContractProblem => {
+      const path = cappedPath(problem.detail.path);
+      // Dropped segments make the path an ancestor of the field. A cut inside one long first key
+      // still names that key, so it keeps the field's own wording.
+      const shortened = path.split("/").length < problem.detail.path.split("/").length;
+      return { ...problem, detail: { ...problem.detail, path }, shortened };
+    })
+    .filter(({ detail, expected, shortened }) => {
+      const key = JSON.stringify([detail.path, detail.code, expected, shortened]);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 32);
+  forgetValidationValues(error.validation);
+  return problems;
 }
 
 const DETAIL_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.freeze({
@@ -268,6 +519,25 @@ const DETAIL_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.fr
   TOO_DEEP: "is nested too deeply",
 });
 
+// A path that lost segments to the cap names an ancestor of the offending field, which may
+// well be accepted, so the message places the problem inside it.
+const SHORTENED_PATH_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.freeze({
+  REQUIRED: "or an object under it is missing a required field",
+  UNKNOWN_FIELD: "contains a field that is not accepted",
+  INVALID_TYPE: "contains a field that has the wrong type",
+  INVALID_FORMAT: "contains a field that has an invalid format",
+  INVALID_VALUE: "contains a field that has an unsupported value",
+  TOO_LONG: "contains a field that is too long",
+  TOO_DEEP: "contains a field that is nested too deeply",
+});
+
+// The error contract caps messages at 256 characters.
+const MESSAGE_CAP = 256;
+// The shortest cut path a message shows when it lists more than one problem, and when it
+// shows only one (a character and the ellipsis).
+const MIN_SHOWN_PATH = 32;
+const MIN_SOLE_PATH = 2;
+
 // Names the first few offending fields so clients that print only the message, such as
 // occ, still show which field to fix. The full list stays in `details`.
 function contractMessage(error: FastifyError, found: readonly ContractProblem[]): string {
@@ -278,26 +548,100 @@ function contractMessage(error: FastifyError, found: readonly ContractProblem[])
     typeof error.validationContext === "string" && error.validationContext.length > 0
       ? `${error.validationContext} `
       : "";
-  const problems = [
-    ...new Set(
-      found.map(
-        ({ detail, expected }) =>
-          `${context}${detail.path || "/"} ${DETAIL_PROBLEMS[detail.code]}${
-            expected === undefined ? "" : ` (expected ${expected})`
-          }`,
-      ),
-    ),
-  ];
-  const shown = problems.slice(0, 3).join("; ");
+  const seen = new Set<string>();
+  const problems: { readonly path: string; readonly wording: string }[] = [];
+  for (const problem of found) {
+    const path = `${context}${problem.detail.path || "/"}`;
+    const wording = ` ${
+      (problem.shortened === true ? SHORTENED_PATH_PROBLEMS : DETAIL_PROBLEMS)[problem.detail.code]
+    }${problem.expected === undefined ? "" : ` (expected ${problem.expected})`}`;
+    if (!seen.has(path + wording)) {
+      seen.add(path + wording);
+      problems.push({ path, wording });
+    }
+  }
+  const prefix = "The request does not match the operation contract: ";
+  // Long paths are cut before any wording is: show fewer problems rather than cut any path
+  // below MIN_SHOWN_PATH, so each shown problem keeps its path start and its whole wording.
+  for (let count = Math.min(problems.length, 3); count >= 1; count -= 1) {
+    const shown = problems.slice(0, count);
+    const more = problems.length > count ? `; and ${problems.length - count} more` : "";
+    const fixed = `${prefix}${shown.map(({ wording }) => wording).join("; ")}${more}.`;
+    const paths = pathsWithin(
+      shown.map(({ path }) => path),
+      MESSAGE_CAP - Array.from(fixed).length,
+      count === 1 ? MIN_SOLE_PATH : MIN_SHOWN_PATH,
+    );
+    if (paths !== undefined) {
+      const listed = shown.map(({ wording }, index) => `${paths[index]}${wording}`).join("; ");
+      return capped(`${prefix}${listed}${more}.`);
+    }
+  }
+  // Wording too long for the cap even with the shortest cut path (none is today): cut the
+  // message end.
+  const listed = problems
+    .slice(0, 3)
+    .map(({ path, wording }) => `${path}${wording}`)
+    .join("; ");
   const more = problems.length > 3 ? `; and ${problems.length - 3} more` : "";
-  return capped(`The request does not match the operation contract: ${shown}${more}.`);
+  return capped(`${prefix}${listed}${more}.`);
 }
 
-// The error contract caps messages at 256 characters; long JSON Pointer paths are cut.
+/**
+ * Cuts the longest of `paths` first, each to the same length ending in "…", so that together
+ * they take at most `budget` characters. Paths that fit stay whole. Returns undefined when a
+ * cut path would be shorter than `minimum` characters. Counts code points, so a cut never
+ * leaves half of a surrogate pair; it can split a `~0` or `~1` escape, which `details` keeps.
+ */
+function pathsWithin(
+  paths: readonly string[],
+  budget: number,
+  minimum: number,
+): readonly string[] | undefined {
+  const characters = paths.map((path) => Array.from(path));
+  if (characters.reduce((total, path) => total + path.length, 0) <= budget) {
+    return paths;
+  }
+  // The largest length that every longer path can be cut to.
+  let left = budget;
+  let longer = characters.length;
+  let length = 0;
+  for (const size of characters.map((path) => path.length).sort((a, b) => a - b)) {
+    if (size * longer > left) {
+      length = Math.floor(left / longer);
+      break;
+    }
+    left -= size;
+    longer -= 1;
+  }
+  if (length < minimum) {
+    return undefined;
+  }
+  return characters.map((path) =>
+    path.length <= length ? path.join("") : `${path.slice(0, length - 1).join("")}…`,
+  );
+}
+
+/**
+ * Puts `path` between `before` and `after`, cutting the path so that the whole message fits
+ * the cap and `after`, the problem wording, stays whole.
+ */
+function pathMessage(before: string, path: string, after: string): string {
+  const [shown] = pathsWithin(
+    [path],
+    MESSAGE_CAP - Array.from(before + after).length,
+    MIN_SOLE_PATH,
+  ) ?? [path];
+  return capped(`${before}${shown}${after}`);
+}
+
+// Any message longer than the cap is cut at its end; contract messages cut paths first.
 // Control and format characters from submitted object keys are replaced, and the cut keeps whole characters.
 function capped(message: string): string {
   const characters = Array.from(message.replace(/[\p{Cc}\p{Cf}]/gu, "?"));
-  return characters.length <= 256 ? characters.join("") : `${characters.slice(0, 255).join("")}…`;
+  return characters.length <= MESSAGE_CAP
+    ? characters.join("")
+    : `${characters.slice(0, MESSAGE_CAP - 1).join("")}…`;
 }
 
 // In Unicode mode, `\p{Cs}` matches only a surrogate that is not part of a pair.
@@ -360,33 +704,15 @@ export function unstorableTextFailure(
     segments.push(jsonPointer(node.key.replaceAll("\u0000", "?").replace(/\p{Cs}/gu, "?")));
   }
   segments.reverse();
-  // ErrorDetail paths are at most 512 characters; keep whole leading segments, or as much of
-  // the first one as fits (cut between escapes and whole characters).
-  let path = "";
-  for (const segment of segments) {
-    if (path.length + segment.length + 1 <= 512) {
-      path += `/${segment}`;
-      continue;
-    }
-    if (path === "") {
-      path = "/";
-      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
-        if (path.length + piece.length > 512) {
-          break;
-        }
-        path += piece;
-      }
-    }
-    break;
-  }
+  const path = cappedPointer(segments);
   const nul = found.problem === "nul";
   return failure(
     400,
     "INVALID_REQUEST",
-    capped(
-      `The request does not match the operation contract: ${context} ${path || "/"} contains ${
-        nul ? "a NUL character" : "an unpaired UTF-16 surrogate"
-      }.`,
+    pathMessage(
+      `The request does not match the operation contract: ${context} `,
+      path || "/",
+      ` contains ${nul ? "a NUL character" : "an unpaired UTF-16 surrogate"}.`,
     ),
     [{ path, code: nul ? "INVALID_FORMAT" : "INVALID_VALUE" }],
   );
@@ -524,7 +850,8 @@ export function requestFailure(error: unknown): RequestFailure {
       error.reason === "unavailable" ? 503 : 400,
       `CHANNEL_CREDENTIAL_${error.reason.toUpperCase()}`,
       messages[error.reason],
-      [{ path: error.path, code: "INVALID_VALUE" }],
+      // The Channel Driver's path can name a submitted account key.
+      [{ path: cappedPath(error.path), code: "INVALID_VALUE" }],
     );
   }
   if (error instanceof ChannelDirectoryError) {
@@ -635,7 +962,7 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (error instanceof IAMPolicyValidationError) {
     return failure(400, "INVALID_REQUEST", error.message, [
-      { path: error.path, code: "INVALID_VALUE" },
+      { path: cappedPath(error.path), code: "INVALID_VALUE" },
     ]);
   }
   if (error instanceof IAMRoleInUseError) {
@@ -651,13 +978,29 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {
-    return failure(400, "INVALID_REQUEST", error.message);
+    // The message names the rule, and the detail the submitted destination key.
+    const { destination } = error;
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      error.message,
+      destination === undefined
+        ? undefined
+        : destination.key === undefined
+          ? [{ path: destination.bindingsPath, code: destination.code }]
+          : pointerDetail(destination.bindingsPath, destination.key, destination.code),
+    );
   }
   if (error instanceof NativeWorkerSupportError) {
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof PluginPolicyValidationError) {
-    return failure(400, "INVALID_REQUEST", error.message);
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      error.message,
+      error.pluginId === undefined ? undefined : pointerDetail("/plugins", error.pluginId),
+    );
   }
   if (error instanceof PresetValidationError && error instanceof Error) {
     // Preset messages name the template path (including submitted object keys) and the

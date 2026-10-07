@@ -10,7 +10,7 @@ Credential sources require a selected Credential Gateway. The only
 implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md),
 which supports one source type, `openai`, for dedicated Codex model
 authentication. OpenShell is not a supported production Agent path; see its
-[remaining blockers](drivers/openshell-sandbox.md#current-upstream-preconditions).
+[qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 
 ## Register a source
 

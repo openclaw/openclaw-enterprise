@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
+  assertConsoleSignIn,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -11,11 +10,11 @@ import {
   githubUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "attach-recovery@example.test";
@@ -35,13 +34,8 @@ test(
   "Installation administrators attach, detach and re-attach GitHub identities and disable accounts",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     const github = await startFakeGitHub(t);
     const address = clientAddresses();
     // Password onboarding on the default install: a second administrator and a reader.
@@ -80,10 +74,7 @@ test(
       app.inject({ method: "POST", url: path, headers, payload: { expectedVersion } });
     async function assertGitHubSignIn(subject, userId) {
       const { callback } = await githubSignIn(app, origin, subject, address());
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, userId);
-      return cookie;
+      return assertConsoleSignIn(app, callback, userId);
     }
     async function assertGitHubRefused(subject) {
       const { callback } = await githubSignIn(app, origin, subject, address());

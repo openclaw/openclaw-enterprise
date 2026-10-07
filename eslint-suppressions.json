@@ -49,17 +49,12 @@
   },
   "packages/contracts/src/api/common.ts": {
     "no-control-regex": {
-      "count": 2
-    }
-  },
-  "packages/occ/src/backends.ts": {
-    "no-control-regex": {
       "count": 1
     }
   },
   "packages/occ/src/state/platform-state.ts": {
     "no-control-regex": {
-      "count": 4
+      "count": 3
     }
   },
   "packages/occ/src/state/postgres-state.ts": {

@@ -17,6 +17,7 @@ import {
   githubConfigurationData,
   requestHead,
   serviceConfigurationData,
+  custodyLimits,
 } from "../fixtures/repository-credentials/builders.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 
@@ -814,9 +815,8 @@ test("retirement uncertainty retains real custody after non-204 replies and lost
       const authority = { sessionId: name, ...factory.resolve("git-read").binding };
       const custody = createCustody({
         clock,
+        ...custodyLimits,
         maximumSlots: 1,
-        maximumAccessBytes: 16384,
-        maximumRenewalBytes: 16384,
         maximumCallbacks: 1,
         admitted: () => true,
         changed() {},

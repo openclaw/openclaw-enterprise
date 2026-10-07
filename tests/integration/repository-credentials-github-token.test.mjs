@@ -16,11 +16,11 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import {
-  createServiceConfiguration,
   eventually,
   gatewayRequest,
+  createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
 import {
   createGitHubTokenServiceFactory,
@@ -67,12 +67,10 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
 }
 
 async function startTokenService(t, limits = {}, configuration = {}) {
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const clock = createControlledClock();
   const tls = await createTlsMaterial(resources);
-  const base = await createServiceConfiguration(resources, limits);
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+  const config = await createLoopbackServiceConfiguration(resources, limits);
   const github = await startGitHubFixture(resources, { clock, tls });
   const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
   // Synthetic host token: the fake GitHub accepts it on git and REST without issuing it.

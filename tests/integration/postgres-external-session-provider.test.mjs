@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  attachProvider,
+  assertProviderAttached,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -20,6 +18,7 @@ import {
   oidcUpgradeSettings,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
@@ -76,13 +75,8 @@ test(
   "PostgreSQL sessions end when their external provider instance is no longer configured",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     await startFakeGitHub(t);
     const google = fakeGoogle(t, {
       clientId: googleClientId,
@@ -185,14 +179,7 @@ test(
       await restart();
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       for (const provider of ["github", "google", "oidc"]) {
-        const attached = await attachProvider(
-          app,
-          adminHeaders,
-          member.id,
-          provider,
-          subjects[provider],
-        );
-        assert.equal(attached.statusCode, 200, attached.body);
+        await assertProviderAttached(app, adminHeaders, member.id, provider, subjects[provider]);
       }
       const methods = (await readAccount(app, adminHeaders, member.id)).methods
         .map(({ providerId }) => providerId)

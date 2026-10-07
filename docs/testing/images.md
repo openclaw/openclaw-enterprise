@@ -85,10 +85,12 @@ OCC_TEST_RUNTIME_IMAGE="$OCC_IMAGE_CHECK_RUNTIME" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
-Before installation, all three suites must pass without skips for the exact
+Before installation, all these suites must pass without skips for the exact
 current pair selected in `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`. Rebuilding or
 changing a digest requires new checks. The historical pair does not meet current
 installation requirements. If GHCR denies a pull, check package visibility and
@@ -105,6 +107,8 @@ docker build -f deploy/runtime/Dockerfile \
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
   node --test tests/integration/runtime-image-startup.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
@@ -224,8 +228,10 @@ reconciliation, runtime image execution, or a model turn.
 
 ## Runtime image startup test environment
 
-[`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs)
-and [`runtime-image-startup-probe.test.mjs`](../../tests/integration/runtime-image-startup-probe.test.mjs)
+[`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs),
+[`runtime-image-startup-probe.test.mjs`](../../tests/integration/runtime-image-startup-probe.test.mjs),
+[`runtime-image-gateway-peer.test.mjs`](../../tests/integration/runtime-image-gateway-peer.test.mjs)
+and [`runtime-image-native-worker.test.mjs`](../../tests/integration/runtime-image-native-worker.test.mjs)
 verify a locally available OpenClaw runtime image before Docker Compose or
 Kubernetes execution. They start task-owned containers with the Docker Compute
 Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
+import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -902,11 +903,15 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
     },
   ];
   for (const env of cases) {
-    const child = spawnSync(process.execPath, ["-e", AGENT_RUNTIME_ENTRYPOINT], {
-      env,
-      encoding: "utf8",
-      timeout: 5000,
-    });
+    const child = spawnSync(
+      process.execPath,
+      ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
+      {
+        env,
+        encoding: "utf8",
+        timeout: 5000,
+      },
+    );
     assert.equal(child.status, 1);
     assert.match(
       child.stderr,

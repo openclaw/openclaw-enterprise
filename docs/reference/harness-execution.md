@@ -17,11 +17,11 @@ Agent creation defaults to `embedded`; an update that omits the mode preserves
 it. Deployment rejects a Harness that the Agent's execution mode cannot run with
 `400 INVALID_REQUEST` before work is admitted. A Harness is not a separately
 created resource or Driver. Availability and isolation also depend on the
-installation's Compute and optional Sandbox. On
-Kubernetes, a dedicated gateway runs in an OCC-managed control-plane runtime
-namespace with its own private storage and ServiceAccount, while its Harness
-stays in the data-plane namespace. Embedded OpenClaw remains one untrusted
-data-plane workload that cannot move apart from its built-in Harness.
+installation's Compute and optional Sandbox. In a single Kubernetes cluster, a
+dedicated gateway and its Harness run as separate Pods in the Agent's
+[tenant namespace](drivers/kubernetes-compute.md), each with its own
+ServiceAccount and storage. Embedded OpenClaw remains one untrusted workload
+that cannot move apart from its built-in Harness.
 
 Each dedicated AgentRevision owns one Harness that all its sessions share: the
 Codex app server or the native OpenClaw node host. OpenShell contains the whole
@@ -116,7 +116,7 @@ implementations reject bindings they do not support. SSH embedded OpenClaw accep
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
 outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
-Kubernetes rejects `runtime`.
+Kubernetes deployment rejects `runtime` with `409`.
 
 Before its app server starts, Codex rejects missing or conflicting runtime
 inputs and, after login, requires a bounded native model turn to succeed; local
@@ -279,14 +279,16 @@ Gateway supplies the model key. The upstream OpenShell Gateway must still
 support the app-server token Secret reference and projected workload identity
 the admitted workload requires; stock OpenShell incompatibilities fail
 explicitly, and test bridges do not establish turnkey production support. See its
-[upstream preconditions](drivers/openshell-sandbox.md#current-upstream-preconditions).
+[qualification contract](drivers/openshell-sandbox.md#qualification-contract).
 
 ### Native worker support
 
 The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) lacks required
 worker placement (`cloudWorkers.requiredProfile`) and native worker inference.
 Deploy and provisioning therefore refuse dedicated native OpenClaw with
-`400 INVALID_REQUEST`, and the console withholds that choice. An operator whose
+`400 INVALID_REQUEST`, and the console withholds that choice. Provisioning
+status reads do not recheck this support, so work accepted before it was
+removed still reports its status; retry refuses it. An operator whose
 runtime image is built from an OpenClaw source with both features can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration).
 

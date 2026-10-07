@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
 
 // The child uses the real process composition and common settlement owner. An
 // unresolved alternate-provider callback must never defeat finite process exit.
@@ -15,8 +15,7 @@ test(
   { timeout: 20_000 },
   async (t) => {
     const tls = await createTlsMaterial(t);
-    const original = await createServiceConfiguration(t, { shutdownGraceMs: 100 });
-    const config = { ...original, gateway: { ...original.gateway, listen: "127.0.0.1:0" } };
+    const config = await createLoopbackServiceConfiguration(t, { shutdownGraceMs: 100 });
     const program = `
     import assert from 'node:assert/strict';
     import { readFile } from 'node:fs/promises';

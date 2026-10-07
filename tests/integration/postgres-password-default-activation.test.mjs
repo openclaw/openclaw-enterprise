@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -13,6 +11,7 @@ import {
   memoryLogger,
   onboardPasswordAccounts,
   passwordSignIn,
+  postgresSignInState,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
@@ -34,13 +33,8 @@ test(
   "password accounts from before GitHub activation keep signing in, and creation continues after it",
   requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     // Phase 0: the default install, no GitHub configuration.
     const {
       admin,
