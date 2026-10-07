@@ -325,7 +325,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const scope =
       feature === "agents"
         ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
-        : feature === "settings"
+        : feature === "settings" || feature === "cli-login"
           ? "Your account"
           : feature === "backends"
             ? "Installation-wide · Experimental"
@@ -344,8 +344,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "div",
         { className: "page-actions" },
-        feature === "namespaces" ? null : namespaceSelector(),
-        feature === "settings" ? null : refresh,
+        feature === "namespaces" || feature === "cli-login" ? null : namespaceSelector(),
+        feature === "settings" || feature === "cli-login" ? null : refresh,
       ),
     );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });

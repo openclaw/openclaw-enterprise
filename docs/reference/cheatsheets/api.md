@@ -30,18 +30,26 @@
 
 ### Authentication
 
+- [`listCliSessions`](../api.md#get-apiauthclisessions): List the signed-in person's own CLI sessions.
 - [`completeGitHubSignIn`](../api.md#get-apiauthprovidersgithubcallback): Complete an enrolled GitHub sign-in.
 - [`completeGoogleSignIn`](../api.md#get-apiauthprovidersgooglecallback): Complete an enrolled Google sign-in.
 - [`completeOidcSignIn`](../api.md#get-apiauthprovidersoidccallback): Complete an enrolled OIDC sign-in.
 - [`getAuthProviders`](../api.md#get-apiauthproviders): List configured browser sign-in methods.
 - [`getAuthRecovery`](../api.md#get-apiauthrecovery): Inspect the recovery account designation.
+- [`getCurrentCliSession`](../api.md#get-apiauthclisessionscurrent): Inspect the calling CLI session.
 - [`confirmGitHubSignIn`](../api.md#post-apiauthprovidersgithubresult): Confirm which session a GitHub sign-in created.
 - [`confirmGoogleSignIn`](../api.md#post-apiauthprovidersgoogleresult): Confirm which session a Google sign-in created.
 - [`confirmOidcSignIn`](../api.md#post-apiauthprovidersoidcresult): Confirm which session an OIDC sign-in created.
+- [`decideCliSignIn`](../api.md#post-apiauthclideviceauthorizationsdecide): Approve or deny a pending occ login request.
+- [`exchangeCliSignIn`](../api.md#post-apiauthclitoken): Poll an occ login device authorization for its CLI session.
+- [`lookupCliSignIn`](../api.md#post-apiauthclideviceauthorizationslookup): Show a pending occ login request before approval.
 - [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another administrator.
+- [`startCliSignIn`](../api.md#post-apiauthclideviceauthorizations): Start an occ login device authorization.
 - [`startGitHubSignIn`](../api.md#post-apiauthprovidersgithubstart): Start GitHub sign-in for an enrolled account.
 - [`startGoogleSignIn`](../api.md#post-apiauthprovidersgooglestart): Start Google sign-in for an enrolled account.
 - [`startOidcSignIn`](../api.md#post-apiauthprovidersoidcstart): Start OIDC sign-in for an enrolled account.
+- [`logoutCliSession`](../api.md#delete-apiauthclisessionscurrent): End the calling CLI session (occ logout).
+- [`revokeCliSession`](../api.md#delete-apiauthclisessionsclisessionid): Revoke one of the signed-in person's own CLI sessions.
 
 ### Installation
 

@@ -54,6 +54,12 @@ auth:
   # else uses an external provider). Attach every ordinary account's external identity first:
   # accounts without one cannot sign in until an administrator attaches it.
   passwordSignIn: all
+  # `occ login` (RFC-0019): people sign in to the CLI by approving a code in the console.
+  # The CLI session acts with the person's current permissions and ends with the browser
+  # session that approved it; maxLifetimeSeconds (900 to 28800) caps it further.
+  cliSessions:
+    enabled: true
+    maxLifetimeSeconds: 28800
   # Optional GitHub browser sign-in for existing password accounts (API Pod only).
   # Needs an HTTPS baseUrl, auth.recoveryUserId and agentNativeAdmin.enabled: false.
   # Create the dedicated Secret first.

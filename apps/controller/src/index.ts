@@ -78,6 +78,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
 import {
+  CLI_SESSION_HEADER,
   OCC_SERVICE_KEY_HEADER,
   type ClientAddressConfiguration,
   type ControllerAuth,
@@ -213,6 +214,7 @@ const resourceHandlers: ResourceHandlers = {
 };
 
 const DEFAULT_BODY_LIMIT = 64 * 1024;
+const CLI_SESSION_SWEEP_INTERVAL_MS = 5 * 60_000;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
@@ -1113,9 +1115,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             name: options.auth?.sessionCookieName ?? "openclaw_occ.session_token",
           },
           serviceApiKey: { type: "apiKey", in: "header", name: OCC_SERVICE_KEY_HEADER },
+          cliSession: { type: "apiKey", in: "header", name: CLI_SESSION_HEADER },
         },
       },
-      security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
+      security: [{ sessionCookie: [] }, { serviceApiKey: [] }, { cliSession: [] }],
     },
   });
 
@@ -1219,8 +1222,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               restrictionIds: authorizationEvidence.restrictionIds,
             },
           };
+    // A person's CLI actions stay distinguishable from their console actions.
+    const admitted = admissions.get(request);
+    const admissionDetails =
+      admitted?.method === "cli_session"
+        ? { admission: { method: "cli_session", cliSessionId: admitted.cliSession.id } }
+        : undefined;
     const details =
-      result?.details === undefined ? evidenceDetails : { ...evidenceDetails, ...result.details };
+      result?.details === undefined && admissionDetails === undefined
+        ? evidenceDetails
+        : { ...evidenceDetails, ...admissionDetails, ...result?.details };
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -1296,7 +1307,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   function requireWorkspaceFileCsrf(request: FastifyRequest, requireOrigin: boolean): void {
     const admitted = admissions.get(request);
-    if (admitted?.method === "api_key") {
+    // Header credentials are not ambient: a browser cannot attach them cross-site.
+    if (admitted?.method === "api_key" || admitted?.method === "cli_session") {
       return;
     }
     const fetchSite = request.headers["sec-fetch-site"];
@@ -1539,6 +1551,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }),
   };
 
+  // RFC-0019: the bounded periodic sweep of expired CLI device authorizations and sessions.
+  // Start and exchange also remove expired rows; a failed sweep waits for the next interval.
+  const cliSignInSweep = options.auth?.cliSignIn;
+  if (cliSignInSweep?.enabled === true) {
+    const timer = setInterval(() => {
+      cliSignInSweep.sweep().catch(() => {});
+    }, CLI_SESSION_SWEEP_INTERVAL_MS);
+    timer.unref();
+    app.addHook("onClose", async () => clearInterval(timer));
+  }
+
   app.addHook("onRequest", async (request, reply) => {
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
@@ -1577,6 +1600,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+    if (
+      request.headers[CLI_SESSION_HEADER] !== undefined &&
+      (operation === createAuthAccountOperation ||
+        operation.operationId === "bootstrapInstallation")
+    ) {
+      // Account creation stays browser-only: a copied CLI token must not create accounts.
+      throw failure(403, "FORBIDDEN", "This operation requires a browser session.");
+    }
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
@@ -1686,7 +1717,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       !isNonEmptyString(admitted.externalIdentity?.issuer) ||
       !isNonEmptyString(admitted.externalIdentity?.subject) ||
       !isNonEmptyString(admitted.decisionId) ||
-      (admitted.method !== "session" && admitted.method !== "api_key") ||
+      (admitted.method !== "session" &&
+        admitted.method !== "api_key" &&
+        admitted.method !== "cli_session") ||
       admitted.admittedScope?.installationId !== installationId ||
       (admitted.method === "session" &&
         admitted.admittedScope.namespaceId !== undefined &&
@@ -1760,8 +1793,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation,
     };
     contexts.set(request, context);
+    // A Namespace service key or a Namespace-pinned CLI session reaches only its Namespace.
     if (
-      admitted.method === "api_key" &&
+      (admitted.method === "api_key" || admitted.method === "cli_session") &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
@@ -2595,6 +2629,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           if (!controller) {
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
+          }
+          if (admissions.get(request)?.method === "cli_session") {
+            // A copied CLI token must not mint or remove a key that outlives its session.
+            const decisionReason =
+              "Service API keys are issued and revoked from a browser session or a service key, never a CLI session.";
+            await denial(
+              operation,
+              request,
+              "authorization_denial",
+              context,
+              undefined,
+              undefined,
+              {
+                decisionReason,
+                reasonCode: "CLI_SESSION_NOT_ALLOWED",
+                details: {},
+              },
+            );
+            throw failure(403, "FORBIDDEN", decisionReason);
           }
           if (!creating && request.body !== undefined) {
             // The same wording as OCC's operations that take no body.
@@ -3537,7 +3590,282 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
       },
-      async (request, reply) => options.auth.session(request, reply),
+      async (request, reply) => {
+        if (request.headers[CLI_SESSION_HEADER] !== undefined) {
+          // A CLI session never reads the browser session's key.
+          throw failure(403, "FORBIDDEN", "This operation requires a browser session.");
+        }
+        return options.auth.session(request, reply);
+      },
+    );
+    // RFC-0019 `occ login`: device authorization approved in the console. These routes admit
+    // their own callers (unauthenticated start and poll, browser session for approval and the
+    // console list, CLI session for current and logout) and are 404 while disabled.
+    const cliSignIn = (
+      handler: "start" | "token" | "lookup" | "decide" | "list" | "revoke" | "current" | "logout",
+    ) =>
+      async function (request: FastifyRequest, reply: FastifyReply) {
+        const signIn = options.auth.cliSignIn;
+        if (signIn === undefined) {
+          throw failure(404, "NOT_FOUND", "CLI sign-in is not enabled on this controller.");
+        }
+        return signIn[handler](request, reply);
+      };
+    const cliSessionView = {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "clientLabel", "createdAt", "expiresAt"],
+      properties: {
+        id: { type: "string" },
+        clientLabel: { type: "string" },
+        createdAt: { type: "string", format: "date-time" },
+        expiresAt: { type: "string", format: "date-time" },
+        namespaceId: { type: "string" },
+      },
+    };
+    const cliUser = {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "email", "name"],
+      properties: { id: { type: "string" }, email: { type: "string" }, name: { type: "string" } },
+    };
+    const userCode = { type: "string", minLength: 1, maxLength: 16 };
+    const cliErrors = {
+      400: { description: "Bad Request", ...error },
+      403: { description: "Forbidden", ...error },
+      404: { description: "Not Found", ...error },
+      429: { description: "Too Many Requests", ...error },
+    };
+    routes.post(
+      "/api/auth/cli/device-authorizations",
+      {
+        schema: {
+          operationId: "startCliSignIn",
+          summary: "Start an occ login device authorization",
+          description:
+            "Unauthenticated. Returns a one-use device code for polling and a user code the person types at /console/cli-login. Stores only hashes of both codes, the unverified client label, the requesting address and the optional Namespace pin; expires after 10 minutes. Limited to 30 per minute per client address and 1,000 pending in total (the oldest are evicted).",
+          tags: ["Authentication"],
+          security: [],
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["clientLabel"],
+            properties: {
+              clientLabel: { type: "string", minLength: 1, maxLength: 64 },
+              namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
+            },
+          },
+          response: {
+            ...responses(
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["deviceCode", "userCode", "verificationUri", "interval", "expiresIn"],
+                properties: {
+                  deviceCode: { type: "string" },
+                  userCode: { type: "string" },
+                  verificationUri: { type: "string" },
+                  interval: { type: "integer" },
+                  expiresIn: { type: "integer" },
+                },
+              },
+              201,
+            ),
+            ...cliErrors,
+            ...bodyErrors,
+          },
+        },
+      },
+      cliSignIn("start"),
+    );
+    routes.post(
+      "/api/auth/cli/token",
+      {
+        schema: {
+          operationId: "exchangeCliSignIn",
+          summary: "Poll an occ login device authorization for its CLI session",
+          description:
+            "Unauthenticated; the device code is the credential. Answers 400 AUTHORIZATION_PENDING, SLOW_DOWN, ACCESS_DENIED or EXPIRED_TOKEN until the person approves, then returns the CLI session token once: the approval is consumed, and the session and its audit event commit together (503 when the audit cannot be written; poll again). The session ends no later than the approving browser session and has no refresh.",
+          tags: ["Authentication"],
+          security: [],
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["deviceCode"],
+            properties: { deviceCode: { type: "string", minLength: 1, maxLength: 64 } },
+          },
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["token", "session", "user"],
+              properties: { token: { type: "string" }, session: cliSessionView, user: cliUser },
+            }),
+            ...cliErrors,
+            409: { description: "Conflict", ...error },
+            ...bodyErrors,
+          },
+        },
+      },
+      cliSignIn("token"),
+    );
+    routes.post(
+      "/api/auth/cli/device-authorizations/lookup",
+      {
+        schema: {
+          operationId: "lookupCliSignIn",
+          summary: "Show a pending occ login request before approval",
+          description:
+            "Browser session only: requires the configured Origin, the tab's x-occ-session-key and the session cookie; refuses a CLI session or service key. Returns the requesting address (and whether it matches this browser's), the unverified client label, the Namespace pin and the resulting session expiry. Wrong codes share a budget of 5 per minute per account and client address with decide.",
+          tags: ["Authentication"],
+          security: [{ sessionCookie: [] }],
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["userCode"],
+            properties: { userCode },
+          },
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "clientLabel",
+                "requesterAddress",
+                "sameAddress",
+                "codeExpiresAt",
+                "sessionExpiresAt",
+              ],
+              properties: {
+                clientLabel: { type: "string" },
+                requesterAddress: { type: "string" },
+                sameAddress: { type: "boolean" },
+                namespaceId: { type: "string" },
+                codeExpiresAt: { type: "string", format: "date-time" },
+                sessionExpiresAt: { type: "string", format: "date-time" },
+              },
+            }),
+            ...cliErrors,
+            ...bodyErrors,
+          },
+        },
+      },
+      cliSignIn("lookup"),
+    );
+    routes.post(
+      "/api/auth/cli/device-authorizations/decide",
+      {
+        schema: {
+          operationId: "decideCliSignIn",
+          summary: "Approve or deny a pending occ login request",
+          description:
+            "Browser session only, as for lookup. Approval binds the CLI session to this browser session: it ends at this session's sign-out or expiry, or when the account is disabled, revoked or loses its sign-in method. A denial is final. The decision and its audit event commit together.",
+          tags: ["Authentication"],
+          security: [{ sessionCookie: [] }],
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["userCode", "decision"],
+            properties: { userCode, decision: { type: "string", enum: ["approve", "deny"] } },
+          },
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["decision"],
+              properties: {
+                decision: { type: "string", enum: ["approve", "deny"] },
+                sessionExpiresAt: { type: "string", format: "date-time" },
+              },
+            }),
+            ...cliErrors,
+            ...bodyErrors,
+          },
+        },
+      },
+      cliSignIn("decide"),
+    );
+    routes.get(
+      "/api/auth/cli-sessions",
+      {
+        schema: {
+          operationId: "listCliSessions",
+          summary: "List the signed-in person's own CLI sessions",
+          description:
+            "Browser session only: requires the tab's x-occ-session-key and the session cookie. Returns unexpired CLI sessions of this account, never their tokens.",
+          tags: ["Authentication"],
+          security: [{ sessionCookie: [] }],
+          response: {
+            ...responses({ type: "array", items: cliSessionView }),
+            ...cliErrors,
+          },
+        },
+      },
+      cliSignIn("list"),
+    );
+    routes.get(
+      "/api/auth/cli-sessions/current",
+      {
+        schema: {
+          operationId: "getCurrentCliSession",
+          summary: "Inspect the calling CLI session",
+          description:
+            "CLI session only (x-occ-cli-session). Returns the session and its account; never the token.",
+          tags: ["Authentication"],
+          security: [{ cliSession: [] }],
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["id", "clientLabel", "createdAt", "expiresAt", "user"],
+              properties: { ...cliSessionView.properties, user: cliUser },
+            }),
+            ...cliErrors,
+          },
+        },
+      },
+      cliSignIn("current"),
+    );
+    const revokedCliSession = {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "revoked"],
+      properties: { id: { type: "string" }, revoked: { type: "boolean", const: true } },
+    };
+    routes.delete(
+      "/api/auth/cli-sessions/current",
+      {
+        schema: {
+          operationId: "logoutCliSession",
+          summary: "End the calling CLI session (occ logout)",
+          description: "CLI session only (x-occ-cli-session). Deletes the session and audits it.",
+          tags: ["Authentication"],
+          security: [{ cliSession: [] }],
+          response: { ...responses(revokedCliSession), ...cliErrors },
+        },
+      },
+      cliSignIn("logout"),
+    );
+    routes.delete(
+      "/api/auth/cli-sessions/:cliSessionId",
+      {
+        schema: {
+          operationId: "revokeCliSession",
+          summary: "Revoke one of the signed-in person's own CLI sessions",
+          description:
+            "Browser session only: requires the configured Origin, the tab's x-occ-session-key and the session cookie. Only the account's own sessions; another account's session is 404.",
+          tags: ["Authentication"],
+          security: [{ sessionCookie: [] }],
+          params: {
+            type: "object",
+            additionalProperties: false,
+            required: ["cliSessionId"],
+            properties: { cliSessionId: { type: "string", minLength: 1, maxLength: 200 } },
+          },
+          response: { ...responses(revokedCliSession), ...cliErrors },
+        },
+      },
+      cliSignIn("revoke"),
     );
     routes.post(
       "/api/auth/accounts",

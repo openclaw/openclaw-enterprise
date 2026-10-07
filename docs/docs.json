@@ -165,6 +165,10 @@
                       {
                         "page": "reference/authentication/service-api-keys",
                         "label": "Service API Keys"
+                      },
+                      {
+                        "page": "reference/authentication/cli-sessions",
+                        "label": "CLI Sign-In"
                       }
                     ]
                   },
@@ -900,6 +904,7 @@
               "flows/configuration-driver",
               "flows/configuration-driver/persistence-and-revisions",
               "flows/local-password-authentication",
+              "flows/cli-sign-in",
               "flows/namespace-iam-policy",
               "flows/native-service-account-credential-delivery",
               "flows/secret-storage-and-delivery",

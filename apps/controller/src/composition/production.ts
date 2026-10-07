@@ -13,6 +13,7 @@ import {
 import {
   betterAuthIssuer,
   createPostgresControllerAuth,
+  type CliSessionSettings,
   type ClientAddressConfiguration,
   type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
@@ -52,6 +53,8 @@ export interface ProductionConfig {
   readonly oidc?: OidcSignInConfiguration;
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
   readonly passwordSignIn?: "recovery-only";
+  /** `auth.cliSessions` (OCC_AUTH_CLI_SESSIONS*); RFC-0019 `occ login`. Default: enabled. */
+  readonly cliSessions?: CliSessionSettings;
   readonly clientAddress?: ClientAddressConfiguration;
   /** Test seam: shortens or observes sign-in pacing; unset in the server (see auth/index.ts). */
   readonly passwordSlowLaneFloors?: PasswordSlowLaneFloors;
@@ -145,6 +148,7 @@ export async function composeProduction(config: ProductionConfig) {
       ...(config.google === undefined ? {} : { google: config.google }),
       ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
       ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
+      ...(config.cliSessions === undefined ? {} : { cliSessionSettings: config.cliSessions }),
       ...(config.logger === undefined
         ? {}
         : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),

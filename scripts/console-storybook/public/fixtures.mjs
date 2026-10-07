@@ -438,6 +438,27 @@ export function installFixture(scenario, evidence) {
       { status, headers: { "content-type": "application/json" } },
     );
   const error = (status, code) => response(null, status, code);
+  const cliExpiry = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+  const cliRequest = {
+    clientLabel: "occ on build-laptop",
+    requesterAddress: scenario.cliOtherAddress ? "203.0.113.24" : "192.0.2.10",
+    sameAddress: scenario.cliOtherAddress !== true,
+    ...(scenario.cliNamespacePin ? { namespaceId } : {}),
+    codeExpiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    sessionExpiresAt: cliExpiry,
+  };
+  let cliPending = true;
+  const cliCode = (value) =>
+    cliPending &&
+    typeof value === "string" &&
+    value.toUpperCase().replace(/[\s-]/g, "") === "BCDFGHJK";
+  const cliSessions = (scenario.cliSessions ?? []).map((label, index) => ({
+    id: `cls_00000000-0000-4000-8000-00000000000${index + 1}`,
+    clientLabel: label,
+    createdAt,
+    expiresAt: cliExpiry,
+    ...(index === 1 ? { namespaceId } : {}),
+  }));
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
@@ -526,6 +547,40 @@ export function installFixture(scenario, evidence) {
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    // RFC-0019 occ login approval: the one valid preview code is BCDF-GHJK.
+    if (path === "/api/auth/cli/device-authorizations/lookup" && method === "POST") {
+      return cliCode(body.userCode) ? response(cliRequest) : error(404, "NOT_FOUND");
+    }
+    if (path === "/api/auth/cli/device-authorizations/decide" && method === "POST") {
+      if (!cliCode(body.userCode)) {
+        return error(404, "NOT_FOUND");
+      }
+      cliPending = false;
+      if (body.decision === "approve") {
+        cliSessions.unshift({
+          id: nextId("cls"),
+          clientLabel: cliRequest.clientLabel,
+          createdAt: new Date().toISOString(),
+          expiresAt: cliRequest.sessionExpiresAt,
+        });
+      }
+      return response({
+        decision: body.decision,
+        ...(body.decision === "approve" ? { sessionExpiresAt: cliRequest.sessionExpiresAt } : {}),
+      });
+    }
+    if (path === "/api/auth/cli-sessions" && method === "GET") {
+      return response(cliSessions);
+    }
+    const cliSession = path.match(/^\/api\/auth\/cli-sessions\/(cls_[0-9a-f-]+)$/);
+    if (cliSession && method === "DELETE") {
+      const index = cliSessions.findIndex((item) => item.id === cliSession[1]);
+      if (index < 0) {
+        return error(404, "NOT_FOUND");
+      }
+      cliSessions.splice(index, 1);
+      return response({ id: cliSession[1], revoked: true });
     }
     if (path === "/installation" && method === "GET") {
       return response({

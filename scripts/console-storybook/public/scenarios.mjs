@@ -841,6 +841,68 @@ export const scenarios = {
     path: "/console/settings",
     description: "Signed-in name and email. There are no editable settings in this release.",
   },
+  settingsCliSessions: {
+    group: "Pages/Settings",
+    name: "CLI sessions",
+    path: "/console/settings",
+    cliSessions: ["occ on build-laptop", "occ on ci-runner"],
+    description:
+      "The person's own occ login sessions, each with Revoke. One is pinned to a Namespace.",
+  },
+  cliLogin: {
+    group: "Pages/CLI sign-in",
+    name: "Enter code",
+    path: "/console/cli-login",
+    description:
+      "occ login printed a code; the person types it here. A code in the URL is never read.",
+  },
+  cliLoginWrongCode: {
+    group: "Pages/CLI sign-in",
+    name: "Wrong code",
+    path: "/console/cli-login",
+    actions: [{ selector: "#cli-login-code", value: "BCDF-XXXX" }, click("Continue")],
+    description: "An unknown or expired code is refused and spends the wrong-code budget.",
+  },
+  cliLoginReview: {
+    group: "Pages/CLI sign-in",
+    name: "Review request",
+    path: "/console/cli-login",
+    actions: [{ selector: "#cli-login-code", value: "bcdf ghjk" }, click("Continue")],
+    description:
+      "The request's unverified client label, address, reach and latest end, before Approve or Deny.",
+  },
+  cliLoginOtherAddress: {
+    group: "Pages/CLI sign-in",
+    name: "Different address warning",
+    path: "/console/cli-login",
+    cliOtherAddress: true,
+    cliNamespacePin: true,
+    actions: [{ selector: "#cli-login-code", value: "BCDF-GHJK" }, click("Continue")],
+    description:
+      "The request came from another network address and is pinned to one Namespace; the page warns before approval.",
+  },
+  cliLoginApproved: {
+    group: "Pages/CLI sign-in",
+    name: "Approved",
+    path: "/console/cli-login",
+    actions: [
+      { selector: "#cli-login-code", value: "BCDF-GHJK" },
+      click("Continue"),
+      click("Approve"),
+    ],
+    description: "Approval confirms when the CLI session ends and links to the person's sessions.",
+  },
+  cliLoginDenied: {
+    group: "Pages/CLI sign-in",
+    name: "Denied",
+    path: "/console/cli-login",
+    actions: [
+      { selector: "#cli-login-code", value: "BCDF-GHJK" },
+      click("Continue"),
+      click("Deny"),
+    ],
+    description: "A denial is final; occ login reports it and stops.",
+  },
   notFound: {
     group: "Pages/Navigation",
     name: "Page not found",

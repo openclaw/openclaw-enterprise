@@ -60,7 +60,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 27 operations |
+| [Authentication](#authentication) | 35 operations |
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 4 operations |
 | [Namespaces](#namespaces) | 4 operations |
@@ -92,6 +92,14 @@ the paths.
 | [`POST /api/auth/accounts/{userId}/providers/google`](#post-apiauthaccountsuseridprovidersgoogle) | Attach an exact Google identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/oidc`](#post-apiauthaccountsuseridprovidersoidc) | Attach an exact OIDC identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/revoke`](#post-apiauthaccountsuseridrevoke) | Revoke all sessions for a human account |
+| [`GET /api/auth/cli-sessions`](#get-apiauthclisessions) | List the signed-in person's own CLI sessions |
+| [`DELETE /api/auth/cli-sessions/current`](#delete-apiauthclisessionscurrent) | End the calling CLI session (occ logout) |
+| [`GET /api/auth/cli-sessions/current`](#get-apiauthclisessionscurrent) | Inspect the calling CLI session |
+| [`DELETE /api/auth/cli-sessions/{cliSessionId}`](#delete-apiauthclisessionsclisessionid) | Revoke one of the signed-in person's own CLI sessions |
+| [`POST /api/auth/cli/device-authorizations`](#post-apiauthclideviceauthorizations) | Start an occ login device authorization |
+| [`POST /api/auth/cli/device-authorizations/decide`](#post-apiauthclideviceauthorizationsdecide) | Approve or deny a pending occ login request |
+| [`POST /api/auth/cli/device-authorizations/lookup`](#post-apiauthclideviceauthorizationslookup) | Show a pending occ login request before approval |
+| [`POST /api/auth/cli/token`](#post-apiauthclitoken) | Poll an occ login device authorization for its CLI session |
 | [`GET /api/auth/providers`](#get-apiauthproviders) | List configured browser sign-in methods |
 | [`GET /api/auth/providers/github/callback`](#get-apiauthprovidersgithubcallback) | Complete an enrolled GitHub sign-in |
 | [`POST /api/auth/providers/github/result`](#post-apiauthprovidersgithubresult) | Confirm which session a GitHub sign-in created |
@@ -626,6 +634,345 @@ Revoke all sessions for a human account
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.userId` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `GET /api/auth/cli-sessions`
+
+<span id="get-apiauthclisessions"></span>
+
+List the signed-in person's own CLI sessions
+
+**Operation ID:** `listCliSessions`
+
+**Permissions:** Browser session only: requires the tab's x-occ-session-key and the session cookie. Returns unexpired CLI sessions of this account, never their tokens.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].clientLabel` | `string` | Yes | — |
+| `data[].createdAt` | `string (date-time)` | Yes | — |
+| `data[].expiresAt` | `string (date-time)` | Yes | — |
+| `data[].id` | `string` | Yes | — |
+| `data[].namespaceId` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `DELETE /api/auth/cli-sessions/current`
+
+<span id="delete-apiauthclisessionscurrent"></span>
+
+End the calling CLI session (occ logout)
+
+**Operation ID:** `logoutCliSession`
+
+**Permissions:** CLI session only (x-occ-cli-session). Deletes the session and audits it.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.id` | `string` | Yes | — |
+| `data.revoked` | `true` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `GET /api/auth/cli-sessions/current`
+
+<span id="get-apiauthclisessionscurrent"></span>
+
+Inspect the calling CLI session
+
+**Operation ID:** `getCurrentCliSession`
+
+**Permissions:** CLI session only (x-occ-cli-session). Returns the session and its account; never the token.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.clientLabel` | `string` | Yes | — |
+| `data.createdAt` | `string (date-time)` | Yes | — |
+| `data.expiresAt` | `string (date-time)` | Yes | — |
+| `data.id` | `string` | Yes | — |
+| `data.namespaceId` | `string` | No | — |
+| `data.user` | `object` | Yes | — |
+| `data.user.email` | `string` | Yes | — |
+| `data.user.id` | `string` | Yes | — |
+| `data.user.name` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `DELETE /api/auth/cli-sessions/{cliSessionId}`
+
+<span id="delete-apiauthclisessionsclisessionid"></span>
+
+Revoke one of the signed-in person's own CLI sessions
+
+**Operation ID:** `revokeCliSession`
+
+**Permissions:** Browser session only: requires the configured Origin, the tab's x-occ-session-key and the session cookie. Only the account's own sessions; another account's session is 404.
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `cliSessionId` | path | `string` | Yes | min length: 1; max length: 200 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.id` | `string` | Yes | — |
+| `data.revoked` | `true` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /api/auth/cli/device-authorizations`
+
+<span id="post-apiauthclideviceauthorizations"></span>
+
+Start an occ login device authorization
+
+**Operation ID:** `startCliSignIn`
+
+**Permissions:** Unauthenticated. Returns a one-use device code for polling and a user code the person types at /console/cli-login. Stores only hashes of both codes, the unverified client label, the requesting address and the optional Namespace pin; expires after 10 minutes. Limited to 30 per minute per client address and 1,000 pending in total (the oldest are evicted).
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientLabel` | `string` | Yes | min length: 1; max length: 64 |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.deviceCode` | `string` | Yes | — |
+| `data.expiresIn` | `integer` | Yes | — |
+| `data.interval` | `integer` | Yes | — |
+| `data.userCode` | `string` | Yes | — |
+| `data.verificationUri` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /api/auth/cli/device-authorizations/decide`
+
+<span id="post-apiauthclideviceauthorizationsdecide"></span>
+
+Approve or deny a pending occ login request
+
+**Operation ID:** `decideCliSignIn`
+
+**Permissions:** Browser session only, as for lookup. Approval binds the CLI session to this browser session: it ends at this session's sign-out or expiry, or when the account is disabled, revoked or loses its sign-in method. A denial is final. The decision and its audit event commit together.
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `decision` | `"approve" or "deny"` | Yes | — |
+| `userCode` | `string` | Yes | min length: 1; max length: 16 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.decision` | `"approve" or "deny"` | Yes | — |
+| `data.sessionExpiresAt` | `string (date-time)` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /api/auth/cli/device-authorizations/lookup`
+
+<span id="post-apiauthclideviceauthorizationslookup"></span>
+
+Show a pending occ login request before approval
+
+**Operation ID:** `lookupCliSignIn`
+
+**Permissions:** Browser session only: requires the configured Origin, the tab's x-occ-session-key and the session cookie; refuses a CLI session or service key. Returns the requesting address (and whether it matches this browser's), the unverified client label, the Namespace pin and the resulting session expiry. Wrong codes share a budget of 5 per minute per account and client address with decide.
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `userCode` | `string` | Yes | min length: 1; max length: 16 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.clientLabel` | `string` | Yes | — |
+| `data.codeExpiresAt` | `string (date-time)` | Yes | — |
+| `data.namespaceId` | `string` | No | — |
+| `data.requesterAddress` | `string` | Yes | — |
+| `data.sameAddress` | `boolean` | Yes | — |
+| `data.sessionExpiresAt` | `string (date-time)` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /api/auth/cli/token`
+
+<span id="post-apiauthclitoken"></span>
+
+Poll an occ login device authorization for its CLI session
+
+**Operation ID:** `exchangeCliSignIn`
+
+**Permissions:** Unauthenticated; the device code is the credential. Answers 400 AUTHORIZATION_PENDING, SLOW_DOWN, ACCESS_DENIED or EXPIRED_TOKEN until the person approves, then returns the CLI session token once: the approval is consumed, and the session and its audit event commit together (503 when the audit cannot be written; poll again). The session ends no later than the approving browser session and has no refresh.
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `deviceCode` | `string` | Yes | min length: 1; max length: 64 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.session` | `object` | Yes | — |
+| `data.session.clientLabel` | `string` | Yes | — |
+| `data.session.createdAt` | `string (date-time)` | Yes | — |
+| `data.session.expiresAt` | `string (date-time)` | Yes | — |
+| `data.session.id` | `string` | Yes | — |
+| `data.session.namespaceId` | `string` | No | — |
+| `data.token` | `string` | Yes | — |
+| `data.user` | `object` | Yes | — |
+| `data.user.email` | `string` | Yes | — |
+| `data.user.id` | `string` | Yes | — |
+| `data.user.name` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 

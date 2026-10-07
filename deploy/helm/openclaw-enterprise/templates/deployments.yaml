@@ -273,6 +273,17 @@ spec:
             - name: OCC_AUTH_PASSWORD_SIGN_IN
               value: recovery-only
             {{- end }}
+            {{- $cliSessions := default dict $.Values.auth.cliSessions }}
+            {{- if eq (toString (dig "enabled" true $cliSessions)) "false" }}
+            - name: OCC_AUTH_CLI_SESSIONS
+              value: disabled
+            {{- end }}
+            {{- $cliLifetime := int (dig "maxLifetimeSeconds" 28800 $cliSessions) }}
+            {{- if or (lt $cliLifetime 900) (gt $cliLifetime 28800) }}{{- fail "auth.cliSessions.maxLifetimeSeconds must be from 900 to 28800" -}}{{- end }}
+            {{- if ne $cliLifetime 28800 }}
+            - name: OCC_AUTH_CLI_SESSION_MAX_LIFETIME_SECONDS
+              value: {{ $cliLifetime | toString | quote }}
+            {{- end }}
             {{- $trustedProxy := default dict $.Values.api.trustedProxy }}
             {{- if $trustedProxy.preset }}
             - name: OCC_AUTH_TRUSTED_PROXY_CIDRS

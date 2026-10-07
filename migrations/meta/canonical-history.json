@@ -384,7 +384,14 @@
       "when": 1787000000048,
       "tag": "0048_administrator_credential_source_grants",
       "breakpoints": true,
-      "sha256": "90e15104a8bf967a6a25e455e6c40b0f7201aacdce004f7565fea8991a3e11b4"
+      "sha256": "90e15104a8bf967a6a25e455e6c40b0f7201aacdce004f7565fea8991a3e11b4"    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787000000049,
+      "tag": "0049_cli_sessions",
+      "breakpoints": true,
+      "sha256": "c37f5a3f8e167e71467292937cd04a8a21e935f6e89699e03ff97be786c95d93"
     }
   ],
   "initialSchemaStates": {
@@ -412,7 +419,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516",
+    "completed": "ba929f0f55cb995e47f0abbccd913ae2136ad61868aa6d25840ccb0c8c52b632",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -432,7 +439,8 @@
     "preBrokerReceiptFence": "ba9e4c487cde7155036d79f6d29d64d9e21819361d8dfebcdfe2754cc12c3539",
     "preModelProbeFailureCause": "038d68892adeb6cf41001617b9ec55ca8a32115c04cfa487f0674b3756294bc2",
     "preProvisioningConfigurationRelease": "3db47081c1e1f671c51aff211ae1fe560dfffe1f80b2176d16b76838cf8f3b30",
-    "preAdministratorCredentialSourceGrants": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516"
+    "preAdministratorCredentialSourceGrants": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516",
+    "preCliSessions": "dcd129084c45ee23fadbbad0fc97b2f6ee38ff12421760f863d1d3e1f5eb4516"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

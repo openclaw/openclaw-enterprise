@@ -17,7 +17,9 @@ import {
   type AuthPrincipalSeedOptions,
 } from "@openclaw-enterprise/iam";
 import {
+  PostgresCliSessions,
   PostgresHumanAuthentication,
+  PostgresPlatformState,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -27,7 +29,6 @@ import {
   createPostgresAuthBinding,
   type SchemaAuthPoolV1,
   type SchemaAuthAdapterOptionsV1,
-  type PostgresPlatformState,
   type PreparedPasswordAccount,
 } from "@openclaw-enterprise/occ";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
@@ -44,6 +45,14 @@ import type { ExternalProviderName } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
+import {
+  DEFAULT_CLI_SESSION_SETTINGS,
+  cliSessionHeader,
+  createCliSignIn,
+  type CliSessionSettings,
+  type CliSessionStore,
+  type CliSignIn,
+} from "./cli-sign-in.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
   SignInRateLimited,
@@ -165,6 +174,13 @@ import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admissi
 import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
 
 export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
+export {
+  CLI_SESSION_HEADER,
+  cliSessionSettings,
+  DEFAULT_CLI_SESSION_SETTINGS,
+  type CliSessionSettings,
+  type CliSignIn,
+} from "./cli-sign-in.ts";
 
 export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 const LOCAL_PASSWORD_MIN_LENGTH = 12;
@@ -229,6 +245,11 @@ export interface ControllerAuthOptions {
   };
   /** Receives runtime operational events, such as a sign-in lane entering the slow lane. */
   readonly onOperationalEvent?: (event: Readonly<Record<string, unknown>>) => void;
+  /** RFC-0019 CLI sign-in; absent means `occ login` is unavailable (404). */
+  readonly cliSessions?: {
+    readonly store: CliSessionStore;
+    readonly settings: CliSessionSettings;
+  };
 }
 
 /**
@@ -256,6 +277,8 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly onWarning?: (event: { readonly event: string; readonly message: string }) => void;
   /** Counts an external sign-in callback that matched no pending attempt (not audited). */
   readonly onUnmatchedCallback?: (provider: ExternalProviderName) => void;
+  /** `auth.cliSessions`; defaults to enabled with an eight-hour cap (RFC-0019). */
+  readonly cliSessionSettings?: CliSessionSettings;
 }
 
 export interface AuthenticatedAccount {
@@ -384,6 +407,8 @@ export interface ControllerAuth {
   }): Promise<ServiceKey & { readonly key: string }>;
   getServiceKey(id: string): Promise<ServiceKey | undefined>;
   revokeServiceKey(key: ServiceKey): Promise<void>;
+  /** RFC-0019 `occ login` routes; absent when this composition has no CLI session store. */
+  readonly cliSignIn?: CliSignIn;
 }
 
 export function normalizeSharedCookieDomain(domain: string | undefined): string | undefined {
@@ -801,6 +826,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
   readonly #sessionCookieName: string;
   readonly #secret: string;
   readonly #browserOrigin: string;
+  readonly #cliSignIn: CliSignIn | undefined;
 
   constructor(
     auth: ControllerBetterAuth,
@@ -808,8 +834,10 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     cookieName: string,
     secret: string,
     browserOrigin: string,
+    cliSignIn?: CliSignIn,
   ) {
     this.#auth = auth;
+    this.#cliSignIn = cliSignIn;
     this.#secret = secret;
     this.#sessionCookieName = cookieName;
     this.#browserOrigin = browserOrigin;
@@ -822,6 +850,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     if (
       request.authorizationHeader === undefined &&
       !headers.has(OCC_SERVICE_KEY_HEADER) &&
+      cliSessionHeader(headers) === undefined &&
       headers.has("cookie") &&
       !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())
     ) {
@@ -843,6 +872,42 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
     }
 
     const headers = authHeaders(request.headers);
+    // An explicit CLI session, like a key, never falls back to the cookie; both together are
+    // ambiguous and refused.
+    const cliToken = cliSessionHeader(headers);
+    if (cliToken !== undefined) {
+      if (headers.has(OCC_SERVICE_KEY_HEADER)) {
+        throw new AdmissionFailure(
+          401,
+          "UNAUTHENTICATED",
+          "Send either a service API key or a CLI session, not both.",
+        );
+      }
+      const session =
+        cliToken === null || this.#cliSignIn === undefined
+          ? undefined
+          : await this.#cliSignIn.verify(cliToken);
+      if (session === undefined) {
+        throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid CLI session is required.");
+      }
+      return {
+        externalIdentity: { issuer: this.#issuer, subject: session.userId },
+        // A Namespace pin scopes the session the way a Namespace service key is scoped.
+        admittedScope: {
+          installationId: this.#installationId,
+          ...(session.namespaceId === undefined ? {} : { namespaceId: session.namespaceId }),
+        },
+        decisionId: `adm_${randomUUID()}`,
+        method: "cli_session",
+        cliSession: {
+          id: session.id,
+          userId: session.userId,
+          parentSessionId: session.parentSessionId,
+          expiresAt: session.expiresAt.toISOString(),
+          ...(session.namespaceId === undefined ? {} : { namespaceId: session.namespaceId }),
+        },
+      };
+    }
     // An explicitly supplied key never falls back to a potentially more privileged cookie.
     if (headers.has(OCC_SERVICE_KEY_HEADER)) {
       const result = await this.#auth.api.verifyApiKey({
@@ -1569,17 +1634,53 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     return session;
   }
 
+  /**
+   * The browser session behind a CLI-login approval or a console list/revoke: the configured
+   * Origin (for state changes), the tab's x-occ-session-key (mandatory here, optional
+   * elsewhere) and a session cookie that key belongs to.
+   */
+  async function browserSession(
+    request: FastifyRequest,
+    requireOrigin: boolean,
+  ): Promise<AuthenticatedSession> {
+    const headers = authHeaders(request.headers);
+    if (requireOrigin) {
+      requireSessionMutationOrigin(headers, expectedBrowserOrigin);
+    } else if (headers.get("sec-fetch-site") === "cross-site") {
+      throw untrustedOrigin();
+    }
+    if (sessionKeyHeader(headers) === undefined) {
+      throw new AdmissionFailure(401, "UNAUTHENTICATED", "The tab's session key is required.");
+    }
+    const current = await resolveSession(request);
+    if (current === undefined) {
+      throw new AdmissionFailure(401, "UNAUTHENTICATED", "A valid controller session is required.");
+    }
+    return current;
+  }
+  const cliSignIn =
+    options.cliSessions === undefined
+      ? undefined
+      : createCliSignIn({
+          store: options.cliSessions.store,
+          settings: options.cliSessions.settings,
+          clientAddressOf,
+          browserSession,
+        });
+
   return {
     auth,
     issuer,
     sessionCookieName,
     ...(sharedCookieDomain === undefined ? {} : { sharedCookieDomain }),
+    ...(cliSignIn === undefined ? {} : { cliSignIn }),
     admissionVerifier: new ControllerAdmissionVerifier(
       auth,
       options.installationId,
       sessionCookieName,
       options.secret,
       expectedBrowserOrigin,
+      cliSignIn,
     ),
     prepareAccount,
     writePreparedAccount,
@@ -1765,6 +1866,7 @@ export async function createPostgresControllerAuth(
     passwordSignIn,
     onWarning,
     onUnmatchedCallback,
+    cliSessionSettings: cliSettings = DEFAULT_CLI_SESSION_SETTINGS,
     ...controllerOptions
   } = options;
   // Sessions from an external provider instance outside this set (removed, or a changed
@@ -1837,8 +1939,23 @@ export async function createPostgresControllerAuth(
           ...(onUnmatchedCallback === undefined ? {} : { onUnmatchedCallback }),
         },
       );
+  // RFC-0019 CLI sessions share the original State transaction and audit writer.
+  const cliSessionStore = new PostgresCliSessions(
+    state ??
+      new PostgresPlatformState(
+        pool as unknown as ConstructorParameters<typeof PostgresPlatformState>[0],
+      ),
+    options.installationId,
+    betterAuthIssuer(options.installationId),
+    {
+      guarded,
+      externalProviderIds,
+      parentSessionKey: (sessionId) => sessionBindingKey(options.secret, sessionId),
+    },
+  );
   const auth = createControllerAuth({
     ...controllerOptions,
+    cliSessions: { store: cliSessionStore, settings: cliSettings },
     ...(humanLogin === undefined ? {} : { humanLogin }),
     // Password-only: bind known-device entries to the password method's authentication
     // version, which the database bumps on every password change. The guarded profile's

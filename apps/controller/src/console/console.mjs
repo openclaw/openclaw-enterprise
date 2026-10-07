@@ -6,6 +6,7 @@ import { createNavigation, pages } from "./navigation.mjs";
 import { createShell, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
+import { renderCliLogin, renderCliSessions } from "./cli-login.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -1085,6 +1086,21 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
           button("Back", () => navigate(navigation.previousCollection)),
         ),
       );
+      renderCliSessions(shell.view, {
+        request: viewRequest,
+        isCurrent: () => lifetime.isCurrent(viewState.active),
+      });
+      markMountedRoute(current);
+      return;
+    }
+    if (current.feature === "cli-login") {
+      // Never retained: a fresh visit always starts at code entry.
+      viewState.reusable = false;
+      renderCliLogin(shell.view, {
+        request: viewRequest,
+        isCurrent: () => lifetime.isCurrent(viewState.active),
+        onSessions: () => navigate("settings"),
+      });
       markMountedRoute(current);
       return;
     }

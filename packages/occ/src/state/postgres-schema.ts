@@ -1479,6 +1479,131 @@ export const humanAuthenticationAttempts = occSchema.table(
   ],
 );
 
+const cliResourceId = (prefix: string) =>
+  `^${prefix}_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`;
+
+// RFC-0019 `occ login`. Migration 0049 also adds the guard_cli_session insert trigger.
+export const cliDeviceAuthorizations = occSchema.table(
+  "cli_device_authorizations",
+  {
+    id: text("id").primaryKey(),
+    deviceCodeHash: text("device_code_hash").notNull().unique(),
+    userCodeHash: text("user_code_hash").notNull().unique(),
+    clientLabel: text("client_label").notNull(),
+    requesterAddress: text("requester_address").notNull(),
+    namespaceId: text("namespace_id"),
+    state: text("state").notNull().default("pending"),
+    userId: text("user_id").references(() => user.id, {
+      onUpdate: "restrict",
+      onDelete: "cascade",
+    }),
+    parentSessionId: text("parent_session_id").references(() => session.id, {
+      onUpdate: "restrict",
+      onDelete: "cascade",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check(
+      "cli_device_authorization_id",
+      sql`${table.id} ~ ${sql.raw(`'${cliResourceId("cda")}'`)}`,
+    ),
+    check(
+      "cli_device_authorization_device_code_hash",
+      sql`${table.deviceCodeHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check("cli_device_authorization_user_code_hash", sql`${table.userCodeHash} ~ '^[a-f0-9]{64}$'`),
+    check(
+      "cli_device_authorization_client_label",
+      sql`${table.clientLabel} ~ '^[\\x20-\\x7e]{1,64}$'`,
+    ),
+    check(
+      "cli_device_authorization_requester_address",
+      sql`char_length(${table.requesterAddress}) BETWEEN 1 AND 64`,
+    ),
+    check(
+      "cli_device_authorization_namespace_id",
+      sql`${table.namespaceId} ~ ${sql.raw(`'${cliResourceId("ns")}'`)}`,
+    ),
+    check(
+      "cli_device_authorization_state",
+      sql`${table.state} IN ('pending', 'approved', 'denied', 'consumed')`,
+    ),
+    check(
+      "cli_device_authorization_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '10 minutes'`,
+    ),
+    check(
+      "cli_device_authorization_decision",
+      sql`(${table.state} = 'pending' AND ${table.userId} IS NULL AND ${table.parentSessionId} IS NULL AND ${table.decidedAt} IS NULL)
+        OR (${table.state} IN ('approved', 'consumed') AND ${table.userId} IS NOT NULL AND ${table.parentSessionId} IS NOT NULL AND ${table.decidedAt} IS NOT NULL)
+        OR (${table.state} = 'denied' AND ${table.userId} IS NOT NULL AND ${table.parentSessionId} IS NULL AND ${table.decidedAt} IS NOT NULL)`,
+    ),
+    index("cli_device_authorization_expiry").on(table.expiresAt),
+    index("cli_device_authorization_pending")
+      .on(table.createdAt)
+      .where(sql`${table.state} = 'pending'`),
+  ],
+);
+
+export const cliSessions = occSchema.table(
+  "cli_sessions",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    authorizationId: text("authorization_id").notNull().unique(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onUpdate: "restrict", onDelete: "cascade" }),
+    parentSessionId: text("parent_session_id")
+      .notNull()
+      .references(() => session.id, { onUpdate: "restrict", onDelete: "cascade" }),
+    namespaceId: text("namespace_id"),
+    clientLabel: text("client_label").notNull(),
+    methodId: text("method_id").references(() => account.id, {
+      onUpdate: "restrict",
+      onDelete: "cascade",
+    }),
+    version: integer("version"),
+    methodVersion: integer("method_version"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check("cli_session_id", sql`${table.id} ~ ${sql.raw(`'${cliResourceId("cls")}'`)}`),
+    check("cli_session_token_hash", sql`${table.tokenHash} ~ '^[a-f0-9]{64}$'`),
+    check(
+      "cli_session_authorization_id",
+      sql`${table.authorizationId} ~ ${sql.raw(`'${cliResourceId("cda")}'`)}`,
+    ),
+    check(
+      "cli_session_namespace_id",
+      sql`${table.namespaceId} ~ ${sql.raw(`'${cliResourceId("ns")}'`)}`,
+    ),
+    check("cli_session_client_label", sql`${table.clientLabel} ~ '^[\\x20-\\x7e]{1,64}$'`),
+    check("cli_session_version_positive", sql`${table.version} > 0`),
+    check("cli_session_method_version_positive", sql`${table.methodVersion} > 0`),
+    check(
+      "cli_session_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '8 hours'`,
+    ),
+    check(
+      "cli_session_binding",
+      sql`(${table.methodId} IS NULL AND ${table.version} IS NULL AND ${table.methodVersion} IS NULL)
+        OR (${table.methodId} IS NOT NULL AND ${table.version} IS NOT NULL AND ${table.methodVersion} IS NOT NULL)`,
+    ),
+    index("cli_session_parent").on(table.parentSessionId),
+    index("cli_session_user").on(table.userId),
+    index("cli_session_expiry").on(table.expiresAt),
+  ],
+);
+
 export const verification = occSchema.table(
   "verification",
   {

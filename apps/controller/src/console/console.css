@@ -2256,3 +2256,29 @@ summary:focus-visible {
   opacity: 0.55;
   text-decoration: line-through;
 }
+.cli-login .form-field,
+.cli-login .notice {
+  max-width: 560px;
+}
+.cli-login-details {
+  grid-template-columns: 110px 1fr;
+}
+.cli-sessions-panel {
+  margin-top: 20px;
+}
+.cli-sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cli-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.cli-session .hint {
+  margin: 4px 0 0;
+}

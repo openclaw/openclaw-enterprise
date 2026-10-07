@@ -39,10 +39,24 @@ export interface AdmittedSession {
   readonly expiresAt: string;
 }
 
+/** An RFC-0019 CLI session: the person's own Principal, bounded by its parent session. */
+export interface AdmittedCliSession {
+  readonly id: string;
+  readonly userId: string;
+  readonly parentSessionId: string;
+  readonly expiresAt: string;
+  /** The optional Namespace pin; it also becomes `admittedScope.namespaceId`. */
+  readonly namespaceId?: string;
+}
+
 export type AdmittedCaller =
   | (AdmittedCallerBase & {
       readonly method: "session";
       readonly session: AdmittedSession;
+    })
+  | (AdmittedCallerBase & {
+      readonly method: "cli_session";
+      readonly cliSession: AdmittedCliSession;
     })
   | (AdmittedCallerBase & {
       readonly method: "api_key" | "oag";

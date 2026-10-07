@@ -11,7 +11,7 @@ Command-line flags override the corresponding environment variables.
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment.                    |
-| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                                        |
+| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Path to a bootstrap or issued service-key JSON response. Wins over an `occ login` session; one of the two is required for resources.       |
 | `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
 | `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                          |
 | `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                                 |
@@ -27,6 +27,14 @@ keys.
 
 Pressing Ctrl-C, or sending `SIGTERM`, cancels an in-flight request and exits
 with an error instead of waiting for `--timeout-seconds` to expire.
+
+## Sign in as a person
+
+| Command                      | What it does                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `occ login [--namespace ID]` | Starts a [CLI sign-in](authentication/cli-sessions.md) you approve at `/console/cli-login`. |
+| `occ logout`                 | Ends the CLI session for `--url` and removes its local file.                                |
+| `occ auth status`            | Shows the credential source and, for a CLI session, its account, end time, pin and state.   |
 
 ## Resource commands
 

@@ -3,7 +3,8 @@
 <a id="occ-cli"></a>
 
 Use `occ` to manage OpenClaw Control Plane (OCC) resources from a terminal. You
-need your Installation's OCC endpoint and a protected service-key response file.
+need your Installation's OCC endpoint, and either a console account (for
+`occ login`) or a protected service-key response file.
 For all commands and flags, see the [CLI command reference](../reference/cli.md).
 To deploy through the browser, see [Create and deploy Agents in the console](../reference/console/create-and-deploy.md).
 
@@ -59,9 +60,20 @@ occ installation get
 occ namespace list
 ```
 
-`occ` has no human sign-in: a service key authenticates a non-Agent
-ServicePrincipal, not a person. Without a key, use the
-[console](../reference/console.md).
+A service key authenticates a non-Agent ServicePrincipal, not a person. To act
+as yourself instead, sign in with your console account:
+
+```bash
+export OCC_URL='https://occ.example.com'
+occ login            # type the printed code at /console/cli-login, then Approve
+occ auth status
+```
+
+The CLI session has your current permissions, ends with the browser session
+that approved it (at most 8 hours) and is not refreshed. `occ login --namespace
+'<namespace-id>'` pins it to one Namespace. `occ logout` ends it; you can also
+revoke it in the console under Settings. A set `OCC_SERVICE_KEY_FILE` takes
+precedence. See [CLI sign-in](../reference/authentication/cli-sessions.md).
 
 Replace both example values with your own. These commands require an
 Installation-scoped key; reading the Installation also requires Installation
@@ -81,9 +93,9 @@ export OCC_NAMESPACE='<namespace-id>'
 
 ## Give a member or automation CLI access
 
-People sign in to the console; the CLI authenticates only with a service key.
-An Installation administrator gives someone CLI access to one Namespace by
-issuing a key for a Namespace service principal that holds only the grants
+A person with a console account can use [`occ login`](#connect-to-your-installation).
+For automation, CI, or someone without a console account, an Installation
+administrator gives CLI access to one Namespace by issuing a key for a Namespace service principal that holds only the grants
 you bind. With an administrator key file and `OCC_NAMESPACE` set:
 
 ```bash

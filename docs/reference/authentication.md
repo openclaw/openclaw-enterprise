@@ -12,8 +12,9 @@ to an explicitly provisioned Principal or ServicePrincipal and owns
 For a sign-in procedure, see
 [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator).
 For non-Agent automation, see the [service-key procedure](authentication/service-api-keys.md).
-The [platform console](console.md) at `/console/` uses these session endpoints. Public signup, OIDC
-provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
+The [platform console](console.md) at `/console/` uses these session endpoints. People sign in to `occ` with [CLI sessions](authentication/cli-sessions.md).
+Public signup, OIDC provisioning or claim mapping, and `Authorization` bearer
+credentials are unsupported; generic OIDC
 sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
 
 ## Installation and account ownership

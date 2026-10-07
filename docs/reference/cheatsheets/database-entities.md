@@ -356,6 +356,42 @@ Stores expiring browser sessions for signed-in users.
 - `user_agent`
 - `user_id`
 
+### `cli_device_authorizations`
+
+Pending, approved, denied or consumed `occ login` requests, kept for at most 10
+minutes. See [CLI sign-in](../authentication/cli-sessions.md).
+
+- `id`
+- `device_code_hash`
+- `user_code_hash`
+- `client_label`
+- `requester_address`
+- `namespace_id`
+- `state`
+- `user_id`
+- `parent_session_id`
+- `created_at`
+- `decided_at`
+- `expires_at`
+
+### `cli_sessions`
+
+CLI sessions issued by `occ login`, each a child of the approving `session`
+(deleted with it) and ending no later than it.
+
+- `id`
+- `token_hash`
+- `authorization_id`
+- `user_id`
+- `parent_session_id`
+- `namespace_id`
+- `client_label`
+- `method_id`
+- `version`
+- `method_version`
+- `created_at`
+- `expires_at`
+
 ### `account`
 
 Links a user to their sign-in method. Password methods store a password hash;

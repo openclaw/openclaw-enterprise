@@ -50,6 +50,7 @@ var Version = "dev"
 
 type application struct {
 	out            io.Writer
+	errOut         io.Writer
 	url            string
 	serviceKeyFile string
 	caBundle       string
@@ -62,7 +63,7 @@ type application struct {
 
 // New builds the OCC domain command tree.
 func New(out, errOut io.Writer) *cobra.Command {
-	app := &application{out: out}
+	app := &application{out: out, errOut: errOut}
 	command := &cobra.Command{
 		Use:           "occ",
 		Short:         "Manage OpenClaw Control Plane resources",
@@ -126,6 +127,9 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.presetCommand(),
 		app.credentialSourceCommand(),
 		app.agentCommand(),
+		app.loginCommand(),
+		app.logoutCommand(),
+		app.authCommand(),
 		developmentCommand(),
 	)
 	command.InitDefaultHelpCmd()
@@ -1701,16 +1705,33 @@ func (app *application) client() (*occclient.Client, error) {
 	if app.url == "" {
 		return nil, fmt.Errorf("set OCC_URL or pass --url")
 	}
-	if app.serviceKeyFile == "" {
-		return nil, fmt.Errorf("set OCC_SERVICE_KEY_FILE or pass --service-key-file")
+	// An explicit service key wins, so existing scripts are unchanged; otherwise this
+	// origin's occ login session, if any.
+	if app.serviceKeyFile != "" {
+		return occclient.New(occclient.Config{
+			URL:            app.url,
+			ServiceKeyFile: app.serviceKeyFile,
+			CABundle:       app.caBundle,
+			Timeout:        app.parsedTimeout,
+			Context:        app.ctx,
+		})
 	}
-	return occclient.New(occclient.Config{
-		URL:            app.url,
-		ServiceKeyFile: app.serviceKeyFile,
-		CABundle:       app.caBundle,
-		Timeout:        app.parsedTimeout,
-		Context:        app.ctx,
-	})
+	origin, err := canonicalOrigin(app.url)
+	if err != nil {
+		return nil, err
+	}
+	session, err := loadSession(origin)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, fmt.Errorf("set OCC_SERVICE_KEY_FILE or pass --service-key-file, or run occ login")
+	}
+	if session.expired(time.Now()) {
+		return nil, fmt.Errorf("the occ login session for %s expired at %s; run occ login", origin, session.ExpiresAt)
+	}
+	_, client, err := app.originClient(session.Token)
+	return client, err
 }
 
 func (app *application) requiredNamespace() (string, error) {
