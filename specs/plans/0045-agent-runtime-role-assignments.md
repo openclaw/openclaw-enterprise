@@ -1,5 +1,5 @@
 ---
-rfc: ../rfcs/36-agent-access.md
+rfc: ../rfcs/0010-agent-access.md
 ---
 
 # Per-person Agent runtime-role assignments
@@ -8,7 +8,7 @@ Status: In progress; awaiting upstream integration and review.
 
 ## Problem and scope
 
-The initial Agent sharing release admits every person as the shared native administrator. [Checkpoint 3](../rfcs/36-agent-access.md#delivery-checkpoints) calls for granular native permissions and verified human identity handoff. This change implements the Gateway-entry portion for embedded Kubernetes by selecting any configured OpenClaw role; it does not introduce an administrator/member role list or duplicate OpenClaw's permission engine.
+The initial Agent sharing release admits every person as the shared native administrator. [Checkpoint 3](../rfcs/0010-agent-access.md#delivery-checkpoints) calls for granular native permissions and verified human identity handoff. This change implements the Gateway-entry portion for embedded Kubernetes by selecting any configured OpenClaw role; it does not introduce an administrator/member role list or duplicate OpenClaw's permission engine.
 
 OCE owns the exact person/Agent assignment and entry revocation. `gateway.roles` owns the native definitions. OpenClaw owns its native profiles and all configured permission checks. Installation administration remains separate from runtime access. The [current reference](../../docs/reference/agent-native-admin.md) owns the contract.
 

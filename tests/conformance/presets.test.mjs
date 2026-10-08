@@ -386,12 +386,49 @@ test("preset admission preserves credential structure and literal and default sc
     assert.throws(() => normalizePresetTemplate(invalid, namespaceId), PresetValidationError);
   }
   const binding = { source: { kind: "secret", namespaceId, id: secretId } };
+  const managedPat = {
+    method: "codex_pat",
+    source: { kind: "service_account", namespaceId, id: secretId.replace("sec_", "sa_") },
+  };
+  const managedTemplate = { agent: { harnessAuth: managedPat } };
+  assert.deepEqual(normalizePresetTemplate(managedTemplate, namespaceId), managedTemplate);
   for (const [invalid, message] of [
     [{ agent: { harnessAuth: { method: "password" } } }, /Harness authentication requires/],
     [
-      { agent: { harnessAuth: { method: "chatgpt_service_account", serviceAccountId: "junk" } } },
+      {
+        agent: {
+          harnessAuth: {
+            method: "chatgpt_service_account",
+            serviceAccountId: managedPat.source.id,
+          },
+        },
+      },
       /Harness authentication requires/,
     ],
+    [
+      { agent: { harnessAuth: { ...managedPat, method: "api_key" } } },
+      /Harness authentication requires/,
+    ],
+    [
+      {
+        agent: {
+          harnessAuth: {
+            ...managedPat,
+            source: { ...managedPat.source, namespaceId: otherNamespaceId },
+          },
+        },
+      },
+      /Harness authentication requires/,
+    ],
+    // The managed account reference is closed and exactly typed.
+    ...[
+      { ...managedPat.source, kind: "secret" },
+      { ...managedPat.source, id: secretId },
+      { ...managedPat.source, name: "extra" },
+    ].map((source) => [
+      { agent: { harnessAuth: { ...managedPat, source } } },
+      /Harness authentication requires/,
+    ]),
     ...["1TOKEN", "TOKEN-NAME", "T".repeat(254), "HOME", "otel_exporter"].map((name) => [
       { configuration: { secretBindings: { [name]: binding } } },
       /reserved or invalid environment destination/,

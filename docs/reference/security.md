@@ -30,12 +30,16 @@ namespace must already be `Active`, carry
 security labels, and have the required tenant-local RoleBindings. The worker
 rejects foreign tenant markers and NetworkPolicies before binding its exact
 `openclaw.dev/namespace` Namespace-ID label and `openclaw.dev/namespace-id`
-annotation together with a `resourceVersion`-guarded, non-forced patch;
+annotation (and, in single-cluster Compute, the `openclaw.dev/gateway-namespace`
+label) together with a `resourceVersion`-guarded, non-forced patch;
 concurrent ownership changes cannot overwrite another tenant's claim.
 Additive foreign policies could otherwise defeat default-deny isolation. The
 namespace and its existing manager remain operator-owned;
 persisted uniqueness prevents simultaneous claims, and retained tenant markers
-prevent reassignment until an operator deliberately clears both old markers.
+prevent reassignment until an operator deliberately clears all of the old
+markers: the `openclaw.dev/namespace` label, the `openclaw.dev/namespace-id`
+annotation and, in single-cluster Compute, the `openclaw.dev/gateway-namespace`
+label. A selection that still finds any of them ends `failed`.
 
 Each tenant namespace also receives:
 

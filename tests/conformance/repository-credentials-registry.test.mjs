@@ -14,7 +14,7 @@ import {
   serviceConfigurationData,
 } from "../fixtures/repository-credentials/builders.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 
 function registryInput() {
   return {
@@ -137,8 +137,7 @@ test("GitHub factory snapshots a registry-selected write grant through session a
     import("../../apps/controller/src/drivers/repo/credentials/configuration.ts"),
     import("../../apps/controller/src/drivers/repo/credentials/service.ts"),
   ]);
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const registry = validateGitHubRepositoryRegistry(registryInput());
   const binding = resolveGitHubRepositoryBinding(registry, {
     namespaceId: "namespace-a",

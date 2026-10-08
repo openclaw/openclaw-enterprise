@@ -614,10 +614,14 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const agent = f.consumer();
   const gateway = f.deployments().find((deployment) => deployment !== agent);
-  assert.equal(
-    preparedNativeDocument(f),
-    original,
-    "the separate gateway receives no native exec prefix",
+  const gatewayConfiguration = JSON.parse(preparedNativeDocument(f));
+  // Compute adds the hook callback independently of repository credential custody.
+  // Repository material must leave every other Gateway setting unchanged.
+  delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
+  assert.deepEqual(
+    gatewayConfiguration,
+    JSON.parse(original),
+    "repository material does not change the separate Gateway's execution configuration",
   );
   const assertGatewayIsolated = (deployment) => {
     const pod = deployment.spec.template.spec;

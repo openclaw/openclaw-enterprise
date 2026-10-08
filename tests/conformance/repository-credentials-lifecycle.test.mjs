@@ -13,10 +13,11 @@ import {
   fixtureRepositoryId,
 } from "../fixtures/repository-credentials/github.mjs";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import {
   requestHead,
   serviceConfigurationData,
+  custodyLimits,
 } from "../fixtures/repository-credentials/builders.mjs";
 import { createGitHubServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
 import { eventually } from "../fixtures/repository-credentials/service.mjs";
@@ -72,10 +73,7 @@ function uncertainLifecycle({ kind = "uncertain", failure } = {}) {
   let lifecycle;
   const custody = createCustody({
     clock,
-    maximumSlots: 2,
-    maximumAccessBytes: 16384,
-    maximumRenewalBytes: 16384,
-    maximumCallbacks: 2,
+    ...custodyLimits,
     admitted: () => open,
     changed() {
       lifecycle?.maintain();
@@ -196,10 +194,7 @@ test("finalization is incomplete until the original finalized outcome settles", 
   let lifecycle;
   const custody = createCustody({
     clock,
-    maximumSlots: 2,
-    maximumAccessBytes: 16384,
-    maximumRenewalBytes: 16384,
-    maximumCallbacks: 2,
+    ...custodyLimits,
     admitted: () => false,
     changed() {
       lifecycle?.maintain();
@@ -279,10 +274,7 @@ for (const action of ["retire", "finalize"]) {
     let lifecycle;
     const custody = createCustody({
       clock,
-      maximumSlots: 2,
-      maximumAccessBytes: 16384,
-      maximumRenewalBytes: 16384,
-      maximumCallbacks: 2,
+      ...custodyLimits,
       admitted: () => open,
       changed: () => lifecycle?.maintain(),
     });
@@ -415,8 +407,7 @@ for (const [profile, permissions] of [
   ],
 ]) {
   test(`GitHub ${profile} replaces after hour 13 and repeatedly each hour through the real common owner`, async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const clock = createControlledClock();
     // Independent provider clocks cover both signs of bounded skew.
     const providerClock = createControlledClock(
@@ -568,10 +559,7 @@ function expiryOnlyLifecycle({ leaseMs = 3600000, safetyMarginMs = 60000 } = {})
   let lifecycle;
   const custody = createCustody({
     clock,
-    maximumSlots: 2,
-    maximumAccessBytes: 16384,
-    maximumRenewalBytes: 16384,
-    maximumCallbacks: 2,
+    ...custodyLimits,
     admitted: () => open,
     changed: () => lifecycle?.maintain(),
   });

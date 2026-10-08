@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertConsoleSignIn,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -14,7 +15,6 @@ import {
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "attach-recovery@example.test";
@@ -74,14 +74,16 @@ test(
       app.inject({ method: "POST", url: path, headers, payload: { expectedVersion } });
     async function assertGitHubSignIn(subject, userId) {
       const { callback } = await githubSignIn(app, origin, subject, address());
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, userId);
-      return cookie;
+      return assertConsoleSignIn(app, callback, userId);
     }
-    async function assertGitHubRefused(subject) {
+    async function assertGitHubRefused(subject, consoleReason) {
       const { callback } = await githubSignIn(app, origin, subject, address());
-      assert.equal(callback.headers.location, "/console/?authError=github");
+      assert.equal(
+        callback.headers.location,
+        consoleReason === undefined
+          ? "/console/?authError=github"
+          : `/console/?authError=github&authReason=${consoleReason}`,
+      );
       assert.equal(callback.headers["set-cookie"], undefined);
     }
 
@@ -228,7 +230,8 @@ test(
       assert.equal(disabled.statusCode, 200, disabled.body);
       assert.equal(await currentSession(app, secondGitHubCookie), null);
       assert.equal((await passwordSignIn(app, origin, second, address())).statusCode, 401);
-      await assertGitHubRefused(secondSubject);
+      // The attached GitHub identity is told its account is disabled; the password is not.
+      await assertGitHubRefused(secondSubject, "account-disabled");
 
       const disabledAccount = await readAccount(app, adminHeaders, second.id);
       assert.equal(disabledAccount.disabled, true);

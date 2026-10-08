@@ -83,6 +83,7 @@ async function createFixture(
   fixture.controller.selectDriver("plugin", driver.id);
   return {
     ...fixture,
+    state,
     namespace,
     calls,
     auditSink,
@@ -224,21 +225,51 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
 });
 
 test("Plugin discovery validates bounded credential and identity input before Driver I/O", async (t) => {
-  const fixture = await createFixture(t);
-  for (const [suffix, body] of [
-    ["", { accessToken: "" }],
-    ["", { accessToken: "x".repeat(16385) }],
-    ["", { accessToken, cursor: "x".repeat(8193) }],
-    ["", { accessToken, q: "x".repeat(1025) }],
-    ["", { accessToken, accountId: "caller-supplied-authority" }],
-    ["/details", { accessToken, pluginId: "" }],
-    ["/details", { accessToken, pluginId: "x".repeat(257) }],
+  const logs = [];
+  const logger = createOccLogger({
+    component: "plugin-discovery-test",
+    destination: {
+      write(chunk) {
+        logs.push(String(chunk));
+        return true;
+      },
+    },
+  });
+  const fixture = await createFixture(t, { logger });
+  const wrongKind = {
+    kind: "secrets",
+    namespaceId: fixture.namespace.id,
+    id: `sec_${randomUUID()}`,
+  };
+  // The body is a union of credential shapes without a shared literal field. Only the shape
+  // whose fields the body uses is reported: the other shapes' required fields and the fields
+  // they do not accept are not, and a wrong literal nested inside the field stays that
+  // field's own problem.
+  for (const [suffix, body, details] of [
+    ["", { accessToken: "" }, [{ path: "/accessToken", code: "INVALID_VALUE" }]],
+    ["", { accessToken: "x".repeat(16385) }, [{ path: "/accessToken", code: "TOO_LONG" }]],
+    ["", { accessToken, cursor: "x".repeat(8193) }, [{ path: "/cursor", code: "TOO_LONG" }]],
+    ["", { accessToken, q: "x".repeat(1025) }, [{ path: "/q", code: "TOO_LONG" }]],
+    ["", { accessToken, accountId: "caller-supplied-authority" }, undefined],
+    ["", { secretRef: wrongKind }, [{ path: "/secretRef/kind", code: "INVALID_VALUE" }]],
+    ["/details", { accessToken, pluginId: "" }, [{ path: "/pluginId", code: "INVALID_VALUE" }]],
+    [
+      "/details",
+      { accessToken, pluginId: "x".repeat(257) },
+      [{ path: "/pluginId", code: "TOO_LONG" }],
+    ],
   ]) {
     const invalid = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
-    assert.equal(invalid.status, 400);
-    assert.equal(JSON.stringify(invalid.body).includes(accessToken), false);
+    const label = `${suffix || "list"} ${JSON.stringify(Object.keys(body))}: ${JSON.stringify(invalid.body)}`;
+    assert.equal(invalid.status, 400, label);
+    if (details !== undefined) {
+      assert.deepEqual(invalid.body.error.details, details, label);
+    }
+    assert.equal(JSON.stringify(invalid.body).includes(accessToken), false, label);
   }
   assert.deepEqual(fixture.calls, []);
+  // No validation failure logs the submitted token.
+  assert.doesNotMatch(logs.join(""), /at-plugin-discovery/);
 });
 
 test("Plugin discovery preserves safe failure reasons and suppresses upstream errors", async (t) => {
@@ -597,12 +628,40 @@ test("Saved Agent plugin discovery rejects unsupported Harness authentication or
   );
   grantAgentSecret(fixture, embedded, secret);
   const embeddedPath = `/namespaces/${fixture.namespace.id}/agents/${embedded.id}/plugins`;
+  // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
+  // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
+  const account = await fixture.state.transact((unit) =>
+    unit.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: fixture.namespace.id,
+      name: `plugin-discovery-account-${randomUUID().slice(0, 8)}`,
+    }),
+  );
+  const managed = await fixture.createAgent(
+    fixture.namespace.id,
+    `Managed PAT Agent ${randomUUID()}`,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: fixture.namespace.id,
+          id: account.id,
+        },
+      },
+    },
+  );
+  const managedPath = `/namespaces/${fixture.namespace.id}/agents/${managed.id}/plugins`;
   const secretReads = trackSecretValueReads(fixture.secretDriver);
   for (const [prefix, suffix, body] of [
     [path, "", {}],
     [path, "/details", { pluginId: remoteId }],
     [embeddedPath, "", {}],
     [embeddedPath, "/details", { pluginId: remoteId }],
+    [managedPath, "", {}],
+    [managedPath, "/details", { pluginId: remoteId }],
   ]) {
     const unsupported = await fixture.request("POST", `${prefix}${suffix}`, { body });
     assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));

@@ -21,6 +21,11 @@ keep its dependency installation separate from the root workspace.
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
 
+Within `internal/occcli/`, `cli.go` assembles the command tree and resource
+commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
+`agent_runtime.go` owns runtime inspection, revision selection for runtime reads,
+and log polling; `output.go` owns terminal presentation.
+
 ## Source ownership
 
 | Path                                                      | Responsibility                                                                                               |
@@ -52,6 +57,14 @@ behavior dependent on contracts; put implementation-specific behavior in the
 owning Driver or Backend and wire it through composition. See
 [platform architecture](design.md) for component interactions, implementation
 status, and remaining design requirements.
+
+Within controller composition, `installation-presets.ts` owns Preset file loading
+and bundled-version assembly; `installation-config.ts` owns Driver composition.
+
+HTTP error details live in `apps/controller/src/http/error-details.ts`.
+It translates schema failures into detail paths and expected values. `http/errors.ts`
+owns platform-error mapping, response formatting, and removal of request values
+from verbose validation errors after their details are built.
 
 The [repository capability](reference/repository-credentials.md#repo-driver-contract)
 uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
@@ -136,7 +149,7 @@ Do not install dependencies as a verification side effect.
 | `docs/contributing/`                  | Onboarding and workflows for people changing the platform source or docs.                          |
 | `docs/flows/`                         | Source-backed runtime execution traces.                                                            |
 | `docs/testing/`                       | Contributor test setup, environments, fixtures, and proof limits.                                  |
-| `specs/README.md`                     | Shared index of RFCs, plans, and historical records.                                               |
+| `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |

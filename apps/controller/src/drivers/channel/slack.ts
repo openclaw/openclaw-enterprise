@@ -191,7 +191,9 @@ export class SlackChannelDriver implements ChannelDriver {
     if (method !== "auth.test") {
       url.search = parameters.toString();
     }
-    let response: Pick<Response, "status" | "ok" | "text">;
+    let response: Pick<Response, "status" | "ok" | "text"> & {
+      readonly body: { cancel(): Promise<void> } | null;
+    };
     try {
       const options = {
         method: method === "auth.test" ? "POST" : "GET",
@@ -209,11 +211,9 @@ export class SlackChannelDriver implements ChannelDriver {
     } catch {
       throw new ChannelDirectoryError("unavailable");
     }
-    if (response.status === 429) {
-      throw new ChannelDirectoryError("rate_limited");
-    }
     if (!response.ok) {
-      throw new ChannelDirectoryError("unavailable");
+      await response.body?.cancel().catch(() => {});
+      throw new ChannelDirectoryError(response.status === 429 ? "rate_limited" : "unavailable");
     }
     let body: SlackRecord | undefined;
     try {

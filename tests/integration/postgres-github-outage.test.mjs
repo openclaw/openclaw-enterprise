@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import {
-  attachProvider,
+  assertConsoleSignIn,
+  assertProviderAttached,
+  assertSessionUser,
   authRowCounts,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -15,7 +17,6 @@ import {
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
@@ -74,14 +75,7 @@ test(
       passwordSlowLaneFloors: slowLane,
     });
     const adminHeaders = await signedInHeaders(app, origin, admin);
-    const attached = await attachProvider(
-      app,
-      adminHeaders,
-      member.id,
-      "github",
-      String(memberSubject),
-    );
-    assert.equal(attached.statusCode, 200, attached.body);
+    await assertProviderAttached(app, adminHeaders, member.id, "github", String(memberSubject));
 
     const memberGitHubSignIn = async (remoteAddress) =>
       (await githubSignIn(app, origin, memberSubject, remoteAddress)).callback;
@@ -95,9 +89,7 @@ test(
 
     await t.test("the fixture provider signs the attached account in while up", async () => {
       const callback = await memberGitHubSignIn();
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      await assertConsoleSignIn(app, callback, member.id);
     });
 
     await t.test("provider 5xx fails closed; password sign-in keeps working", async () => {
@@ -106,8 +98,7 @@ test(
       await assertFailedClosed(await memberGitHubSignIn(), before);
       const signedIn = await passwordSignIn(app, origin, member);
       assert.equal(signedIn.statusCode, 200, signedIn.body);
-      const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      const cookie = await assertSessionUser(app, signedIn, member.id);
       const signedOut = await app.inject({
         method: "POST",
         url: "/api/auth/sign-out",
@@ -265,8 +256,7 @@ test(
         );
         const known = await signInWith(device, member, "192.0.2.62");
         assert.equal(known.statusCode, 200, known.body);
-        const cookie = cookieHeaderFromSetCookie(known.headers["set-cookie"]);
-        assert.equal((await currentSession(app, cookie)).user.id, member.id);
+        await assertSessionUser(app, known, member.id);
         // The cookie is bound to its account and grants nothing for another email.
         const foreign = await signInWith(device, { ...other, password: wrong }, "192.0.2.62");
         assert.equal(foreign.statusCode, 401);
@@ -337,16 +327,11 @@ test(
       const slowed = await passwordSignIn(app, origin, admin, "192.0.2.65");
       assert.equal(slowed.statusCode, 200, slowed.body);
       assert.ok(performance.now() - started >= slowLane.maxFloorMs - 10, "the attempt was slowed");
-      assert.equal(
-        (await currentSession(app, cookieHeaderFromSetCookie(slowed.headers["set-cookie"]))).user
-          .id,
-        admin.id,
-      );
+      await assertSessionUser(app, slowed, admin.id);
       // The browser that signed in before spends its own lane instead.
       const known = await signInWith(device, admin, "192.0.2.64");
       assert.equal(known.statusCode, 200, known.body);
-      const cookie = cookieHeaderFromSetCookie(known.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, admin.id);
+      await assertSessionUser(app, known, admin.id);
     });
 
     // A known-device entry is bound to the account's password and enabled state: a password

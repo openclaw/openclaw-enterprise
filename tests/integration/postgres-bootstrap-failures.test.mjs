@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +12,7 @@ import { composePostgresDevelopment } from "../../apps/controller/src/compositio
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { admittedLoggingLevel } from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -668,6 +670,145 @@ test(
       namespaces: 0,
       namespace_work: 0,
     });
+  },
+);
+
+test(
+  "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
+  requiresFailurePostgres,
+  async (context) => {
+    await resetFailureDatabase();
+    const directory = await privateOutputDirectory("openclaw-bootstrap-installation-name-");
+    context.after(async () => {
+      await resetFailureDatabase();
+      await rm(directory, { recursive: true, force: true });
+    });
+
+    // PostgreSQL's name check accepts a trailing NBSP and a line separator; the API's Name
+    // rule refuses both. Development bootstrap reads its name from OPENCLAW_DEV_INSTALLATION_NAME.
+    for (const environment of [
+      productionEnvironment({
+        directory,
+        email: `bootstrap-installation-name-${randomUUID()}@example.test`,
+        name: "Installation\u00a0",
+      }),
+      developmentEnvironment({
+        directory,
+        email: `bootstrap-installation-name-${randomUUID()}@example.test`,
+        name: "Installation\u2028name",
+      }),
+    ]) {
+      const label = environment.NODE_ENV;
+      const result = await runBootstrapInstallation(environment);
+      assert.equal(result.ok, false, label);
+      const failure = jsonLines(result.stderr).find(
+        (line) => line.event === "installation.bootstrap-failed",
+      );
+      assert.equal(failure?.code, "INSTALLATION_NAME_INVALID", `${label}: ${result.stderr}`);
+      if (environment.OCC_BOOTSTRAP_PASSWORD_FILE !== undefined) {
+        assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), false, label);
+      }
+      assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), false, label);
+      assert.deepEqual(
+        await rowCounts(),
+        {
+          installations: 0,
+          bootstrap_audits: 0,
+          principals: 0,
+          service_principals: 0,
+          bindings: 0,
+          service_keys: 0,
+          users: 0,
+          namespaces: 0,
+          namespace_work: 0,
+        },
+        label,
+      );
+    }
+  },
+);
+
+test(
+  "API and worker startup refuse a stored Installation name outside the Name rule",
+  requiresFailurePostgres,
+  async (context) => {
+    const { environment } = await bootstrapExistingInstallation(context, "stored-name");
+    const configurationRoot = await privateOutputDirectory("openclaw-bootstrap-stored-name-");
+    context.after(() => rm(configurationRoot, { recursive: true, force: true }));
+    // An Installation stored before OCC applied the Name rule can hold a trailing NBSP:
+    // PostgreSQL's name check accepts it.
+    await withPool(migratorDatabaseUrl(), (pool) =>
+      pool.query("UPDATE occ.installation SET name = $1", ["Installation\u00a0"]),
+    );
+    const started = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: {
+        ...process.env,
+        NODE_ENV: "development",
+        OCC_HOST: "127.0.0.1",
+        OCC_PORT: "39999",
+        OCC_DATABASE_URL: failureDatabaseUrl,
+        OCC_AUTH_BASE_URL: environment.OCC_AUTH_BASE_URL,
+        OCC_AUTH_SECRET: environment.OCC_AUTH_SECRET,
+        // Development composition builds these Drivers before it reads the Installation.
+        OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-this-test",
+        OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
+      },
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(started.status, 1, started.stderr);
+    const failure = jsonLines(started.stderr).find((line) => line.event === "startup-error");
+    assert.equal(failure?.code, "INSTALLATION_NAME_INVALID", started.stderr);
+
+    // The development worker entrypoint needs a Docker runtime image before it reads the
+    // Installation, so start the worker itself with passive Drivers.
+    const driverConfiguration = { ...createInstallationDriverConfiguration(), backend: [] };
+    const pool = new pg.Pool({ connectionString: failureDatabaseUrl, max: 2 });
+    const worker = createControllerWorker({
+      pool,
+      mode: "production",
+      drivers: {
+        installation: driverConfiguration,
+        computeDriver: passiveComputeDriver(),
+        configurationDriver: createTestConfigurationDriver(),
+        secretDriver: createTestSecretDriver({ id: driverConfiguration.drivers.secret.id }),
+        createIAMDriver(state) {
+          return new NativeIAMDriver(state, { id: driverConfiguration.drivers.iam.id });
+        },
+      },
+      emit: () => {},
+    });
+    try {
+      await assert.rejects(
+        worker.start(),
+        /The stored Installation name breaks the Name rule: 1 to 200 characters/,
+      );
+    } finally {
+      await worker.stop().catch(() => {});
+      await pool.end().catch(() => {});
+    }
+
+    // The production worker entrypoint builds its configured Drivers without contacting them,
+    // so it reaches the stored Installation and names the code.
+    const configPath = join(configurationRoot, "installation.yaml");
+    await writeFile(configPath, JSON.stringify(createInstallationDriverConfiguration()), "utf8");
+    const workerProcess = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
+      cwd: fileURLToPath(new URL("../../", import.meta.url)),
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: configPath,
+        OCC_DATABASE_URL: failureDatabaseUrl,
+      },
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    assert.equal(workerProcess.status, 1, `${workerProcess.error ?? ""}\n${workerProcess.stderr}`);
+    const workerFailure = jsonLines(workerProcess.stderr).find(
+      (line) => line.event === "worker.startup-error",
+    );
+    assert.equal(workerFailure?.code, "INSTALLATION_NAME_INVALID", workerProcess.stderr);
   },
 );
 

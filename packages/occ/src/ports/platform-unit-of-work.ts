@@ -47,6 +47,7 @@ export function bindPlatformUnitOfWork(
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
+      "listReferences",
       "lockSecret",
       "createSecret",
       "deleteSecret",
@@ -65,6 +66,7 @@ export function bindPlatformUnitOfWork(
       "findCredentialWithdrawal",
       "listCredentialWithdrawals",
       "requestCredentialWithdrawal",
+      "reassignCredentialWithdrawal",
       "recordCredentialWithdrawalAttempt",
       "markCredentialWithdrawalRevoked",
     ]),
@@ -115,6 +117,9 @@ export function bindPlatformUnitOfWork(
       "createAccessBinding",
       "updateRuntimeRole",
       "deleteAccessBinding",
+      "listServicePrincipals",
+      "getServicePrincipal",
+      "createServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",

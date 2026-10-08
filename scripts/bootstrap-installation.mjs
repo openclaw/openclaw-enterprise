@@ -13,6 +13,7 @@ import {
   OpenClawController,
   PostgresPlatformState,
 } from "../packages/occ/src/index.ts";
+import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/installation-config.ts";
 
@@ -45,6 +46,14 @@ function optional(name, fallback) {
   const value = process.env[name] ?? fallback;
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${name} must be explicitly configured.`);
+  }
+  return value;
+}
+
+// The Installation name skips the API schema, so check its Name rule before anything is created.
+function installationName(value, name) {
+  if (!isName(value)) {
+    throw new Error(`${name} breaks the Name rule: ${NAME_RULE}.`);
   }
   return value;
 }
@@ -111,6 +120,9 @@ function randomPassword() {
 
 function bootstrapFailureCode(error) {
   const message = error instanceof Error ? error.message : "";
+  if (/installation[ _]name breaks the Name rule/i.test(message)) {
+    return "INSTALLATION_NAME_INVALID";
+  }
   if (/OCC_AUTH_SECRET/.test(message)) {
     return "AUTH_SECRET_INVALID";
   }
@@ -175,7 +187,10 @@ function freshBootstrapConfig(config) {
     const passwordPath = passwordOutputPath(required("OCC_BOOTSTRAP_PASSWORD_FILE"));
     return {
       password: randomPassword(),
-      installationName: required("OCC_BOOTSTRAP_INSTALLATION_NAME"),
+      installationName: installationName(
+        required("OCC_BOOTSTRAP_INSTALLATION_NAME"),
+        "OCC_BOOTSTRAP_INSTALLATION_NAME",
+      ),
       passwordPath,
       serviceKeyPath: serviceKeyOutputPath(
         required("OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
@@ -185,7 +200,10 @@ function freshBootstrapConfig(config) {
   }
   return {
     password: optional("OPENCLAW_DEV_PASSWORD", DEFAULT_DEV_ADMIN_PASSWORD),
-    installationName: optional("OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
+    installationName: installationName(
+      optional("OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
+      "OPENCLAW_DEV_INSTALLATION_NAME",
+    ),
     serviceKeyPath: serviceKeyOutputPath(required("OCC_BOOTSTRAP_SERVICE_KEY_FILE")),
   };
 }

@@ -869,7 +869,15 @@ test(
         await changeAccount(person.id, "disable", peer);
         assert.equal(await persistence.currentSession(record.token), undefined);
         assert.equal(await persistence.snapshotPassword(person.email), undefined);
-        assert.equal(await persistence.snapshotExternal(providerId, subject), undefined);
+        // The attached identity learns its account is disabled; it still gets no proof.
+        assert.deepEqual(await persistence.snapshotExternal(providerId, subject), {
+          disabled: true,
+          userId: person.id,
+        });
+        assert.equal(
+          await persistence.snapshotExternal(providerId, "unattached-subject"),
+          undefined,
+        );
         await assert.rejects(
           persistence.issueSession(proof, sessionRecord(person.id)),
           /no longer current/,

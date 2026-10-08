@@ -31,21 +31,18 @@ session cookie before forwarding to the native gateway.
 | `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database.                                                               |
 | `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                      |
 | `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                 |
-| `OCC_AUTH_BASE_URL`                        | Absolute controller base URL.                                                                                      | Defines the production Better Auth base URL and cookie origin.                                                          |
+| `OCC_AUTH_BASE_URL`                        | Absolute HTTP(S) origin without a path, query, fragment or user info.                                              | Defines the production Better Auth base URL and cookie origin.                                                          |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.             |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.    |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for a private gateway CA.                                                                      | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
 
-For the Helm deployment, prefer `slackProxy.enabled`. The chart then passes the
-managed Service URL and its matching host only to the API Pod and grants API
-egress only to the proxy Pods. For an external proxy, set
-`api.channelDirectoryProxyUrl` to the approved proxy IP and port; the chart grants
-egress only to that exact IPv4 `/32` and TCP port. The proxy must allow CONNECT to
-`slack.com:443`; restrict its other destinations at the proxy. When neither
-setting is used, the chart renders no proxy egress rule, and Slack lookup and
-credential validation require another approved network route. See the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production).
+For Helm, prefer `slackProxy.enabled` over an external
+`api.channelDirectoryProxyUrl`; the
+[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
+owns both options' API-only proxy egress and the proxy's `slack.com:443`
+requirement. With neither, the chart renders no proxy egress rule, and Slack
+lookup and credential validation require another approved network route.
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
@@ -64,10 +61,9 @@ For changes to startup `logging.level`, follow the
 
 The API and worker load the same trusted startup YAML; only the API initializes
 the optional [Backend client](../backends.md). Both validate Backend membership
-and stored ownership before accepting work. When the bundled Kubernetes Compute
-Driver is selected, its `drivers.compute.configuration` section contains the
-`KubernetesComputeDriverOptions` shape described in the
-[Kubernetes Compute Driver guide](../drivers/kubernetes-compute.md#configuration).
+and stored ownership before accepting work. With the bundled Kubernetes Compute
+Driver, `drivers.compute.configuration` holds the
+[`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
 digest-pinned gateway and Agent image references, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
@@ -79,18 +75,16 @@ Agent workspace-file requests use the selected Compute Driver's private gateway
 endpoint. Kubernetes derives the URL from the optional `gatewayRouting.hostname`
 and the admitted Namespace and Agent IDs. If the hostname is omitted or empty,
 Compute derives the chart's Service DNS hostname from the required `gatewayName`,
-`gatewayNamespace`, and `envoyNamespace`; see the
-[hostname contract](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
-`gatewayName` and `gatewayNamespace` identify the route's parent Gateway;
-`envoyNamespace` selects its data-plane namespace.
-Compute derives the allowed Envoy peer from those routing settings and rejects
-explicit `network.gatewayClients` in routed mode. It does not read a per-Agent
-endpoint file or persist a URL in Agent Configuration.
+`gatewayNamespace`, and `envoyNamespace`. It derives the allowed Envoy peer from
+those settings and rejects explicit `network.gatewayClients` in routed mode. It
+does not read a per-Agent endpoint file or persist a URL in Agent Configuration.
+See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+for the hostname contract and each setting's role.
 
-`OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key into
-the API only. Missing or invalid configured key files fail startup; a file that
-becomes unavailable during rotation makes new requests unavailable. Never reuse
-the Better Auth signing secret or a model-provider credential. The worker needs
+`OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key;
+never reuse the Better Auth signing secret or a model-provider credential.
+Missing or invalid key files fail startup; a file that becomes unavailable
+during rotation makes new requests unavailable. The worker needs
 route configuration and namespace-bound HTTPRoute permissions, but no service
 key or CA bundle for native file access.
 
@@ -101,17 +95,14 @@ the generated root Secret's public `tls.crt` into the API and sets
 issuer selects operator-managed issuance instead. Its optional `caSecretName`
 and `caSecretKey` must be supplied together when additional CA trust is needed.
 
-See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-for the Compute contract, and the
-[deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files) for Envoy,
-cert-manager, native trusted-proxy configuration, and key/certificate rotation.
+See the [deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files)
+for Envoy, cert-manager, native trusted-proxy configuration, and key/certificate rotation.
 Kubernetes gateway authentication is always trusted-proxy; private routing
 still requires the Installation, Helm, and service-key settings above. Unsupported Drivers and unavailable endpoints return
 `503 DEPENDENCY_UNAVAILABLE`.
 
-Missing, invalid, expired, or revoked sessions or service keys return `401`; an
-authenticated Principal or ServicePrincipal without the exact existing IAM grant
-receives `403`. Neither credential grants rights without IAM. See
+Sessions and service keys grant no rights without IAM; see
+[denials](../authorization.md#denials-and-failures) for `401` and `403`,
 [Authentication](../authentication/service-api-keys.md#service-api-keys) for service-key issuance,
 scope, and revocation, and the [deployment guide](../../guides/deploy/service-keys.md#service-api-keys-for-automation)
 for the procedure. Normal issuance and verification require no additional
@@ -134,7 +125,7 @@ the worker or initialization Job.
 | `OCC_AUTH_GITHUB_ALLOWED_TEAMS`    | `auth.github.allowedTeams`, comma-joined   | Optional `org/team-slug` entries whose active members may sign in. The GitHub App needs organization permission Members: read.                                                                                           |
 | `OCC_AUTH_GITHUB_RECOVERY_USER_ID` | `auth.recoveryUserId`                      | Existing local password administrator's user ID; designates the recovery account on first activation.                                                                                                                    |
 | `OCC_AUTH_PASSWORD_SIGN_IN`        | `auth.passwordSignIn`                      | `all` (default, not rendered) or `recovery-only`: only the recovery account may use a password. Needs GitHub, Google or OIDC; see [recovery-only](../authentication/external-sign-in.md#recovery-only-password-sign-in). |
-| `OCC_AUTH_TRUSTED_PROXY_CIDRS`     | `api.trustedProxy.cidrs`                   | Comma-separated IPv4 or IPv6 CIDRs, never `/0`. Requests whose socket peer is inside them may carry forwarded headers.                                                                                                   |
+| `OCC_AUTH_TRUSTED_PROXY_CIDRS`     | `api.trustedProxy.cidrs`                   | Comma-separated IPv4 or IPv6 CIDRs, subject to the limits below. Requests whose socket peer is inside them may carry forwarded headers.                                                                                  |
 | `OCC_AUTH_TRUSTED_PROXY_PRESET`    | `api.trustedProxy.preset`                  | `ingress-nginx` (default), `aws` or `generic`. Named presets read `x-forwarded-for`. Set with the CIDRs.                                                                                                                 |
 | `OCC_AUTH_CLIENT_IP_HEADER`        | `api.trustedProxy.clientAddressHeader`     | Lowercase header name, up to 64 characters, `generic` only. Sign-in limits key on the client address it carries from a trusted peer.                                                                                     |
 
@@ -150,26 +141,29 @@ A non-empty list replaces the default, so an egress proxy on a link-local addres
 reached by listing its CIDR; the same holds for Google and OIDC. Listed CIDRs carry no
 link-local exception, so keep them narrow.
 
-`api.trustedProxy` is off by default: the API rejects `Forwarded`,
-`X-Forwarded-*`, and `X-Real-IP` with `403`. Failed password sign-ins are then
-limited per email only, because every browser behind a proxy shares its address.
-With GitHub, Google or OIDC, start, callback, and result then key on the browser's own
-cookies, not the address; start has no per-client limit, only an active cap and
-the 1,000 pending attempts. Startup logs `authentication.sign-in-limit-warning`,
-and Helm's install notes and the profile renderer warn; none of them fail. Set
-`api.trustedProxy` unless the API sees each client's own address. Presets:
+`api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
+return `403`. Failed password sign-ins have per-email limits only: browsers behind
+a proxy share its address. With GitHub, Google or OIDC, start, callback, and result
+key on browser cookies; start has only an active cap and the 1,000-pending-attempt
+cap. Startup logs `authentication.sign-in-limit-warning`; Helm notes and profile
+rendering also warn without failing. Set `api.trustedProxy` unless the API sees
+each client's address. Presets:
 
-- `ingress-nginx`: `cidrs` is the ingress controller Pod CIDR; the header
-  is `x-forwarded-for`. Keep ingress-nginx `use-forwarded-headers` off.
-- `aws`: an Application Load Balancer targeting API Pods; `cidrs` are its
-  subnets and the header is `x-forwarded-for`. A Network Load Balancer
-  preserves the client source and needs no preset unless it fronts ingress-nginx.
+- `ingress-nginx`: trust the ingress controller Pod CIDR; read `x-forwarded-for`.
+  Keep `use-forwarded-headers` off.
+- `aws`: trust Application Load Balancer subnets targeting API Pods; read
+  `x-forwarded-for`. A source-preserving Network Load Balancer needs no preset
+  unless it fronts ingress-nginx.
 - `generic`: `cidrs` and `clientAddressHeader`, such as `x-real-ip`, are required.
 
 Trust only proxies that overwrite or append the header, and admit them through
-`api.clients`. Rendering fails on incomplete GitHub values, an allowlist entry that is
+`api.clients`. Any IPv4-mapped IPv6 spelling counts as IPv4 (prefix 1–32).
+The API and chart refuse entries covering every IPv4 or IPv6 address, including
+`/0`. Mapped peers and header hops use dotted IPv4 sign-in limit keys.
+
+Rendering fails on incomplete GitHub values, an allowlist entry that is
 not an organization login or `org/team-slug`, more than 10 allowlist entries, a shared Secret,
-`agentNativeAdmin.enabled` with GitHub, `/0` proxy CIDRs, another header with a
+`agentNativeAdmin.enabled` with GitHub, refused proxy CIDRs, another header with a
 named preset, or credential, routing and internal headers such as `cookie`.
 
 ### Google sign-in
@@ -235,10 +229,10 @@ before another attempt.
 | Variable                          | Required value or format                                                                                |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `OCC_AUTH_SECRET`                 | Same mounted Better Auth secret used by the API.                                                        |
-| `OCC_AUTH_BASE_URL`               | Same absolute Better Auth base URL used by the API.                                                     |
+| `OCC_AUTH_BASE_URL`               | Same as the API; HTTPS unless the host is `localhost` or `127.0.0.1`.                                   |
 | `OCC_BOOTSTRAP_ADMIN_EMAIL`       | Email address for the first administrator account.                                                      |
 | `OCC_BOOTSTRAP_PASSWORD_FILE`     | New file path on protected operator-owned storage for the generated password.                           |
-| `OCC_BOOTSTRAP_INSTALLATION_NAME` | Nonempty display name used when creating the Installation.                                              |
+| `OCC_BOOTSTRAP_INSTALLATION_NAME` | Installation display name; it must follow the API Name rule (`INSTALLATION_NAME_INVALID`).              |
 | `OCC_BOOTSTRAP_SERVICE_KEY_FILE`  | New private absolute JSON path; on fresh production bootstrap, a distinct sibling of the password file. |
 
 Repeated bootstrap preserves the existing Installation only when the exact

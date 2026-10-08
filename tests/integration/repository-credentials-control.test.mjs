@@ -9,7 +9,7 @@ import {
   startRegistryCredentialServiceFixture,
 } from "../fixtures/repository-credentials/registry.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { createServer as createTlsServer, request as tlsRequest } from "node:https";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -36,6 +36,7 @@ import {
   controlRequest,
   createServiceConfiguration,
   eventually,
+  createLoopbackServiceConfiguration,
 } from "../fixtures/repository-credentials/service.mjs";
 import {
   createGitHubServiceFactory,
@@ -92,13 +93,11 @@ async function dropControlResponse(t, target) {
 }
 
 async function admissionFixture(t, onCreate) {
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
   const clock = createControlledClock();
   const tls = await createTlsMaterial(resources);
-  const base = await createServiceConfiguration(resources, { sessions: 1 });
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+  const config = await createLoopbackServiceConfiguration(resources, { sessions: 1 });
   const upstream = await startAlternateUpstream(resources, { clock, tls });
   const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
@@ -299,13 +298,11 @@ test(
   "private control socket opens, inspects and closes real sessions with bounded input",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
-    const base = await createServiceConfiguration(resources);
-    const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+    const config = await createLoopbackServiceConfiguration(resources);
     const github = await startGitHubFixture(resources, { clock, tls });
     const factory = await createGitHubServiceFactory(resources, {
       config,
@@ -520,14 +517,12 @@ test(
   "close after asynchronous authentication prevents actual upstream dispatch",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     const upstream = await startAlternateUpstream(resources, { tls });
-    const base = await createServiceConfiguration(resources);
-    const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+    const config = await createLoopbackServiceConfiguration(resources);
     let resume;
     const barrier = new Promise((resolve) => {
       resume = resolve;
@@ -586,8 +581,7 @@ test(
   "Agent response completion and premature close preserve lifecycle outcomes",
   { timeout: 10000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const [{ createSystemClock }, { createCredentialService }, { startListeners }] =
       await Promise.all([
         appModule("drivers/repo/credentials/clock"),
@@ -597,11 +591,10 @@ test(
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     // A single exchange slot makes leaked ownership observable on the next request.
-    const base = await createServiceConfiguration(resources, {
+    const config = await createLoopbackServiceConfiguration(resources, {
       exchanges: 1,
       exchangesPerSession: 1,
     });
-    const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
     const github = await startGitHubFixture(resources, { clock, tls });
     const received = [];
     let upstreamCancelled = false;
@@ -1210,8 +1203,7 @@ test(
   async (t) => {
     for (const closeBy of ["control", "deadline"]) {
       await t.test(closeBy, async (t) => {
-        const resources = createResourceScope();
-        t.after(() => resources.close());
+        const resources = createTestResourceScope(t);
         const clock = createControlledClock();
         const tls = await createTlsMaterial(resources);
         const github = await startGitHubFixture(resources, { clock, tls });
@@ -1246,8 +1238,7 @@ test(
           credentialDriverModule("service"),
           credentialDriverModule("server"),
         ]);
-        const base = await createServiceConfiguration(resources);
-        const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+        const config = await createLoopbackServiceConfiguration(resources);
         const factory = await createGitHubServiceFactory(resources, {
           config,
           clock,

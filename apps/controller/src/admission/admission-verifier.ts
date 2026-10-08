@@ -45,7 +45,12 @@ export type AdmittedCaller =
       readonly session: AdmittedSession;
     })
   | (AdmittedCallerBase & {
-      readonly method: "api_key" | "oag";
+      readonly method: "api_key";
+      /** The non-secret ID of the verified service key, recorded on the request's audit rows. */
+      readonly serviceKeyId?: string;
+    })
+  | (AdmittedCallerBase & {
+      readonly method: "oag";
     });
 
 export interface AdmissionVerifier {

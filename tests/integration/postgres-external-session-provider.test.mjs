@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
-  attachProvider,
+  assertProviderAttached,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -179,14 +179,7 @@ test(
       await restart();
       adminHeaders = await signedInHeaders(app, origin, admin, address());
       for (const provider of ["github", "google", "oidc"]) {
-        const attached = await attachProvider(
-          app,
-          adminHeaders,
-          member.id,
-          provider,
-          subjects[provider],
-        );
-        assert.equal(attached.statusCode, 200, attached.body);
+        await assertProviderAttached(app, adminHeaders, member.id, provider, subjects[provider]);
       }
       const methods = (await readAccount(app, adminHeaders, member.id)).methods
         .map(({ providerId }) => providerId)

@@ -82,10 +82,21 @@ so when the commit outcome is unknown. Updates overwrite the backend value: OCC
 keeps no prior value for rollback, and success means stored, not delivered.
 Deletion is refused with `409` while a Configuration, credential source, Agent
 draft, active revision, pending deployment, or queued or running Agent
-provisioning request still references the Secret; the message lists these
-kinds, not the specific resources. A failed provisioning request does not block
+provisioning request still references the Secret. The message names each
+referencing resource the caller may read, by kind and ID, as many as fit the
+256-character message, and only counts the others. The exact Secret read lists
+the same references as `consumers`; see
+[Find a Secret's consumers](kubernetes-secret.md#find-a-secrets-consumers).
+A failed provisioning request does not block
 deletion; reading or retrying it then names the deleted Secret. Otherwise OCC calls the
 Driver before removing its own record.
+
+After the Installation selects another Secret Driver, Secrets stored through the
+previous one keep their metadata, and exact reads still work. Updating or
+deleting one fails with `503` and a message naming the fix, only after the grant,
+lookup, and reference checks: create a new Secret through the selected driver and
+bind it instead, or delete the old Secret once the Installation selects its
+Driver again. OCC never calls a Driver that does not own the Secret.
 
 For plugin discovery, OCC checks permissions and reads current Secret metadata,
 then calls `withValue` without holding a platform transaction over backend or

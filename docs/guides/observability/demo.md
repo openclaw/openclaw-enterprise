@@ -165,6 +165,11 @@ unchanged: Helm upgrades the failed release in place. Any other error, or an
 interrupted run (Helm reports `another operation ... is in progress`), can
 leave resources without a marker; follow [recovery](demo-cleanup.md#recover-an-incomplete-setup).
 
+After you update the checkout for an OCC upgrade, rerun this block to pick up
+dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus,
+Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
+Grafana stops working until you start it again.
+
 Services use `ClusterIP`. Prometheus reads Pod metadata, not Secrets. Grafana
 bundles plugins; startup downloads are disabled. Its disposable database is
 memory-backed so first-start migrations finish in seconds.
@@ -337,7 +342,12 @@ Helm's `--wait` can return while a new Collector Pod is still starting (a
 DaemonSet may have one unavailable Pod), so the block waits for its rollout before
 forwarding. Keep forwarding running. Sign in at `http://127.0.0.1:3001` as `admin` with
 the generated password. Open **OCC → OCC observability** for metrics and logs.
-Point `observability.url` to its `/d/occ-observability` URL.
+For a console link, set `observability.url` to its `/d/occ-observability` URL in
+the [Installation startup YAML](../../reference/configuration.md#installation-startup-configuration),
+not `occ-demo.yaml` (profile installs set `controlPlane.observabilityUrl`). Apply it
+as a separate change with
+[Apply other Installation changes](../deploy/production-upgrade.md#apply-other-installation-changes);
+the new checksum restarts the API and worker.
 
 ## Verify actual data
 

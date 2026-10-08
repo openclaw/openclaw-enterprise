@@ -23,7 +23,11 @@
       "path": "tests/integration/observability-demo-chart.test.mjs",
       "expectedTests": [
         "demo Grafana keeps its disposable SQLite database off node disk",
-        "demo guide install can be rerun after a cold-cache wait timeout"
+        "demo guide install can be rerun after a cold-cache wait timeout",
+        "demo Kubernetes identifiers remain strings for 407",
+        "demo Kubernetes identifiers remain strings for true",
+        "demo Kubernetes identifiers remain strings for null",
+        "demo Kubernetes identifiers remain strings for 1e3"
       ]
     },
     {

@@ -8,7 +8,7 @@ import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
 import {
-  attachProvider,
+  assertProviderAttached,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -146,8 +146,7 @@ test(
       secrets,
     });
     const adminHeaders = await signedInHeaders(app, origin, admin, address());
-    const attached = await attachProvider(app, adminHeaders, member.id, "github", memberSubject);
-    assert.equal(attached.statusCode, 200, attached.body);
+    await assertProviderAttached(app, adminHeaders, member.id, "github", memberSubject);
     assert.equal(
       (await githubSignIn(app, origin, memberSubject, address())).callback.headers.location,
       "/console/",

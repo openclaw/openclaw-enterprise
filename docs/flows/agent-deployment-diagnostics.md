@@ -67,9 +67,15 @@ request. Collection has a ten-second deadline and a 64 KiB response limit.
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
 Gateway container. It maps live configuration, authentication, and connectivity
 to safe codes without sending a message. The call cancels after six seconds or
-when the HTTP caller disconnects. Transport failures return `UNAVAILABLE`; RPC failures return `PROBE_FAILED`.
-Both produce unknown checks; local
-configuration is not substituted for the live response. The Agent container
+when the HTTP caller disconnects. OpenClaw loads the Slack plugin only for a
+Configuration with a Slack channel, so for an Agent without one the Gateway
+refuses the call as an unknown channel; that refusal maps to configuration
+`failed` with `NOT_CONFIGURED`. The probe code is part of the Gateway Pod
+specification, so a revision deployed by an earlier controller keeps the
+earlier mapping (three unknown `PROBE_FAILED` checks) until the Agent is
+redeployed. Transport failures return `UNAVAILABLE`; other RPC failures return
+`PROBE_FAILED`. Both produce unknown checks; local configuration is not
+substituted for the live response. The Agent container
 currently returns no channel checks.
 
 ### 3. Return validated evidence
@@ -105,6 +111,10 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-07 12:00: Say that a revision deployed by an older controller keeps its diagnostics mapping until the Agent is redeployed. (dogfood-r43)
+
+- 2026-10-07 11:30: An Agent without a Slack channel reports `NOT_CONFIGURED` instead of three `PROBE_FAILED` checks. (fix-member-1007/d531)
 
 - 2026-10-01 15:14: Use bounded SDK queries for live channel diagnostics. (authoring-run/24df37c6-7eef-483a-a31c-d2c14a51ca6c - 521549df)
 

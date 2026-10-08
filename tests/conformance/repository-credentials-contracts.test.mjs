@@ -4,13 +4,16 @@ import { verify } from "node:crypto";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import {
+  createResourceScope,
+  createTestResourceScope,
+} from "../fixtures/repository-credentials/resources.mjs";
 import {
   temporaryDirectory,
   createTlsMaterial,
 } from "../fixtures/repository-credentials/process.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
@@ -579,12 +582,15 @@ test("partial fixture cleanup retains the startup failure and releases keys and 
 });
 
 test("a cleanup deadline is a failure and does not prevent remaining resource release", async () => {
-  const resources = createResourceScope({ cleanupTimeoutMs: 20 });
+  // Every cleanup races the same deadline, so it must leave the directory removal room on a
+  // loaded runner; 20 ms let the removal time out too.
+  const resources = createResourceScope({ cleanupTimeoutMs: 500 });
   const directory = await temporaryDirectory(resources);
   const pendingCleanup = Promise.withResolvers();
   resources.after(() => pendingCleanup.promise);
   const closed = resources.close();
   await assert.rejects(closed, (error) => {
+    assert.ok(error instanceof AggregateError);
     assert.equal(error.errors.length, 1);
     assert.match(error.errors[0].message, /cleanup timed out/);
     return true;
@@ -594,18 +600,17 @@ test("a cleanup deadline is a failure and does not prevent remaining resource re
   await pendingCleanup.promise;
   // Late completion cannot replace the recorded cleanup deadline with success.
   assert.equal(resources.close(), closed);
+  await assert.rejects(resources.close(), /credential fixture cleanup failed/);
 });
 
 test(
   "service resource factories revoke acquired credentials before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
-    const resources = createResourceScope();
-    t.after(() => resources.close());
+    const resources = createTestResourceScope(t);
     const clock = createControlledClock();
     const tls = await createTlsMaterial(resources);
-    const original = await createServiceConfiguration(resources);
-    const config = { ...original, gateway: { ...original.gateway, listen: "127.0.0.1:0" } };
+    const config = await createLoopbackServiceConfiguration(resources);
     const github = await startGitHubFixture(resources, { clock, tls });
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
     const factory = await createGitHubServiceFactory(resources, {

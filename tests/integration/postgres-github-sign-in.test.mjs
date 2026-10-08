@@ -18,13 +18,14 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import {
+  assertProviderAttached,
   assertReservedLane,
   attachProvider,
   serveAsGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.mjs";
 
 const email = "github-recovery@example.test";
 const password = "github-local-recovery-password";
@@ -74,7 +75,11 @@ test(
       computeDriver: createDevelopmentComputeDriver(),
       configurationDriver,
     });
-    const port = await availablePort();
+    // The port is part of the auth base URL, and three apps bind it in turn. Hold it from here
+    // until the first binds it, and again across each restart, so no other socket takes it.
+    let reservation = await reservePort();
+    t.after(() => reservation.release());
+    const { port, reusePort } = reservation;
     const origin = `http://127.0.0.1:${port}`;
     const base = {
       mode: "development",
@@ -94,7 +99,8 @@ test(
         await releaseAdmitted.promise;
       }
     });
-    await unconfigured.listen({ host: "127.0.0.1", port });
+    await unconfigured.listen({ host: "127.0.0.1", port, reusePort });
+    await reservation.release();
     assert.equal(
       (await unconfigured.inject({ url: "/api/auth/providers" })).json().data.github,
       false,
@@ -169,6 +175,7 @@ test(
       headers: { cookie: legacyCookie },
     });
     await admitted.promise;
+    reservation = await reservePort({ port });
     let closed = false;
     const closing = unconfigured.close().then(() => {
       closed = true;
@@ -300,7 +307,8 @@ test(
     }
     const app = await composePostgresDevelopment(config, drivers());
     apps.push(app);
-    await app.listen({ host: "127.0.0.1", port });
+    await app.listen({ host: "127.0.0.1", port, reusePort });
+    await reservation.release();
     assert.equal(
       (await app.inject({ url: "/api/auth/session", headers: { cookie: legacyCookie } })).json()
         .data,
@@ -377,8 +385,7 @@ test(
       ).statusCode,
       403,
     );
-    const attach = await attachProvider(app, headers, recovery, "github", "12345678");
-    assert.equal(attach.statusCode, 200, attach.body);
+    await assertProviderAttached(app, headers, recovery, "github", "12345678");
     assert.equal(
       (await app.inject({ url: "/api/auth/session", headers })).json().data,
       null,
@@ -1382,11 +1389,13 @@ test(
     );
     await browser.close();
     browser = undefined;
+    reservation = await reservePort({ port });
     await app.close();
     apps.pop();
     const restarted = await composePostgresDevelopment(config, drivers());
     apps.push(restarted);
-    await restarted.listen({ host: "127.0.0.1", port });
+    await restarted.listen({ host: "127.0.0.1", port, reusePort });
+    await reservation.release();
     assert.equal(
       (
         await restarted.inject({ url: "/api/auth/session", headers: { cookie: limitedCookie } })

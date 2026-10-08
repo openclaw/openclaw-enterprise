@@ -24,7 +24,7 @@ The first slice supports plugin-free dedicated Codex with an OpenAI API-key
 CredentialSource. It does not add embedded OpenClaw support to OpenShell, OAuth,
 repository credentials, selected Codex plugins, or native OpenClaw file delivery.
 Those paths keep their current fail-closed behavior. This plan does not expand the
-unaccepted remainder of the [credential-injection RFC](../rfcs/39-sandbox-credential-injection.md).
+unaccepted remainder of the [credential-injection RFC](../rfcs/0016-sandbox-credential-injection.md).
 
 ## Contract and source touchpoints
 

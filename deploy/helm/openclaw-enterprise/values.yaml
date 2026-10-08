@@ -115,6 +115,8 @@ auth:
 agentNativeAdmin:
   enabled: false
   domain: ""
+  # Must not be a public suffix such as co.uk or github.io. Helm has no public suffix
+  # list: the installation profile renderer and API startup refuse one.
   sharedCookieDomain: ""
 
 # Console and API runtime status and container log reads (Agent administer for text).
@@ -228,7 +230,9 @@ api:
   # the API then rejects forwarded headers and keys sign-in limits on the socket peer.
   # With a preset, requests whose socket peer is inside cidrs may carry forwarded
   # headers, and sign-in limits key on the client address from clientAddressHeader.
-  # cidrs never include /0 and must match only proxies that overwrite or append it.
+  # cidrs must match only proxies that overwrite or append the header. IPv4-mapped
+  # IPv6 addresses in any spelling count as IPv4 (prefix 1-32). Entries covering
+  # every IPv4 or every IPv6 address, including /0, are refused.
   #   ingress-nginx: cidrs = ingress controller Pod CIDR; header x-forwarded-for
   #     (x-real-ip also works). Keep use-forwarded-headers off in ingress-nginx.
   #   aws: ALB in front of the API; cidrs = ALB subnet CIDRs; header x-forwarded-for.

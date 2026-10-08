@@ -15,7 +15,10 @@ import {
   createPostgresControllerAuth,
 } from "../../apps/controller/src/auth/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { parseAuthMaintainArguments } from "../../scripts/lib/auth-maintain-arguments.mjs";
+import {
+  AUTH_MAINTAIN_USAGE,
+  parseAuthMaintainArguments,
+} from "../../scripts/lib/auth-maintain-arguments.mjs";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -48,7 +51,15 @@ test("auth:maintain requires an explicit writers-stopped claim for every change"
     () => parseAuthMaintainArguments(["activate", "--writers-stopped", "--recovery-user"]),
     /requires a value/,
   );
-  assert.throws(() => parseAuthMaintainArguments(["drop-everything"]), /Unknown command/);
+  for (const command of ["drop-everything", "constructor", "toString", "__proto__"]) {
+    assert.throws(() => parseAuthMaintainArguments([command]), /Unknown command/);
+  }
+  for (const args of [[], ["--"]]) {
+    assert.throws(
+      () => parseAuthMaintainArguments(args),
+      /^AuthMaintainUsageError: Unknown command: \(none\)\.\n/,
+    );
+  }
   assert.deepEqual(
     parseAuthMaintainArguments(["--", "purge-sessions", "--user", "u2", "--writers-stopped"]),
     {
@@ -67,14 +78,19 @@ test("auth:maintain requires an explicit writers-stopped claim for every change"
   );
 });
 
-function maintain(args, url = migrationUrl) {
+function maintain(args, url = migrationUrl, environment = {}) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
       ["scripts/auth-maintain.mjs", ...args],
       {
         cwd: repository,
-        env: { ...process.env, NODE_ENV: "development", OCC_MIGRATION_DATABASE_URL: url },
+        env: {
+          ...process.env,
+          NODE_ENV: "development",
+          OCC_MIGRATION_DATABASE_URL: url,
+          ...environment,
+        },
         timeout: 30_000,
       },
       (error, stdout, stderr) => {
@@ -88,6 +104,24 @@ function maintain(args, url = migrationUrl) {
     );
   });
 }
+
+test("auth:maintain rejects undeclared commands before configuration", async () => {
+  // A relative startup path fails the configuration load, so a declared command stops there.
+  const unreadableConfiguration = { OCC_CONFIG_PATH: "relative-startup.yaml" };
+  const declared = await maintain(["status"], "", unreadableConfiguration);
+  assert.equal(declared.code, 1, declared.stderr);
+  assert.match(declared.stderr, /^OCC_CONFIG_PATH must identify an absolute/);
+  for (const command of ["drop-everything", "constructor", "toString", "__proto__"]) {
+    for (const args of [[command], ["--", command, "--writers-stopped"]]) {
+      // Neither the startup file nor missing database configuration may obscure an invalid command.
+      // Launch the actual maintenance entrypoint, without a migrator credential.
+      const result = await maintain(args, "", unreadableConfiguration);
+      assert.equal(result.code, 64, `${args.join(" ")}: ${result.stderr}`);
+      assert.equal(result.stderr, `Unknown command: ${command}.\n${AUTH_MAINTAIN_USAGE}\n`);
+      assert.equal(result.output, undefined);
+    }
+  }
+});
 
 // Short-lived pools: every mutating command refuses while any other client is connected.
 async function withPool(url, work) {

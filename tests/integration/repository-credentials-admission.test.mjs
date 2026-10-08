@@ -441,6 +441,38 @@ test("Repository options preserve an empty successful discovery", async (t) => {
   assert.deepEqual(options.data, []);
 });
 
+test("Repository options refuse Driver display text with C0 controls or DEL", async (t) => {
+  // The utils conformance suite pins every code unit of the shared helper; this pins its use here.
+  let override = {};
+  class CraftedRepositoryDriver extends GitHubRepoDriver {
+    async listOptions(input) {
+      const result = await super.listOptions(input);
+      return { ...result, options: result.options.map((option) => ({ ...option, ...override })) };
+    }
+  }
+  const f = await fixture(t);
+  const { controller } = await f.compose(f.registry, CraftedRepositoryDriver);
+  for (const [code, refused] of [
+    [0x1f, true],
+    [0x20, false],
+    [0x7e, false],
+    [0x7f, true],
+    [0x80, false],
+  ]) {
+    const text = `example${String.fromCharCode(code)}project`;
+    for (const field of ["displayName", "description"]) {
+      const label = `${field} U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+      override = { [field]: text };
+      const listing = controller.listRepositoryOptions(f.actorId, f.namespace.id);
+      if (refused) {
+        await assert.rejects(listing, /returned invalid repository options/, label);
+      } else {
+        assert.equal((await listing).options[0][field], text, label);
+      }
+    }
+  }
+});
+
 test("Repository discovery supports a dedicated-only Compute Driver without admitting unsupported Harnesses", async (t) => {
   // A Driver may support a narrower topology than the platform's Harness catalog.
   // Discovery must not invent an embedded Harness to test that Driver's availability.

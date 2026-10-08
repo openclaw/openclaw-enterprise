@@ -821,6 +821,10 @@
                         "label": "CI"
                       },
                       {
+                        "page": "testing/ci-k3d-images",
+                        "label": "k3d Images"
+                      },
+                      {
                         "page": "testing/first-agent-smoke",
                         "label": "First Agent Smoke"
                       },
@@ -932,6 +936,7 @@
               "testing/gateway-routing",
               "testing/production-tui",
               "testing/slack",
+              "testing/qa-matrix",
               "testing/service-accounts",
               "testing/plugins",
               "testing/openshell",

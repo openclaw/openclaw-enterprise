@@ -12,6 +12,7 @@ import {
 import { PresetValidationError } from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {
+  AgentCredentialSourceBindingError,
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
@@ -22,6 +23,7 @@ import {
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -34,12 +36,15 @@ import {
   PluginDiscoveryError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
+  ProvisioningSecretDriverError,
   ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
+  SecretBindingDriverError,
   SecretBindingValidationError,
+  SecretStorageDriverError,
   SecretValueError,
 } from "../../packages/occ/src/index.ts";
 
@@ -192,6 +197,19 @@ const cases = [
     },
   ],
   [
+    "an IAM policy path over the 512-character cap keeps whole leading segments",
+    new IAMPolicyValidationError(
+      `/bindings/${"b".repeat(600)}`,
+      "The subject is not usable in this Namespace.",
+    ),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "The subject is not usable in this Namespace.",
+      details: [{ path: "/bindings", code: "INVALID_VALUE" }],
+    },
+  ],
+  [
     "a Secret value over the byte limit",
     new SecretValueError("TOO_LONG", "Secret values must be at most 65536 UTF-8 bytes."),
     {
@@ -208,6 +226,15 @@ const cases = [
       status: 400,
       code: "INVALID_REQUEST",
       message: "The Configuration does not select a supported Harness.",
+    },
+  ],
+  [
+    "an unlisted Harness credential source",
+    new AgentCredentialSourceBindingError(),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "The Harness credential source must be listed in the Agent's credentialSources.",
     },
   ],
   [
@@ -308,6 +335,19 @@ const cases = [
       code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
       message: "Select an environment-backed Secret for this channel credential.",
       details: [{ path: "/channels/slack/appToken", code: "INVALID_VALUE" }],
+    },
+  ],
+  [
+    "a channel credential path under a long account key is capped",
+    new ChannelCredentialError(
+      "binding_required",
+      `/channels/slack/accounts/${"a".repeat(600)}/appToken`,
+    ),
+    {
+      status: 400,
+      code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
+      message: "Select an environment-backed Secret for this channel credential.",
+      details: [{ path: "/channels/slack/accounts", code: "INVALID_VALUE" }],
     },
   ],
   [
@@ -658,6 +698,56 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message: "A required platform dependency is unavailable.",
+    },
+  ],
+  [
+    "a Configuration Secret binding the selected Secret Driver cannot serve names the fix",
+    new SecretBindingDriverError(),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+    },
+  ],
+  [
+    "a Harness authentication Secret the selected Secret Driver cannot serve names the fix",
+    new HarnessAuthSecretDriverError(),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    },
+  ],
+  [
+    "an Agent provisioning Secret the selected Secret Driver cannot serve names the fix",
+    new ProvisioningSecretDriverError(),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    },
+  ],
+  [
+    "a Secret update the selected Secret Driver cannot perform names the fix",
+    new SecretStorageDriverError("update"),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+    },
+  ],
+  [
+    "a Secret delete the selected Secret Driver cannot perform names the fix",
+    new SecretStorageDriverError("delete"),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
     },
   ],
   [

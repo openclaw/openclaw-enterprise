@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
+  assertConsoleSignIn,
+  assertExternalSignInRefused,
+  assertProviderAttached,
   assertReservedLane,
-  attachProvider,
   authRowCounts,
   clientAddresses,
   composeProductionSignIn,
@@ -14,10 +16,12 @@ import {
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
+  loginDenialCount,
   onboardPasswordAccounts,
   passwordSignIn,
   postgresSignInState,
   readAccount,
+  sessionCookieName,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
@@ -52,7 +56,6 @@ const strangerSubject = "110000000000000000002";
 const disabledSubject = "110000000000000000003";
 const bothSubject = "110000000000000000004";
 const bothGithubSubject = "9500004";
-const sessionCookieName = "__Host-openclaw_occ.session_token";
 
 // The Google provider fixture replaces only Google's token and key endpoints. State,
 // audit, IAM, Better Auth, the guarded human-login profile and Fastify are production code.
@@ -97,34 +100,21 @@ test(
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
 
     const counts = () => authRowCounts(pool);
-    const denials = async (reason) =>
-      (await state.transact((unit) => unit.audit.list())).filter(
-        ({ action, outcome, reasonCode }) =>
-          action === "authentication.login" && outcome === "denied" && reasonCode === reason,
-      ).length;
-    const attach = async (userId, provider, subject) => {
-      const response = await attachProvider(app, adminHeaders, userId, provider, subject);
-      assert.equal(response.statusCode, 200, response.body);
-      return response;
-    };
-    async function assertGoogleRefused(
-      authorization,
-      message,
-      reason = "EXTERNAL_IDENTITY_REJECTED",
-    ) {
-      const before = await counts();
-      const deniedBefore = await denials(reason);
-      const { callback } = await googleSignIn(app, origin, google, authorization, address());
-      assert.equal(callback.statusCode, 302, message);
-      assert.equal(callback.headers.location, "/console/?authError=google", message);
-      assert.equal(
-        String(callback.headers["set-cookie"] ?? "").includes(sessionCookieName),
-        false,
-        `${message}: no session cookie`,
+    const denials = (reason) => loginDenialCount(state, reason);
+    const attach = (userId, provider, subject) =>
+      assertProviderAttached(app, adminHeaders, userId, provider, subject);
+    const assertGoogleRefused = (authorization, message, reason, consoleReason) =>
+      assertExternalSignInRefused(
+        {
+          pool,
+          provider: "google",
+          denials,
+          signIn: () => googleSignIn(app, origin, google, authorization, address()),
+        },
+        message,
+        reason,
+        consoleReason,
       );
-      assert.deepEqual(await counts(), before, `${message}: no user, method or session`);
-      assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
-    }
     async function assertGoogleSignIn(subject, userId, claims) {
       const signIn = await googleSignIn(
         app,
@@ -133,9 +123,7 @@ test(
         { subject, ...(claims ? { claims } : {}) },
         address(),
       );
-      assert.equal(signIn.callback.headers.location, "/console/", signIn.callback.body);
-      const cookie = cookieHeaderFromSetCookie(signIn.callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, userId);
+      const cookie = await assertConsoleSignIn(app, signIn.callback, userId);
       return { ...signIn, cookie };
     }
 
@@ -461,7 +449,12 @@ test(
       });
       assert.equal(disable.statusCode, 200, disable.body);
       assert.equal(await currentSession(app, cookie), null);
-      await assertGoogleRefused({ subject: disabledSubject }, "disabled account");
+      await assertGoogleRefused(
+        { subject: disabledSubject },
+        "disabled account",
+        "ACCOUNT_DISABLED",
+        "account-disabled",
+      );
     });
 
     await t.test("GitHub and Google together both sign in with distinct provider ids", async () => {
@@ -485,14 +478,17 @@ test(
         password: true,
         sessionBinding: true,
       });
-      await assertGoogleRefused({ subject: disabledSubject }, "disabled after restart");
+      await assertGoogleRefused(
+        { subject: disabledSubject },
+        "disabled after restart",
+        "ACCOUNT_DISABLED",
+        "account-disabled",
+      );
       await attach(both.id, "google", bothSubject);
       await attach(both.id, "github", bothGithubSubject);
       await assertGoogleSignIn(bothSubject, both.id);
       const { callback } = await githubSignIn(app, origin, bothGithubSubject, address());
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const githubCookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, githubCookie)).user.id, both.id);
+      await assertConsoleSignIn(app, callback, both.id);
       const methods = (
         await pool.query(
           `SELECT provider_id, account_id FROM occ.account

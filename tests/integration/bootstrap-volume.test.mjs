@@ -108,6 +108,49 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
     ),
     /approved immutable SHA-256 image reference/,
   );
+  // Kubernetes rejects uppercase digest hex as InvalidImageName, so the helper
+  // refuses it before creating a preparation Pod that could never start.
+  await assert.rejects(
+    execute(
+      helper,
+      [
+        "--kubeconfig",
+        kubeconfig,
+        "--context",
+        "ctx",
+        "--namespace",
+        "openclaw-system",
+        "--claim",
+        "claim",
+        "--image",
+        `registry.example.invalid/openclaw/controller@sha256:${"A".repeat(64)}`,
+      ],
+      base,
+    ),
+    /--image must be an approved immutable SHA-256 image reference/,
+  );
+  // A digest is exactly 64 hex characters.
+  for (const digest of ["a".repeat(63), "a".repeat(65)]) {
+    await assert.rejects(
+      execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "ctx",
+          "--namespace",
+          "openclaw-system",
+          "--claim",
+          "claim",
+          "--image",
+          `registry.example.invalid/openclaw/controller@sha256:${digest}`,
+        ],
+        base,
+      ),
+      /--image must be an approved immutable SHA-256 image reference/,
+    );
+  }
   await assert.rejects(
     execute(
       helper,
@@ -327,4 +370,55 @@ test("prepare-bootstrap-volume refuses unverifiable success reports without prin
 
   const calls = await invocations(statePath);
   assert.ok(!calls.some((args) => args.includes("delete") && args.includes("pod")));
+});
+
+test("prepare-bootstrap-volume preserves YAML-scalar namespace names as strings", async (t) => {
+  for (const namespace of ["true", "407", "null", "1e3"]) {
+    await t.test(namespace, async (t) => {
+      const { directory, kubeconfig, manifestPath } = await fixture(t);
+      await execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "production",
+          "--namespace",
+          namespace,
+          "--claim",
+          "claim",
+          "--image",
+          image,
+        ],
+        { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+      );
+      const manifest = loadYaml(await readFile(manifestPath, "utf8"));
+      assert.equal(manifest.metadata.namespace, namespace);
+    });
+  }
+});
+
+test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and values", async (t) => {
+  // Each key is also its value, so neither side of a selector may be left unquoted.
+  const keys = ["null", "yes", "on", "1e3", "0x10", "010"];
+  const { directory, kubeconfig, manifestPath } = await fixture(t);
+  await execute(
+    helper,
+    [
+      "--kubeconfig",
+      kubeconfig,
+      "--context",
+      "production",
+      "--namespace",
+      "openclaw-system",
+      "--claim",
+      "claim",
+      "--image",
+      image,
+      ...keys.flatMap((key) => ["--node-selector", `${key}=${key}`]),
+    ],
+    { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+  );
+  const manifest = loadYaml(await readFile(manifestPath, "utf8"));
+  assert.deepEqual(manifest.spec.nodeSelector, Object.fromEntries(keys.map((key) => [key, key])));
 });

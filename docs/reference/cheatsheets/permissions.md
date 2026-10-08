@@ -72,9 +72,9 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   [deploy an Agent](../api.md#post-namespacesnamespaceidagentsagentiddeploy) also
   require `configuration:read`, `service_account:read` for current or new
   associations, `secret:operate` for bound Secrets, and `credential_source:operate`
-  for a bound credential source. At deployment the Agent’s own service principal
-  also needs `secret:operate` on each bound Secret and `credential_source:operate`
-  on its source.
+  for each source in `credentialSources`. At
+  deployment the Agent’s own service principal also needs `secret:operate` on each
+  bound Secret and `credential_source:operate` on each source.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.
@@ -106,10 +106,12 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
 the per-kind actions in the table above on `agent`, `agent_revision`,
-`configuration`, `credential_source`, `preset`, `secret`, and `service_account`.
+`configuration`, `credential_source`, `preset`, `secret`, and `service_account`,
+except `create`.
 It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
 checks, such as `secret:read_logs` or `configuration:deploy`, because it would
-grant nothing. On `namespace` it accepts only `read`.
+grant nothing, and a Role with any `create` Permission, which no exact-resource
+binding can grant. On `namespace` it accepts only `read`.
 It can bind an existing human Principal or a Namespace-local ServicePrincipal
 to an existing exact resource, including the path Namespace itself. Exact
 Namespace access does not grant access to child resources.

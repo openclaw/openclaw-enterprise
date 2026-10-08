@@ -209,7 +209,9 @@ until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
-`SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`. See the
+`SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share
+a placeholder variable fail it the same way with
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
 

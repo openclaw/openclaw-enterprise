@@ -327,7 +327,7 @@ case "$*" in
   *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate"}' ;;
-  *) printf '%s\\n' '{"id":"ins_upgrade_test"}' ;;
+  *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,
   );
@@ -404,4 +404,54 @@ esac
     await readFile(commandLog, "utf8"),
     /exec gateway-test --container gateway -- node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
   );
+});
+
+test("production image upgrades refuse uppercase or wrong-length digests before touching the cluster", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // Image references are checked during argument validation, before any file,
+  // tool, or cluster access, so placeholder paths are enough here.
+  const required = [
+    "--kubeconfig",
+    join(directory, "kubeconfig"),
+    "--context",
+    "fixture",
+    "--namespace",
+    "openclaw-system",
+    "--release",
+    "oce",
+    "--values",
+    join(directory, "values"),
+    "--installation",
+    join(directory, "installation"),
+    "--source-revision",
+    "d".repeat(40),
+    "--evidence-dir",
+    join(directory, "evidence"),
+  ];
+  // Kubernetes rejects uppercase digest hex as InvalidImageName, so each image
+  // flag must refuse it instead of failing later in a rollout. A digest is
+  // exactly 64 hex characters.
+  for (const [flag, repositoryName, digest] of [
+    ["--controller-image", "controller", "A".repeat(64)],
+    ["--broker-image", "repository-credentials", "A".repeat(64)],
+    ["--runtime-image", "runtime", "A".repeat(64)],
+    ["--controller-image", "controller", "a".repeat(63)],
+    ["--controller-image", "controller", "a".repeat(65)],
+  ]) {
+    await assert.rejects(
+      execute(
+        upgradeScript,
+        [...required, flag, `registry.example.invalid/${repositoryName}@sha256:${digest}`],
+        { cwd: repository },
+      ),
+      (error) => {
+        assert.match(
+          error.stderr,
+          new RegExp(`${flag} must be an approved immutable SHA-256 image reference`, "u"),
+        );
+        return true;
+      },
+    );
+  }
 });

@@ -138,7 +138,8 @@ function wait(ms) {
 
 // Failed provisioning codes that a retry of the same job cannot fix: the worker rejected
 // the request (a taken name, a scope or authorization rejection, a Namespace or Agent
-// lifecycle change) or the job was cancelled. Every other code, including the worker's
+// lifecycle change, an Installation Driver change the stored plan no longer passes, or a
+// Secret Driver switch) or the job was cancelled. Every other code, including the worker's
 // PROVISIONING_FAILED and PROVISIONING_WORK_NOT_FOUND, keeps Retry.
 const PERMANENT_PROVISIONING_CODES = new Set(["PROVISIONING_REJECTED", "PROVISIONING_CANCELLED"]);
 
@@ -321,11 +322,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   if (
     binding != null &&
     (!isObject(binding) ||
-      !["runtime", "api_key", "codex_pat", "chatgpt_service_account"].includes(binding.method) ||
-      (binding.method === "chatgpt_service_account" &&
-        typeof binding.serviceAccountId !== "string") ||
+      !["runtime", "api_key", "codex_pat"].includes(binding.method) ||
       (["api_key", "codex_pat"].includes(binding.method) &&
-        (binding.source?.kind !== "secret" ||
+        (!["secret", ...(binding.method === "codex_pat" ? ["service_account"] : [])].includes(
+          binding.source?.kind,
+        ) ||
           binding.source.namespaceId !== namespaceId ||
           typeof binding.source.id !== "string")))
   ) {
@@ -1771,7 +1772,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         savedSecret ??
         modelCredentialSecret ??
         presetExistingSecret ??
-        (hasBoundModelCredential ? binding.source : undefined);
+        (hasBoundModelCredential && binding.source.kind === "secret" ? binding.source : undefined);
       if (modelSecret) {
         await ensureSecretOperateBinding(context, savedAgent, modelSecret);
       }

@@ -146,7 +146,7 @@ is_dns_label "$namespace" ||
   die "--namespace must be a DNS label."
 is_dns_subdomain "$claim" ||
   die "--claim must be a DNS subdomain."
-[[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[A-Fa-f0-9]{64}$ ]] ||
+[[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] ||
   die "--image must be an approved immutable SHA-256 image reference."
 
 suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)
@@ -159,7 +159,7 @@ if ((${#node_selectors[@]})); then
   for selector in "${node_selectors[@]}"; do
     key=${selector%%=*}
     value=${selector#*=}
-    node_selector_yaml+="    ${key}: \"${value}\"
+    node_selector_yaml+="    \"${key}\": \"${value}\"
 "
   done
 fi
@@ -186,7 +186,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: ${pod}
-  namespace: ${namespace}
+  namespace: "${namespace}"
   labels:
     app.kubernetes.io/name: openclaw-enterprise
     app.kubernetes.io/component: bootstrap-volume-preparation

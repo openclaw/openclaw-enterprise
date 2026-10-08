@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-09-29
-last_updated_session: authoring-run/5b79ed06-59ff-4a5d-9cf4-0479d7c8d717
+updated: 2026-10-05
+last_updated_session: authoring-run/eb95c719-31db-483c-9db3-c9573329209d
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -80,6 +80,12 @@ requires a bot identity from `auth.test` and pages through `users.list` or
 The response contains bounded candidates and pagination state, never the token.
 An incomplete page cannot establish that a name is absent or unique.
 
+`apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.call`
+cancels an unused response body on a non-success HTTP status before returning
+the safe rate-limit or unavailable error. This releases occupied transport
+capacity even when the error body has not finished. The same request owner
+serves credential validation; no automatic retry is added.
+
 ### 3. Display names and save IDs
 
 `apps/controller/src/console/channels/slack.mjs:appendFields`,
@@ -125,7 +131,8 @@ view.
   Enable Helm `slackProxy.enabled` or set the approved
   external proxy IP and port in `api.channelDirectoryProxyUrl`, then verify that
   the proxy permits CONNECT to `slack.com:443`.
-- Directory conformance tests cover provider pagination and safe errors. The
+- Directory conformance tests cover provider pagination, safe errors, and native
+  HTTP connection recovery after unfinished 429 and 503 response bodies. The
   OCC API integration test covers both authorization checks and response
   projection. Browser checks cover name display and exact-ID saving.
 - The Agent plugin approver browser check holds the refocus access read and
@@ -145,6 +152,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-05 19:32: Describe failed HTTP response cleanup and native connection recovery. (authoring-run/eb95c719-31db-483c-9db3-c9573329209d - 5a2dd43d2e524637e7173457def040fa79d42a93)
 
 - 2026-09-28 15:37: Document the managed Helm Slack proxy path and selector-scoped API egress. (authoring-run/5b79ed06-59ff-4a5d-9cf4-0479d7c8d717 - 6c56149f1f2b7290d8526d87c3624c9b7db09fbf)
 

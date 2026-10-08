@@ -72,8 +72,8 @@ spec:
             - name: GF_SECURITY_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Values.grafana.adminSecretName }}
-                  key: {{ $.Values.grafana.adminSecretKey }}
+                  name: {{ $.Values.grafana.adminSecretName | quote }}
+                  key: {{ $.Values.grafana.adminSecretKey | quote }}
             - { name: GF_PATHS_DATA, value: /data }
             - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
             - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }

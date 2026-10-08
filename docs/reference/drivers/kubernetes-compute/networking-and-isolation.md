@@ -58,7 +58,13 @@ identity `occ-workspace-files` with `operator.admin`, and
 `gateway.allowRealIpFallback: true`. Agent Configuration and Console starters
 can omit those fields. Unsupported gateway authentication fields or conflicting
 tenant trust fields fail deployment; matching explicit CIDR lists are accepted
-regardless of order. `trustedProxy.allowLoopback` must be omitted or false:
+regardless of order. Deployment and Agent provisioning check the same fields
+when they admit a request and answer `409 RESOURCE_CONFLICT` naming the refused
+setting and what is accepted, for example `Configuration setting gateway.auth.mode must be
+trusted-proxy: …`, never its value. `trustedProxy.allowUsers` is checked later:
+provisioning answers the fixed `409` text, with the reason in the API log, and a
+deployment is admitted and then fails with `DEPENDENCY_UNAVAILABLE`, with the
+reason in the worker's `worker.compute-prepare-failed` line. `trustedProxy.allowLoopback` must be omitted or false:
 loopback access uses the separate password, not proxy identity headers. Native
 required-header and device auto-approval settings retain their separate purposes.
 

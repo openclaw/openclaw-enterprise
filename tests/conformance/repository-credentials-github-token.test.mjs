@@ -18,6 +18,7 @@ import {
   githubTokenConfigurationData,
   requestHead as head,
   serviceConfigurationData,
+  custodyLimits,
 } from "../fixtures/repository-credentials/builders.mjs";
 
 // Synthetic values: the prefix selects a class; nothing here is a real credential.
@@ -82,10 +83,7 @@ function bind({ factory, clock }, profile, binding = factory.resolve(profile).bi
   const admitted = admitSession(binding, clock.wallNow() + 3600000, clock);
   const custody = createCustody({
     clock,
-    maximumSlots: 2,
-    maximumAccessBytes: 16384,
-    maximumRenewalBytes: 16384,
-    maximumCallbacks: 2,
+    ...custodyLimits,
     admitted: () => true,
     changed() {},
   });

@@ -53,7 +53,7 @@ runs:
         sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
         skopeo --version | grep -Fx 'skopeo version 1.13.3'
     - name: Enable Kubernetes bridge packet filtering
-      if: startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
+      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -70,11 +70,11 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth'
+      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -118,8 +118,8 @@ runs:
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
       run: pnpm build
-    - name: Build Go CLI for OpenShell development proof
-      if: inputs.lane == 'openshell'
+    - name: Build Go CLI for development installation proof
+      if: inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Prepare hosted platform disk capacity
@@ -131,7 +131,7 @@ runs:
     - name: Expose image cache credentials
       id: image-cache
       if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'repository-credentials-platform'
-      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
           const token = process.env.ACTIONS_RUNTIME_TOKEN;
@@ -149,10 +149,14 @@ runs:
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
+    - name: Install trusted browser certificate tooling
+      if: inputs.lane == 'qa-matrix'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libnss3-tools
     - name: Run lane
       shell: bash
       env:
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.

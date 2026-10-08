@@ -21,7 +21,8 @@ Run the commands below from the repository root on Linux or macOS. You need:
   in `package.json`.
 - About 20 GB of free container-engine storage for the first build. On macOS
   that space is inside the Podman or Docker virtual machine rather than on your
-  host disk; check it with `podman machine ssh df -h /var`. Without it, startup
+  host disk; check it with `podman machine ssh df -h /var`, or for Docker
+  Desktop with `docker run --rm alpine df -h /`. Without it, startup
   fails late with `no space left on device` and rolls back the cluster.
 - Free local ports `3000` for the API, `8443` for the browser console, and
   `6443` for Kubernetes. If a port is in use, override `OPENCLAW_DEV_PORT`,

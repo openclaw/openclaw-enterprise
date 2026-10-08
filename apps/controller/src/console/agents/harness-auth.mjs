@@ -41,18 +41,18 @@ export function harnessAuthDescription(binding) {
     return "Operator-managed credentials";
   }
   if (binding.method === "codex_pat") {
-    return "Service Accounts · Secret configured";
+    return binding.source.kind === "service_account"
+      ? `ChatGPT service account · ${binding.source.id}`
+      : "Service Accounts · Secret configured";
   }
   if (binding.method === "oauth") {
     return "ChatGPT OAuth (Experimental) · Agent login configured";
   }
-  return binding.method === "api_key"
-    ? "API key · Secret configured"
-    : `ChatGPT service account · ${binding.serviceAccountId}`;
+  return "API key · Secret configured";
 }
 
 export function renderHarnessAuthSummary(context, binding) {
-  if (!["api_key", "codex_pat", "oauth"].includes(binding?.method)) {
+  if (binding?.source?.kind !== "secret") {
     return harnessAuthDescription(binding);
   }
   return element(
@@ -78,9 +78,15 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
       ? element("option", { value: "oauth" }, "ChatGPT OAuth (Experimental)")
       : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
-    element("option", { value: "chatgpt_service_account" }, "ChatGPT service account"),
+    harnessId === "codex"
+      ? element("option", { value: "service_account" }, "Issued ChatGPT service account")
+      : null,
   );
-  method.value = binding?.method ?? "";
+  const originalMethod =
+    binding?.method === "codex_pat" && binding.source.kind === "service_account"
+      ? "service_account"
+      : (binding?.method ?? "");
+  method.value = originalMethod;
   const originalSecretSource =
     ["api_key", "codex_pat", "oauth"].includes(binding?.method) && binding.source?.kind === "secret"
       ? binding.source
@@ -92,11 +98,9 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     { id: "service-account-id", disabled: true },
     element("option", { value: "" }, "Select an issued account"),
   );
-  if (binding?.method === "chatgpt_service_account") {
-    account.append(
-      element("option", { value: binding.serviceAccountId }, binding.serviceAccountId),
-    );
-    account.value = binding.serviceAccountId;
+  if (originalMethod === "service_account") {
+    account.append(element("option", { value: binding.source.id }, binding.source.id));
+    account.value = binding.source.id;
   }
   const draft = options.draft;
   if (draft) {
@@ -193,13 +197,13 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     secretField.hidden = !directSecret;
     secretField.querySelector("label").textContent =
       method.value === "codex_pat" ? "Service account token Secret" : "API key Secret";
-    accountField.hidden = method.value !== "chatgpt_service_account";
+    accountField.hidden = method.value !== "service_account";
     const methodChanged = method.value !== previousMethod;
     previousMethod = method.value;
-    if (methodChanged && directSecret && method.value === binding?.method) {
+    if (methodChanged && directSecret && method.value === originalMethod) {
       selectedSecretSource = originalSecretSource;
       changedSecret = null;
-    } else if (methodChanged && (!directSecret || method.value !== binding?.method)) {
+    } else if (methodChanged && (!directSecret || method.value !== originalMethod)) {
       selectedSecretSource = null;
       changedSecret = null;
     }
@@ -210,7 +214,7 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
     secretPicker.setRequired(directSecret);
     secretPicker.setDisabled(disabled || !directSecret);
     secretPicker.refresh();
-    account.required = method.value === "chatgpt_service_account";
+    account.required = method.value === "service_account";
   }
   method.addEventListener("change", update);
   update();
@@ -269,11 +273,14 @@ export function createHarnessAuthFields(context, binding = null, harnessId, opti
       if (method.value === "runtime") {
         return { method: "runtime" };
       }
-      if (method.value === "chatgpt_service_account") {
+      if (method.value === "service_account") {
         if (!account.value) {
           throw new Error("Select an issued ChatGPT service account.");
         }
-        return { method: "chatgpt_service_account", serviceAccountId: account.value };
+        return {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: context.namespaceId, id: account.value },
+        };
       }
       if (!selectedSecretSource?.id) {
         throw new Error(

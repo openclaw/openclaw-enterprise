@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  attachProvider,
+  assertConsoleSignIn,
+  assertProviderAttached,
+  assertSessionUser,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
-  currentSession,
   fakeGoogle,
   githubSignIn,
   githubUpgradeSettings,
   googleSignIn,
   googleUpgradeSettings,
+  loginDenialCount,
   memoryLogger,
   onboardPasswordAccounts,
   passwordSignIn,
@@ -19,7 +21,6 @@ import {
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "recovery-only-admin@example.test";
@@ -82,14 +83,7 @@ test(
     let adminHeaders;
 
     async function attach(provider, account, subject) {
-      const attached = await attachProvider(
-        app,
-        adminHeaders,
-        account.id,
-        provider,
-        String(subject),
-      );
-      assert.equal(attached.statusCode, 200, attached.body);
+      await assertProviderAttached(app, adminHeaders, account.id, provider, String(subject));
     }
 
     await t.test("the default setting keeps every enrolled account's password", async () => {
@@ -152,13 +146,7 @@ test(
       });
     });
 
-    const denials = async () =>
-      (await state.transact((unit) => unit.audit.list())).filter(
-        ({ action, outcome, reasonCode }) =>
-          action === "authentication.login" &&
-          outcome === "denied" &&
-          reasonCode === "INVALID_CREDENTIALS",
-      ).length;
+    const denials = () => loginDenialCount(state, "INVALID_CREDENTIALS");
     await t.test("ordinary passwords get the bad-credential answer", async () => {
       const before = await denials();
       const unknown = { email: "recovery-only-nobody@example.test", password };
@@ -196,8 +184,7 @@ test(
     await t.test("the recovery account still signs in with its password", async () => {
       const signedIn = await passwordSignIn(app, origin, admin, address());
       assert.equal(signedIn.statusCode, 200, signedIn.body);
-      const cookie = cookieHeaderFromSetCookie(signedIn.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, admin.id);
+      const cookie = await assertSessionUser(app, signedIn, admin.id);
       assert.equal(
         (await passwordSignIn(app, origin, { ...admin, password: "x".repeat(20) }, address()))
           .statusCode,
@@ -208,9 +195,7 @@ test(
 
     await t.test("an ordinary account signs in with its GitHub identity", async () => {
       const { callback } = await githubSignIn(app, origin, memberSubject, address());
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      await assertConsoleSignIn(app, callback, member.id);
     });
 
     await t.test("attaching an identity unstrands an account without a restart", async () => {
@@ -270,9 +255,7 @@ test(
         { subject: googleMemberSubject },
         address(),
       );
-      assert.equal(callback.headers.location, "/console/", callback.body);
-      const cookie = cookieHeaderFromSetCookie(callback.headers["set-cookie"]);
-      assert.equal((await currentSession(app, cookie)).user.id, member.id);
+      await assertConsoleSignIn(app, callback, member.id);
     });
   },
 );

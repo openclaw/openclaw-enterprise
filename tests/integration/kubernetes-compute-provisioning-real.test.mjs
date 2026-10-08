@@ -108,11 +108,13 @@ test(
       );
     }
 
-    async function assertPermanentlyRejected(tenant = owner) {
+    // The reason is what the worker logs for the refusal (D521).
+    async function assertPermanentlyRejected(reason, tenant = owner) {
       assert.deepEqual(await driver.ensureNamespace(tenant), {
         namespaceId: tenant.id,
         namespaceReady: false,
         failure: "permanent",
+        reason,
       });
     }
 
@@ -123,7 +125,10 @@ test(
       status: "provisioning",
       existingNamespace: `oce-missing-${hash(randomUUID())}`,
     };
-    await assertPermanentlyRejected(missingOwner);
+    await assertPermanentlyRejected(
+      `Existing Kubernetes namespace ${missingOwner.existingNamespace} does not exist.`,
+      missingOwner,
+    );
     assert.equal(await missing("namespace", missingOwner.existingNamespace), true);
     assert.equal(await missing("namespace", kubernetesNamespaceName(missingOwner.id)), true);
 
@@ -152,12 +157,45 @@ test(
     );
 
     // Existing foreign identity, missing external consent, and unsafe Pod Security fail closed.
-    for (const [operation, key, rejectedValue, restoredValue] of [
-      ["label", "openclaw.dev/namespace", randomUUID(), undefined],
-      ["label", "openclaw.dev/gateway-namespace", randomUUID(), undefined],
-      ["annotate", "openclaw.dev/namespace-id", `ns_${randomUUID()}`, undefined],
-      ["annotate", "openclaw.dev/namespace-lifecycle", undefined, "external"],
-      ["label", "pod-security.kubernetes.io/enforce", "baseline", "restricted"],
+    // A foreign marker is named by its key only, never by its value (another tenant's ID).
+    const foreignMarker = (key, kind) =>
+      `Existing Kubernetes namespace ${existingName} belongs to another tenant: its ${key} ${kind} names a different Namespace.`;
+    for (const [operation, key, rejectedValue, restoredValue, reason] of [
+      [
+        "label",
+        "openclaw.dev/namespace",
+        randomUUID(),
+        undefined,
+        foreignMarker("openclaw.dev/namespace", "label"),
+      ],
+      [
+        "label",
+        "openclaw.dev/gateway-namespace",
+        randomUUID(),
+        undefined,
+        foreignMarker("openclaw.dev/gateway-namespace", "label"),
+      ],
+      [
+        "annotate",
+        "openclaw.dev/namespace-id",
+        `ns_${randomUUID()}`,
+        undefined,
+        foreignMarker("openclaw.dev/namespace-id", "annotation"),
+      ],
+      [
+        "annotate",
+        "openclaw.dev/namespace-lifecycle",
+        undefined,
+        "external",
+        `Existing Kubernetes namespace ${existingName} requires external ownership.`,
+      ],
+      [
+        "label",
+        "pod-security.kubernetes.io/enforce",
+        "baseline",
+        "restricted",
+        `Existing Kubernetes namespace ${existingName} requires restricted Pod Security.`,
+      ],
     ]) {
       await kubectl(
         operation,
@@ -167,7 +205,7 @@ test(
         "--overwrite",
       );
       const rejectedNamespace = await resource("namespace", existingName);
-      await assertPermanentlyRejected();
+      await assertPermanentlyRejected(reason);
       assert.deepEqual(await resource("namespace", existingName), rejectedNamespace);
       await kubectl(
         operation,
@@ -193,7 +231,9 @@ test(
     await kubectl("label", "namespace", duplicateName, `openclaw.dev/namespace=${owner.id}`);
     await kubectl("annotate", "namespace", duplicateName, `openclaw.dev/namespace-id=${owner.id}`);
     const namespaceBeforeDuplicateRejection = await resource("namespace", existingName);
-    await assertPermanentlyRejected();
+    await assertPermanentlyRejected(
+      `Another Kubernetes namespace already claims tenant ${owner.id}.`,
+    );
     assert.deepEqual(await resource("namespace", existingName), namespaceBeforeDuplicateRejection);
     assert.equal(await missing("resourcequota", "openclaw-quota", existingName), true);
     await kubectl("delete", "namespace", duplicateName, "--wait=true");
@@ -216,7 +256,9 @@ test(
       existingName,
     );
     const namespaceBeforePolicyRejection = await resource("namespace", existingName);
-    await assertPermanentlyRejected();
+    await assertPermanentlyRejected(
+      `The existing Kubernetes namespace ${existingName} has a NetworkPolicy that this Namespace does not own.`,
+    );
     assert.deepEqual(
       await resource("namespace", existingName),
       namespaceBeforePolicyRejection,

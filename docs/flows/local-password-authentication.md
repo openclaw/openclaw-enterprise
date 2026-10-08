@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-01
-last_updated_session: authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213
+updated: 2026-10-07
+last_updated_session: fix-678
 ---
 
 # Bootstrap and human authentication flow
@@ -203,8 +203,8 @@ it. A malformed, unbound, replayed, or expired callback is refused by
 `refuseUnmatched`, which writes no audit event and increments
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
 Denials after `consumeAttempt` matches are audited as
-[`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-or `EXTERNAL_IDENTITY_REJECTED`; with GitHub's
+[`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
+`EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
 `apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
 lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`, whose response code the
@@ -220,13 +220,25 @@ Google's signing keys through the same bounded transport, verifies the RS256 ID 
 signature, issuer, audience, expiry, and nonce (plus `hd` and `email_verified` when
 allowed domains are set), and returns only `sub`. Tokens and email are discarded.
 
-The controller route admits password sign-in before `/oce/password` runs, with the
-recovery email reserved like an administrator's. Start, callback, and result each have
-bounded process-local admission (`keyedAdmission`), shared by GitHub, Google and OIDC, keyed on
-the client address only behind a trusted proxy and otherwise on the browser's cookies. Provider HTTP shares a deadline and
-limits streamed response bytes; State bounds pending attempts and expired cleanup.
-State persists the attempt and session deadlines; cookie Max-Age subtracts
-monotonic elapsed work from them, and expired completion cannot release a cookie.
+`apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
+IPv4-mapped addresses before prefix validation, refusing entries covering every
+IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
+header hops.
+
+Password sign-in enters controller admission before `/oce/password`, with the
+recovery email reserved like an administrator's. GitHub, Google and OIDC share bounded
+process-local start, callback and result admission (`keyedAdmission`), keyed on
+client addresses behind trusted proxies and browser cookies otherwise. Provider
+HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
+State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
+elapsed work. Expired completion releases no cookie.
+
+`scripts/auth-maintain.mjs` parses arguments with
+`scripts/lib/auth-maintain-arguments.mjs:parseAuthMaintainArguments` before
+configuration or database access. Undeclared commands, including inherited object
+properties, exit `64` with usage. The
+[maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations
+and exit codes.
 
 Activation is a stopped-maintenance contract: admission stopped, requests
 drained or terminated, and every old controller stopped; startup does not fence
@@ -333,24 +345,12 @@ Account creation issues no session and infers no grants.
 
 ## Changelog
 
+- 2026-10-07 10:10: Treat IPv4-mapped trusted proxies as IPv4; refuse catch-all proxy CIDRs. (fix-678 - bf67a4317)
+
+- 2026-10-06 07:30: Reject undeclared maintenance commands before configuration. (authoring-run/8f5b1566-4538-437c-8e8a-fd2049050c6e - 4bacc7925fcef75ea8715905a0c6c86abb7203d2)
+
 - 2026-10-04 21:00: Verify an existing Installation with SQL before loading Better Auth. (fix/bootstrap-fast-path)
 
 - 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
-
-- 2026-09-30 20:57: Receive landed PR751 while preserving bounded device proofs and both documentation histories. (authoring-run/b38fdf7a-4e45-40ac-a7d7-7da3aa8e0070 - 0e59bf4479aabfa0d00c6940c55be760fa19a200)
-
-- 2026-09-30 20:28: Receive bounded device proofs and clarify audit-failure accounting and cookie delivery. (authoring-run/b84d8248-fb41-44b3-8ed5-30d7fd777926 - 2702a01c6c2136cf9fb5b6808d3972379158f2ff)
-
-- 2026-09-30 20:12: Qualify audit-failure session cleanup and tracked-budget accounting. (authoring-run/d58e793e-df0f-40de-8f08-5d0ee989927a - d7b2e4c0697ace45cf2d4b3ab630ce3976334a16)
-
-- 2026-09-30 17:01: Bound fresh device proofs without reopening spent allowances. (authoring-run/bc25e670-bfac-4568-9e6d-d0104391ed45 - 6b43652ca0792ca1a4be0f8bc628f62c1f72fe17)
-
-- 2026-09-30 12:00: Trace the password-only refusal of account and recovery routes. (fix/dogfood-2)
-
-- 2026-09-30 01:03: Receive the PostgreSQL binding and independent schema views. (authoring-run/f1ccd2eb-7d83-40d8-9fe1-c79672f9f98f - f2c9f98b0b89762cc9edda189c102ed8c593c678)
-
-- 2026-09-28 04:00: Trace the GitHub attempt receipt, result exchange, and `x-occ-session-key` narrowing in the accompanying source change. (feat/github-session-binding-20260928)
-
-- 2026-09-26 21:09: Trace origin checks for cookie-authenticated mutations and sign-out. (authoring-run/6d7cf57f-03f3-4ea7-8694-38edd9f3c9c2 - 849b2b24111fe237b12da5be1d4b411d3146cefb)
 
 [Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves the older dated entries.

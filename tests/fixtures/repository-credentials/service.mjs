@@ -42,6 +42,12 @@ export async function createServiceConfiguration(t, limits = {}) {
   );
 }
 
+/** createServiceConfiguration with the gateway on an ephemeral loopback port. */
+export async function createLoopbackServiceConfiguration(owner, limits) {
+  const base = await createServiceConfiguration(owner, limits);
+  return { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
+}
+
 export async function startCredentialServiceFixture(t, options = {}) {
   const resources = createResourceScope();
   try {

@@ -4500,6 +4500,15 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
+  // Issued ChatGPT service accounts are a Codex-only PAT source.
+  await page.getByLabel("Authentication source", { exact: true }).waitFor();
+  assert.deepEqual(
+    await page
+      .getByLabel("Authentication source", { exact: true })
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["", "api_key", "runtime"],
+  );
   await page.route(`**${agentPath}`, async (route) => {
     if (route.request().method() !== "PATCH") {
       await route.continue();
@@ -5223,4 +5232,72 @@ test("Slack editor preserves existing qualified channel and user targets", async
     assert.equal(entry.requireMention, false);
   }
   assert.deepEqual(persisted.allowFrom, dmUsers);
+});
+
+test("Credentials saves an issued service account as a PAT source without granting Secret access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Managed PAT source", { ready: true });
+  // Issuance is outside this Console test. Seed its realistic result through State;
+  // the browser still lists, selects and saves it through production API/IAM paths.
+  const account = await fixture.controller.transact(async (state) => {
+    const created = await state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Issued research account",
+    });
+    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
+      kind: "access_token",
+      secretRef: { name: "managed-pat-browser-fixture", key: "token" },
+    });
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Managed PAT Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
+  await page.getByLabel("Issued ChatGPT service account", { exact: true }).selectOption(account.id);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" && response.url().endsWith(`/agents/${agent.id}`),
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Authentication source", { exact: true }).inputValue(),
+    "service_account",
+  );
+  assert.equal(
+    await page.getByLabel("Issued ChatGPT service account", { exact: true }).inputValue(),
+    account.id,
+  );
+  assert.deepEqual(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+      .harnessAuth,
+    {
+      method: "codex_pat",
+      source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+    },
+  );
+  assert.equal(
+    requests.some(
+      (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
+    ),
+    false,
+  );
+  // The draft summary names the selected account rather than a Secret.
+  await page.goto(
+    `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+  );
+  await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
 });

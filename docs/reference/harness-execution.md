@@ -17,11 +17,11 @@ Agent creation defaults to `embedded`; an update that omits the mode preserves
 it. Deployment rejects a Harness that the Agent's execution mode cannot run with
 `400 INVALID_REQUEST` before work is admitted. A Harness is not a separately
 created resource or Driver. Availability and isolation also depend on the
-installation's Compute and optional Sandbox. On
-Kubernetes, a dedicated gateway runs in an OCC-managed control-plane runtime
-namespace with its own private storage and ServiceAccount, while its Harness
-stays in the data-plane namespace. Embedded OpenClaw remains one untrusted
-data-plane workload that cannot move apart from its built-in Harness.
+installation's Compute and optional Sandbox. In a single Kubernetes cluster, a
+dedicated gateway and its Harness run as separate Pods in the Agent's
+[tenant namespace](drivers/kubernetes-compute.md), each with its own
+ServiceAccount and storage. Embedded OpenClaw remains one untrusted workload
+that cannot move apart from its built-in Harness.
 
 Each dedicated AgentRevision owns one Harness that all its sessions share: the
 Codex app server or the native OpenClaw node host. OpenShell contains the whole
@@ -91,15 +91,15 @@ revoked authority, or a missing required Driver fail closed; see
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                        | Topology                           | Credential consumer                                                                                               |
-| ------------------------------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `api_key` with an OCC Secret   | Embedded OpenClaw                  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
-| `api_key` with an OCC Secret   | Dedicated OpenClaw                 | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
-| `api_key` with an OCC Secret   | Dedicated Codex                    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
-| `codex_pat` with an OCC Secret | Dedicated Codex                    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
-| `oauth` (**Experimental**)     | Dedicated Codex, no Sandbox Driver | Codex owns its credential bundle on [private storage](drivers/kubernetes-compute/codex-oauth-storage.md).         |
-| `chatgpt_service_account`      | Dedicated Codex                    | Only Codex receives the account token and forced workspace.                                                       |
-| `credential_source`            | Dedicated Harness                  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
+| Binding                           | Topology                           | Credential consumer                                                                                               |
+| --------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `api_key` with an OCC Secret      | Embedded OpenClaw                  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
+| `api_key` with an OCC Secret      | Dedicated OpenClaw                 | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
+| `api_key` with an OCC Secret      | Dedicated Codex                    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
+| `codex_pat` with an OCC Secret    | Dedicated Codex                    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
+| `oauth` (**Experimental**)        | Dedicated Codex, no Sandbox Driver | Codex owns its credential bundle on [private storage](drivers/kubernetes-compute/codex-oauth-storage.md).         |
+| `codex_pat` with a ServiceAccount | Dedicated Codex                    | Only Codex receives the account token; Backend and workspace ownership stay in control-plane checks.              |
+| `credential_source`               | Dedicated Harness                  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
 
 A selected Sandbox uses only Compute's
 [rendered login mode and Secret projections](drivers/sandbox.md#provisioning-inputs).
@@ -116,7 +116,7 @@ implementations reject bindings they do not support. SSH embedded OpenClaw accep
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
 outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
-Kubernetes rejects `runtime`.
+Kubernetes deployment rejects `runtime` with `409`.
 
 Before its app server starts, Codex rejects missing or conflicting runtime
 inputs and, after login, requires a bounded native model turn to succeed; local
@@ -283,10 +283,12 @@ explicitly, and test bridges do not establish turnkey production support. See it
 
 ### Native worker support
 
-The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) lacks required
-worker placement (`cloudWorkers.requiredProfile`) and native worker inference.
+The pinned OpenClaw [runtime image](../../deploy/runtime/README.md) supports required
+worker placement (`cloudWorkers.requiredProfile`), but still lacks native worker inference.
 Deploy and provisioning therefore refuse dedicated native OpenClaw with
-`400 INVALID_REQUEST`, and the console withholds that choice. An operator whose
+`400 INVALID_REQUEST`, and the console withholds that choice. Provisioning
+status reads do not recheck this support, so work accepted before it was
+removed still reports its status; retry refuses it. An operator whose
 runtime image is built from an OpenClaw source with both features can declare
 [`runtime.nativeWorkerSupport`](configuration.md#installation-startup-configuration).
 

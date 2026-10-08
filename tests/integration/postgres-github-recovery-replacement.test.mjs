@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertProviderAttached,
   assertReservedLane,
-  attachProvider,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -81,8 +81,7 @@ test(
       );
 
     // The second administrator works through GitHub while it is up.
-    const attached = await attachProvider(app, adminHeaders, second.id, "github", secondSubject);
-    assert.equal(attached.statusCode, 200, attached.body);
+    await assertProviderAttached(app, adminHeaders, second.id, "github", secondSubject);
     const { callback } = await githubSignIn(app, origin, secondSubject, address());
     assert.equal(callback.headers.location, "/console/", callback.body);
     const secondHeaders = {

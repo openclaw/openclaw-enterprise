@@ -48,6 +48,20 @@ with `--volumes`. It uses disposable project resources and no model credentials
 or Agent runtime image. Failure cleanup uses Compose directly without masking
 the CLI failure. This proves the cleanup lifecycle, not Agent execution.
 
+## Docker response interruption regression
+
+With workspace dependencies already installed, run:
+
+```sh
+node --test tests/conformance/docker-compute.test.mjs
+```
+
+The preflight interruption case runs the production Driver and Node HTTP client
+against a local HTTP fault server in an isolated child. Only the socket address
+is redirected; the server closes a partially delivered response. Expect prompt
+rejection followed by a successful preflight retry. This covers response handling,
+not a Docker daemon, Compose startup, Agent deployment, or model execution.
+
 ## Docker transport-token retry fixture
 
 With Docker Engine available at `/var/run/docker.sock` and workspace dependencies

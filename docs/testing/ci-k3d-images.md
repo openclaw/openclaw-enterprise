@@ -1,0 +1,46 @@
+# k3d image preparation in CI
+
+How CI preparation selects images and imports them into the k3d clusters that the
+Kubernetes lanes use. For lanes, coverage and failures, see [GitHub Actions testing](ci.md).
+
+## Import and verify
+
+Imports stream `docker image save` into node-local `ctr image import` on each owned
+k3d node (`image-stream-import`): k3d `tools-node` can hide per-node failures while
+exiting successfully. Imports are serialized per cluster, then preparation verifies
+digest and CRI references. Each node check and tag, and each host engine image
+inspect and tag before the import, times out after 30 seconds
+(`OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS` overrides it; it also bounds source image
+inspects in lanes without k3d). A timeout fails preparation; it never counts as a
+missing image, so nothing is pulled for it.
+
+## Select immutable images for local preparation
+
+Ordinary Kubernetes lanes default to the digest-pinned K3s 1.35 image in
+`defaultK3sImage` (`scripts/ci/prepare.mjs`), so cluster creation never queries
+k3d's online release channel. Set `OPENCLAW_CI_K3S_IMAGE` to another approved
+`image@sha256:<digest>` before
+`node scripts/ci/prepare.mjs --lane <lane> --state <private-state-file>` to
+override it. Both paths require the API server to report Kubernetes 1.35.x;
+OpenShell retains its separately pinned image. Mutable overrides fail before
+resource creation. Clean up a failed run's owned resources with
+`node scripts/ci/cleanup.mjs --state <private-state-file>` before reusing its state path.
+
+Preparation reuses a supplied immutable workload image in the local Docker daemon
+only when `docker image inspect` records the requested digest in `RepoDigests`;
+a mutable tag or unverified image is insufficient. Missing or mismatched images
+are pulled and rechecked before import. Other Docker inspection failures stop
+preparation. Cleanup removes owned import tags and preserves the supplied image.
+
+On GitHub-hosted runners, both observability lanes require 36 GiB free before
+building and importing images, removing unused SDKs only when less is free
+(concurrently, ten-minute deadline, per-directory timing receipts); local runs
+omit this guarded cleanup. Both use single-node clusters and overlap independent
+pulls, builds, and cluster setup, then serialize k3d imports per cluster to avoid
+importer races. The demo lane imports only its three services and a Node
+image for protocol fixtures; it does not build OCC. State writes remain
+serialized, and all in-flight operations settle before failure cleanup.
+
+Image imports time out after ten minutes. Preparation verifies each immutable
+reference on every schedulable node. Errors and timeouts fail preparation; lane
+cleanup removes the owned cluster and partial imports.

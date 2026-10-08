@@ -858,7 +858,14 @@ test(
         "agents_harness_auth_secret_owner",
       ],
       [
-        { method: "chatgpt_service_account", serviceAccountId: fixture.serviceAccount.id },
+        {
+          method: "codex_pat",
+          source: {
+            kind: "service_account",
+            namespaceId: fixture.namespace.id,
+            id: fixture.serviceAccount.id,
+          },
+        },
         "23503",
         "agents_harness_auth_service_account_owner",
       ],

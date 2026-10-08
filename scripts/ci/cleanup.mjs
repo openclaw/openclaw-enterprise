@@ -5,6 +5,7 @@ import { constants } from "node:fs";
 import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withStateLock } from "./state-lock.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -311,13 +312,28 @@ async function cleanupResourceIds(statePath, resourceIds) {
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
   }
+  if (!(await stateExists(path))) {
+    return;
+  }
+  // A test may prepare and clean databases from its own process beside the runner.
+  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds));
+}
+
+async function stateExists(path) {
   try {
     await access(path, constants.F_OK);
+    return true;
   } catch (error) {
     if (error.code === "ENOENT") {
-      return;
+      return false;
     }
     throw error;
+  }
+}
+
+async function cleanupLockedResourceIds(path, resourceIds) {
+  if (!(await stateExists(path))) {
+    return;
   }
   const state = await readState(path);
   const selected = new Set(resourceIds ?? state.resources.map((resource) => resource.id));

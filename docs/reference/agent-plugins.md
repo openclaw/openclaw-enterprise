@@ -293,9 +293,10 @@ are rejected rather than applied to the whole app. Unsupported choices fail even
 or the value matches an inherited reviewer. Reviewer does not belong in
 `driverPolicy`.
 
-For explicit Codex reviewers, startup checks effective reviewer settings, session
-approval, and managed model requirements, but not routing after later session or
-model changes. [Native limits](drivers/plugin-bundled.md#native-mappings-and-limits)
+The dedicated Codex app-server starts with the admitted Harness model. For explicit
+Codex reviewers, startup checks that model against managed requirements along with
+effective reviewer settings and session approval. These checks do not cover routing
+after later session or model changes. [Native limits](drivers/plugin-bundled.md#native-mappings-and-limits)
 lists the value mapping and exact checks.
 
 ### Codex-specific policy

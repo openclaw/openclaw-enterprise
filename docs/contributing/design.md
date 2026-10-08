@@ -24,8 +24,8 @@ behavior from approved requirements that are not yet supported.
 - [Repository layout](../layout.md) maps packages and source directories to
   their owners.
 - [RFCs and implementation plans](specifications.md) explains how to record
-  decisions and delivery. The [specification index](../../specs/README.md) links
-  individual workstreams; their recorded status is not proof of availability.
+  decisions and delivery. The [RFC index](../../specs/README.md) lists
+  numbered decisions and their statuses; their recorded status is not proof of availability.
 
 Keep architecture pages about components, ownership, trust boundaries, and major
 interactions. Put a feature's detailed behavior in its current reference and

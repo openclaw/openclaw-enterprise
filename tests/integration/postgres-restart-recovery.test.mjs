@@ -185,6 +185,24 @@ async function claimExpected(queue, idempotencyKey) {
   assert.fail(`The durable queue did not expose expected work ${idempotencyKey}.`);
 }
 
+// Claims and completes Work, including any unrelated leftover Work, until every
+// expected key was handed out, in whatever order the queue picks. Use it for keys
+// whose relative claim order the test does not pin: claimExpected completes the
+// Work it skips, so claiming such keys one by one fails whenever the queue hands
+// out a later key first.
+async function completeExpected(queue, idempotencyKeys) {
+  const pending = new Set(idempotencyKeys);
+  for (let index = 0; index < 200 && pending.size > 0; index += 1) {
+    const claim = await queue.claim();
+    if (!claim) {
+      break;
+    }
+    pending.delete(claim.idempotencyKey);
+    await queue.complete(claim);
+  }
+  assert.deepEqual([...pending], [], "The durable queue did not expose all expected work.");
+}
+
 test(
   "Namespace creation and deletion retain distinct durable work targets",
   requiresPostgres,
@@ -967,9 +985,10 @@ test(
       [`${prefix}:%`],
     );
     assert.equal(remaining.rowCount, 2);
-    for (const { idempotency_key } of remaining.rows) {
-      await queue.complete(await claimExpected(queue, idempotency_key));
-    }
+    await completeExpected(
+      queue,
+      remaining.rows.map(({ idempotency_key }) => idempotency_key),
+    );
   },
 );
 
@@ -1087,10 +1106,10 @@ test(
     assert.equal(audits.rowCount, 2);
     assert.ok(audits.rows.every(({ events }) => events === 1));
 
+    // Recovery requeues both items at clock_timestamp() in the UPDATE's row order,
+    // which the query plan decides, so either may be claimable first.
     const cleanupQueue = new PostgresWorkQueue(pool, { leaseDurationMs: 1_000, random: () => 0 });
-    for (const key of keys) {
-      await cleanupQueue.complete(await claimExpected(cleanupQueue, key));
-    }
+    await completeExpected(cleanupQueue, keys);
   },
 );
 

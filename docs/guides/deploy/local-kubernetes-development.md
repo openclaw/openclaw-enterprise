@@ -159,10 +159,14 @@ the profile exports for startup and cleanup. Without profile selections,
 startup uses the Compose control-plane preview with Docker Compute.
 
 State, the kubeconfig, and credentials, including the initial administrator
-service key, are written to the private `/tmp/openclaw-development` directory by
-default. Set the absolute
-`OCC_DEVELOPMENT_STATE_DIRECTORY` before both startup and cleanup to use
-another location. `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds k3d
+service key, are written to a private
+[state directory](../../reference/settings/development.md#required-development-controller-environment)
+that startup prints. By default it is `openclaw-development` in the temporary
+directory, which on macOS is a per-user `/private/var/folders/<id>/T` path.
+Set the absolute `OCC_DEVELOPMENT_STATE_DIRECTORY` before both startup and
+cleanup to use another location. Its parent must not contain symlinks; on macOS,
+use `/private/tmp/...` instead of `/tmp/...`.
+`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds k3d
 readiness and each later startup wait. A cluster timeout triggers owned-resource
 rollback; follow the printed cleanup instruction if state is retained. Startup
 refuses an existing state directory or cluster. To pick up source changes,
@@ -283,7 +287,8 @@ development NetworkPolicy in `oce-system`.
 The launcher sets
 [`network.pluginStatusProxySourceCidrs`](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 to the k3d node's Pod bridge address, enabling plugin status and diagnostics and
-letting a dedicated Codex Gateway start once on a first deploy.
+letting a dedicated Codex Gateway start once on a first deploy. The two-minute
+bridge-route wait also bounds each container-engine lookup.
 
 The OpenShell profile declares an `openshell` Backend for the Gateway
 endpoint and selects both the OpenShell Sandbox and the

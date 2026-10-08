@@ -1,3 +1,4 @@
+import { submitChatTurnWithAssistantProof, textFromFrame, waitForStockUi } from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
@@ -365,60 +366,6 @@ async function assertNoNativeCredentialLeak(page, protectedValues) {
   }
 }
 
-function textFromFrame(frame) {
-  const payload = frame?.payload;
-  if (typeof payload === "string") {
-    return payload;
-  }
-  if (Buffer.isBuffer(payload)) {
-    return payload.toString("utf8");
-  }
-  return String(payload ?? "");
-}
-
-function messageText(message) {
-  if (typeof message?.content === "string") {
-    return message.content;
-  }
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
-      .join("");
-  }
-  return "";
-}
-
-function terminalAssistantSessionMessage(frameText, marker, prompt) {
-  let parsed;
-  try {
-    parsed = JSON.parse(frameText);
-  } catch {
-    return false;
-  }
-  if (parsed?.type !== "event" || parsed.event !== "session.message") {
-    return false;
-  }
-  const message = parsed.payload?.message;
-  const text = messageText(message);
-  return message?.role === "assistant" && text.includes(marker) && !text.includes(prompt);
-}
-
-async function submitChatTurnWithAssistantProof(page, marker, receivedFrames) {
-  await page.goto(new URL("/new", page.url()).href);
-  await waitForStockUi(page);
-  const prompt = `Reply with exactly the token on its own line and no other text: ${marker}`;
-  const firstFrame = receivedFrames.length;
-  const input = page.locator(".agent-chat__composer-combobox > textarea").first();
-  await input.waitFor({ state: "visible", timeout: 60_000 });
-  await input.fill(prompt);
-  await page.getByRole("button", { name: "Start session", exact: true }).click();
-  return waitFor("stock UI terminal assistant session.message containing the nonce", () =>
-    receivedFrames
-      .slice(firstFrame)
-      .find((frame) => terminalAssistantSessionMessage(textFromFrame(frame), marker, prompt)),
-  );
-}
-
 async function nativeRequest(page, method, params = {}) {
   // Use the shipped UI's current Gateway client, including its real device handshake.
   // No replacement transport or alternate credential may bypass the person's role.
@@ -450,26 +397,6 @@ function assertMissingNativeScope(result, scope) {
   assert.equal(result.ok, false, JSON.stringify(result));
   assert.equal(result.error.code, "FORBIDDEN");
   assert.equal(result.error.details?.missingScope, scope);
-}
-
-async function waitForStockUi(page) {
-  await page.waitForFunction(
-    () =>
-      globalThis.customElements.get("openclaw-app") !== undefined &&
-      globalThis.document.querySelector("openclaw-app") !== null,
-    undefined,
-    { timeout: 120_000 },
-  );
-  await page.waitForFunction(
-    () =>
-      globalThis
-        .getComputedStyle(globalThis.document.documentElement)
-        .getPropertyValue("--openclaw-css-ok")
-        .trim() === "1",
-    undefined,
-    { timeout: 60_000 },
-  );
-  await page.locator("body").waitFor({ state: "visible", timeout: 60_000 });
 }
 
 async function assertServiceWorkerRegistrationBlockedByCsp(page) {
@@ -897,6 +824,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       nativePage,
       `sharing-${label}-${randomUUID()}`,
       frames,
+      waitFor,
     );
     // Bind withdrawal to the connection that delivered the real assistant reply.
     // Records from previous page navigations do not establish a current stream.
@@ -1112,6 +1040,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
     unaffected.frames,
+    waitFor,
   );
   context.diagnostic(
     `Selective sharing withdrawal closed the confirmed native stream in ${Math.ceil(elapsedMs)} ms; the other recipient completed a subsequent real model turn.`,
@@ -1243,7 +1172,7 @@ test(
     );
 
     const marker = `native-admin-browser-${randomUUID()}`;
-    await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames);
+    await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames, waitFor);
     await nativePage.screenshot({ path: join(artifacts, "stock-ui-chat.png"), fullPage: true });
     await assertNoNativeCredentialLeak(nativePage, [
       topology.gatewayPassword,

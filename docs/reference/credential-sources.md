@@ -3,13 +3,15 @@
 A credential source registers a Namespace Secret with the Installation's
 selected [Credential Gateway](drivers/credential-gateway.md). The gateway keeps
 its own copy of the value and applies it outside the Agent workload, so the
-Harness never receives the real credential. An Agent uses a source through
-[`harnessAuth`](agents.md#harness-authentication).
+Harness never receives the real credential. An Agent uses a model source through
+[`harnessAuth`](agents.md#harness-authentication) and other sources through its
+`credentialSources` list.
 
 Credential sources require a selected Credential Gateway. The only
-implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md),
-which supports one source type, `openai`, for dedicated Codex model
-authentication. OpenShell is not a supported production Agent path; see its
+implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
+Its `openai` type authenticates dedicated Codex models, and its `bearer-token`
+type carries a static token to one API endpoint. OpenShell is not a supported
+production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 
 ## Register a source
@@ -77,18 +79,43 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set the Agent's binding to
-`{ "method": "credential_source", "sourceId": "cs_…" }`. The caller needs
-`credential_source:operate` on the exact source. Deployment also requires the
-Agent's service principal to have `operate` on it; grant it with a
+List every source the Agent uses in its `credentialSources`, up to eight
+entries of `{ "sourceId": "cs_…" }`, on create or update. An update replaces the
+list, `[]` removes it, and a source cannot appear twice. Any catalog type can be
+listed.
+
+To have the Harness authenticate its model with a source, also set
+`harnessAuth` to `{ "method": "credential_source", "sourceId": "cs_…" }`. It
+names one listed entry whose catalog type has `harnessAuth`; it does not bind
+the source separately. A request that names an unlisted source, or removes the
+named source from the list, fails with `400` "The Harness credential source must
+be listed in the Agent's credentialSources." after the grant checks below.
+
+The caller needs `credential_source:operate` on each exact
+source, including any the update removes. Every source a request lists, including
+one it keeps, must be `ready` and registered through the selected Credential
+Gateway. Sources the Agent already binds need only `operate`, so after the
+Installation selects another Credential Gateway, an update that leaves
+`credentialSources` out still succeeds, and one that sets `harnessAuth` to
+another method or source and lists only new sources, or `[]`, removes the old
+ones. Listing an old source again fails with `503`, and so does deploying an
+Agent that still lists one; see [After a Credential Gateway change](#after-a-credential-gateway-change). Deployment also requires the Agent's
+service principal to have `operate` on each source; grant it with a
 [Namespace IAM](authorization.md#manage-namespace-policy) Role and an exact
 `credential_source` AccessBinding. The principal needs no permission on the
 underlying Secret. The worker rechecks both grants before it
-provisions the revision. See [Harness execution](harness-execution.md#harness-authentication)
+provisions the revision. On an Installation with no Credential Gateway, binding
+any source fails with `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, as registration
+does, once the caller holds `operate` on it. Deploying an Agent that lists any
+source also needs a selected Sandbox Driver, because the paired Sandbox applies
+the sources; without one, deployment fails with `409 RESOURCE_CONFLICT` "Agent
+credential sources require a selected Sandbox Driver." (or, when `harnessAuth`
+names a source, "Credential-source Harness authentication requires a selected
+Sandbox Driver."). See [Harness execution](harness-execution.md#harness-authentication)
 for the supported topology.
 
-While a Credential Gateway is selected, deployment rejects `api_key`,
-`codex_pat`, and `chatgpt_service_account` bindings with `409`. Guided Agent
+While a Credential Gateway is selected, deployment rejects `api_key` and
+`codex_pat` bindings (both Secret and ServiceAccount sources) with `409`. Guided Agent
 provisioning rejects credential sources with `400`; create the Agent, then
 deploy it.
 
@@ -132,10 +159,12 @@ gateway gives updated values only to new processes. To rotate a key:
 Withdrawal revokes a source from an Agent's active revision while the revision
 keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
-The caller needs `agent:operate`, and the active revision must authenticate with
-that source. The request returns `202` with the withdrawal in state `pending`.
+The caller needs `agent:operate`, and the active revision must have been
+admitted with that source, as its Harness authentication or in
+`credentialSources`. The request returns `202` with the withdrawal in state `pending`.
 A replay returns the same withdrawal. It queues another attempt only if no
-attempt is already queued or running.
+attempt is already queued or running, and the caller then becomes the
+withdrawal's `requestedBy`.
 
 The worker detaches the source from the revision's Sandbox and records
 `revoked` only after the gateway confirms that the revision's placeholders no
@@ -148,7 +177,8 @@ worker's latest attempt, and `withdrawalInProgress`, which is `true` while an
 attempt is queued or running. A `pending` withdrawal with reason
 `CREDENTIAL_WITHDRAWAL_PENDING` is waiting for the gateway; a Sandbox without a
 running process never confirms revocation. `AUTHORIZATION_DENIED` or
-`ACTOR_REVOKED` means the requester lost `agent:operate`.
+`ACTOR_REVOKED` means the requester lost `agent:operate`; another operator can
+send the withdraw request again to retry it on their own authority.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
 (`OCC_WORKER_MAX_ATTEMPTS`). When those attempts run out, the withdrawal stays
@@ -156,14 +186,21 @@ The worker retries an unconfirmed withdrawal a few times with backoff
 unless the revision has maintenance (see below). Send the withdraw request
 again to queue another attempt.
 
-A withdrawn source never re-attaches to that revision; if its Sandbox is
-recreated, provisioning fails with `CREDENTIAL_WITHDRAWN`. Maintenance of the
-revision stops preparing it. Only revisions with maintenance, those with
-repository credentials or on a Compute Driver that declares a maintenance
-interval, run it: while the withdrawal is `pending`, each maintenance pass
-queues another attempt if none is outstanding. Once it is `revoked`,
-maintenance stops, so Compute no longer repairs the revision until a redeploy
-replaces it.
+A withdrawn source never re-attaches to that revision. If its Sandbox is
+recreated, a withdrawn source is left out and the revision keeps running
+without it, unless `harnessAuth` names it. A withdrawn Harness source instead fails provisioning with
+`CREDENTIAL_WITHDRAWN`, and maintenance of the revision stops preparing it. While any
+withdrawal is `pending`, each maintenance pass queues another attempt if none is
+outstanding. Maintenance does not recheck grants on withdrawn sources, which never
+attach again, so removing one cannot stop it. After model-source withdrawal,
+maintenance never prepares the revision again. It continues recovering pending
+tool withdrawals even when the model source is already `revoked`, and stops only when every withdrawal is `revoked`.
+Redeploy to resume Compute repair.
+
+Withdrawals of different sources on one revision share one worker attempt, but
+each is authorized by its own `requestedBy`. A requester who lost
+`agent:operate` leaves only their withdrawal `pending` with
+`AUTHORIZATION_DENIED`; the others are still revoked.
 
 The revision still references the source, so the source cannot be deleted until
 a redeploy replaces the revision. Redeploy the Agent with a replacement source
@@ -176,6 +213,9 @@ requires exact `delete` and returns `204`:
 
 - It returns `409` while an Agent draft, active revision, or pending deployment
   references the source.
+- On an Installation with no Credential Gateway it returns
+  `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
+  did not register it returns `503`; neither changes the record.
 - It marks the record `deleting` before it asks the gateway to remove its copy.
   A gateway failure returns `503` and leaves the record `deleting`. Send the same
   request again; an already-removed copy counts as deleted.
@@ -186,17 +226,35 @@ requires exact `delete` and returns `204`:
 While a source exists, including one in `deleting`, its Namespace cannot be
 deleted, and its referenced Secrets cannot be deleted.
 
+## After a Credential Gateway change
+
+A source belongs to the Credential Gateway Driver that registered it. After the
+Installation selects another driver in `drivers.credential_gateway`, binding,
+deploying, updating, or deleting an old source returns
+`503 DEPENDENCY_UNAVAILABLE` with one fixed message: "The selected Credential
+Gateway Driver did not register this credential source. …". OCC answers it only
+after the caller's grant and the source lookup. `GET` on such a source reports a
+`failed` status whose reason names the driver change.
+
+- To keep an Agent running, register a replacement source through the selected
+  driver, list it in place of the old one, and deploy again.
+- To delete an old source, an administrator changes the Installation
+  configuration to select the driver ID that registered it again, deletes the
+  source, then selects the new driver. The same steps finish a source that an earlier release left
+  `deleting` after a gateway change, which otherwise keeps its Namespace and
+  Secrets from being deleted.
+
 ## Errors
 
 | Status                                  | Meaning                                                                                                                                                                                  |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `400 INVALID_REQUEST`                   | The body or a field name is malformed, or a Secret reference names another Namespace.                                                                                                    |
+| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                   |
 | `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                        |
 | `404 NOT_FOUND`                         | The source, Secret, or type is not in the exact Namespace or catalog, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it. |
 | `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                            |
-| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; or the Agent has no active revision to withdraw from.                                          |
-| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration on an Installation that selects no Credential Gateway.                                                                                                                      |
-| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, or the gateway call failed.                                                                                         |
+| `409 RESOURCE_CONFLICT`                 | The source is still referenced, not `ready` for an update, or changed during the request; the Agent has no active revision to withdraw from; or sources need a Sandbox Driver.           |
+| `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` | Registration, update, deletion, Agent binding, or deploying an Agent that binds a source, on an Installation that selects no Credential Gateway.                                         |
+| `503 DEPENDENCY_UNAVAILABLE`            | The selected Credential Gateway or the Secret Driver is unavailable, the gateway call failed, or the source was registered through a previously selected gateway.                        |
 
 ## Related
 

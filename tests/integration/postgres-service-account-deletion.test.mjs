@@ -73,11 +73,38 @@ test(
       namespaceId: namespace.id,
       name: "account-consumer",
       configurationId: configuration.id,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: account.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
       backendId,
       executionMode: "dedicated",
     });
     const target = { namespaceId: namespace.id, agentId: agent.id };
+    // Direct SQL proves the canonical source discriminator drives the real ownership FK,
+    // independently of OCC's input validation and authorization.
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT harness_auth_secret_id, harness_auth_service_account_id FROM occ.agents WHERE id = $1",
+          [agent.id],
+        )
+      ).rows,
+      [{ harness_auth_secret_id: null, harness_auth_service_account_id: account.id }],
+    );
+    for (const [source, code] of [
+      [{ ...agent.harnessAuth.source, id: `sa_${randomUUID()}` }, "23503"],
+      [{ ...agent.harnessAuth.source, namespaceId: `ns_${randomUUID()}` }, "23514"],
+      [{ ...agent.harnessAuth.source, kind: "secret" }, "23514"],
+    ]) {
+      await assert.rejects(
+        pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
+          JSON.stringify({ method: "codex_pat", source }),
+          agent.id,
+        ]),
+        { code },
+      );
+    }
     async function claimRevision() {
       const client = await pool.connect();
       try {
@@ -154,7 +181,14 @@ test(
     await controller.updateAgent(actor.id, {
       ...target,
       configurationId: configuration.id,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: replacementAccount.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: replacementAccount.namespaceId,
+          id: replacementAccount.id,
+        },
+      },
     });
     const replacement = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
     const next = await claimRevision();
@@ -194,7 +228,14 @@ test(
     await controller.updateAgent(actor.id, {
       ...target,
       configurationId: configuration.id,
-      harnessAuth: { method: "chatgpt_service_account", serviceAccountId: failedAccount.id },
+      harnessAuth: {
+        method: "codex_pat",
+        source: {
+          kind: "service_account",
+          namespaceId: failedAccount.namespaceId,
+          id: failedAccount.id,
+        },
+      },
     });
     const failedRevision = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
     await controller.updateAgent(actor.id, {

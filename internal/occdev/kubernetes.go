@@ -281,7 +281,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 		if err := r.run(ctx, r.engine, saveArgs...); err != nil {
 			return "", err
 		}
-		if err := r.run(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", s.Cluster); err != nil {
+		if err := r.importArchiveDirect(ctx, archive, s.Cluster); err != nil {
 			return "", err
 		}
 	} else if err := r.run(ctx, "k3d", "image", "import", selected, "-c", s.Cluster); err != nil {

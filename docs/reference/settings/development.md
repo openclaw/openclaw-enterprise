@@ -20,7 +20,7 @@ worker require initialized state and do not read those credentials or output.
 | `OCC_HOST`                                          | Host-process development: exactly `127.0.0.1` or `::1`; Compose: `0.0.0.0`.                            | Host-process development must bind loopback. Compose may bind `0.0.0.0` inside its private bridge only because the published host port remains `127.0.0.1` and `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` is explicit.                                                                                           |
 | `OCC_PORT`                                          | Decimal integer from `1` through `65535`.                                                              | Selects the controller TCP port; no default is supplied.                                                                                                                                                                                                                                                    |
 | `OCC_AUTH_SECRET`                                   | High-entropy secret string.                                                                            | Signs and verifies user session material; do not reuse across installations.                                                                                                                                                                                                                                |
-| `OCC_AUTH_BASE_URL`                                 | Absolute controller base URL.                                                                          | Defines the Better Auth base URL and cookie origin for backend auth endpoints.                                                                                                                                                                                                                              |
+| `OCC_AUTH_BASE_URL`                                 | Absolute HTTP(S) origin without a path, query, fragment or user info.                                  | Defines the Better Auth base URL and cookie origin for backend auth endpoints.                                                                                                                                                                                                                              |
 | `OPENCLAW_DEV_EMAIL`                                | Email address.                                                                                         | Initializer input selecting the development administrator sign-in email; defaults to `admin@openclaw.local`.                                                                                                                                                                                                |
 | `OPENCLAW_DEV_INSTALLATION_NAME`                    | `OpenClaw Local Development`.                                                                          | Development-only Installation name used by the initializer when the database is fresh.                                                                                                                                                                                                                      |
 | `OPENCLAW_DEV_PASSWORD`                             | String from `12` through `128` characters.                                                             | Initializer input selecting the development administrator sign-in password; defaults to `openclaw-development-password`.                                                                                                                                                                                    |
@@ -57,9 +57,12 @@ worker require initialized state and do not read those credentials or output.
 When `OCC_DEVELOPMENT_STATE_DIRECTORY` is unset, the state directory is the
 launching process's temporary directory plus `openclaw-development`. On Linux
 that temporary directory is `TMPDIR` if the launching process set it, and
-`/tmp` if `TMPDIR` is unset. The launcher resolves symlinks in the temporary
-directory once. An explicit path is used as given and is not placed under the
-temporary directory.
+`/tmp` if `TMPDIR` is unset. On macOS it is the per-user `TMPDIR`. The launcher
+resolves symlinks in the temporary directory once, so the macOS default is
+`/private/var/folders/<id>/T/openclaw-development`. An explicit path is used as
+given and is not placed under the temporary directory. Its parent must not
+contain symlinks, so on macOS, where `/tmp` links to `/private/tmp`, use
+`/private/tmp/<name>`.
 
 Generate `OCC_AUTH_SECRET` with `openssl rand -hex 32`; do not commit it, log
 it, or reuse another installation's secret. Local `.env` files are ignored by

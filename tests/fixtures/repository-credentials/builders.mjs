@@ -106,3 +106,11 @@ export function pullResponse(overrides = {}) {
     ...overrides,
   };
 }
+
+/** Custody limits for driver tests: two slots and callbacks, 16 KiB access and renewal bodies. */
+export const custodyLimits = Object.freeze({
+  maximumSlots: 2,
+  maximumAccessBytes: 16384,
+  maximumRenewalBytes: 16384,
+  maximumCallbacks: 2,
+});

@@ -514,6 +514,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
+    case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
+      return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "SANDBOX_ADMISSION_LIMIT_REACHED":
       return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
     default:

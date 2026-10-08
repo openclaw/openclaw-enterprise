@@ -49,6 +49,7 @@ import {
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -94,18 +95,18 @@ import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
+import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
+  cappedPath,
   dependencyUnavailable,
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
-  jsonPointer,
   RequestFailure,
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  type ErrorDetail,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
 import {
@@ -195,7 +196,8 @@ interface RequiredPermission {
     | "provisioning_work"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
-    | "read_logs_alternative";
+    | "read_logs_alternative"
+    | "bound_credential_source";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -381,7 +383,7 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   if (depth > 24) {
     throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path, code: "TOO_DEEP" },
+      { path: cappedPath(path), code: "TOO_DEEP" },
     ]);
   }
   if (value === null || typeof value !== "object") {
@@ -396,7 +398,7 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   for (const [key, entry] of Object.entries(value)) {
     if (key === "__proto__" || key === "constructor" || key === "prototype") {
       throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-        { path: `${path}/${jsonPointer(key)}`, code: "INVALID_VALUE" },
+        { path: cappedPath(`${path}/${jsonPointer(key)}`), code: "INVALID_VALUE" },
       ]);
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
@@ -565,6 +567,24 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [{ ...permission, scope: "namespace" }];
   }
 
+  if (
+    operation.operationId === "createCredentialSource" ||
+    operation.operationId === "updateCredentialSource"
+  ) {
+    // Mirrors OCC readCredentialSourceSecrets: operate on each Secret whose value the
+    // gateway receives (an update re-sends the current references when it names none).
+    const create = operation.operationId === "createCredentialSource";
+    return [
+      { ...permission, scope: create ? "namespace" : "requested" },
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: create ? "request_body" : "requested",
+        condition: "bound_secret",
+      },
+    ];
+  }
+
   if (operation.operationId === "lookupChannelDirectory") {
     return [
       {
@@ -674,7 +694,10 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "deleteIAMRole" ||
     operation.operationId === "listIAMAccessBindings" ||
     operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "deleteIAMAccessBinding"
+    operation.operationId === "deleteIAMAccessBinding" ||
+    operation.operationId === "listIAMServicePrincipals" ||
+    operation.operationId === "createIAMServicePrincipal" ||
+    operation.operationId === "getIAMServicePrincipal"
   ) {
     return [
       { action: "administer", resourceKind: "installation", scope: "requested" },
@@ -744,6 +767,21 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: "requested",
         condition: "bound_secret",
       },
+      // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Agent
+      // provisioning refuses credential sources, so it needs no such grant.
+      ...(operation.operationId === "provisionAgent"
+        ? []
+        : [
+            {
+              action: "operate" as const,
+              resourceKind: "credential_source" as const,
+              scope:
+                operation.operationId === "createAgent"
+                  ? ("request_body" as const)
+                  : ("requested" as const),
+              condition: "bound_credential_source" as const,
+            },
+          ]),
     ];
   }
 
@@ -923,7 +961,22 @@ function permissionDescription(
         if (operation?.operationId === "updateConfiguration") {
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
         }
+        if (operation?.operationId === "createCredentialSource") {
+          return `Requires ${action} permission on each ${name} named in the request body secrets.`;
+        }
+        if (operation?.operationId === "updateCredentialSource") {
+          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
+        }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
+      }
+      if (condition === "bound_credential_source") {
+        if (operation?.operationId === "createAgent") {
+          return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
+        }
+        if (operation?.operationId === "updateAgent") {
+          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
+        }
+        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
@@ -954,7 +1007,7 @@ function permissionDescription(
     .join(" ");
 
   if (operation?.operationId === "deployAgent") {
-    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret.`;
+    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
   }
   return description;
 }
@@ -1069,7 +1122,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       canonicalFailure(reply, mapped);
     },
     ajv: {
-      customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false },
+      // `verbose` attaches each failure's schema and value, so contract errors can tell which
+      // shape of a discriminated union a request chose (http/error-details.ts). Neither is logged or
+      // returned: problems name only paths and the schema's accepted values, and http/errors.ts
+      // drops both from the error once its problems are built. An onError hook runs before
+      // that, so none may log `error.validation`.
+      customOptions: {
+        removeAdditional: false,
+        coerceTypes: false,
+        useDefaults: false,
+        verbose: true,
+      },
       plugins: [formatsPlugin],
     },
     schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
@@ -1226,8 +1289,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               restrictionIds: authorizationEvidence.restrictionIds,
             },
           };
+    // A request admitted by a service key names that key (its non-secret ID), so an
+    // administrator can tell which of a ServicePrincipal's keys acted. `serviceKeyId` stays
+    // the key a key-management event acts on.
+    const admitted = admissions.get(request);
+    const actorKeyDetails =
+      admitted?.method === "api_key" && admitted.serviceKeyId !== undefined
+        ? { actorServiceKeyId: admitted.serviceKeyId }
+        : undefined;
     const details =
-      result?.details === undefined ? evidenceDetails : { ...evidenceDetails, ...result.details };
+      result?.details === undefined && actorKeyDetails === undefined
+        ? evidenceDetails
+        : { ...evidenceDetails, ...result?.details, ...actorKeyDetails };
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -1598,7 +1671,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs"
     ) {
-      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "The request does not match the operation contract: this operation accepts no query parameters.",
+      );
     }
     for (const [parameter, pattern] of Object.entries(RESOURCE_ID)) {
       if (
@@ -2600,10 +2677,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
           }
           if (!creating && request.body !== undefined) {
+            // The same wording as OCC's operations that take no body.
             throw failure(
               400,
               "INVALID_REQUEST",
-              "The request does not match the operation contract.",
+              "The request does not match the operation contract: this operation accepts no request body.",
             );
           }
           const { selected, target, decision } = await requireInstallationAdmin(
@@ -2611,13 +2689,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             context,
           );
-          const audit = (key: { id: string; servicePrincipalId: string }) => {
+          // Names the key acted on by ID and its non-secret name; never the credential.
+          const audit = (key: { id: string; servicePrincipalId: string; name: string }) => {
             const base = event(operation, request, target, "mutation", context, decision.evidence);
             return {
               ...base,
               details: {
                 ...base.details,
                 serviceKeyId: key.id,
+                serviceKeyName: key.name,
                 servicePrincipalId: key.servicePrincipalId,
               },
             };
@@ -3730,7 +3810,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(
               400,
               "INVALID_REQUEST",
-              "The request does not match the operation contract.",
+              "The request does not match the operation contract: this operation accepts no request body.",
             );
           }
           const unstorable =
@@ -3855,6 +3935,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         kubernetesNamespace: error.kubernetesNamespace,
         plane: error.plane,
         kubernetesStatus: error.status,
+      });
+    }
+    if (error instanceof ComputeProvisioningRefusedError) {
+      // The response keeps fixed text, because the Compute Driver's reason can name
+      // Installation gateway or routing settings; the operator finds it here by request ID.
+      app.log.warn({
+        event: "agent_provisioning.compute_refused",
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+        reason: error.reason,
       });
     }
     if (error instanceof DeviceAuthorizationStartError) {

@@ -36,6 +36,7 @@ const cheatSheetEntities = [
   { title: "Configurations" },
   { title: "IAM access bindings", tag: "IAM", paths: ["/iam/access-bindings"] },
   { title: "IAM roles", tag: "IAM", paths: ["/iam/roles"] },
+  { title: "IAM service principals", tag: "IAM", paths: ["/iam/service-principals"] },
   { title: "Secrets" },
   { title: "Service accounts" },
   {
@@ -213,7 +214,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
               ? " (when associated)"
               : condition === "existing_namespace"
                 ? " (when selecting an existing namespace)"
-                : condition === "bound_secret"
+                : condition === "bound_secret" || condition === "bound_credential_source"
                   ? " (when bound)"
                   : condition === "read_logs_alternative"
                     ? " (instead of `read_logs`)"
@@ -396,7 +397,18 @@ function referencePage(document, groups, entries) {
         "declared body size exceeds the route's limit is refused with",
         "`413 PAYLOAD_TOO_LARGE`, and any POST, PUT, PATCH or DELETE request with a",
         "body that is not JSON with `415 UNSUPPORTED_MEDIA_TYPE`, even on an",
-        "operation that takes no body.",
+        "operation that takes no body. A query string sent to an operation that lists",
+        "no query parameters is refused with `400 INVALID_REQUEST`, except on the",
+        "sign-in, sign-out, session and provider operations under `/api/auth`, which",
+        "do not refuse one; most operations that take no body refuse a JSON body the",
+        "same way.",
+        "A detail path longer than 512 characters is cut to its leading whole",
+        "segments (or the start of a long first key, keeping whole `~0` and `~1`",
+        "escapes). When whole segments were dropped, a contract validation message",
+        "says that the cut path contains the offending field. To fit the",
+        "256-character message cap, a message cuts long paths (ending them with `…`)",
+        "and shows fewer problems before it cuts any problem wording; `details` keeps",
+        "the paths.",
       ].join("\n"),
       schemaTable(schema, document),
     );

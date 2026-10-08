@@ -17,26 +17,18 @@ const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
 
+// Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
+// thread rollouts. Skills no longer arrive through the workspace PVC.
 const requiredWorkspaceMounts = Object.freeze([
   {
-    subPath: "bundled-skills",
-    mountPath: "/sandbox/.openclaw-runtime/home/openclaw-runtime-assets/bundled-skills",
-    readOnly: true,
+    subPath: "codex-sessions",
+    mountPath: "/sandbox/.openclaw-runtime/home/.codex/sessions",
+    readOnly: false,
   },
   {
     subPath: "generated-images",
     mountPath: "/sandbox/.openclaw-runtime/home/.codex/generated_images",
     readOnly: false,
-  },
-  {
-    subPath: "plugin-skills",
-    mountPath: "/sandbox/.openclaw-runtime/home/openclaw-runtime-assets/plugin-skills",
-    readOnly: true,
-  },
-  {
-    subPath: "sessions",
-    mountPath: "/sandbox/.openclaw-runtime/home/.openclaw/agents/main/sessions",
-    readOnly: true,
   },
   { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
 ]);
@@ -330,6 +322,32 @@ export function openShellGatewayNetworkPolicies(namespace, apiPeers) {
                 { protocol: "TCP", port: gatewayPort },
                 { protocol: "TCP", port: 8081 },
               ],
+            },
+          ],
+        },
+      },
+      {
+        // A dedicated Agent Gateway reaches its Codex Harness only through the endpoint OpenShell
+        // exposes, so it may call this gateway's service port and nothing else here.
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata: { name: "allow-openshell-gateway-agent-gateways", namespace },
+        spec: {
+          podSelector: { matchLabels: gatewayLabels },
+          policyTypes: ["Ingress"],
+          ingress: [
+            {
+              from: [
+                {
+                  podSelector: {
+                    matchLabels: {
+                      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                      "openclaw.dev/workload-role": "gateway",
+                    },
+                  },
+                },
+              ],
+              ports: [{ protocol: "TCP", port: gatewayPort }],
             },
           ],
         },
@@ -791,19 +809,24 @@ export function createOpenShellKubernetesFixture({
       .filter(({ name }) => workspaceVolumes.has(name))
       .map(({ mountPath, readOnly = false, subPath }) => ({ mountPath, readOnly, subPath }))
       .sort((left, right) => left.subPath.localeCompare(right.subPath));
+    // OpenShell replaces the agent container command with its own supervisor entrypoint, so the
+    // bootstrap that links each relocated mount is not visible in the Pod. The caller verifies
+    // these links inside the running Sandbox.
+    const links = [];
     for (const required of requiredWorkspaceMounts) {
       const observed = mounts.find(({ subPath }) => subPath === required.subPath);
-      assert.ok(observed, `the Harness must preserve workspace subpath ${required.subPath}.`);
+      assert.ok(
+        observed,
+        `the Harness must preserve workspace subpath ${required.subPath}; observed ${mounts
+          .map(({ subPath }) => subPath)
+          .join(", ")}.`,
+      );
       assert.equal(observed.readOnly, required.readOnly);
       if (required.mountPath === "/sandbox/enterprise") {
         assert.equal(observed.mountPath, required.mountPath);
       } else {
         assert.match(observed.mountPath, /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}$/u);
-        assert.equal(
-          container.command?.some((part) => part.includes(required.mountPath)),
-          true,
-          `the runtime bootstrap must link ${required.mountPath} to its isolated mount.`,
-        );
+        links.push({ path: required.mountPath, target: observed.mountPath });
       }
     }
     assert.equal(
@@ -838,6 +861,7 @@ export function createOpenShellKubernetesFixture({
       false,
       "nested PVC mounts must not let kubelet create non-writable runtime-home parents.",
     );
+    return links;
   }
 
   async function assertServicePrincipalTokenProjection(namespace, pod, expected) {
@@ -995,8 +1019,10 @@ export function createOpenShellKubernetesFixture({
             clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
+          // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
+          // cannot start exec tools in a working directory that does not exist there.
           const started = await request("thread/start", {
-            cwd: "/home/node/workspace",
+            cwd: process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace",
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
             sandbox: "danger-full-access",
@@ -1032,9 +1058,12 @@ export function createOpenShellKubernetesFixture({
           }
           finished = true;
           clearTimeout(timeout);
-          process.stdout.write(JSON.stringify({ assistant, items }));
-          socket.close();
-        } else if (message.method === "error") {
+          // Exit once the result is flushed. Through the OpenShell service route the WebSocket
+          // close handshake never completes, so waiting for it would hold kubectl exec open.
+          process.stdout.write(JSON.stringify({ assistant, items }), () => process.exit(0));
+        } else if (message.method === "error" && message.params?.willRetry !== true) {
+          // Codex reports retried model reconnects as errors; only a final error ends the turn,
+          // and turn/completed still requires a completed status.
           fail(new Error(message.params?.error?.message || "Codex harness turn failed"));
         }
       });

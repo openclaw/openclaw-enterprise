@@ -11,6 +11,7 @@ export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
+export const IAMServicePrincipalId = Type.String({ minLength: 1, maxLength: 200 });
 export const ConfigurationKindSchema = Type.Literal("agent");
 export const HarnessExecutionModeSchema = Type.Union([
   Type.Literal("embedded"),
@@ -29,22 +30,76 @@ export const AgentProvisioningWorkId = Type.String({
   maxLength: 200,
   pattern: "^[A-Za-z0-9._~:@/-]{1,200}$",
 });
+/**
+ * The text rule shared by Names and Backend IDs: no leading or trailing whitespace, and no
+ * control character (C0, DEL or C1) and no line or paragraph separator (U+2028, U+2029)
+ * anywhere. C1 is refused because the PostgreSQL `[[:cntrl:]]` checks on names and backend
+ * IDs refuse it: PostgreSQL's `[[:cntrl:]]` is exactly C0, DEL and C1 under every locale
+ * provider, so a value the API accepted could not be saved. The separators never matched the
+ * old `.+` Name pattern either; PostgreSQL accepts them.
+ */
+const PLAIN_TEXT_PATTERN = /^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.source;
+
+/**
+ * The Backend ID rule, shared by the API schema, OCC's Installation configuration check and
+ * the in-memory state store. An ID is 1 to 200 code points (Ajv counts `maxLength` that way,
+ * and so does PostgreSQL `char_length`) and follows the plain text rule above.
+ */
+export const BACKEND_ID_PATTERN = PLAIN_TEXT_PATTERN;
+export const BACKEND_ID_MAX_CHARACTERS = 200;
 export const BackendId = Type.String({
   minLength: 1,
-  maxLength: 200,
-  pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
+  maxLength: BACKEND_ID_MAX_CHARACTERS,
+  pattern: BACKEND_ID_PATTERN,
 });
+
+const PLAIN_TEXT = new RegExp(PLAIN_TEXT_PATTERN, "u");
+const LONE_SURROGATE = /\p{Cs}/u;
+
+/**
+ * True when `value` is 1 to `maxCharacters` code points that follow the plain text rule,
+ * checked the way Ajv checks the schema. A lone surrogate is refused too: it has no UTF-8
+ * spelling, so it could not be stored as given.
+ */
+function isPlainText(value: unknown, maxCharacters: number): value is string {
+  return (
+    typeof value === "string" &&
+    PLAIN_TEXT.test(value) &&
+    !LONE_SURROGATE.test(value) &&
+    Array.from(value).length <= maxCharacters
+  );
+}
+
+/** True when `value` meets the Backend ID rule (see `isPlainText`). */
+export function isBackendId(value: unknown): value is string {
+  return isPlainText(value, BACKEND_ID_MAX_CHARACTERS);
+}
 
 export const Timestamp = Type.String({
   format: "date-time",
   pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
 });
 
+export const NAME_MAX_CHARACTERS = 200;
+/** The Name rule in words, for refusals of names that skip the API schema. */
+export const NAME_RULE =
+  "1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators";
+
+/** A resource Name: 1 to 200 code points that follow the plain text rule. */
 export const Name = Type.String({
   minLength: 1,
-  maxLength: 200,
-  pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
+  maxLength: NAME_MAX_CHARACTERS,
+  pattern: PLAIN_TEXT_PATTERN,
 });
+
+/**
+ * True when `value` meets the Name rule, checked the way Ajv checks the `Name` schema (plus
+ * the lone surrogate refusal of `isPlainText`). OCC applies it to names that skip the API:
+ * the stored Installation, configured default Presets and direct controller calls.
+ */
+export function isName(value: unknown): value is string {
+  return isPlainText(value, NAME_MAX_CHARACTERS);
+}
 
 export const PluginApproversSchema = Type.Array(
   Type.Object(
@@ -126,6 +181,11 @@ export const IAMRoleParams = Type.Object(
 
 export const IAMAccessBindingParams = Type.Object(
   { namespaceId: NamespaceId, bindingId: IAMAccessBindingId },
+  { additionalProperties: false },
+);
+
+export const IAMServicePrincipalParams = Type.Object(
+  { namespaceId: NamespaceId, servicePrincipalId: IAMServicePrincipalId },
   { additionalProperties: false },
 );
 
@@ -235,7 +295,16 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("codex_pat"), source: SecretReference },
+    {
+      method: Type.Literal("codex_pat"),
+      source: Type.Union([
+        SecretReference,
+        Type.Object(
+          { kind: Type.Literal("service_account"), namespaceId: NamespaceId, id: ServiceAccountId },
+          { additionalProperties: false },
+        ),
+      ]),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -243,14 +312,20 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("chatgpt_service_account"), serviceAccountId: ServiceAccountId },
-    { additionalProperties: false },
-  ),
-  Type.Object(
     { method: Type.Literal("credential_source"), sourceId: CredentialSourceId },
     { additionalProperties: false },
   ),
 ]);
+
+export const AgentCredentialSourcesSchema = Type.Array(
+  Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
+  {
+    maxItems: 8,
+    uniqueItems: true,
+    description:
+      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+  },
+);
 
 export const CredentialSourceReference = Type.Object(
   { kind: Type.Literal("credential_source"), namespaceId: NamespaceId, id: CredentialSourceId },
@@ -509,6 +584,8 @@ export const AgentRuntimeRoleSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const CreateIAMServicePrincipalBody = Type.Object({}, { additionalProperties: false });
+
 export const CreateIAMAccessBindingBody = Type.Object(
   {
     subjectKind: Type.Literal("identity"),
@@ -642,6 +719,7 @@ export const CreateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -688,6 +766,7 @@ export const UpdateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
@@ -906,6 +985,7 @@ export type ServiceAccountId = Type.Static<typeof ServiceAccountId>;
 export type SecretId = Type.Static<typeof SecretId>;
 export type IAMRoleId = Type.Static<typeof IAMRoleId>;
 export type IAMAccessBindingId = Type.Static<typeof IAMAccessBindingId>;
+export type IAMServicePrincipalId = Type.Static<typeof IAMServicePrincipalId>;
 export type ConfigurationGeneration = Type.Static<typeof ConfigurationGeneration>;
 export type AgentId = Type.Static<typeof AgentId>;
 export type RevisionId = Type.Static<typeof RevisionId>;
@@ -923,6 +1003,7 @@ export type ServiceAccountParams = Type.Static<typeof ServiceAccountParams>;
 export type SecretParams = Type.Static<typeof SecretParams>;
 export type IAMRoleParams = Type.Static<typeof IAMRoleParams>;
 export type IAMAccessBindingParams = Type.Static<typeof IAMAccessBindingParams>;
+export type IAMServicePrincipalParams = Type.Static<typeof IAMServicePrincipalParams>;
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
@@ -932,6 +1013,7 @@ export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredent
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;
 export type CreateIAMRoleBody = Type.Static<typeof CreateIAMRoleBody>;
 export type CreateIAMAccessBindingBody = Type.Static<typeof CreateIAMAccessBindingBody>;
+export type CreateIAMServicePrincipalBody = Type.Static<typeof CreateIAMServicePrincipalBody>;
 export type ConfigurationValues = Type.Static<typeof ConfigurationValues>;
 export type CreateSecretBody = Type.Static<typeof CreateSecretBody>;
 export type UpdateSecretBody = Type.Static<typeof UpdateSecretBody>;

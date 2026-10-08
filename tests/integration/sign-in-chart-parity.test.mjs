@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   clientAddressConfiguration,
+  createControllerAuth,
   githubLoginConfiguration,
   humanLoginConfiguration,
   resolveClientAddress,
@@ -388,7 +389,38 @@ test(
       jwksUrl: "https://sso.example.com/realms/acme/protocol/openid-connect/certs",
     };
     const extra = { tokenAuth: "client_secret_basic", displayName: "Acme SSO" };
+    // The API trims each URL with JavaScript's trim (ASCII whitespace, Unicode spaces, U+2028,
+    // U+2029 and U+FEFF) before its checks, and so does the chart. The env keeps the value as
+    // written, and the API reads the trimmed one.
+    const padded = {
+      issuer: ` \u000b${fixtureOidcIssuer.issuer}\f `,
+      authorizationUrl: `\t${fixtureOidcIssuer.authorizationUrl}\u00a0`,
+      tokenUrl: `\u3000${fixtureOidcIssuer.tokenUrl}\ufeff`,
+      jwksUrl: `\u2028${fixtureOidcIssuer.jwksUrl}\u2003 `,
+    };
+    // An issuer without a path ends at its host, so trailing padding there must be trimmed too.
+    const bare = {
+      issuer: "https://sso.example.com",
+      authorizationUrl: "https://sso.example.com/authorize",
+      tokenUrl: "https://sso.example.com/token",
+      jwksUrl: "https://sso.example.com/jwks",
+    };
+    const paddedBare = { ...bare, issuer: `${bare.issuer}\ufeff\u2029` };
     const cases = [
+      {
+        label: "OIDC, URLs padded with whitespace the API trims",
+        values: oidcUpgradeValues(recoveryUserId, padded),
+        settings: oidcUpgradeSettings(recoveryUserId, padded),
+        parsed: { oidc },
+        egress: ["oidc"],
+      },
+      {
+        label: "OIDC, an issuer without a path, padded with whitespace the API trims",
+        values: oidcUpgradeValues(recoveryUserId, paddedBare),
+        settings: oidcUpgradeSettings(recoveryUserId, paddedBare),
+        parsed: { oidc: { ...oidc, ...bare } },
+        egress: ["oidc"],
+      },
       {
         label: "OIDC only",
         values: oidcUpgradeValues(recoveryUserId),
@@ -512,6 +544,75 @@ test(
 
 const githubOn = { "auth.github.enabled": "true", "auth.recoveryUserId": recoveryUserId };
 const googleOn = { "auth.google.enabled": "true", "auth.recoveryUserId": recoveryUserId };
+
+// Treat mapped spellings as IPv4 before interpreting their prefix. The /1 examples
+// deliberately use the upper IPv4 half, so none can legitimately trust 8.8.8.8.
+const trustedProxyCidrs = {
+  accepted: [
+    ["10.0.0.0/8", "10.1.2.3"],
+    ["8.0.0.0/8", "8.8.8.8"],
+    ["::1/128", "::1"],
+    ["fd00:10::/64", "fd00:10::1"],
+    ["2600:1f18::/40", "2600:1f18::1"],
+    ["fe80::/10", "fe80::1"],
+    ["::/81", "::1"],
+    ["::/96", "::192.0.2.1"],
+    ["::fffe:0:0/96", "::fffe:c000:201"],
+    ["64:ff9b::/96", "64:ff9b::c000:201"],
+    ["2002::/16", "2002:c000:201::1"],
+    ["::ffff:192.0.2.1/1", "192.0.2.1"],
+    ["::ffff:c000:201/1", "192.0.2.1"],
+    ["::ffff:192.0.2.1/32", "192.0.2.1"],
+    ["::FFFF:c000:201/32", "192.0.2.1"],
+    ["0:0:0:0:0:ffff:192.0.2.1/32", "192.0.2.1"],
+    ["0::ffff:1.2.3.4/32", "1.2.3.4"],
+    ["::0:ffff:1.2.3.4/32", "1.2.3.4"],
+    ["0000:0000:0000:0000:0000:FFFF:C000:0201/32", "192.0.2.1"],
+  ],
+  catchAll: ["::/1", "::/8", "::/80", "::8000:0:0/81", "::fffe:0:0/95"],
+  invalidMappedPrefix: [
+    "::ffff:0:0/96",
+    "::FFFF:c000:201/33",
+    "0:0:0:0:0:ffff:192.0.2.1/96",
+    "0::ffff:1.2.3.4/128",
+    "::0:ffff:1.2.3.4/33",
+    "::ffff:192.0.2.1/33",
+    "::FFFF:C000:0201/128",
+  ],
+};
+
+test(
+  "trusted-proxy CIDR parity preserves mapped hosts and bounded IPv6 ranges",
+  tooling,
+  async () => {
+    // One render validates every accepted entry; parse its emitted entries individually
+    // so another trusted subnet cannot conceal an entry that trusts every IPv4 peer.
+    const objects = await renderChart({
+      "api.trustedProxy.preset": "ingress-nginx",
+      ...Object.fromEntries(
+        trustedProxyCidrs.accepted.map(([cidr], index) => [
+          `api.trustedProxy.cidrs[${index}]`,
+          cidr,
+        ]),
+      ),
+    });
+    const rendered = signInSettings(deploymentEnv(objects, "api"));
+    const cidrs = rendered.OCC_AUTH_TRUSTED_PROXY_CIDRS.split(",");
+    assert.deepEqual(
+      cidrs,
+      trustedProxyCidrs.accepted.map(([cidr]) => cidr),
+    );
+    for (const [index, cidr] of cidrs.entries()) {
+      const config = clientAddressConfiguration({
+        ...rendered,
+        OCC_AUTH_TRUSTED_PROXY_CIDRS: cidr,
+      });
+      assert.equal(config.trusts(trustedProxyCidrs.accepted[index][1]), true, cidr);
+      assert.equal(config.trusts("8.8.8.8"), cidr === "8.0.0.0/8", cidr);
+    }
+  },
+);
+
 const invalid = [
   {
     name: "generic preset without a header",
@@ -550,6 +651,22 @@ const invalid = [
     },
     parser: /must not trust every address/,
   },
+  // IPv6 prefixes covering the mapped range would otherwise let every IPv4
+  // socket peer supply the header used for sign-in rate limiting.
+  ...trustedProxyCidrs.catchAll.map((cidr) => ({
+    name: `a trusted-proxy IPv6 CIDR covering every IPv4 address: ${cidr}`,
+    values: { "api.trustedProxy.preset": "ingress-nginx", "api.trustedProxy.cidrs[0]": cidr },
+    chart: /must not trust every address/,
+    env: { OCC_AUTH_TRUSTED_PROXY_PRESET: "ingress-nginx", OCC_AUTH_TRUSTED_PROXY_CIDRS: cidr },
+    parser: /must not trust every address/,
+  })),
+  ...trustedProxyCidrs.invalidMappedPrefix.map((cidr) => ({
+    name: `a trusted-proxy mapped IPv4 address with an IPv6 prefix: ${cidr}`,
+    values: { "api.trustedProxy.preset": "ingress-nginx", "api.trustedProxy.cidrs[0]": cidr },
+    chart: /prefix must be 1 through 32/,
+    env: { OCC_AUTH_TRUSTED_PROXY_PRESET: "ingress-nginx", OCC_AUTH_TRUSTED_PROXY_CIDRS: cidr },
+    parser: /IPv4-mapped address, whose prefix must be 1 through 32/,
+  })),
   {
     name: "an invalid proxy address",
     values: { "api.trustedProxy.preset": "aws", "api.trustedProxy.cidrs[0]": "300.1.1.0/24" },
@@ -609,6 +726,7 @@ const invalid = [
     values: githubOn,
     chart: /auth\.github requires agentNativeAdmin\.enabled: false/,
     github: true,
+    code: "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED",
     env: {
       OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
@@ -729,6 +847,7 @@ const invalid = [
     values: googleOn,
     chart: /auth\.google requires agentNativeAdmin\.enabled: false/,
     google: true,
+    code: "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED",
     env: {
       OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
@@ -770,6 +889,8 @@ const invalid = [
     ["an issuer with an explicit port 443", "issuer", "https://tenant.idp.example.test:443/"],
     ["an IP-address issuer", "issuer", "https://203.0.113.10/"],
     ["an issuer with a query", "issuer", "https://tenant.idp.example.test/?t=1"],
+    // JavaScript's trim keeps U+0085, though Go's TrimSpace strips it.
+    ["an issuer padded with U+0085", "issuer", "\u0085https://tenant.idp.example.test/"],
   ].map(([name, key, value]) => ({
     name: `OIDC with ${name}`,
     values: { ...oidcUpgradeValues(recoveryUserId), [`auth.oidc.${key}`]: value },
@@ -833,6 +954,7 @@ const invalid = [
     values: { ...oidcUpgradeValues(recoveryUserId), "agentNativeAdmin.enabled": "true" },
     chart: /auth\.oidc requires agentNativeAdmin\.enabled: false/,
     oidc: true,
+    code: "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED",
     env: {
       OCC_AGENT_NATIVE_ADMIN_ENABLED: "true",
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.example.internal",
@@ -840,6 +962,9 @@ const invalid = [
     },
   },
 ];
+
+// Refusals with a named startup code; every other entry stops with STARTUP_FAILED.
+const startupCodes = new Map(invalid.flatMap(({ name, code }) => (code ? [[name, code]] : [])));
 
 test("values the chart refuses are settings the API also refuses", tooling, async (t) => {
   const directory = await startupDirectory(t);
@@ -869,7 +994,11 @@ test("values the chart refuses are settings the API also refuses", tooling, asyn
         name,
       );
     }
-    assert.equal(await startupCode(directory, environment), "STARTUP_FAILED", name);
+    assert.equal(
+      await startupCode(directory, environment),
+      startupCodes.get(name) ?? "STARTUP_FAILED",
+      name,
+    );
   });
 });
 
@@ -1042,4 +1171,397 @@ test("a null optional sign-in map renders like an absent one", tooling, async ()
       key,
     );
   }
+});
+
+// With native admin, the API refuses at startup a console origin outside the shared cookie
+// parent, or one without HTTPS (createControllerAuth, before any database read). The chart
+// refuses the same values at render time, and still renders what the API accepts.
+test("the chart refuses native admin base URLs the API refuses at startup", tooling, async () => {
+  const nativeAdmin = {
+    "gatewayRouting.enabled": "true",
+    "gatewayRouting.gatewayClassName": "private-envoy-gateway",
+    "gatewayRouting.apiKeySecretName": "occ-gateway-api-key",
+    "agentNativeAdmin.enabled": "true",
+    "agentNativeAdmin.domain": "agents.oce.example.com",
+    "agentNativeAdmin.sharedCookieDomain": "oce.example.com",
+  };
+  const apiRefusal = (baseUrl) => () =>
+    createControllerAuth({
+      mode: "production",
+      secret: "s".repeat(32),
+      baseURL: new URL(baseUrl).toString().replace(/\/$/, ""),
+      sharedCookieDomain: "oce.example.com",
+    });
+  for (const [baseUrl, chart, api] of [
+    [
+      "https://console.example.com",
+      /agentNativeAdmin\.sharedCookieDomain must contain the auth\.baseUrl host/,
+      /OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host/,
+    ],
+    [
+      "https://console-oce.example.com",
+      /agentNativeAdmin\.sharedCookieDomain must contain the auth\.baseUrl host/,
+      /OCC_AUTH_COOKIE_DOMAIN must contain the OCC_AUTH_BASE_URL host/,
+    ],
+    [
+      "http://console.oce.example.com",
+      /agentNativeAdmin\.enabled requires an HTTPS auth\.baseUrl/,
+      /OCC_AUTH_COOKIE_DOMAIN requires secure HTTPS session cookies/,
+    ],
+  ]) {
+    assert.match(await chartRefusal({ ...nativeAdmin, "auth.baseUrl": baseUrl }), chart, baseUrl);
+    assert.throws(apiRefusal(baseUrl), api, baseUrl);
+  }
+  for (const baseUrl of [
+    "https://oce.example.com",
+    "https://Console.OCE.example.com",
+    "https://console.oce.example.com.",
+    "https://console.oce.example.com:8443",
+    " https://console.oce.example.com ",
+  ]) {
+    // The API's cookie checks pass; it stops later, at the Installation it was not given.
+    assert.throws(apiRefusal(baseUrl), /Better Auth issuer requires an Installation/, baseUrl);
+    const objects = await renderChart({ ...nativeAdmin, "auth.baseUrl": baseUrl });
+    assert.ok(
+      deploymentEnv(objects, "api").some(
+        ({ name, value }) => name === "OCC_AUTH_BASE_URL" && value === baseUrl,
+      ),
+      baseUrl,
+    );
+  }
+});
+
+// The bootstrap Job's own check, run as the chart's Job runs it (NODE_ENV=production). Its
+// database is unreachable, so an accepted base URL ends at PERSISTENCE_UNAVAILABLE.
+async function jobCode(baseUrl) {
+  const result = await new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      ["scripts/bootstrap-installation.mjs"],
+      {
+        cwd: repository,
+        env: {
+          PATH: process.env.PATH,
+          NODE_ENV: "production",
+          OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+          OCC_AUTH_SECRET: secrets["occ-auth/secret"],
+          OCC_AUTH_BASE_URL: baseUrl,
+          OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@oce.example.internal",
+        },
+        timeout: 20_000,
+      },
+      (error, _stdout, output) => resolve({ killed: error?.killed === true, output }),
+    );
+  });
+  assert.ok(!result.killed, `the bootstrap Job timed out for ${JSON.stringify(baseUrl)}`);
+  const failure = result.output
+    .split("\n")
+    .filter((line) => line.startsWith("{") && line.endsWith("}"))
+    .map((line) => JSON.parse(line))
+    .find(({ event }) => event === "installation.bootstrap-failed");
+  assert.ok(failure, result.output);
+  return failure.code;
+}
+
+// The API refuses an auth base URL that is not an absolute HTTP(S) origin: server.mjs parses
+// OCC_AUTH_BASE_URL, and createControllerAuth (validHttpBaseURL, which the bootstrap Job also
+// runs before it) refuses the rest, both as AUTH_BASE_URL_INVALID. The bootstrap Job also
+// refuses plain HTTP unless the host is 127.0.0.1 or localhost. The chart refuses the same
+// values at render time and still renders every origin both accept. Native admin is off, so
+// only the origin checks apply.
+test(
+  "the chart refuses auth base URLs the API or the bootstrap Job refuses",
+  tooling,
+  async (t) => {
+    const directory = await startupDirectory(t);
+    const values = { "agentNativeAdmin.enabled": "false" };
+    const environment = resolveSecrets(
+      signInSettings(deploymentEnv(await renderChart(values), "api")),
+    );
+    // server.mjs's normalization, then createControllerAuth. Without an Installation, accepted
+    // settings stop right after its base URL checks.
+    const apiAccepts = (baseUrl) => {
+      let normalized;
+      try {
+        normalized = new URL(baseUrl).toString().replace(/\/$/, "");
+      } catch {
+        return false;
+      }
+      try {
+        createControllerAuth({ mode: "production", secret: "s".repeat(32), baseURL: normalized });
+      } catch (error) {
+        if (/Better Auth issuer requires an Installation/.test(error.message)) {
+          return true;
+        }
+        assert.match(error.message, /^OCC_AUTH_BASE_URL must be an absolute HTTP origin URL\.$/);
+        return false;
+      }
+      assert.fail(`createControllerAuth accepted ${baseUrl} without an Installation`);
+    };
+    const notOrigin = /auth\.baseUrl must be an absolute HTTP\(S\) origin/;
+    const plainHttp = /auth\.baseUrl must use HTTPS unless its host is 127\.0\.0\.1 or localhost/;
+    const unicodeEdge =
+      /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/;
+    const unicodeInside = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
+    const compatibility = /auth\.baseUrl must not contain compatibility characters/;
+    const cases = [
+      ...[
+        "https://console.oce.example.internal/occ",
+        "https://console.oce.example.internal/occ/",
+        "https://console.oce.example.internal?next=1",
+        "https://console.oce.example.internal/?next=1",
+        "https://console.oce.example.internal#console",
+        // An empty query or fragment parses as none, but survives serialization
+        // (https://host/?), which would move Better Auth's routes under /?/auth.
+        "https://console.oce.example.internal?",
+        "https://console.oce.example.internal/?",
+        "https://console.oce.example.internal#",
+        "https://console.oce.example.internal/#",
+        " https://console.oce.example.internal? ",
+        "https://admin@console.oce.example.internal",
+        "https://admin:secret@console.oce.example.internal",
+        "https://:secret@console.oce.example.internal",
+        "console.oce.example.internal",
+        "//console.oce.example.internal",
+        "ftp://console.oce.example.internal",
+        "https://console.oce.example.internal:65536",
+        "https://",
+        "http://localhost/occ",
+      ].map((baseUrl) => ({ baseUrl, chart: notOrigin, api: false, job: false })),
+      ...[
+        "https://console.oce.example.internal",
+        "https://console.oce.example.internal/",
+        "https://console.oce.example.internal:8443",
+        "https://console.oce.example.internal:0443/",
+        "https://console.oce.example.internal:65535",
+        "HTTPS://Console.OCE.example.internal",
+        "https://console.oce.example.internal.",
+        " https://console.oce.example.internal ",
+        "https://192.0.2.10",
+        "https://[2001:db8::10]:8443",
+        "https://localhost",
+        "http://127.0.0.1",
+        "http://127.0.0.1:8080/",
+        "http://localhost:8080",
+        "HTTP://LocalHost:8080",
+        " http://localhost ",
+        "https://bücher.oce.example.internal",
+        "https://console.例え.テスト",
+      ].map((baseUrl) => ({ baseUrl, chart: undefined, api: true, job: true })),
+      // URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces
+      // and invisible characters there reach the parser, which refuses them in the scheme or a
+      // host. The chart refuses them all; it is deliberately stricter for U+FEFF and U+200B at
+      // the end, which the host parser drops. A trailing unassigned code point (U+0378), which
+      // RE2's \p{C} does not cover, is refused too.
+      {
+        baseUrl: "https://console.oce.example.internal\u0378",
+        chart: unicodeEdge,
+        api: false,
+        job: false,
+      },
+      ...[
+        ["\u00a0", false],
+        ["\u2003", false],
+        ["\u3000", false],
+        ["\ufeff", true],
+        ["\u200b", true],
+      ].flatMap(([space, trailingAccepted]) =>
+        [
+          [`${space}https://console.oce.example.internal`, false],
+          [`https://console.oce.example.internal${space}`, trailingAccepted],
+          [` ${space}https://console.oce.example.internal${space} `, false],
+        ].map(([baseUrl, accepted]) => ({
+          baseUrl,
+          chart: unicodeEdge,
+          api: accepted,
+          job: accepted,
+        })),
+      ),
+      // Inside the host, the parser refuses spaces, < and >, and drops tabs and most invisible
+      // characters. The chart refuses them all (deliberately stricter for the dropped ones),
+      // but keeps the joiners U+200C and U+200D that some IDN labels need.
+      ...[
+        [" ", false],
+        ["\u00a0", false],
+        ["\u2003", false],
+        ["\u3000", false],
+        ["\u2028", false],
+        // Go's URL parser keeps these, but the API's refuses them.
+        ["<", false],
+        [">", false],
+        ["\t", true],
+        ["\ufeff", true],
+        ["\u200b", true],
+        ["\u00ad", true],
+      ].map(([space, accepted]) => ({
+        baseUrl: `https://console${space}.oce.example.internal`,
+        chart: unicodeInside,
+        api: accepted,
+        job: accepted,
+      })),
+      // The host parser maps compatibility characters first and refuses those that map to a
+      // forbidden host code point (full-width ? # / @, ?? from U+2047) or that UTS #46 disallows
+      // (U+2488 maps to "1.", U+FFFD). Go's URL parser keeps them. A sample here; the next test
+      // checks the chart's whole list against Node.
+      ...["\uff1f", "\uff03", "\uff0f", "\uff20", "\ufe56", "\u2047", "\u2488", "\ufffd"].map(
+        (character) => ({
+          baseUrl: `https://console${character}.oce.example.internal`,
+          chart: compatibility,
+          api: false,
+          job: false,
+        }),
+      ),
+      ...[
+        "https://\u0646\u0627\u0645\u0647\u200c\u0627\u06cc.oce.example.internal",
+        "https://\u0915\u094d\u200d\u0937.oce.example.internal",
+      ].map((baseUrl) => ({ baseUrl, chart: undefined, api: true, job: true })),
+      // The API serves plain HTTP anywhere, but the bootstrap Job refuses it off loopback.
+      ...[
+        "http://console.oce.example.internal",
+        "HTTP://console.oce.example.internal",
+        "http://192.0.2.10:8080",
+        "http://127.0.0.2",
+        "http://[::1]:8080",
+        "http://localhost.",
+        "http://localhost.oce.example.internal",
+      ].map((baseUrl) => ({ baseUrl, chart: plainHttp, api: true, job: false })),
+      // Deliberately stricter: Node repairs these degenerate spellings into an origin, or
+      // reads another IPv4 spelling (shorthand, octal, hex, trailing dot) as 127.0.0.1.
+      ...[
+        ["https:console.oce.example.internal", notOrigin],
+        ["https://console.oce.example.internal/.", notOrigin],
+        ["https://console.oce.example.internal/%2e", notOrigin],
+        ["http://127.1", plainHttp],
+        ["http://2130706433", plainHttp],
+        ["http://0177.0.0.1", plainHttp],
+        ["http://127.0.0.1.", plainHttp],
+      ].map(([baseUrl, chart]) => ({ baseUrl, chart, api: true, job: true })),
+    ];
+    await eachBounded(cases, async ({ baseUrl, chart, api, job }) => {
+      const label = JSON.stringify(baseUrl);
+      assert.equal(apiAccepts(baseUrl), api, label);
+      assert.equal(
+        await jobCode(baseUrl),
+        job ? "PERSISTENCE_UNAVAILABLE" : "AUTH_BASE_URL_INVALID",
+        label,
+      );
+      if (chart !== undefined) {
+        assert.match(await chartRefusal({ ...values, "auth.baseUrl": baseUrl }), chart, label);
+        return;
+      }
+      const objects = await renderChart({ ...values, "auth.baseUrl": baseUrl });
+      const bootstrap = objects
+        .filter(({ kind }) => kind === "Job")
+        .flatMap(({ spec }) => spec.template.spec.containers)
+        .find(({ name }) => name === "bootstrap");
+      for (const [workload, env] of [
+        ["api", deploymentEnv(objects, "api")],
+        ["bootstrap", bootstrap.env],
+      ]) {
+        assert.ok(
+          env.some(({ name, value }) => name === "OCC_AUTH_BASE_URL" && value === baseUrl),
+          `${label} ${workload}`,
+        );
+      }
+      // The real entrypoint gets past configuration with the rendered value.
+      assert.equal(
+        await startupCode(directory, { ...environment, OCC_AUTH_BASE_URL: baseUrl }),
+        "PERSISTENCE_UNAVAILABLE",
+        label,
+      );
+    });
+    // The entrypoint's own code for a value it cannot parse.
+    assert.equal(
+      await startupCode(directory, {
+        ...environment,
+        OCC_AUTH_BASE_URL: "console.oce.example.internal",
+      }),
+      "AUTH_BASE_URL_INVALID",
+    );
+  },
+);
+
+// The chart refuses a listed set of compatibility characters ($baseUrlHostRefused) that the API's
+// URL parser refuses in a host. This re-derives the list from Node: of the non-ASCII letters,
+// marks, numbers, punctuation and symbols (what the chart's other Unicode checks let through),
+// exactly those that URL parsing refuses in every host context tried are listed. The contexts
+// put Latin, Arabic, Hebrew and virama neighbours on each side, in every label position, so a
+// character refused only by the Bidi or joiner rules, or at a label start, is never listed.
+// The refusals follow the IDNA tables of Node's URL parser (ada), so a Node upgrade can change
+// them; this test then names the code points to add or remove. JavaScript's Unicode tables can be
+// newer than Go's: a listed code point that Go's RE2 reads as unassigned is refused by the chart's
+// earlier check instead, which is harmless.
+test("the chart lists exactly the compatibility characters the API's URL parser refuses in a host", async () => {
+  const helpers = await readFile(
+    join(repository, "deploy/helm/openclaw-enterprise/templates/_helpers.tpl"),
+    "utf8",
+  );
+  const [, source] = helpers.match(/\$baseUrlHostRefused := "(\[[^"]+\])"/) ?? [];
+  assert.ok(source, "_helpers.tpl defines $baseUrlHostRefused");
+  const listed = new RegExp(source.replaceAll("\\\\x{", "\\u{"), "u");
+  const parses = (host) => URL.canParse(`https://${host}`);
+  const labels = (character) =>
+    ["", "a", "\u0627", "\u05d0", "\u0915\u094d"].flatMap((before) =>
+      ["", "a", "\u0627", "\u05d0"].map((after) => `${before}${character}${after}`),
+    );
+  const refusedEverywhere = (character) =>
+    !labels(character).some((label) =>
+      [label, `${label}.example`, `example.${label}`, `${label}.\u0627`].some(parses),
+    );
+  const missing = [];
+  const extra = [];
+  let count = 0;
+  // Surrogates are category Cs, so the property test skips them.
+  for (let codePoint = 0x80; codePoint <= 0x10ffff; codePoint++) {
+    const character = String.fromCodePoint(codePoint);
+    if (/[\p{L}\p{M}\p{N}\p{P}\p{S}]/u.test(character)) {
+      const isListed = listed.test(character);
+      count += isListed ? 1 : 0;
+      if (refusedEverywhere(character) !== isListed) {
+        const hex = `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;
+        (isListed ? extra : missing).push(hex);
+      }
+    }
+  }
+  assert.ok(count > 0, "the list matches no letter, mark, number, punctuation or symbol");
+  assert.deepEqual({ missing, extra }, { missing: [], extra: [] });
+});
+
+// The chart's sign-in checks read the scheme as URL parsing does, like the API: an uppercase
+// HTTPS origin, or one with surrounding spaces, passes for GitHub, Google and OIDC. Plain HTTP
+// stays refused even on loopback, where the bootstrap Job would accept it. The API also requires
+// HTTPS for production external sign-in, but only after its database opens, so only the chart's
+// refusal is checked here.
+test("external sign-in accepts the HTTPS spellings the API accepts", tooling, async (t) => {
+  const directory = await startupDirectory(t);
+  const cases = [];
+  for (const [provider, values, settings] of [
+    ["GitHub", githubUpgradeValues(recoveryUserId), githubUpgradeSettings(recoveryUserId)],
+    ["Google", googleUpgradeValues(recoveryUserId), googleUpgradeSettings(recoveryUserId)],
+    ["OIDC", oidcUpgradeValues(recoveryUserId), oidcUpgradeSettings(recoveryUserId)],
+  ]) {
+    assert.match(
+      await chartRefusal({ ...values, "auth.baseUrl": "http://localhost:8080" }),
+      new RegExp(`auth\\.${provider.toLowerCase()} requires an HTTPS auth\\.baseUrl`),
+      provider,
+    );
+    for (const baseUrl of [
+      "HTTPS://Console.OCE.example.internal",
+      " https://console.oce.example.internal ",
+    ]) {
+      cases.push({ label: `${provider} ${JSON.stringify(baseUrl)}`, values, settings, baseUrl });
+    }
+  }
+  await eachBounded(cases, async ({ label, values, settings, baseUrl }) => {
+    const rendered = signInSettings(
+      deploymentEnv(await renderChart({ ...values, "auth.baseUrl": baseUrl }), "api"),
+    );
+    assert.deepEqual(rendered, { ...settings, OCC_AUTH_BASE_URL: baseUrl }, label);
+    assert.equal(await jobCode(baseUrl), "PERSISTENCE_UNAVAILABLE", label);
+    assert.equal(
+      await startupCode(directory, resolveSecrets(rendered)),
+      "PERSISTENCE_UNAVAILABLE",
+      label,
+    );
+  });
 });

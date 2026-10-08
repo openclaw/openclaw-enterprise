@@ -1,6 +1,6 @@
 {{- define "demo.labels" -}}
 app.kubernetes.io/name: openclaw-observability-demo
-app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/instance: {{ .root.Release.Name | quote }}
 app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- define "demo.validate" -}}

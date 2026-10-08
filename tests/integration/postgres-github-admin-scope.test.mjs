@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertConsoleSignIn,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
@@ -13,7 +14,6 @@ import {
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "scope-recovery@example.test";
@@ -126,9 +126,7 @@ test(
     });
     assert.equal(covered.statusCode, 200, covered.body);
     const signedIn = await githubSignIn(app, origin, limitedSubject, address());
-    assert.equal(signedIn.callback.headers.location, "/console/", signedIn.callback.body);
-    const cookie = cookieHeaderFromSetCookie(signedIn.callback.headers["set-cookie"]);
-    assert.equal((await currentSession(app, cookie)).user.id, limited.id);
+    await assertConsoleSignIn(app, signedIn.callback, limited.id);
 
     // Taking the recovery designation acts against its holder: disabling a holder returns 409,
     // so a narrower administrator must not move it onto itself and lock the broader one out.

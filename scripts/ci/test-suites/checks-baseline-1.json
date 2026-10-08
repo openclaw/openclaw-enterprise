@@ -89,6 +89,9 @@
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
+      "path": "tests/conformance/filesystem-configuration.test.mjs"
+    },
+    {
       "path": "tests/conformance/console-api-client.test.mjs"
     },
     {
@@ -209,7 +212,8 @@
       "path": "tests/integration/presets-controller.test.mjs"
     },
     {
-      "path": "tests/integration/profile-renderer.test.mjs"
+      "path": "tests/integration/profile-renderer.test.mjs",
+      "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
       "path": "tests/integration/bootstrap-output.test.mjs"
