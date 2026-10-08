@@ -63,7 +63,7 @@ RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
 # TODO: Remove this bridge when upstream accepts a verified proxy role at profile admission.
 COPY deploy/runtime/openclaw-trusted-proxy-role.patch /tmp/openclaw-trusted-proxy-role.patch
-RUN echo '8ac146ce128293e2c8130c4e5e6f3b9edcddd5e3572a7a89ef179b7c60ca5504  /tmp/openclaw-trusted-proxy-role.patch' | sha256sum --check --strict \
+RUN echo '782200074a3f917dca48d63ac6faa6c5ade24ad23e9409452ccf607a7d287de6  /tmp/openclaw-trusted-proxy-role.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-trusted-proxy-role.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs

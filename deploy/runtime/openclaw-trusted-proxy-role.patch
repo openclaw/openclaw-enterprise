@@ -192,7 +192,7 @@ index 730cc9d..47aa5c4 100644
    if (!authority?.isCurrent()) {
      throw new Error("HTTP profile authority changed during acquisition");
 diff --git a/src/gateway/server.auth.identity-scopes.test.ts b/src/gateway/server.auth.identity-scopes.test.ts
-index c2c3a0c..ae22680 100644
+index c2c3a0c..7a19cb5 100644
 --- a/src/gateway/server.auth.identity-scopes.test.ts
 +++ b/src/gateway/server.auth.identity-scopes.test.ts
 @@ -1,3 +1,4 @@
@@ -220,7 +220,7 @@ index c2c3a0c..ae22680 100644
    connectReq,
    CONTROL_UI_CLIENT,
    installGatewayTestHooks,
-@@ -958,3 +961,299 @@ describe("gateway identity scope grants", () => {
+@@ -958,3 +961,301 @@ describe("gateway identity scope grants", () => {
      );
    });
  });
@@ -456,13 +456,14 @@ index c2c3a0c..ae22680 100644
 +          "x-proxy-role-policy": roleHash("researcher"),
 +        });
 +        try {
-+          await expect(
-+            connectIdentity(ws, {
-+              skipDefaultAuth: true,
-+              scopes: ["operator.read", "operator.write"],
-+              deviceIdentityPath: deviceIdentityPath(`binding-${identity}`),
-+            }),
-+          ).rejects.toThrow("closed");
++          const closed = waitForWsClose(ws, 5_000);
++          const response = await connectIdentity(ws, {
++            skipDefaultAuth: true,
++            scopes: ["operator.read", "operator.write"],
++            deviceIdentityPath: deviceIdentityPath(`binding-${identity}`),
++          });
++          expect(response).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
++          expect(await closed).toBe(true);
 +        } finally {
 +          ws.close();
 +        }
@@ -507,13 +508,14 @@ index c2c3a0c..ae22680 100644
 +    await withGatewayServer(async ({ port }) => {
 +      const ws = await openWs(port, { ...TRUSTED_PROXY_HEADERS, ...headers });
 +      try {
-+        await expect(
-+          connectIdentity(ws, {
-+            skipDefaultAuth: true,
-+            scopes: ["operator.read"],
-+            deviceIdentityPath: deviceIdentityPath("proxy-rejected"),
-+          }),
-+        ).rejects.toThrow("closed");
++        const closed = waitForWsClose(ws, 5_000);
++        const response = await connectIdentity(ws, {
++          skipDefaultAuth: true,
++          scopes: ["operator.read"],
++          deviceIdentityPath: deviceIdentityPath("proxy-rejected"),
++        });
++        expect(response).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
++        expect(await closed).toBe(true);
 +      } finally {
 +        ws.close();
 +      }
