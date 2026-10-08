@@ -145,8 +145,9 @@ publish.
 
 ## Trust a private IdP CA
 
-Create a Secret in the OCE namespace containing only your approved public CA
-certificates in PEM format, with no private keys or leaf certificates:
+Create a Secret in the OCE namespace, distinct from the OIDC client credential
+Secret, containing only approved CA certificates in PEM format. Do not
+include private keys or leaf certificates:
 
 ```bash
 kubectl -n openclaw-system create secret generic occ-oidc-ca-v1 \
@@ -163,11 +164,16 @@ auth:
 ```
 
 Set both values or neither. Clear both when disabling OIDC. The API's
-`assemble-api-ca` init container validates the bundle and combines it with any
-configured Gateway CA. Missing Secret keys prevent startup; empty, malformed,
-non-CA or private-key content fails initialization. Each input bundle is limited
-to 1 MiB. Check `kubectl -n openclaw-system logs deployment/openclaw-enterprise-api
--c assemble-api-ca` for initialization errors, or Pod events for missing Secrets.
+`assemble-api-ca` init container validates this bundle and any selected Gateway
+CA bundle, then combines them. Each input must contain only PEM CA certificates
+and be no larger than 1 MiB. A missing Secret or key prevents startup; empty,
+malformed, non-CA or private-key content fails initialization. Before enabling
+this setting, check that any existing Gateway bundle also meets these requirements.
+For missing Secrets, inspect Pod events. For initialization errors, run:
+
+```bash
+kubectl -n openclaw-system logs deployment/openclaw-enterprise-api -c assemble-api-ca
+```
 
 This extends public trust **process-wide in the API** for clients that use
 Node's default trust. The chart does not add IdP roots to workers, Jobs,
@@ -177,14 +183,19 @@ external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replac
 still apply. See the [trust contract](../../reference/settings/oidc.md).
 
 For rotation, create a new versioned Secret and change `caSecretName`; the changed
-Pod template replaces the API Pod. If you update the existing Secret's contents,
-explicitly replace the API Pod with `kubectl -n openclaw-system rollout restart
-deployment/openclaw-enterprise-api`. Wait for `kubectl -n openclaw-system rollout
-status deployment/openclaw-enterprise-api`, then verify sign-in and Gateway access.
-The single API replica has a brief interruption. A Secret update alone does not
-refresh the assembled bundle or Node's startup trust. Include old and new CA
-certificates together during an overlap, then remove the old CA and replace the
-Pod again. Ordinary leaf renewal under the same CA needs no restart.
+Pod template replaces the API Pod. If you update the contents of the IdP Secret
+or a combined Gateway CA Secret, explicitly replace the API Pod:
+
+```bash
+kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
+kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api
+```
+
+Then verify sign-in and Gateway access. Replacing the single API replica interrupts service until it is ready. A Secret update alone does not refresh the assembled bundle or
+Node's startup trust; restarting only the API container keeps the init container's
+previous snapshot. Include old and new CA certificates together during an overlap,
+then remove the old CA and replace the Pod again. Ordinary leaf renewal under the
+same CA needs no restart.
 
 ## Find a person's subject
 
