@@ -439,7 +439,7 @@ async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, until, act 
       finishedAt: running === "true" ? undefined : containerStartedAt(finished.join(" ")),
     };
   };
-  const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;
+  const deadline = Date.now() + 90_000 * imageSmokeTimeoutMultiplier;
   const scenario = {
     containerName,
     startedAt,
@@ -723,7 +723,8 @@ async function assertWrapperTermination(t, kind) {
   const probing = await runTerminationScenario(t, {
     kind,
     mode: "hang",
-    until: ({ events }) => events.some(isModelTurn),
+    // DO NOT MERGE: forced failure for the diagnostics proof.
+    until: () => false,
     description: `${label} during its model probe`,
   });
   await withStartupProbeEvidence(probing, async () => {
