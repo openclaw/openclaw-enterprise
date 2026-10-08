@@ -110,6 +110,11 @@ Credential Gateway Drivers.
 | Delete a source           | `removeRefresh`, then gateway `removeSource`                                                                                            | `DeleteProviderRefresh` with `allow_missing`, then `DeleteProvider`      |
 | Attach, withdraw, retire  | Unchanged gateway calls. The placeholder does not change when a token is re-minted.                                                     | Unchanged                                                                |
 
+For a refresh type, OCC calls `registerSource` with empty `secrets`. The
+resolved Secret values are issuer material, and only `configureRefresh`
+receives them, so the Credential Gateway Driver never holds a client secret or
+refresh token. `updateSource` is never called for a refresh type.
+
 Registration keeps the current recovery model. OCC commits the source as
 `registering` before the first gateway call. If any later step fails, OCC
 removes the refresh material and the provider. After an uncertain outcome the
@@ -123,6 +128,24 @@ new random request ID. OCC does not replay an uncertain update or rotation: it
 returns `503`, and the caller retries. A retried rotation mints one more token.
 A retried update reconfigures the same material, which starts one more
 authorization epoch.
+
+An update is not atomic. Once `configureRefresh` succeeds, OpenShell holds the
+new material and has started a new authorization epoch, even if `rotate` then
+fails. In that case:
+
+- OCC returns `503` and keeps the previous Secret references, which name the
+  last material that minted.
+- The source stays `ready`. Its `status.refresh` reports the failed mint with
+  its failure code and recovery action.
+- OCC changes no attachment, but running Agents lost their handle with the
+  epoch and need a redeploy, as after a successful update.
+- OCC does not restore the previous material. Reconfiguring it would start
+  another epoch and still not restore the revoked handles.
+
+To recover, the owner sends `PATCH` with no `secrets`, which re-applies the
+recorded references, or supplies corrected material. While minting keeps
+failing, the source stays readable with its failed status until one of those
+updates succeeds or the owner deletes the source.
 
 Reconfiguring refresh material starts a new OpenShell authorization epoch and
 revokes handles derived from the previous one (`provider_refresh.rs`,
@@ -165,6 +188,9 @@ worker principal needs none.
   registration the record stays `deleting` for `DELETE`. An update or rotation
   returns `503`, and an update commits no new Secret references; the caller
   retries with a new request ID.
+- **Failed mint after an update.** The update returns `503`, keeps the
+  previous Secret references, and leaves the new material in place; see
+  [Source lifecycle](#source-lifecycle) for recovery.
 - **Gateway unavailable.** `rotate`, `PATCH`, and registration return `503`.
   Running Sandboxes can keep using their last minted token until it expires.
 
@@ -202,6 +228,12 @@ private CA:
   refresh fail with `reauthorize`, shown in the source status.
 - An update starts a new epoch; the test records whether running Sandboxes need
   a redeploy.
+- An update whose mint fails returns `503`, keeps the recorded Secret
+  references, and the source reports the failure. A later update with new
+  material restores minting.
+- Registration passes the Credential Gateway Driver no Secret values for a
+  refresh type. OCC conformance checks this boundary, because OpenShell returns
+  no provider credential values for the real test to observe.
 - Deleting the source removes refresh state and the provider.
 - Startup rejects `credential_refresh` without a paired `credential_gateway` on
   the same Backend.
