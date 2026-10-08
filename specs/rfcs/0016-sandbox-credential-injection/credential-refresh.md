@@ -41,7 +41,7 @@ interface CredentialRefreshDriver extends Driver {
     context: CredentialSourceContext,
     input: CredentialRefreshInput,
   ): Promise<CredentialRefreshStatus>;
-  rotate(context: CredentialSourceContext): Promise<CredentialRefreshStatus>;
+  rotate(context: CredentialSourceContext, requestId: string): Promise<CredentialRefreshStatus>;
   refreshStatus(context: CredentialSourceContext): Promise<CredentialRefreshStatus>;
   removeRefresh(context: CredentialSourceContext): Promise<void>;
 }
@@ -49,7 +49,7 @@ interface CredentialRefreshDriver extends Driver {
 interface CredentialRefreshInput {
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, string>>; // resolved values, never persisted by OCC
-  readonly requestId: string; // UUID, stable per source and configuration attempt
+  readonly requestId: string; // UUID; see Source lifecycle for when OCC reuses one
 }
 
 interface CredentialRefreshStatus {
@@ -68,7 +68,8 @@ Contract rules:
   successful call with the same `requestId` returns its original outcome
   instead of applying it again.
 - `rotate` forces one refresh. It is for incidents, such as a suspected token
-  leak. It does not revoke the previous token at the issuer.
+  leak. It does not revoke the previous token at the issuer. Its `requestId`
+  follows the same replay rule as `configureRefresh`.
 - `removeRefresh` is idempotent and deletes the stored refresh material. On
   OpenShell, `DeleteProvider` also removes it; the separate call keeps the
   contract complete for implementations that store material elsewhere.
@@ -104,18 +105,24 @@ Credential Gateway Drivers.
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Register a refresh source | Gateway `registerSource`, then `configureRefresh`, then `rotate` to mint the first token. The source is `ready` once status is `ready`. | `CreateProvider`, `ConfigureProviderRefresh`, `RotateProviderCredential` |
 | Read a source             | Gateway `sourceStatus` and `refreshStatus`, returned together as the source's `status`                                                  | `GetProvider`, `GetProviderRefreshStatus`                                |
-| Update refresh material   | `configureRefresh` with values from the source's current or replacement Secrets                                                         | `ConfigureProviderRefresh`                                               |
+| Update refresh material   | `configureRefresh` with current or replacement Secret values, then `rotate`. References commit only once `ready`.                       | `ConfigureProviderRefresh`, `RotateProviderCredential`                   |
 | Force a rotation          | `rotate`                                                                                                                                | `RotateProviderCredential`                                               |
 | Delete a source           | `removeRefresh`, then gateway `removeSource`                                                                                            | `DeleteProviderRefresh` with `allow_missing`, then `DeleteProvider`      |
 | Attach, withdraw, retire  | Unchanged gateway calls. The placeholder does not change when a token is re-minted.                                                     | Unchanged                                                                |
 
 Registration keeps the current recovery model. OCC commits the source as
 `registering` before the first gateway call. If any later step fails, OCC
-removes the refresh material and the provider, and marks an uncertain removal
-`deleting`. OCC derives each `requestId` as a name-based UUID from the source
-ID and attempt. OpenShell replays a successful result for the same request ID
-for 24 hours, so a retry after an uncertain response does not configure the
-source twice.
+removes the refresh material and the provider. After an uncertain outcome the
+record stays `deleting`, and `DELETE` repeats the removal. Each source ID
+registers once, so registration derives its `configureRefresh` and `rotate`
+request IDs as name-based UUIDs from the source ID and step. OpenShell replays
+a successful result for the same request ID for 24 hours.
+
+An update and a forced rotation are new caller requests, so each call takes a
+new random request ID. OCC does not replay an uncertain update or rotation: it
+returns `503`, and the caller retries. A retried rotation mints one more token.
+A retried update reconfigures the same material, which starts one more
+authorization epoch.
 
 Reconfiguring refresh material starts a new OpenShell authorization epoch and
 revokes handles derived from the previous one (`provider_refresh.rs`,
@@ -126,7 +133,8 @@ update. The real test must confirm it before the reference documents it.
 ### API
 
 - `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` keeps
-  its current rules and calls `configureRefresh` for a refresh type.
+  its current rules. For a refresh type it calls `configureRefresh`, then
+  `rotate`, and returns `503` unless the mint is `ready`.
 - `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate`
   needs exact `credential_source:update`. It reads no Secret, so it needs no
   `secret:operate`. It returns `200` with the source and its status, `409` for a
@@ -153,9 +161,10 @@ worker principal needs none.
   `reauthorize`, the owner supplies new material with `PATCH`.
 - **Expired token.** If refresh keeps failing, the Harness's requests carry an
   expired token and fail at the protected API.
-- **Uncertain configure or rotate.** OCC replays with the same `requestId`. After
-  the 24-hour replay window, OCC reads refresh status before deciding, and never
-  starts a new configuration attempt to resolve an uncertain one.
+- **Uncertain configure or rotate.** OCC does not replay the call. During
+  registration the record stays `deleting` for `DELETE`. An update or rotation
+  returns `503`, and an update commits no new Secret references; the caller
+  retries with a new request ID.
 - **Gateway unavailable.** `rotate`, `PATCH`, and registration return `503`.
   Running Sandboxes can keep using their last minted token until it expires.
 
