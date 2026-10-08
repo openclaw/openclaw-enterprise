@@ -68,13 +68,19 @@ Stories reach error states through real controls after loading fixture data.
 | Navigation components   | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                              |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials             | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
-| Native admin            | Available launch, stopped, UI configuration required, assigned role missing, insufficient pairing permissions, unsupported Compute transport, and denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                          |
+| Native admin            | Available launch, stopped, UI configuration required, assigned role missing, insufficient pairing permissions, unsupported Compute transport, administrator self-assignment and explicit Refresh recovery, disabled panel hidden, and ordinary-user denial hidden. The launch target is an explanatory fixture page.                                                                                              |
 | Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                                                                |
 | Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                                                      |
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                                                      |
 
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
+
+In **Components/Native admin → Administrator Needs Assignment**, follow the
+hint, assign the fixture Principal `platform-administrator` in Share Agent, then
+select **Refresh access**. The launch link appears in the same tab. Compare
+**Disabled and hidden** and **Denied and hidden**; neither shows the assignment
+hint. These stories simulate policy writes and status reads.
 
 ## Return navigation
 

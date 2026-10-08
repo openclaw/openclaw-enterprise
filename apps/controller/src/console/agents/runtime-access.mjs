@@ -35,7 +35,10 @@ export function renderRuntimeAccess(context, path) {
     { className: "primary", target: "_blank", rel: "noopener noreferrer", hidden: true },
     "Open OpenClaw",
   );
-  const reload = button("Refresh access", () => void load());
+  const reload = button("Refresh access", () => {
+    context.deniedReads?.forget(statusPath);
+    void load();
+  });
   const section = element(
     "section",
     { className: "agent-card native-admin-access" },
@@ -49,6 +52,7 @@ export function renderRuntimeAccess(context, path) {
   let current;
   // A failed read other than a denial keeps the card, its error and Refresh visible.
   let failed = false;
+  let assignmentRequired = false;
   let pending = false;
   // A refresh that arrives during a read may predate the change it reports; read once more.
   let rereadAfterPending = false;
@@ -63,18 +67,27 @@ export function renderRuntimeAccess(context, path) {
     }
     section.hidden =
       !failed &&
+      !assignmentRequired &&
       (current === undefined || current.status === "disabled" || current.status === "denied");
+  }
+
+  function showDeniedAccess() {
+    current = undefined;
+    failed = false;
+    assignmentRequired = context.installationAdmin === true;
+    status.textContent = assignmentRequired
+      ? "To open OpenClaw, assign your Principal ID an OpenClaw role in Share Agent below, then select Refresh access."
+      : "";
+    error.textContent = "";
   }
 
   async function load() {
     if (!context.isCurrent() || pending) {
       return;
     }
-    // OpenClaw needs an exact Agent use grant and runtime assignment; a 403 is audited, so this tab asks once per Agent.
+    // Automatic reads retain audited denials; an explicit Refresh checks access again.
     if (context.deniedReads?.has(statusPath)) {
-      current = undefined;
-      failed = false;
-      status.textContent = "";
+      showDeniedAccess();
       updateControls();
       return;
     }
@@ -88,6 +101,7 @@ export function renderRuntimeAccess(context, path) {
         return;
       }
       failed = false;
+      assignmentRequired = false;
       if (current.status === "available") {
         status.textContent = "OpenClaw is available for this Agent’s current version.";
       } else if (current.status === "disabled" || current.status === "denied") {
@@ -105,11 +119,14 @@ export function renderRuntimeAccess(context, path) {
       }
       if (cause.status === 403) {
         context.deniedReads?.remember(statusPath);
+        showDeniedAccess();
+      } else {
+        failed = true;
+        assignmentRequired = false;
+        current = undefined;
+        status.textContent = "";
+        error.textContent = message(cause);
       }
-      failed = cause.status !== 403;
-      current = undefined;
-      status.textContent = "";
-      error.textContent = message(cause);
     } finally {
       if (context.isCurrent()) {
         pending = false;

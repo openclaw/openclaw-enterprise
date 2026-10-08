@@ -957,6 +957,19 @@ export function installFixture(scenario, evidence) {
           return response(saved, 202);
         }
         if (suffix === "/native-admin" && method === "GET") {
+          if (
+            scenario.nativeAssignmentPrincipal &&
+            !bindings.some(
+              (binding) =>
+                binding.subjectKind === "identity" &&
+                binding.subjectId === scenario.nativeAssignmentPrincipal &&
+                binding.resourceKind === "agent" &&
+                binding.resourceId === id &&
+                binding.runtimeRole !== undefined,
+            )
+          ) {
+            return error(403);
+          }
           return response({
             status: scenario.nativeAdmin ?? "disabled",
             ...(scenario.nativeAdminReason === undefined

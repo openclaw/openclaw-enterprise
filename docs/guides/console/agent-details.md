@@ -258,6 +258,10 @@ When enabled by the Installation and permitted for your account, **OpenClaw**
 provides **Refresh access** and **Open OpenClaw**. The latter opens
 the active gateway in a new tab, even while you view a draft or older revision.
 
+If you are an Installation administrator without OpenClaw access, the card directs
+you to assign your Principal ID a role in **Share Agent** below. After saving,
+select **Refresh access** to open it in the same tab.
+
 The native UI can change the gateway outside OCE's revision tracking. Use OCE for
 durable configuration. See [native admin access](../../reference/agent-native-admin.md)
 for permissions and stopped, unavailable, or unsupported states. Installation

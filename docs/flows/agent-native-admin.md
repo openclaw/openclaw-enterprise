@@ -67,7 +67,7 @@ graph TD
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Disabled and denied responses keep it hidden. Stopped, unavailable and unsupported responses show feedback; other read failures retain the error and **Refresh access**. Only `available` with an Agent URL shows **Open OpenClaw**, opening a new tab with `noopener noreferrer` and no launch request. After an audited `403`, tab `sessionStorage` caches the denied path for that session owner, hiding later views without another request. The [shared page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Logout, sign-in or a new tab asks afresh.
+Agent detail requests `${path}/native-admin` with the OpenClaw panel hidden. Disabled responses and ordinary-user denials keep it hidden. An Installation administrator denied access sees a self-assignment hint and **Refresh access**. Stopped, unavailable and unsupported responses show feedback; other read failures retain the error and **Refresh access**. Only `available` with an Agent URL shows **Open OpenClaw**, opening a new tab with `noopener noreferrer` and no launch request. After an audited `403`, tab `sessionStorage` caches the denied path for that session owner, preserving the same denial state on later views without another request. **Refresh access** forgets only this status path and rereads current authority, so a new assignment can take effect in the same tab. The [shared page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Logout, sign-in or a new tab asks afresh.
 
 `updateCurrentAgent` calls `refresh()` when deployment polling or **Refresh deployment** observes changed `activeRevisionId` or `desiredRuntimeState`. A pending read queues one further read. The panel warns that native edits do not update durable OCE configuration.
 
@@ -197,7 +197,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
-- 2026-10-08 14:03: Return disabled status to exact-Agent administrators without requiring a runtime assignment. (authoring-run/3bee1cb2-aeb2-4700-8ff4-3da9ac7f098c - 346b1fe14)
+- 2026-10-08 14:03: Return disabled status without a runtime assignment; keep administrator assignment guidance visible and retry remembered denial on explicit Refresh. (authoring-run/3bee1cb2-aeb2-4700-8ff4-3da9ac7f098c - 346b1fe14)
 
 - 2026-10-08 03:40: Documented client reset handling during native-admin WebSocket admission and the denial-audit and upstream-connection ordering at inspected revision `002d0f796`. (authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c - 002d0f79639a9c814eb1fa2799530516a6c90cde)
 - 2026-10-05 17:34: Trace Namespace-scoped entry Roles and consistent human-route selection for runtime assignments. (authoring-run/593fb00e-b94d-46a0-a339-f3a8973764cb - aecffb24a16b5252c55ddf47bed2c66e622f1813)

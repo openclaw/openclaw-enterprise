@@ -3892,11 +3892,36 @@ export const scenarios = {
     description: "Pairing cannot approve every scope required by the assigned role.",
     steps: ["Confirm the pairing permissions message is distinct from a disabled UI."],
   },
+  nativeAdministratorAssignment: {
+    group: "Components/Native admin",
+    name: "Administrator Needs Assignment",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAssignmentPrincipal: "prn_00000000-0000-4000-8000-000000000003",
+    description:
+      "An Installation administrator needs an explicit OpenClaw role. Simulated UI proof.",
+    steps: [
+      "Confirm the OpenClaw card shows assignment guidance and no launch link.",
+      "In Share Agent, enter prn_00000000-0000-4000-8000-000000000003, select platform-administrator, acknowledge the permissions and select Share Agent.",
+      "Select Refresh access. Open OpenClaw becomes available in the same tab.",
+    ],
+  },
+  nativeDisabled: {
+    group: "Components/Native admin",
+    name: "Disabled and hidden",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "disabled",
+    description:
+      "A disabled Installation hides OpenClaw without suggesting an assignment. Simulated UI proof.",
+  },
   nativeDenied: {
     group: "Components/Native admin",
     name: "Denied and hidden",
     path: revision,
     deployed: true,
+    observabilityDenied: true,
     rules: [{ suffix: "/native-admin", method: "GET", status: 403 }],
     description:
       "A person without an OpenClaw assignment can retain their Agent page while access is denied.",

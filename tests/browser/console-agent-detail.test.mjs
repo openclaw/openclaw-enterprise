@@ -2801,7 +2801,11 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   await page.reload();
   assert.equal((await deniedAccess).status(), 403);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await expectNativeAdminHidden(page);
+  await page
+    .locator(".native-admin-access")
+    .getByText("assign your Principal ID", { exact: false })
+    .waitFor();
+  assert.equal(await page.getByRole("link", { name: "Open OpenClaw" }).isVisible(), false);
   fixture.policy.restrictions.length = 0;
   // The audited denial is settled for this tab; a new tab in the same session asks afresh.
   const deniedTabWrites = nonAuthWriteRequests(requests);
@@ -4013,6 +4017,99 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   assert.equal(await panel.count(), 0);
 });
 
+test("an unassigned Installation administrator can self-assign and explicitly refresh OpenClaw access", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const cookieDomain = "oce.example.test";
+  const consoleHost = `console.${cookieDomain}`;
+  const fixture = await createConsoleAppFixture(t, {
+    auditSink,
+    provisionedPeople: [],
+    originHost: consoleHost,
+    publicOrigin: true,
+    authCookieDomain: cookieDomain,
+    development: { enabled: false },
+    https: true,
+    authSecureCookies: true,
+    nativeAdmin: {
+      enabled: true,
+      domain: `agents.${cookieDomain}`,
+      sharedCookieDomain: cookieDomain,
+    },
+    nativeAdminGatewayApiKey: async () => "native-admin-gateway-api-key",
+    computeDriver: nativeAdminComputeDriver(
+      "wss://private-gateway.example.invalid/self-assignment",
+    ),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Administrator entry", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Self-assignment Agent",
+    nativeValues("self-assignment"),
+  );
+  const origin = new URL(fixture.origin);
+  origin.hostname = deriveNativeAdminHost(
+    fixture.controller.installation.id,
+    agent,
+    `agents.${cookieDomain}`,
+  );
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeAdminValues("self-assignment", origin.origin),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const principal = fixture.policy.identities.find((identity) => identity.kind === "principal");
+  const { page } = await newPage(t, fixture, {
+    args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const statusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  const reads = () => pathRequests(requests, "GET", statusPath).length;
+  const denials = () =>
+    auditSink
+      .list()
+      .filter(
+        (event) =>
+          event.kind === "authorization_denial" &&
+          event.action === "openclaw.agents.native_admin.read",
+      ).length;
+  const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  await login(page, fixture, detail);
+  const card = page.locator(".native-admin-access");
+  await card.getByText("assign your Principal ID", { exact: false }).waitFor({ timeout: 5_000 });
+  assert.equal(await card.getByRole("link", { name: "Open OpenClaw" }).isVisible(), false);
+  assert.equal(denials(), 1);
+
+  // Automatic reloads retain the hint and suppress another audited denial.
+  await page.reload();
+  await card.getByText("assign your Principal ID", { exact: false }).waitFor();
+  assert.equal(reads(), 1);
+  assert.equal(denials(), 1);
+  // An explicit retry still checks current authority; it cannot invent access.
+  await card.getByRole("button", { name: "Refresh access" }).click();
+  await waitForCondition(() => reads() === 2 && denials() === 2, "explicit denied retry");
+  await card.getByText("assign your Principal ID", { exact: false }).waitFor();
+
+  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  await sharing.getByLabel("Existing person’s Principal ID").fill(principal.id);
+  await sharing.getByLabel("OpenClaw role", { exact: true }).selectOption("platform-administrator");
+  await sharing.getByRole("checkbox").check();
+  await sharing.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await sharing.getByText("Agent access is shared.", { exact: false }).waitFor();
+  const assignedAccess = await fixture.request("GET", statusPath);
+  assert.equal(assignedAccess.status, 200);
+  assert.equal(assignedAccess.data.status, "available", JSON.stringify(assignedAccess.data));
+  // The same tab and session must recover after the real policy write.
+  await card.getByRole("button", { name: "Refresh access" }).click();
+  const launch = card.getByRole("link", { name: "Open OpenClaw" });
+  await launch.waitFor({ timeout: 5_000 });
+  assert.equal(await launch.getAttribute("href"), origin.href);
+  assert.equal(reads(), 3);
+  assert.equal(denials(), 2);
+  assert.equal(await card.getByText("assign your Principal ID", { exact: false }).count(), 0);
+});
+
 test("a read-only viewer is denied saved settings and native admin once per tab, not per view", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink });
@@ -4132,7 +4229,7 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   await card.getByRole("alert").getByText("Service unavailable", { exact: false }).waitFor();
   assert.equal(failures, 2, "Back revalidates the failed read once");
 
-  // A later answer still decides visibility: this person has no runtime assignment.
+  // Recovery still honors Installation configuration: the feature is disabled.
   unavailable = false;
   const reads = () => requests.filter((request) => request.path === nativeAdminPath).length;
   const before = reads();

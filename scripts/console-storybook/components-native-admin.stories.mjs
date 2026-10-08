@@ -22,3 +22,9 @@ export const PairingPermissionsRequired = {
   ...story("nativeDeviceApproval"),
   name: "Pairing Permissions Required",
 };
+
+export const AdministratorNeedsAssignment = {
+  ...story("nativeAdministratorAssignment"),
+  name: "Administrator Needs Assignment",
+};
+export const NativeDisabled = { ...story("nativeDisabled"), name: "Disabled and hidden" };
