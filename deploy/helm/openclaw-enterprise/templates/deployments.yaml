@@ -1,4 +1,6 @@
 {{- range $component := list "api" "worker" }}
+{{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
+{{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +53,18 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if $oidcCa }}
+        - name: oidc-ca
+          secret:
+            secretName: {{ $.Values.auth.oidc.caSecretName | quote }}
+            items:
+              - key: {{ $.Values.auth.oidc.caSecretKey | quote }}
+                path: ca.crt
+        - name: api-extra-ca
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Mi
+        {{- end }}
         {{- if $.Values.executionCluster.enabled }}
         - name: execution-kubeconfig
           secret:
@@ -174,6 +188,41 @@ spec:
           emptyDir:
             sizeLimit: 1Mi
         {{- end }}
+      {{- if $oidcCa }}
+      initContainers:
+        - name: assemble-api-ca
+          image: {{ $.Values.images.controller | quote }}
+          command: ["node"]
+          args:
+            - --input-type=module
+            - -e
+            - {{ required "chart is missing files/assemble-api-ca.mjs" ($.Files.Get "files/assemble-api-ca.mjs") | quote }}
+            - /etc/openclaw/api-extra-ca/ca.crt
+            - /etc/openclaw/oidc-ca/ca.crt
+            {{- if $gatewayCa }}
+            - /etc/openclaw/gateway-ca/ca.crt
+            {{- end }}
+          securityContext:
+            {{- include "openclaw.containerSecurity" $ | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: oidc-ca
+              mountPath: /etc/openclaw/oidc-ca
+              readOnly: true
+            {{- if $gatewayCa }}
+            - name: gateway-ca
+              mountPath: /etc/openclaw/gateway-ca
+              readOnly: true
+            {{- end }}
+            - name: api-extra-ca
+              mountPath: /etc/openclaw/api-extra-ca
+      {{- end }}
       {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
       # The receipt server must remain available while the broker drains.
       initContainers:
@@ -211,10 +260,13 @@ spec:
             {{- if $.Values.gatewayRouting.enabled }}
             - name: OCC_GATEWAY_API_KEY_PATH
               value: /etc/openclaw/gateway-api-key/key
-            {{- if or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName }}
+            {{- end }}
+            {{- if $oidcCa }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/openclaw/api-extra-ca/ca.crt
+            {{- else if $gatewayCa }}
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/openclaw/gateway-ca/ca.crt
-            {{- end }}
             {{- end }}
             {{- if eq $component "api" }}
             - name: OCC_HOST
@@ -319,6 +371,11 @@ spec:
               value: {{ $.Values.worker.convergenceTimeoutMs | quote }}
             {{- end }}
           volumeMounts:
+            {{- if $oidcCa }}
+            - name: api-extra-ca
+              mountPath: /etc/openclaw/api-extra-ca
+              readOnly: true
+            {{- end }}
             {{- if $.Values.executionCluster.enabled }}
             - name: execution-kubeconfig
               mountPath: /etc/openclaw/execution

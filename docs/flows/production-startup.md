@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-05"
-last_updated_session: "authoring-run/54e33467-f3d2-4f4e-afad-952157ec12f0"
+updated: "2026-10-08"
+last_updated_session: "authoring-run/c63bb502-5d8d-4ab7-807a-9ca22d609986"
 ---
 
 # Production Startup Flow
@@ -16,10 +16,9 @@ API and worker, then proves authenticated `/installation` access with the
 retrieved bootstrap service key. This flow ends at control-plane access; tenant
 Agent deployment and model-backed TUI proof are later flows.
 
-For the operator commands, use the [deployment guide](../guides/deploy.md). The
-chart owns migration/bootstrap ordering and controller readiness. It does not
-provision cloud infrastructure, publish images, create TLS, retrieve keys, or
-prepare application Secrets automatically.
+For commands, see the [deployment guide](../guides/deploy.md). The chart orders
+initialization and readiness. Operators provision infrastructure, publish images,
+configure TLS, create Secrets and retrieve keys.
 
 ## Entry Points
 
@@ -49,11 +48,15 @@ graph TD
         F --> O{"Canonical migration history?"}
         O -->|No| P["Refuse initialization before migration DDL"]
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
-        G --> H["Start private API Deployment"]
+        G --> CA{"OIDC CA configured?"}
+        CA -->|No| H["Start private API Deployment"]
+        CA -->|Yes| CB["Validate and combine IdP and Gateway CA bundles"]
+        CB -->|Valid| H
+        CB -->|Invalid or missing| CF["Block API startup"]
         G --> I["Start independent worker Deployment"]
-        I --> O{"Repository credentials enabled?"}
-        O -->|Yes| P["Sidecar copies protected inputs and starts private control"]
-        P --> Q["Sidecar probe gates worker Pod readiness"]
+        I --> R{"Repository credentials enabled?"}
+        R -->|Yes| S["Sidecar copies protected inputs and starts private control"]
+        S --> Q["Sidecar probe gates worker Pod readiness"]
         H --> L["Run Kubernetes Compute preflight"]
         I --> L
         L --> M{"Kubernetes older than 1.35?"}
@@ -159,39 +162,37 @@ Job; Helm failure does not imply the database hook was rolled back.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-After successful initialization, Kubernetes starts separate API and worker
-Deployments. The API validates production listener settings, Better Auth,
-database access, trusted Installation YAML, selected Drivers, Backend
-membership, and Kubernetes Compute preflight before readiness. It serves private
-controller routes, `/healthz`, and database-backed `/readyz` behind the
-operator-managed endpoint. A `/healthz` startup probe (1-second period, 120
-failures) gives the API 2 minutes to listen and lets readiness start within a
-second of listening.
+After initialization, Kubernetes starts separate API and worker Deployments.
+With [OIDC CA settings](../reference/settings/oidc.md), `deploy/helm/openclaw-enterprise/templates/deployments.yaml:1`
+runs `deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs:1` first. This nonroot
+init combines validated IdP and Gateway certificates; invalid or missing input
+blocks the API. Node loads the read-only result through `NODE_EXTRA_CA_CERTS`,
+retaining public roots for `apps/controller/src/auth/provider-transport.ts:providerJSON`
+and other API HTTPS clients. Pod replacement reloads trust; workers receive no
+IdP roots.
+
+Before readiness, the API validates listener settings, Better Auth, database,
+Installation YAML, Drivers, Backend membership and Kubernetes Compute preflight.
+It serves private routes, `/healthz` and database-backed `/readyz`. The startup
+probe allows two minutes to listen (120 failures at one-second intervals);
+readiness can begin within a second of listening.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-On `SIGTERM` the API stops accepting connections and finishes admitted requests.
-Their responses carry `Connection: close` (a streamed one closes its connection
-when it ends), so the process exits without waiting out the 72-second keep-alive.
-The single `Recreate` replica keeps the default 30-second termination grace and
-no `preStop` hook, since no peer takes its traffic; a request still running after
-30 seconds is cut off. The API logs `shutdown.started` with the `signal`, then
-`shutdown.completed` with `durationMs` once every close hook has finished; a
-failed close logs `shutdown.failed` and exits `1`. A log ending at
-`shutdown.started` means the grace period cut the drain off.
+On `SIGTERM`, the API stops accepting connections and finishes admitted requests
+with `Connection: close`, avoiding the 72-second keep-alive wait. Its single
+`Recreate` replica has no peer or `preStop` hook; the default 30-second grace
+cuts off requests still running. Logs report `shutdown.started` with `signal`,
+then `shutdown.completed` with `durationMs`. A failed close logs `shutdown.failed`
+and exits `1`; a log ending at `shutdown.started` indicates the grace cut off
+the drain.
 
-When `controlPlane.nodeSelector` is non-empty, the chart places the API and
-worker Pods with that selector. The same selector applies to the initialization
-Job (migration and bootstrap), so all four stay on a reviewed control-plane node
-pool.
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also projects
-that selector into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`,
-so the credential-checking private proxy stays on the trusted pool.
-Empty chart defaults omit the field for clusters that do
-not label a dedicated control-plane pool. When `database.caSecretName` is set,
-API and worker also mount the CA Secret read-only at `database.caMountPath`.
-Tenant gateway and Agent placement remain in the selected Compute Driver
-configuration.
+`controlPlane.nodeSelector` places API, worker and initialization Pods on the
+reviewed pool. `deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml`
+projects it into `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod` for the
+private proxy. Empty defaults omit placement; tenant gateway and Agent placement
+belongs to the Compute Driver. `database.caSecretName` mounts the database CA
+read-only at `database.caMountPath` in API and worker Pods.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -301,6 +302,8 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
   from the retrieved key file.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
+- `tests/integration/oidc-ca-trust.test.mjs` executes rendered assembly and real
+  loopback TLS through the OIDC callback; see [local proof limits](../testing/local.md#authentication-and-authorization-coverage).
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
   chart; it does not prove a live install, key retrieval, tenant runtime, or
   model turn.
@@ -322,6 +325,8 @@ model calls remain unproven until the tenant deployment and TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 22:12: Trace private IdP CA assembly and startup refusal. (authoring-run/c63bb502-5d8d-4ab7-807a-9ca22d609986 - 52a54734de41cc62fd57b2fb3081a979057a0059)
 
 - 2026-10-05 12:10: Bound initialization hook names for valid long Helm releases. (authoring-run/54e33467-f3d2-4f4e-afad-952157ec12f0 - 4cda6515736280ca39f0fbe92cff78194b2c3638)
 - 2026-10-05 06:59: Preserve bootstrap Pod namespace strings. (01a0f9e4-a0bf-76f1-acdb-e6b55ada490a - 66a4a07028fd0a08c29ea80e8f95cadc48a74932)

@@ -29,7 +29,8 @@
     "tests/integration/repository-runtime-volume.test.mjs",
     "tests/integration/production-image-qualification.test.mjs",
     "tests/integration/development-packaging.test.mjs",
-    "tests/integration/container-publication-workflow.test.mjs"
+    "tests/integration/container-publication-workflow.test.mjs",
+    "tests/integration/oidc-ca-trust.test.mjs"
   ],
   "files": [
     {
@@ -120,6 +121,14 @@
         "malformed output",
         "tool event",
         "termination during backoff exits without another probe"
+      ]
+    },
+    {
+      "path": "tests/integration/oidc-ca-trust.test.mjs",
+      "expectedTests": [
+        "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
+        "OIDC CA chart refuses partial, malformed and disabled configuration",
+        "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust"
       ]
     }
   ]

@@ -100,6 +100,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- $oidcCa := default dict $oidc -}}
+{{- range $key := list "caSecretName" "caSecretKey" -}}
+{{- if and (hasKey $oidcCa $key) (not (kindIs "string" (index $oidcCa $key))) -}}{{- fail (printf "auth.oidc.%s must be a string" $key) -}}{{- end -}}
+{{- end -}}
+{{- if or $oidcCa.caSecretName $oidcCa.caSecretKey -}}
+{{- if or (not (kindIs "bool" $oidcCa.enabled)) (not $oidcCa.enabled) -}}{{- fail "auth.oidc CA configuration requires auth.oidc.enabled: true" -}}{{- end -}}
+{{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
+{{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
+{{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
+{{- if or (gt (len $oidcCa.caSecretKey) 253) (has $oidcCa.caSecretKey (list "." "..")) (not (regexMatch "^[A-Za-z0-9._-]+$" $oidcCa.caSecretKey)) -}}{{- fail "auth.oidc.caSecretKey must be a Secret key basename" -}}{{- end -}}
+{{- end -}}
 {{- if and $oidc $oidc.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}

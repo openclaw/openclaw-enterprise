@@ -104,6 +104,10 @@ auth:
     secretName: occ-oidc-login
     clientIdKey: client-id
     clientSecretKey: client-secret
+    # Optional public CA certificate bundle for the IdP (no private keys). Both or neither.
+    # API-only process-wide Node trust, combined with Gateway roots. Replace API Pods on rotation.
+    caSecretName: ""
+    caSecretKey: ""
     # client_secret_post (default) or client_secret_basic.
     tokenAuth: client_secret_post
     # Console button label ("Continue with <displayName>"); empty means "single sign-on".
