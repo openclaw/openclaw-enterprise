@@ -100,7 +100,12 @@ runtime Secrets; do not put them in the image.
 Keep the source commit and archive checksum together when updating OpenClaw.
 The `matrix-sdk-crypto` stage fetches the Matrix crypto library with the retrying,
 checksum-verifying download helper, and both installs read it from a loopback server
-instead of GitHub. When an OpenClaw update changes the locked
+instead of GitHub.
+The public download wrapper is copied into the shared dependency-inputs stage,
+so both installs can execute it with Podman on SELinux-enforcing hosts. The
+verified library remains a read-only mount from the `matrix-sdk-crypto` stage.
+Neither the wrapper nor build credentials are copied into the final image.
+When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/Dockerfile)

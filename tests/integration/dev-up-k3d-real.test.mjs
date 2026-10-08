@@ -258,6 +258,53 @@ test(
       assert.equal((await stat(join(stateDirectory, file))).mode & 0o077, 0);
     }
 
+    // Compare the admitted image with real containerd metadata. Readiness alone
+    // cannot establish that the native engine archive preserved image identity.
+    const installation = loadYaml(
+      await readFile(join(stateDirectory, "installation.yaml"), "utf8"),
+    );
+    const runtimeReference = installation.drivers.compute.configuration.images.agent;
+    assert.match(runtimeReference, /@sha256:[a-f0-9]{64}$/);
+    const [runtimeRepository, runtimeDigest] = runtimeReference.split("@");
+    const importedImages = (
+      await execute(
+        state.containerEngine,
+        ["exec", `k3d-${cluster}-server-0`, "ctr", "-n", "k8s.io", "images", "list"],
+        { cwd: repository, env: environment },
+      )
+    ).stdout;
+    assert.ok(
+      importedImages.split("\n").some((line) => {
+        const [reference, , digest] = line.trim().split(/\s+/);
+        return (
+          digest === runtimeDigest &&
+          (reference === runtimeReference || reference.startsWith(`${runtimeRepository}:`))
+        );
+      }),
+      "the installed runtime digest must resolve in the real owned node",
+    );
+    assert.equal(existsSync(join(stateDirectory, "development-import.tar")), false);
+    if (state.containerEngine === "podman") {
+      // Default tagged builds exercise the Podman repair rather than the older
+      // digest-staging path. The exporter must retain both original source tags.
+      for (const [selection, image] of [
+        ["OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart"],
+        [
+          "OCC_DEVELOPMENT_CONTROLLER_IMAGE",
+          "openclaw-enterprise-controller:kubernetes-quickstart",
+        ],
+      ]) {
+        if (!environment[selection]) {
+          const inspected = await execute(
+            "podman",
+            ["image", "inspect", "--format", "{{json .RepoTags}}", image],
+            { cwd: repository, env: environment },
+          );
+          assert.ok(JSON.parse(inspected.stdout).includes(`localhost/${image}`));
+        }
+      }
+    }
+
     // The browser endpoint terminates TLS for this installation only. Verify
     // the real console and sign-in response over that endpoint; this does not
     // claim that an Agent native UI or its WebSocket has been exercised.
@@ -357,7 +404,8 @@ test(
       catalog.data.plugins.some(({ id }) => id === "codex-plugin:linear@openai-curated-remote"),
     );
     // Provision the shipped dedicated Codex Preset through the same API used by
-    // the console. The synthetic Secret permits startup but cannot run a model.
+    // the console. This synthetic Secret is not a live credential and cannot
+    // satisfy Codex's native startup probe; successful deployment needs test auth.
     const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
     const preset = presets.data.find(({ name }) => name === "Standard Codex");
     const rendered = renderPresetTemplate(preset.template, {
@@ -450,6 +498,7 @@ test(
     const agentPod = agentPods[0];
     const container = agentPod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container);
+    assert.equal(container.image, runtimeReference);
     const provenancePath = join(stateDirectory, "codex-seccomp-provenance.json");
     if (existsSync(provenancePath)) {
       const provenance = JSON.parse(await readFile(provenancePath, "utf8"));

@@ -20,6 +20,22 @@ verify workspace writes succeed and outside writes fail; neither proves model
 execution, and the Compose case does not prove Agent routing. Failed cleanup
 preserves state for `occ dev down`.
 
+Run Kubernetes cases with rootful Podman; the Compose case requires Docker:
+
+```sh
+OCC_TEST_DEV_UP_K3D_REAL=1 OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
+  node --test --test-concurrency=1 --test-name-pattern='dev-up (refuses|installs)' \
+  tests/integration/dev-up-k3d-real.test.mjs
+```
+
+Select the engine's Unix socket where its loopback ports are reachable. Leave
+runtime/controller image selectors unset to test tagged imports; prebuilt immutable
+selections exercise digest staging. The case checks containerd/runtime Pod image
+identity, source-tag retention and archive cleanup. It supplies no live provider
+credential; the synthetic key cannot satisfy Codex's startup probe, so full-case
+success is pending. It rebuilds quickstart tags; record and restore existing tag
+identities.
+
 See [two-cluster validation](two-cluster-local.md).
 
 ## Kubernetes HTTP fixture

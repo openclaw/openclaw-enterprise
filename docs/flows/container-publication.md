@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-05
-last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-10-07
+last_updated_session: codex/01a11214-e11d-7172-b802-f8088e4e068a
 ---
 
 # Container publication flow
@@ -101,6 +101,12 @@ frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build tools remain in full Bookworm stages; final images
 use a separately pinned Node 24 Bookworm slim base.
+
+`deploy/runtime/Dockerfile:openclaw-dependency-inputs` copies the public Matrix
+download wrapper into the shared builder stage, avoiding context-file bind access
+failures on enforcing hosts. Both frozen installs retain the read-only
+`matrix-sdk-crypto` stage mount for the verified library. Neither the wrapper nor
+build credentials enter the final image.
 
 `deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
 the final image environment. Harness child processes inherit that default, so
@@ -237,6 +243,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-07 03:09: Copy the public Matrix download wrapper into the shared builder stage to preserve Podman builds on SELinux-enforcing hosts. (codex/01a11214-e11d-7172-b802-f8088e4e068a - e5e206c2a9de01601100c06581cc32f73a174456)
 
 - 2026-10-05 12:10: Update the OpenClaw pin, workspace templates, and Codex sandbox qualification to 0.160.0. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - dd344a97)
 

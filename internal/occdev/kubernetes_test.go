@@ -173,3 +173,84 @@ func TestEngineImageReferenceMatchesDefaultTagAndRegistry(t *testing.T) {
 		})
 	}
 }
+
+func TestImportDevelopmentImagePreservesTaggedImagesAndReleasesPodmanArchives(t *testing.T) {
+	// k3d's tools importer cannot use a remote engine's guest socket. Exercise
+	// the real launcher step with external CLI contracts and a real archive;
+	// the full launcher/engine proof remains a separate integration check.
+	for _, tc := range []struct {
+		name          string
+		engine        string
+		saveFailure   bool
+		importFailure bool
+	}{
+		{name: "Podman tagged image", engine: "podman"},
+		{name: "Podman partial export fails", engine: "podman", saveFailure: true},
+		{name: "Podman direct import fails", engine: "podman", importFailure: true},
+		{name: "Docker tagged image", engine: "docker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &developmentState{Cluster: "occ-dev-owned", directory: t.TempDir()}
+			requested := "openclaw-enterprise-runtime:quickstart"
+			recorded := requested
+			repository := "docker.io/library/openclaw-enterprise-runtime"
+			if tc.engine == "podman" {
+				recorded = "localhost/" + requested
+				repository = "localhost/openclaw-enterprise-runtime"
+			}
+			archive := filepath.Join(state.directory, "development-import.tar")
+			importMarker := filepath.Join(state.directory, "imported")
+			exportResult := ""
+			if tc.saveFailure {
+				exportResult = "exit 43"
+			}
+			importResult := ""
+			if tc.importFailure {
+				importResult = "exit 44"
+			}
+			engineCases := `"image inspect --format {{json .RepoTags}} ` + requested + `") echo '["` + recorded + `"]' ;;
+"exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images list") echo '` + recorded + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `' ;;
+"exec k3d-occ-dev-owned-server-0 ctr -n k8s.io images tag ` + recorded + ` ` + repository + `@` + profileTestDigest + `") ;;`
+			importCases := `"image import ` + recorded + ` -c occ-dev-owned") touch ` + shellQuote(importMarker) + ` ;;`
+			if tc.engine == "podman" {
+				engineCases += `
+"image inspect --format {{.Os}}/{{.Architecture}} ` + recorded + `") echo linux/arm64 ;;
+"image save --output ` + archive + ` ` + recorded + `") umask 077; printf '%s' 'exported fixture bytes' > "$4"; ` + exportResult + ` ;;`
+				importCases = `"image import --mode direct ` + archive + ` -c occ-dev-owned") [ "$(cat "$5")" = 'exported fixture bytes' ] || exit 45; touch ` + shellQuote(importMarker) + `; ` + importResult + ` ;;`
+			}
+			commands := fakeProfileCommands(t, map[string]string{tc.engine: engineCases, "k3d": importCases})
+			r := newRunner(Options{})
+			r.engine = tc.engine
+
+			reference, err := r.importDevelopmentImage(context.Background(), state, requested)
+			calls := strings.Join(commands(), "\n")
+			if tc.saveFailure || tc.importFailure {
+				if err == nil || reference != "" {
+					t.Fatalf("failed image transfer was accepted: %q, %v", reference, err)
+				}
+				if strings.Contains(calls, "ctr -n k8s.io images list") {
+					t.Fatalf("verified an image after failed transfer:\n%s", calls)
+				}
+			} else if err != nil || reference != repository+"@"+profileTestDigest {
+				t.Fatalf("unexpected immutable reference: %q, %v\n%s", reference, err, calls)
+			}
+			if tc.engine == "podman" && !strings.Contains(calls, "podman image save --output "+archive+" "+recorded) {
+				t.Fatalf("Podman did not export its recorded image:\n%s", calls)
+			}
+			if _, err := os.Stat(archive); !os.IsNotExist(err) {
+				t.Fatalf("temporary archive survived: %v", err)
+			}
+			_, importErr := os.Stat(importMarker)
+			if tc.saveFailure {
+				if !os.IsNotExist(importErr) {
+					t.Fatalf("import ran after a partial export: %v", importErr)
+				}
+			} else if importErr != nil {
+				t.Fatalf("import did not read the expected source: %v\n%s", importErr, calls)
+			}
+			if strings.Contains(calls, "image rm ") || strings.Contains(calls, tc.engine+" tag ") {
+				t.Fatalf("changed the operator's tagged image:\n%s", calls)
+			}
+		})
+	}
+}

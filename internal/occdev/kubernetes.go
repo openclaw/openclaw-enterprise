@@ -258,7 +258,9 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 		return "", err
 	}
 	selected = recorded
-	if staged {
+	// Podman's API socket may exist only in the engine's VM. Export through the
+	// selected CLI and stream the archive without a guest socket for k3d-tools.
+	if staged || r.engine == "podman" {
 		platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
 		if err != nil {
 			return "", err
