@@ -181,6 +181,11 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 					} `yaml:"gateway"`
 				} `yaml:"configuration"`
 			} `yaml:"sandbox"`
+			CredentialGateway struct {
+				Configuration struct {
+					Binaries []string `yaml:"binaries"`
+				} `yaml:"configuration"`
+			} `yaml:"credential_gateway"`
 			Compute struct {
 				Configuration struct {
 					Network struct {
@@ -194,6 +199,14 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	}
 	if err := yaml.Unmarshal(data, &installation); err != nil {
 		t.Fatal(err)
+	}
+	// Native OpenClaw inference is a Node child; Codex still needs its exact
+	// executable. The rendered profile must grant both, never an empty allowlist.
+	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
+		openShellCodexBinary,
+		"/usr/local/bin/node",
+	}) {
+		t.Fatalf("unexpected model-credential binaries: %v", installation.Drivers.CredentialGateway.Configuration.Binaries)
 	}
 	sandbox := installation.Drivers.Sandbox.Configuration
 	if sandbox.StartupDelayMs != 30_000 {

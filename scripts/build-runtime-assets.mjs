@@ -291,11 +291,13 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b",
+        sourceArchiveSha256: "ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d",
         openclawBridgePatchSha256:
           "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
         openclawConnectPatchSha256:
-          "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f",
+          "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2",
+        openclawRequiredWorkerAuthorityPatchSha256:
+          "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8",
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),

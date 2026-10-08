@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-08
-last_updated_session: 01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa
+last_updated_session: authoring-run/da7b4107-43b4-4a3f-b941-194218df6457
 ---
 
 # Harness Execution Topology Flow
@@ -19,8 +19,8 @@ retires predecessors before exactly-once activation audit.
 - Source: `packages/occ/src/index.ts:OpenClawController.deployAgent` and
   `apps/controller/src/worker.ts:ControllerWorker`.
 - Assumptions: authorized actor; ready Namespace; same-Namespace native agent Configuration;
-  explicit Agent execution mode; and a supported `harnessAuth` binding. Managed methods reference an authorized OCC
-  Secret API key or a Driver-issued account-owned access-token credential.
+  explicit execution mode; and a supported `harnessAuth` binding with an authorized
+  OCC Secret or account-owned credential.
 
 ## Flow
 
@@ -68,8 +68,8 @@ captures its native configuration, approved harness identity/version, explicit m
 selection, and Agent ServicePrincipal. Production admits approved
 `openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
 the selected SandboxDriver provisions Harnesses with networking, filesystem, and
-process containment and the Installation declares a compatible runtime image.
-The default native capability remains disabled pending runtime qualification.
+process containment and the Installation has native-worker support.
+Pinned runtime support is automatic; custom images can declare it at startup.
 An associated
 `access_token` additionally requires dedicated Codex; the frozen account
 contains only its OCC identity, credential kind, and opaque Secret reference.
@@ -151,8 +151,10 @@ revision's setup envelope and Gateway CA through its native runtime profile
 provider files, separate from Codex's. The native entrypoint combines the Gateway
 CA with inherited TLS trust and converts the envelope into a private one-use
 target; restarts reuse the persisted device token. SandboxDriver propagates renewed
-enrollment material and removes the revision's provider during cleanup. Native
-workers connect outbound without a Codex app-server endpoint. Compute pins the
+enrollment material and removes the revision's provider during cleanup.
+`internal/occdev/kubernetes.go:writeInstallation` permits model egress for
+Node and pinned Codex binaries. Native workers
+connect outbound without a Codex app-server endpoint. Compute pins the
 device in `dedicated-native` with `inference: "worker"`: missing/disconnected
 Harnesses fail without Gateway inference. Exact callbacks and session-bound
 admission scope transport to the Agent.
@@ -257,9 +259,8 @@ prepares private directories and `/tmp`.
 Workspace-file access uses the enrolled Harness node; Gateway and Harness share
 no workspace, session, skill, or image mounts. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 covers per-image assets and generated-image return.
-The OpenClaw node host keeps Gateway-issued worker bundles in its own state and
-workspaces below `/home/node/workspace`, away from gateway state, `CODEX_HOME`,
-and credentials. A restart republishes image-owned
+The node host stores bundles in its own state and workspaces below
+`/home/node/workspace`, separate from gateway state, `CODEX_HOME`, and credentials. A restart republishes image-owned
 runtime assets and reconnects with the paired identity; readiness waits for the
 bounded identity check. The compile cache and model-probe state stay in node
 state and `TMPDIR`, which a Sandbox Driver can grant.
@@ -322,6 +323,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-08 15:29: Trace default pinned-runtime support and native Node model-egress allowance in the accompanying change. (authoring-run/da7b4107-43b4-4a3f-b941-194218df6457 - 13405e1fee089db09c4d592e6dba7adb566f3b17)
 
 - 2026-10-08 02:42: Align the admitted native Agent workspace and Gateway file-transfer binding with OpenShell's approved data mount. (authoring-run/4fbff731-5f62-4865-9fee-a2a117c3d0a6 - a8d2969355bd3c0478337e16a01e267ad3607595)
 

@@ -229,7 +229,7 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.8` defaults with this identity. A stale identity rejects
+all four rendered `2026.9.9` defaults with this identity. A stale identity rejects
 creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
 See the [workspace guide](../guides/topics/workspace-files.md) and
 [setup flow](../flows/workspace-files.md) for recovery and runtime requirements.
@@ -368,9 +368,10 @@ The public API has no revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
 The optional
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
-Kubernetes Compute and dedicated Codex; other sandbox execution combinations are
-rejected. Stock OpenShell cannot provide all required workload credentials; check
-its compatibility limits before planning deployment.
+Kubernetes Compute and dedicated Codex or native OpenClaw with the pinned
+worker-capable runtime. Its Credential Gateway mediates supported model
+Credential Sources; direct Secret-backed model delivery remains unavailable.
+Check its compatibility limits before planning deployment.
 
 ## Failure semantics
 

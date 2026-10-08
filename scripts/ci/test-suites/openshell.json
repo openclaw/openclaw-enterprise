@@ -48,13 +48,15 @@
     {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
       "expectedTests": [
-        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes"
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
+        "guided provisioning starts a dedicated native OpenClaw Agent with automatic required-worker execution"
       ]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       "expectedTests": [
-        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes"
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
+        "guided provisioning starts a dedicated native OpenClaw Agent with automatic required-worker execution"
       ]
     }
   ]

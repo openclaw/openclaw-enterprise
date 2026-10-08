@@ -120,6 +120,8 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const provisioning = new Map();
   const credentials = new Map();
+  const credentialSources = new Map();
+  let credentialRegistrationFailed = false;
   const deviceLogins = new Map();
   const files = new Map();
   const secrets = new Map();
@@ -251,6 +253,13 @@ export function installFixture(scenario, evidence) {
     const harnessId =
       configuration.values.agents?.defaults?.models?.[primaryModel]?.agentRuntime?.id ??
       (primaryModel?.startsWith("codex/") ? "codex" : "openclaw");
+    const source =
+      owner.harnessAuth?.method === "credential_source"
+        ? credentialSources.get(owner.harnessAuth.sourceId)
+        : undefined;
+    const sourceSnapshot = source
+      ? { sourceId: source.id, credentialGatewayId: source.driverId, sourceType: source.type }
+      : undefined;
     return {
       id,
       namespaceId,
@@ -263,7 +272,15 @@ export function installFixture(scenario, evidence) {
       createdAt,
       configuration: structuredClone(configuration.values),
       secretBindings: structuredClone(configuration.secretBindings),
-      harnessAuth: structuredClone(owner.harnessAuth),
+      harnessAuth: sourceSnapshot
+        ? {
+            ...owner.harnessAuth,
+            ...sourceSnapshot,
+            loginMode: scenario.credentialSourceTypes.find((type) => type.type === source.type)
+              .harnessAuth.loginMode,
+          }
+        : structuredClone(owner.harnessAuth),
+      ...(sourceSnapshot ? { credentialSources: [sourceSnapshot] } : {}),
       ...(owner.pluginApprovers !== undefined
         ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
         : {}),
@@ -542,8 +559,11 @@ export function installFixture(scenario, evidence) {
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
-          ...(scenario.nativeWorkerSupport
-            ? { nativeWorkers: { support: scenario.nativeWorkerSupport } }
+          ...(scenario.nativeWorkerSupport === false
+            ? {}
+            : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
+          ...(scenario.credentialSourceTypes !== undefined
+            ? { credentialSources: { types: scenario.credentialSourceTypes } }
             : {}),
           ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
           ...(scenario.pluginDiscoveryCredential
@@ -733,6 +753,47 @@ export function installFixture(scenario, evidence) {
           complete: !nextCursor,
         });
       }
+      if (resource === "credential-sources") {
+        if (method === "GET") {
+          return response([...credentialSources.values()]);
+        }
+        if (method === "POST") {
+          const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
+          const saved = {
+            ...body,
+            id: nextId("csr"),
+            namespaceId,
+            driverId: "credential-gateway-storybook",
+            state:
+              uncertain && scenario.credentialRegistrationOutcome === "deleting"
+                ? "deleting"
+                : "ready",
+            createdAt,
+          };
+          credentialSources.set(saved.id, saved);
+          if (uncertain) {
+            // Preserve the server-owned registration after an uncertain response;
+            // recovery operates on the saved source, never another model Secret.
+            credentialRegistrationFailed = true;
+            return error(503, "DEPENDENCY_UNAVAILABLE");
+          }
+          return response(saved, 201);
+        }
+      }
+      if (resource.startsWith("credential-sources/")) {
+        const id = resource.split("/")[1];
+        const source = credentialSources.get(id);
+        if (!source) {
+          return error(404, "NOT_FOUND");
+        }
+        if (method === "GET") {
+          return response(source);
+        }
+        if (method === "DELETE") {
+          credentialSources.delete(id);
+          return new Response(null, { status: 204 });
+        }
+      }
       if (resource === "configurations" && method === "POST") {
         const saved = {
           ...body,
@@ -810,6 +871,9 @@ export function installFixture(scenario, evidence) {
           createdAt,
           activeRevisionId: null,
           servicePrincipalId: "identity_demo_provisioned",
+          ...(agentBody.harnessAuth?.method === "credential_source"
+            ? { credentialSources: [{ sourceId: agentBody.harnessAuth.sourceId }] }
+            : {}),
         };
         agents.set(saved.id, saved);
         credentials.set(saved.id, { transportConfigured: true });

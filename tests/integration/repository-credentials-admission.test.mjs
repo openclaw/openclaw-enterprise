@@ -890,8 +890,14 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
   for (const { harness, executionMode, status, code, message } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
     { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
-    // The pinned runtime lacks native worker support, so admission refuses first.
-    { harness: "openclaw", executionMode: "dedicated", status: 400, code: "INVALID_REQUEST" },
+    // Native dedicated execution requires full containment before Repository admission.
+    {
+      harness: "openclaw",
+      executionMode: "dedicated",
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: /^A required platform dependency is unavailable\.$/,
+    },
     // A Harness/mode mismatch names the execution mode the Configuration needs.
     {
       harness: "codex",

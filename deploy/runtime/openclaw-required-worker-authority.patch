@@ -1,0 +1,168 @@
+diff --git a/src/agents/session-placement-admission.types.ts b/src/agents/session-placement-admission.types.ts
+index a08f38c..e0e4f92 100644
+--- a/src/agents/session-placement-admission.types.ts
++++ b/src/agents/session-placement-admission.types.ts
+@@ -11,5 +11,9 @@ export type RequiredSessionPlacementAdmission = <T>(
+   task: (assertPlacementCurrent: () => void) => Promise<T>,
+   assertCurrent?: () => void,
+   signal?: AbortSignal,
+-  preparation?: { waitForReady: false },
++  preparation?: {
++    waitForReady: false;
++    /** Borrow the original caller until detached placement setup settles. */
++    retainAuthority?: () => (() => void) | undefined;
++  },
+ ) => Promise<T>;
+diff --git a/src/gateway/server-methods/session-create-required-worker.ts b/src/gateway/server-methods/session-create-required-worker.ts
+index 6fa0e94..ca17d44 100644
+--- a/src/gateway/server-methods/session-create-required-worker.ts
++++ b/src/gateway/server-methods/session-create-required-worker.ts
+@@ -74,6 +74,7 @@ export async function prepareRequiredWorkerCreatedSession(params: {
+   prepare: SessionPlacementAdmissionProvider["withRequiredSession"];
+   session: { entry: Pick<SessionEntry, "sessionId">; key: string; agentId: string };
+   assertCurrent: () => void;
++  retainAuthority?: () => (() => void) | undefined;
+   signal?: AbortSignal;
+ }): Promise<void> {
+   if (!params.requiredProfile || params.pendingWorktree || params.requestedProjectGitUrl) {
+@@ -96,6 +97,6 @@ export async function prepareRequiredWorkerCreatedSession(params: {
+     },
+     params.assertCurrent,
+     params.signal,
+-    { waitForReady: false },
++    { waitForReady: false, retainAuthority: params.retainAuthority },
+   );
+ }
+diff --git a/src/gateway/server-methods/sessions-create.ts b/src/gateway/server-methods/sessions-create.ts
+index 42060c3..e2869d6 100644
+--- a/src/gateway/server-methods/sessions-create.ts
++++ b/src/gateway/server-methods/sessions-create.ts
+@@ -13,7 +13,10 @@ import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-ke
+ import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
+ import { captureAgentTurnPrincipal } from "../agent-turn/principal.js";
+ import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js";
+-import { acceptGatewayDeviceSourceAuthority } from "../device-revocation.js";
++import {
++  acceptGatewayDeviceSourceAuthority,
++  retainGatewayDeviceRevocation,
++} from "../device-revocation.js";
+ import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
+ import { ModelAccountConnectAuthorityError } from "../model-account-connect-errors.js";
+ import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
+@@ -161,6 +164,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
+     const { personalModelSelection, personalAccountDefaults } = personalAccounts;
+     const cfg = getCurrentConfig();
+     const authority = createAgentRuntimeAuthorityGuard(client, context, respond);
++    let createdSessionCommitted = false;
+     const assertSessionCreateCurrent = () => {
+       requestAuthority.assertCurrent();
+       assertRequiredWorkerSessionCreateCurrent(getCurrentConfig(), requiredProfile, p);
+@@ -180,7 +184,11 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
+         client,
+         context,
+         hasCurrentClientAuthority,
+-        invocationAuthority: { assertCurrent: commitGuard, signal },
++        invocationAuthority: {
++          assertCurrent: () =>
++            createdSessionCommitted ? assertSessionCreateCurrent() : commitGuard(),
++          signal,
++        },
+       }),
+       async [Symbol.asyncDispose]() {
+         const captured = await this.preparation.catch(() => undefined);
+@@ -572,6 +580,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
+           sessionId: committed.entry.sessionId,
+           lifecycleRevision: committed.entry.lifecycleRevision,
+         });
++        createdSessionCommitted = true;
+         if ((hasInitialTurn || requiredProfile) && requestAuthority.family === "worker") {
+           sessionSourceAccepted = acceptGatewayDeviceSourceAuthority(hasCurrentClientAuthority);
+         }
+@@ -580,14 +589,26 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
+         if (!authority.hasActive()) {
+           return;
+         }
++        const captured = requiredProfile ? await operatorCapture.preparation : undefined;
+         await prepareRequiredWorkerCreatedSession({
+           requiredProfile,
+           pendingWorktree: Boolean(preparedWorktree?.pendingWorktree),
+           requestedProjectGitUrl,
+           prepare: context.workerPlacementDispatchService?.withRequiredSession,
+           session,
+-          assertCurrent: assertSessionCreateCurrent,
+-          signal,
++          assertCurrent: () => {
++            // Inherited captures own the parent source; creation still owns this target session.
++            assertSessionCreateCurrent();
++            captured?.authority.assertCurrent();
++          },
++          retainAuthority:
++            captured?.authority.retain ??
++            (() => retainGatewayDeviceRevocation(hasCurrentClientAuthority)),
++          signal: captured?.authority.signal
++            ? signal
++              ? AbortSignal.any([signal, captured.authority.signal])
++              : captured.authority.signal
++            : signal,
+         });
+         if (!hasInitialTurn) {
+           scheduleCreatedDashboardSessionTitle(session, cfg, context, p.titleSource);
+diff --git a/src/gateway/server-worker-required-profile.ts b/src/gateway/server-worker-required-profile.ts
+index 62d16a7..3673672 100644
+--- a/src/gateway/server-worker-required-profile.ts
++++ b/src/gateway/server-worker-required-profile.ts
+@@ -79,6 +79,7 @@ export function createRequiredWorkerSessionPreparation(options: {
+           authorizeDispatch: assertPolicyCurrent,
+           signal: source.signal,
+           waitForReady: preparation?.waitForReady,
++          retainAuthority: preparation?.retainAuthority,
+           prepareWorkspace: (canPrepare) =>
+             ensureSessionWorkspaceForPlacement({
+               cfg: options.getConfig(),
+diff --git a/src/gateway/worker-environments/placement-dispatch-coordinator.ts b/src/gateway/worker-environments/placement-dispatch-coordinator.ts
+index 74b1893..ce51fa5 100644
+--- a/src/gateway/worker-environments/placement-dispatch-coordinator.ts
++++ b/src/gateway/worker-environments/placement-dispatch-coordinator.ts
+@@ -68,7 +68,7 @@ export function coordinateWorkerPlacementDispatch(
+       | "dispatch"
+       | "startDispatch"
+       | "waitForInitialPlacement"
+-    >,
++    > & { retainAuthority?: () => (() => void) | undefined },
+   ): ReturnType<typeof ensureWorkerSessionPlacement>;
+   /** Lend admission while interrupting session work and waiting for its turn claim. */
+   awaitTurnClaimRelease(sessionId: string, wait: () => Promise<void>): Promise<void>;
+@@ -260,15 +260,24 @@ export function coordinateWorkerPlacementDispatch(
+         waitForInitialPlacement: coordinator.waitForInitialPlacement,
+         startDispatch: async (request, onTransition, authorize, signal) => {
+           const started = createDeferredCore<WorkerDispatchPlacement>();
+-          const operation = coordinator.dispatch(
+-            request,
+-            (placement) => {
+-              started.resolve(placement);
+-              onTransition?.(placement);
+-            },
+-            authorize,
+-            signal,
+-          );
++          // The requested acknowledgment ends the RPC borrow, not setup custody.
++          // Keep its original grant alive until every placement effect has settled.
++          const operation = (async () => {
++            const releaseAuthority = params.retainAuthority?.();
++            try {
++              return await coordinator.dispatch(
++                request,
++                (placement) => {
++                  started.resolve(placement);
++                  onTransition?.(placement);
++                },
++                authorize,
++                signal,
++              );
++            } finally {
++              releaseAuthority?.();
++            }
++          })();
+           void operation.catch((error: unknown) => {
+             try {
+               sessionPreparation.warn("Worker setup failed: " + String(error));

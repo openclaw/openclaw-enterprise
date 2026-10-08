@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
+import {
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+} from "../../packages/contracts/src/workspace-defaults.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  assertNativeWorkerProofInController,
+  nativeFirstAgentProofTimeout,
+} from "../helpers/local-first-agent-native.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -259,7 +268,7 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   );
 }
 
-async function requestLocalApi(origin, serviceKey, method, path, values) {
+async function requestLocalApi(origin, serviceKey, method, path, body) {
   let response;
   try {
     response = await fetch(new URL(path, origin), {
@@ -268,9 +277,9 @@ async function requestLocalApi(origin, serviceKey, method, path, values) {
       signal: AbortSignal.timeout(20_000),
       headers: {
         "x-api-key": serviceKey,
-        ...(values === undefined ? {} : { "content-type": "application/json" }),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
-      ...(values === undefined ? {} : { body: JSON.stringify({ values }) }),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   } catch {
     throw new Error(`The local controller did not answer ${method} ${path}.`);
@@ -366,7 +375,12 @@ test(
     skip: selected
       ? false
       : "set OCC_TEST_LOCAL_FIRST_AGENT_REAL=1 to run against a disposable local Kubernetes installation",
-    timeout: 2 * commandTimeout + refusalTimeout + stackLifecycleTimeout + 60_000,
+    timeout:
+      2 * commandTimeout +
+      refusalTimeout +
+      stackLifecycleTimeout +
+      nativeFirstAgentProofTimeout +
+      9 * 60_000,
   },
   async (context) => {
     assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for the first invocation");
@@ -557,6 +571,125 @@ test(
       assert.equal(source.secrets.api_key?.kind, "secret");
       assert.equal(source.secrets.api_key?.namespaceId, first.namespaceId);
       secretId = source.secrets.api_key?.id;
+
+      await context.test(
+        "guided provisioning starts a dedicated native OpenClaw Agent with automatic required-worker execution",
+        { timeout: 8 * 60_000 + nativeFirstAgentProofTimeout + 30_000 },
+        async (nativeContext) => {
+          const request = (method, path, body) =>
+            requestLocalApi(first.origin, serviceKey, method, path, body);
+          const { agents, models } = createHarnessConfiguration("openclaw", expectedModel);
+          const installation = await request("GET", "/installation");
+          assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
+          assert.ok(
+            installation.capabilities?.credentialSources?.types.some(
+              ({ type }) => type === source.type,
+            ),
+          );
+          // Use the same ready model Source, then let the regular Console API
+          // create its Configuration, Agent, grants, transport and first revision.
+          const submitted = await request("POST", `${base}/agents/provision`, {
+            requestId: `req_${randomUUID()}`,
+            name: `first-agent-native-${suffix}`,
+            executionMode: "dedicated",
+            harnessAuth: { method: "credential_source", sourceId: source.id },
+            configuration: {
+              kind: "agent",
+              values: {
+                agents,
+                models,
+                tools: { allow: ["exec"] },
+              },
+            },
+            initialWorkspaceFiles: { ...WORKSPACE_DEFAULTS },
+            workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
+          });
+          const deadline = Date.now() + 8 * 60_000;
+          let provisioned;
+          let deployment;
+          let nativeAgent;
+          while (Date.now() < deadline) {
+            nativeContext.signal.throwIfAborted();
+            provisioned = await request("GET", submitted.provisioning.url);
+            assert.notEqual(
+              provisioned.status,
+              "failed",
+              "Guided native provisioning must succeed",
+            );
+            if (provisioned.status === "succeeded") {
+              assert.ok(provisioned.agentId && provisioned.revisionId);
+              const nativePath = `${base}/agents/${provisioned.agentId}`;
+              deployment = await request(
+                "GET",
+                `${nativePath}/deployments/${provisioned.revisionId}`,
+              );
+              assert.notEqual(
+                deployment.status,
+                "failed",
+                "The admitted native revision must become ready",
+              );
+              nativeAgent = await request("GET", nativePath);
+              if (
+                deployment.status === "succeeded" &&
+                nativeAgent.activeRevisionId === provisioned.revisionId
+              ) {
+                break;
+              }
+            }
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(2_000, Math.max(1, deadline - Date.now()))),
+            );
+          }
+          assert.equal(provisioned?.status, "succeeded");
+          assert.equal(deployment?.status, "succeeded");
+          assert.equal(nativeAgent?.activeRevisionId, provisioned.revisionId);
+          assert.equal(nativeAgent.executionMode, "dedicated");
+          assert.deepEqual(nativeAgent.harnessAuth, {
+            method: "credential_source",
+            sourceId: source.id,
+          });
+          assert.deepEqual(nativeAgent.credentialSources, [{ sourceId: source.id }]);
+          const nativePath = `${base}/agents/${nativeAgent.id}`;
+          const revision = await request(
+            "GET",
+            `${nativePath}/revisions/${provisioned.revisionId}`,
+          );
+          assert.equal(revision.harness.id, "openclaw");
+          assert.equal(revision.harness.mode, "dedicated");
+          const access = await request("GET", `${base}/iam/access-bindings`);
+          assert.ok(
+            access.some(
+              (binding) =>
+                binding.subjectId === nativeAgent.servicePrincipalId &&
+                binding.resourceKind === "credential_source" &&
+                binding.resourceId === source.id,
+            ),
+          );
+          assert.equal(
+            access.some(
+              (binding) =>
+                binding.subjectId === nativeAgent.servicePrincipalId &&
+                binding.resourceKind === "secret",
+            ),
+            false,
+            "The native Agent must not gain underlying Secret access",
+          );
+          // Reading through the real Console workspace route proves private setup
+          // bytes are usable by the enrolled worker, not merely accepted at admission.
+          for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
+            const file = await request("GET", `${nativePath}/workspace/files/${filename}`);
+            assert.equal(file.name, filename);
+            assert.equal(file.content, content);
+          }
+          await assertNativeWorkerProofInController(nativeContext, {
+            stateDirectory,
+            state: recorded,
+            environment: env,
+            namespaceId: first.namespaceId,
+            agentId: nativeAgent.id,
+          });
+        },
+      );
       const bindings = await requestLocalApi(
         first.origin,
         serviceKey,
@@ -615,8 +748,10 @@ test(
     );
     try {
       const changed = await requestLocalApi(first.origin, serviceKey, "PATCH", configurationPath, {
-        ...original.values,
-        tools: { allow: ["*"] },
+        values: {
+          ...original.values,
+          tools: { allow: ["*"] },
+        },
       });
       assert.equal(changed.id, original.id, "The edit must preserve the Configuration ID");
       assert.equal(
@@ -663,7 +798,9 @@ test(
         "A refused key replacement must leave the active revision unchanged",
       );
     } finally {
-      await requestLocalApi(first.origin, serviceKey, "PATCH", configurationPath, original.values);
+      await requestLocalApi(first.origin, serviceKey, "PATCH", configurationPath, {
+        values: original.values,
+      });
     }
   },
 );

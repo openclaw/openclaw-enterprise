@@ -74,12 +74,12 @@ runtime:
   nativeWorkerSupport: custom-image
 ```
 
-`custom-image` is the only value. It is off by default; no API or Agent
-Configuration field can set it. Declare it only for an image with automatic
-required worker placement and node-local native inference. The pinned source
-accepts the node configuration but lacks complete placement activation, so it
-does not qualify. This declaration does not add runtime features or waive the
-required provisioning SandboxDriver and its containment facets. See
+`custom-image` is the only declaration value; no API or Agent Configuration
+field can set it. The pinned runtime already supplies native-worker support,
+so its Dedicated OpenClaw flow needs no declaration. Use this optional block
+only for a separately selected custom image with automatic required worker
+placement and node-local inference. It does not add runtime features or waive
+the required provisioning SandboxDriver and its containment facets. See
 [Native worker support](harness-execution.md#native-worker-support).
 
 ## Create, read, update, and delete

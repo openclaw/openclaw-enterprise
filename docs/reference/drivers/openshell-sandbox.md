@@ -4,11 +4,12 @@ The OpenShell SandboxDriver pairs its Gateway with dedicated Codex/native
 OpenClaw Harnesses and [Kubernetes Compute](kubernetes-compute.md). OCC owns
 Agents, revisions, Namespaces, routing, credentials, and authorization.
 
-Development supplies plugin-free dedicated Codex with
-[`v0.1.3-pre.2`](https://github.com/NVIDIA/OpenShell/tree/v0.1.3-pre.2). The paired
-[OpenShell Credential Gateway](openshell-credential-gateway.md) delivers the
-model key; a revision-owned provider supplies Codex files and the workspace-node
-credential. These APIs are experimental and unqualified for production.
+Development supplies native OpenClaw and plugin-free Codex with
+[`v0.1.3-pre.2`](https://github.com/NVIDIA/OpenShell/tree/v0.1.3-pre.2). The pinned
+OCE runtime declares native Dedicated support. The paired
+[Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
+revision-owned providers supply node enrollment and Codex files. These APIs remain
+experimental and unqualified for production.
 
 Embedded OpenClaw fails: only dedicated Harnesses are supported. The Driver
 supplies native OpenClaw's three containment facets; see
@@ -29,8 +30,8 @@ The OpenShell SandboxDriver owns only the provider sandboxing delegation:
   in that Workspace. Dedicated Codex exposes its loopback app-server port in the
   same request; native OpenClaw requests no inbound service. The Driver adds each
   [credential attachment](#credential-attachments) to the Sandbox's providers,
-  plus a revision-owned Codex runtime provider when applicable,
-  validates the route, and returns the stable Sandbox reference.
+  plus the selected Harness's revision-owned runtime provider,
+  validates any Codex route, and returns the stable Sandbox reference.
 - OpenShell's controller creates and owns the provider Harness Pod behind that
   Sandbox.
 - `cleanup` derives the stable Sandbox identity during revision retirement, even
@@ -59,7 +60,8 @@ to a running Agent requires upstream support:
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
-including `best_effort`, fails Installation startup.
+including `best_effort`, fails Installation startup. The Sandbox host must support
+the requested Landlock operations; a host that cannot enforce them fails launch.
 
 There is no `exec` facet; command-level authorization and per-tool dynamic
 sandbox creation are deferred. `exec` remains a tool invocation inside the
@@ -179,7 +181,10 @@ OpenShell credentials must not appear in startup YAML.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
-under `/sandbox/`.
+under `/sandbox/`. Compute initializes
+[private workspace inputs](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
+on that PVC before Sandbox startup. Exact marker readiness and writer Pod
+termination precede handoff; the Harness verifies completion at its effective path.
 
 For dedicated Codex, OpenShell's `configureAgent` hook contributes the effective
 configuration before OCC validates and freezes the revision, disabling the
@@ -225,27 +230,28 @@ static `providers` entries that use the OCC shape, so operator-configured
 providers cannot impersonate a credential source. After the Harness is ready,
 Compute requires every attachment to report `ready` before activation.
 
-## Dedicated Codex runtime provider
+<span id="dedicated-codex-runtime-provider"></span>
 
-Compute emits bounded, nonsecret `runtime.json` and `config.toml`; a
-revision-owned provider exposes them read-only and supplies their paths through
-`OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and `OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`.
-Provisioning waits for the first fail-closed Gateway to issue its workspace-node
-setup Secret, so the provider starts with final setup.
+## Dedicated runtime providers
 
-Development also places the expiring setup envelope in that provider. The token
-is visible inside the Sandbox, so this is not a production credential guarantee.
-Policy limits node egress to the Gateway destination and executable. Compute
-waits for the provider route before enrollment. If Compute renews an expired
-setup, `provisionHarness` uses a version-fenced OpenShell update limited to
-`node_setup_json`; the endpoint, TLS fingerprint, runtime files, CA, labels, and
-ownership must remain exact. The Harness rereads the provider file before each
-node retry and retains the latest valid value during projection gaps. The raw
-app-server token stays outside the provider. Plugins and repository broker
-configuration fail before creation.
+Revision-owned providers use `oce-codex-runtime` or `oce-openclaw-runtime` profiles.
+Both expose node-enrollment and Gateway CA files after the Agent Gateway issues
+setup. Codex additionally requires bounded, nonsecret `runtime.json` and
+`config.toml`, addressed through `OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and
+`OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`; native OpenClaw rejects them. Ordinary
+Secret-backed environment projections remain unsupported.
+
+The expiring setup token is visible inside the Sandbox, without a production
+credential guarantee. Policy limits node egress to the Gateway and executable.
+Codex waits for its provider route; native OpenClaw connects outbound. Renewal
+version-fences `node_setup_json`; endpoint, TLS fingerprint, runtime files, CA,
+labels, and ownership stay exact. Native startup reads the envelope; the Codex
+supervisor rereads it before node retries and retains valid setup during projection
+gaps. The raw app-server token stays outside the provider. Plugins and repository
+broker configuration fail before creation.
 
 Revision cleanup deletes the Sandbox before its runtime provider. Namespace
-cleanup then removes the shared profile. Replays adopt only exact
+cleanup removes unused runtime profiles. Replays adopt only exact
 Namespace-, Agent-, and revision-owned providers with identical nonsecret
 configuration except the narrowly reconciled expired setup envelope. A failed
 or timed-out Sandbox create does not eagerly delete that provider because the

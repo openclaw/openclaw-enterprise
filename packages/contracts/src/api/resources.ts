@@ -252,8 +252,39 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const CredentialSourceFieldSchema = Type.Object(
+  {
+    name: Type.String({ minLength: 1 }),
+    required: Type.Boolean(),
+    description: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const CredentialSourceCatalogSchema = Type.Object(
+  {
+    type: CredentialSourceType,
+    config: Type.Array(CredentialSourceFieldSchema),
+    secrets: Type.Array(CredentialSourceFieldSchema),
+    rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("gateway")]),
+    harnessAuth: Type.Optional(
+      Type.Object(
+        { modelProvider: Type.String({ minLength: 1 }), loginMode: Type.Literal("api_key") },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    credentialSources: Type.Optional(
+      Type.Object(
+        { types: Type.Array(CredentialSourceCatalogSchema) },
+        { additionalProperties: false },
+      ),
+    ),
     agentProvisioning: Type.Optional(
       Type.Object(
         { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },

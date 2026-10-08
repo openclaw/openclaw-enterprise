@@ -181,7 +181,7 @@ catch { process.stderr.write("WORKSPACE_SETUP_FAILED\n"); process.exitCode = 1; 
 /** Metadata-only guard for Harness processes that share the initialized workspace. */
 export function workspaceSetupVerifier(
   setup: Pick<WorkspaceSetup, "id" | "namespaceId" | "agentId" | "defaultsId">,
-  workspace: string,
+  workspace?: string,
 ): string {
   const identity = {
     id: setup.id,
@@ -195,7 +195,7 @@ export function workspaceSetupVerifier(
       ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}], {
         input: ${JSON.stringify(JSON.stringify(identity))},
         env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined,
-          OPENCLAW_WORKSPACE_DIR: ${JSON.stringify(workspace)} },
+          OPENCLAW_WORKSPACE_DIR: ${workspace === undefined ? "process.env.OPENCLAW_WORKSPACE_DIR" : JSON.stringify(workspace)} },
         stdio: ["pipe", "pipe", "pipe"], timeout: 10000, maxBuffer: 4096,
       });
     if (verification.error || verification.status !== 0) {

@@ -9,7 +9,7 @@ Harness never receives the real credential. An Agent uses a model source through
 
 Credential sources require a selected Credential Gateway. The only
 implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
-Its `openai` type authenticates dedicated Codex models, and its `bearer-token`
+Its `openai` type authenticates dedicated Codex and OpenClaw models, and its `bearer-token`
 type carries a static token to one API endpoint. OpenShell is not a supported
 production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
@@ -116,10 +116,18 @@ configuration, fails first with `409 RESOURCE_CONFLICT` "Agent credential
 sources require a selected Sandbox Driver." See [Harness execution](harness-execution.md#harness-authentication)
 for the supported topology.
 
-While a Credential Gateway is selected, deployment rejects `api_key` and
-`codex_pat` bindings (both Secret and ServiceAccount sources) with `409`. Guided Agent
-provisioning rejects credential sources with `400`; create the Agent, then
-deploy it.
+While a Credential Gateway is selected, deployment and guided provisioning reject
+`api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.
+Guided provisioning accepts a ready model source in `harnessAuth`, records it in
+the Agent's `credentialSources`, and grants its service principal exact source
+`operate` access. The caller needs source `operate`; the Agent receives no
+permission on the underlying model Secret. Queued and running provisioning jobs
+keep their source referenced before the Agent exists.
+
+The Console uses the selected gateway catalog from Installation capabilities.
+For supported Dedicated API-key creation, it registers the selected model Secret
+before submitting the provisioning request; the provider and Secret controls are
+shared by both Harnesses. See [Console creation](console/create-and-deploy.md).
 
 ## Update a source
 
@@ -221,8 +229,8 @@ or another authentication method.
 `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 requires exact `delete` and returns `204`:
 
-- It returns `409` while an Agent draft, active revision, or pending deployment
-  references the source.
+- It returns `409` while an Agent draft, active revision, pending deployment,
+  or queued/running guided provisioning job references the source.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.

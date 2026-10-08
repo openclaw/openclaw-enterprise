@@ -110,6 +110,20 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   assert.equal(existsSync(join(f.root, "outside", "USER.md")), false);
 });
 
+test("Harness completion guard follows its effective Sandbox workspace and refuses a lost marker", (t) => {
+  const f = fixture(t);
+  const relocated = join(f.root, "sandbox", "enterprise");
+  mkdirSync(relocated, { recursive: true });
+  writeFileSync(join(relocated, ".oce-workspace-setup.json"), JSON.stringify(identity));
+  // The Sandbox relocates the approved PVC mount; the command must inspect its runtime path.
+  const guard = workspaceSetupVerifier(identity);
+  const verified = f.execute(guard, "", { OPENCLAW_WORKSPACE_DIR: relocated });
+  assert.equal(verified.status, 0, verified.stderr);
+  failed(f.execute(guard, ""));
+  rmSync(join(relocated, ".oce-workspace-setup.json"));
+  failed(f.execute(guard, "", { OPENCLAW_WORKSPACE_DIR: relocated }));
+});
+
 const native = {
   skip:
     executable === undefined && image === undefined
