@@ -404,7 +404,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
 // bounded, redacted projection. Passing tests write nothing.
 export const CONTAINER_LOG_DIRECTORY_VARIABLE = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 const MAX_CONTAINER_LOG_FILES = 4;
-const MAX_CONTAINER_LOG_RECORDS = 20;
+const MAX_CONTAINER_LOG_RECORDS = 8;
 const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
@@ -440,30 +440,33 @@ export function projectContainerLog(value, secrets = []) {
   const text = (field, limit = 200) =>
     typeof field === "string" ? redactLogLine(field, secrets, limit) : undefined;
   const count = (field) => (Number.isSafeInteger(field) && field >= 0 ? field : 0);
-  const lines = value.lines
-    .filter((line) => typeof line === "string")
+  const lines = value.lines.filter((line) => typeof line === "string");
+  const kept = lines
+    .slice(-CONTAINER_LOG_LINES)
     .map((line) =>
       CONTAINER_LOG_SECRET_LINE.test(line)
         ? "[redacted credential-bearing line]"
         : redactLogLine(line, secrets, CONTAINER_LOG_LINE_CHARS),
     );
-  const kept = lines.slice(-CONTAINER_LOG_LINES);
   const stream = record(value.stream) ? value.stream : {};
+  const markers = (Array.isArray(value.markers) ? value.markers : []).filter(record);
   return {
     test: text(value.test),
     reason: text(value.reason),
     namespace: text(value.namespace),
     pod: text(value.pod),
     container: text(value.container),
-    markers: (Array.isArray(value.markers) ? value.markers : [])
-      .filter(record)
-      .slice(0, 20)
-      .map((marker) => ({ label: text(marker.label), at: text(marker.at, 40) })),
+    // The last marker names the failed wait.
+    markers: (markers.length > 20 ? [...markers.slice(0, 19), markers.at(-1)] : markers).map(
+      (marker) => ({ label: text(marker.label), at: text(marker.at, 40) }),
+    ),
     stream: {
       startedAt: text(stream.startedAt, 40),
       endedAt: text(stream.endedAt, 40),
       ended: stream.ended === true,
       exitCode: Number.isInteger(stream.exitCode) ? stream.exitCode : undefined,
+      // kubectl's own complaint when the follow failed (Pod gone, API error).
+      error: text(stream.error, 2_000),
     },
     snapshots: (Array.isArray(value.snapshots) ? value.snapshots : [])
       .filter(record)
@@ -471,6 +474,8 @@ export function projectContainerLog(value, secrets = []) {
       .map((snapshot) => ({
         label: text(snapshot.label),
         at: text(snapshot.at, 40),
+        // A failed read must not look like a Pod that is already gone.
+        ...(snapshot.unavailable === true ? { unavailable: true } : {}),
         pods: (Array.isArray(snapshot.pods) ? snapshot.pods : [])
           .filter((pod) => record(pod?.metadata))
           .slice(0, 8)
@@ -484,7 +489,10 @@ export function projectContainerLog(value, secrets = []) {
           }),
         events: (Array.isArray(snapshot.events) ? snapshot.events : [])
           .filter(record)
-          .map(eventStatus)
+          .map((event) => {
+            const status = eventStatus(event);
+            return { ...status, message: text(status.message, 512) };
+          })
           .sort((left, right) =>
             String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
           )

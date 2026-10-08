@@ -31,16 +31,57 @@ if (args[0] === "models" && args[1] === "status") {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     process.exit(1);
   }
+  // Lifecycle lines for the container log a failed stop wait attaches (finding
+  // 795: a stopped gateway once took 29 s to exit). Requests and closed
+  // connections are logged only while draining.
+  const startedAt = Date.now();
+  const log = (event, fields = {}) =>
+    process.stdout.write(
+      `${JSON.stringify({ event: `fixture_harness.${event}`, sinceStartMs: Date.now() - startedAt, ...fields })}\n`,
+    );
+  const sockets = new Set();
+  let activeRequests = 0;
+  let draining = false;
+  const state = () => ({
+    connections: sockets.size,
+    activeRequests,
+    peers: [...sockets].slice(0, 8).map((socket) => `${socket.remoteAddress}:${socket.remotePort}`),
+  });
   const server = createServer((request, response) => {
+    activeRequests += 1;
+    response.once("close", () => {
+      activeRequests -= 1;
+    });
+    if (draining) {
+      log("request", { method: request.method, readyz: request.url === "/readyz" });
+    }
     response.writeHead(request.url === "/readyz" ? 200 : 404, {
       "content-type": "application/json",
     });
     response.end(JSON.stringify({ fixtureHarness: true }));
   });
-  server.listen(port, "0.0.0.0");
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => {
+      sockets.delete(socket);
+      if (draining) {
+        log("connection-closed", state());
+      }
+    });
+  });
+  server.listen(port, "0.0.0.0", () => log("listening", { port }));
   for (const signal of ["SIGTERM", "SIGINT"]) {
-    process.once(signal, () => server.close());
+    process.once(signal, () => {
+      if (draining) {
+        return;
+      }
+      draining = true;
+      log("signal", { signal, ...state() });
+      server.close(() => log("closed", state()));
+      setInterval(() => log("draining", state()), 2_000).unref();
+    });
   }
+  process.once("exit", (code) => log("exit", { code }));
 } else {
   process.exitCode = 1;
 }

@@ -2384,6 +2384,8 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     "2026-10-08T07:43:53.4Z provider token=do-not-publish-assignment refreshed",
     "2026-10-08T07:43:53.5Z parent value secretauthvalue-parent seen",
   ];
+  // Only the lane gives the child this value; the runner's own env never has it.
+  const childSecret = "childonlysecret-1754";
   // One stand-in serves the runner's raw watches (which wait until stopped) and
   // the test helper's log follow and snapshots; the log ends after a slow exit.
   const bin = join(root, "bin");
@@ -2396,6 +2398,8 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       "const args = process.argv.slice(2);",
       'if (args.includes("logs")) {',
       `  process.stdout.write(${JSON.stringify(`${logLines.join("\n")}\n`)});`,
+      "  process.stdout.write(`2026-10-08T07:43:53.6Z child value ${process.env.OCC_TEST_CHILD_ONLY}\\n`);",
+      "  process.stderr.write('follow note');",
       "  setTimeout(() => process.stdout.write('2026-10-08T07:44:22.0Z [gateway] exit 0'), 300);",
       '} else if (args.includes("get") && args.includes("pods")) {',
       `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(pod)}] }));`,
@@ -2414,18 +2418,22 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     [
       'import test from "node:test";',
       `import { followContainerLog } from ${JSON.stringify(helper)};`,
+      "let snapshots = 0;",
       'test("gateway stop is confirmed", async (t) => {',
       "  const log = followContainerLog({",
       '    args: ["logs", "--follow", "--timestamps"],',
       "    env: process.env,",
       '    target: { namespace: "occ-agent-a", pod: "gateway-0", container: "gateway" },',
       "    snapshot: async () => {",
+      '      if (process.env.SNAPSHOT_FAILS_AFTER === String(++snapshots)) throw new Error("read failed");',
       '      const read = async (kind) => JSON.parse((await import("node:child_process"))',
       '        .execFileSync("kubectl", ["get", kind, "-o", "json"], { encoding: "utf8" })).items;',
       '      return { pods: await read("pods"), events: await read("events") };',
       "    },",
       "  });",
       "  try {",
+      '    process.env.SNAPSHOT_FAILS_AFTER = "2";',
+      '    await log.attachOnFailure(t, "passing wait", async () => "settled");',
       '    log.mark("stop requested");',
       '    await log.attachOnFailure(t, "terminal response wait", async () => {',
       '      throw new Error("timed out");',
@@ -2442,6 +2450,7 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     'import test from "node:test";\ntest("passes", () => {});\n',
   );
   await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
+    env: { OCC_TEST_CHILD_ONLY: childSecret },
     files: [
       { path: "tests/integration/stop.test.mjs", expectedTests: ["gateway stop is confirmed"] },
       { path: "tests/integration/pass.test.mjs", expectedTests: ["passes"] },
@@ -2473,7 +2482,7 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   assert.equal(result.status, 1, result.stderr);
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   const { containerLogs } = JSON.parse(text);
-  // Only the failed wait writes a record; the passing file adds none.
+  // Only the failed wait writes a record: not the wait that settled, not the passing file.
   assert.equal(containerLogs.length, 1);
   const [log] = containerLogs;
   assert.equal(log.file, "tests/integration/stop.test.mjs");
@@ -2490,17 +2499,23 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   // The follow ran to the container's exit, unterminated last line included.
   assert.equal(log.stream.ended, true);
   assert.equal(log.stream.exitCode, 0);
+  assert.equal(log.stream.error, "follow note");
   assert.deepEqual(log.lines, [
     logLines[0],
     logLines[1],
     "[redacted credential-bearing line]",
     "2026-10-08T07:43:53.4Z provider token=[redacted] refreshed",
     "2026-10-08T07:43:53.5Z parent value [env:CI_RUNNER_PARENT_SECRET] seen",
+    "2026-10-08T07:43:53.6Z child value [env:OCC_TEST_CHILD_ONLY]",
     "2026-10-08T07:44:22.0Z [gateway] exit 0",
   ]);
+  // A failed read is marked, so it cannot pass for a Pod that is already gone.
   assert.deepEqual(
-    log.snapshots.map(({ label }) => label),
-    ["at-failure", "after-log"],
+    log.snapshots.map(({ label, unavailable }) => [label, unavailable]),
+    [
+      ["at-failure", undefined],
+      ["after-log", true],
+    ],
   );
   const [snapshot] = log.snapshots;
   assert.equal(snapshot.pods[0].deletedAt, "2026-10-08T07:43:53Z");
@@ -2510,7 +2525,7 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     snapshot.events.map(({ reason, message }) => [reason, message]),
     [["Killing", "Stopping container gateway"]],
   );
-  assert.doesNotMatch(text, /do-not-publish|secretauthvalue/);
+  assert.doesNotMatch(text, /do-not-publish|secretauthvalue|childonlysecret/);
   // The record directory lived in the cluster's private directory and is gone.
   assert.deepEqual(
     (await readdir(clusterDirectory)).filter((name) => name.startsWith("container-logs-")),

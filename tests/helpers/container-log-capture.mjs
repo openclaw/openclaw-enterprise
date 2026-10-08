@@ -9,7 +9,10 @@ import { setTimeout as delay } from "node:timers/promises";
 // artifact. Without it, a failure prints the record as a test diagnostic.
 export const containerLogDirectoryVariable = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 
+// The runner publishes at most the last 1,500 lines of 1,000 characters.
+const maxBufferedLines = 1_500;
 const maxBufferedChars = 2 * 1024 * 1024;
+const maxErrorChars = 2_048;
 const stopTimeoutMs = 5_000;
 
 // Whether `promise` settles within `ms`; the timer never outlives the race.
@@ -23,6 +26,24 @@ async function settlesWithin(promise, ms) {
   } finally {
     timer.abort();
   }
+}
+
+// Status and identity only: the record never stores a Pod spec or environment.
+function podSummary({ metadata = {}, spec = {}, status }) {
+  const { namespace, name, uid, creationTimestamp, deletionTimestamp, deletionGracePeriodSeconds } =
+    metadata;
+  return {
+    metadata: {
+      namespace,
+      name,
+      uid,
+      creationTimestamp,
+      deletionTimestamp,
+      deletionGracePeriodSeconds,
+    },
+    spec: { nodeName: spec.nodeName },
+    status,
+  };
 }
 
 /**
@@ -39,26 +60,35 @@ export function followContainerLog({ args, env, target, snapshot }) {
   let bufferedChars = 0;
   let omittedLines = 0;
   const stream = { startedAt: new Date().toISOString() };
-  const child = spawn("kubectl", args, { env, stdio: ["ignore", "pipe", "ignore"] });
+  let error = "";
+  const child = spawn("kubectl", args, { env, stdio: ["ignore", "pipe", "pipe"] });
   const ended = new Promise((resolve) => {
     const settle = (exitCode) => {
       stream.endedAt ??= new Date().toISOString();
       stream.exitCode ??= exitCode;
       resolve();
     };
-    child.once("error", () => settle(null));
+    child.on("error", () => settle(null));
     child.once("close", (code) => settle(code));
+  });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("error", () => {});
+  child.stderr.on("data", (chunk) => {
+    error = (error + chunk).slice(-maxErrorChars);
   });
   child.stdout.setEncoding("utf8");
   child.stdout.on("error", () => {});
   child.stdout.on("data", (chunk) => {
     const parts = (partial + chunk).split("\n");
-    partial = parts.pop();
+    partial = parts.pop().slice(-maxBufferedChars);
     for (const line of parts) {
       lines.push(line);
       bufferedChars += line.length;
     }
-    while (bufferedChars > maxBufferedChars && lines.length > 0) {
+    while (
+      (bufferedChars > maxBufferedChars || lines.length > maxBufferedLines) &&
+      lines.length > 0
+    ) {
       bufferedChars -= lines.shift().length;
       omittedLines += 1;
     }
@@ -77,7 +107,8 @@ export function followContainerLog({ args, env, target, snapshot }) {
 
   async function takeSnapshot(label) {
     try {
-      return { label, at: new Date().toISOString(), ...(await snapshot()) };
+      const { pods = [], events = [] } = await snapshot();
+      return { label, at: new Date().toISOString(), pods: pods.map(podSummary), events };
     } catch {
       return { label, at: new Date().toISOString(), unavailable: true };
     }
@@ -94,17 +125,22 @@ export function followContainerLog({ args, env, target, snapshot }) {
       reason,
       ...target,
       markers,
-      stream,
+      stream: { ...stream, ...(error.length > 0 ? { error } : {}) },
       snapshots,
       omittedLines,
       lines: partial.length > 0 ? [...lines, partial] : lines,
     };
     const directory = process.env[containerLogDirectoryVariable];
     if (directory) {
-      await writeFile(join(directory, `${randomUUID()}.json`), JSON.stringify(record), {
-        mode: 0o600,
-        flag: "wx",
-      });
+      // Time-ordered names: the runner keeps the first records when a file writes too many.
+      await writeFile(
+        join(directory, `${Date.now()}-${randomUUID()}.json`),
+        JSON.stringify(record),
+        {
+          mode: 0o600,
+          flag: "wx",
+        },
+      );
     } else {
       t.diagnostic(
         [

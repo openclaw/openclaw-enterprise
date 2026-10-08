@@ -95,8 +95,9 @@ node, system Pod, event and redacted node-container diagnostics before cleanup;
 k3d rollback is disabled long enough to retain them. Inspect the
 `diagnostics-<artifact-prefix>-<lane>` artifact or local
 `<state-file>.diagnostics.json`. Failed diagnostic commands are marked unavailable or timed out; collection preserves the original failure. Raw
-kubeconfig, environment values and Pod specs are excluded. A failed wait that
-follows a container log adds the redacted log under `containerLogs`. After a failed prepared
+kubeconfig, environment values and Pod specs are excluded. In k3d lanes the runner
+sets `OPENCLAW_CI_CONTAINER_LOG_DIR` for each file; a failed wait that follows a
+container log there adds the redacted log under `containerLogs`. After a failed prepared
 run, local callers must run `node scripts/ci/cleanup.mjs --state <state-file>`.
 Diagnostics explain setup failures without establishing coverage.
 
