@@ -900,7 +900,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
-  // The real Gateway loads its plugins during the first model request.
+  // The real Gateway was OOMKilled at 2Gi during a model turn; 4Gi passed the rerun.
   configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
   const pluginStatusProxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
   if (pluginStatusProxyCidrs !== undefined && pluginStatusProxyCidrs.trim().length > 0) {
